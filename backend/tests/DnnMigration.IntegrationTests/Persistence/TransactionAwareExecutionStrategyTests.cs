@@ -14,33 +14,13 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Why one property needs its own suite.</strong> Retrying is configured because SQL Server produces
-/// genuinely transient faults, and the retry is applied by the provider around a single operation. Inside an
-/// explicit transaction that is unsound: the provider can only retry the operation it wrapped, and re-running
-/// one statement of a multi-statement transaction after the transaction has been invalidated either
-/// double-applies work or applies it outside the atomic unit the caller believed it was inside. Entity
-/// Framework Core's own defence is to THROW when a retrying strategy meets a user-initiated transaction,
-/// which turns a resilience feature into a hard failure on every transactional write path this application
-/// has.
+/// <strong>Why one property needs its own suite.</strong> Retrying is configured because SQL Server
+/// produces genuinely transient faults, and the retry is applied by the provider around a single operation.
 /// </para>
 /// <para>
-/// <strong>And it is a property whose value is not fixed.</strong> The whole point is that the same strategy
-/// instance answers differently at different moments in one request - retrying before a transaction opens,
-/// declining while one is open, and retrying again once it has closed. A flag captured at construction gives
-/// the wrong answer, and the strategy's own header records that as an alternative that was tried and rejected
-/// rather than reasoned about: the strategy is created once per context scope, BEFORE the transaction opens,
-/// so anything decided at construction is decided too early. Nothing but a test that reads the property at
-/// each of those moments distinguishes the working implementation from that broken one - both compile, and
-/// both pass every other suite in this solution, because every other suite exercises the happy path where no
-/// fault occurs and no retry is ever attempted.
-/// </para>
-/// <para>
-/// <strong>Reached through the container, not constructed by hand.</strong> The strategy is obtained from the
-/// database facade, which resolves it through the factory registered in
-/// <c>DependencyInjection.AddInfrastructure</c>. That makes these assertions evidence about the composed
-/// application: if the registration were removed, the facade would hand back the provider's own retrying
-/// strategy and the transaction cases below would fail. Constructing the type directly would prove the
-/// predicate and nothing about whether it is ever used.
+/// <strong>And it is a property whose value is not fixed.</strong> The whole point is that the same
+/// strategy instance answers differently at different moments in one request - retrying before a
+/// transaction opens, declining while one is open, and retrying again once it has closed.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -49,17 +29,17 @@ public sealed class TransactionAwareExecutionStrategyTests
 {
     private readonly ApiTestFixture _fixture;
 
-    /// <summary>Initialises a new instance of the <see cref="TransactionAwareExecutionStrategyTests"/> class.</summary>
+    /// <summary>
+    /// Initialises a new instance of the <see cref="TransactionAwareExecutionStrategyTests"/> class.
+    /// </summary>
     /// <param name="fixture">The shared host, whose container supplies the context and unit of work.</param>
     public TransactionAwareExecutionStrategyTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>The composed application really does use this strategy.</summary>
     /// <remarks>
-    /// Asserted first because every other case in this suite would pass vacuously against the provider's own
-    /// strategy in one direction: a non-retrying strategy would satisfy the "declines inside a transaction"
-    /// assertions for entirely the wrong reason. Deriving from the provider's retrying strategy is asserted
-    /// too, because that is where the retry count, the delay and the list of transient error numbers come
-    /// from - reimplementing them here would mean maintaining Microsoft's transient-fault list by hand.
+    /// Asserted first because every other case in this suite would pass vacuously against the provider's
+    /// own strategy in one direction: a non-retrying strategy would satisfy the "declines inside a
+    /// transaction" assertions for entirely the wrong reason.
     /// </remarks>
     [Fact]
     public void TheComposedApplication_ResolvesTheTransactionAwareStrategy()
@@ -82,9 +62,9 @@ public sealed class TransactionAwareExecutionStrategyTests
 
     /// <summary>Outside a transaction the strategy retries.</summary>
     /// <remarks>
-    /// This is the resilience the configuration was added for, and it is the case that would be silently lost
-    /// by an implementation that declined always - which is what returning a constant <see langword="false"/>
-    /// would do, and it would pass every transaction case below.
+    /// This is the resilience the configuration was added for, and it is the case that would be silently
+    /// lost by an implementation that declined always - which is what returning a constant <see
+    /// langword="false"/> would do, and it would pass every transaction case below.
     /// </remarks>
     [Fact]
     public void RetriesOnFailure_IsTrueOutsideATransaction()
@@ -102,11 +82,9 @@ public sealed class TransactionAwareExecutionStrategyTests
 
     /// <summary>Inside a transaction opened through the unit of work the strategy declines to retry.</summary>
     /// <remarks>
-    /// The transaction is opened the way production opens one - through
-    /// <see cref="IUnitOfWork.BeginTransactionAsync"/> - rather than by setting the announcement flag
-    /// directly, so this covers the announcement being made at all and being made before the transaction
-    /// opens. The unit of work and the context are resolved from the same scope, which is what makes them the
-    /// same context; that is also the production arrangement.
+    /// The transaction is opened the way production opens one - through <see
+    /// cref="IUnitOfWork.BeginTransactionAsync"/> - rather than by setting the announcement flag directly,
+    /// so this covers the announcement being made at all and being made before the transaction opens.
     /// </remarks>
     [Fact]
     public async Task RetriesOnFailure_IsFalseInsideATransactionOpenedThroughTheUnitOfWork()
@@ -131,7 +109,8 @@ public sealed class TransactionAwareExecutionStrategyTests
     /// <remarks>
     /// The announcement must be withdrawn on the way out, not merely made on the way in. A flag left set
     /// would suppress retrying for the remainder of the request - a silent, permanent loss of resilience on
-    /// every operation after the first transaction, which no later call could diagnose because nothing fails.
+    /// every operation after the first transaction, which no later call could diagnose because nothing
+    /// fails.
     /// </remarks>
     [Fact]
     public async Task RetriesOnFailure_IsTrueAgainAfterACommit()
@@ -155,12 +134,6 @@ public sealed class TransactionAwareExecutionStrategyTests
     }
 
     /// <summary>Rolling back restores retrying too.</summary>
-    /// <remarks>
-    /// The rollback path is separate from the commit path and is the one taken when something has already
-    /// gone wrong, so it is the one most likely to leave state behind. The scope has no rollback member by
-    /// design - disposing without committing is the rollback - which means this asserts the disposal path
-    /// specifically.
-    /// </remarks>
     [Fact]
     public async Task RetriesOnFailure_IsTrueAgainAfterARollback()
     {
@@ -179,21 +152,10 @@ public sealed class TransactionAwareExecutionStrategyTests
         context.Database.CreateExecutionStrategy().RetriesOnFailure.Should().BeTrue();
     }
 
-    /// <summary>
-    /// One strategy instance answers differently before, during and after a transaction.
-    /// </summary>
+    /// <summary>One strategy instance answers differently before, during and after a transaction.</summary>
     /// <remarks>
-    /// <para>
-    /// This is the assertion that separates the working implementation from the rejected one. The strategy is
-    /// created ONCE, before any transaction exists, and is then read at three moments. An implementation that
-    /// captured the answer at construction - which is the obvious way to write it, and is what the strategy's
-    /// header records as having been tried - would report retrying at all three, because at construction no
-    /// transaction was open.
-    /// </para>
-    /// <para>
-    /// It also proves the property is evaluated against the LIVE context rather than a snapshot of it, which
-    /// is what makes a single strategy safe to hold for the life of a scope.
-    /// </para>
+    /// This is the assertion that separates the working implementation from the rejected one. The strategy
+    /// is created ONCE, before any transaction exists, and is then read at three moments.
     /// </remarks>
     [Fact]
     public async Task TheSameStrategyInstance_ReEvaluatesRatherThanCapturingItsAnswer()
@@ -226,12 +188,8 @@ public sealed class TransactionAwareExecutionStrategyTests
 
     /// <summary>The announcement flag alone decides the answer.</summary>
     /// <remarks>
-    /// Isolates the predicate from the transaction machinery: with no transaction anywhere near the context,
-    /// the announcement is set and cleared directly and the strategy follows it. This is what establishes
-    /// that the mechanism is the flag - so a future reader who wonders whether the strategy is really
-    /// consulting the database facade has an answer, and does not reintroduce the facade read that the
-    /// strategy's header records as HANGING, because resolving the facade's dependencies resolves the
-    /// execution strategy factory that is asking the question.
+    /// Isolates the predicate from the transaction machinery: with no transaction anywhere near the
+    /// context, the announcement is set and cleared directly and the strategy follows it.
     /// </remarks>
     [Fact]
     public void RetriesOnFailure_FollowsTheAnnouncementOnTheContext()
@@ -256,9 +214,6 @@ public sealed class TransactionAwareExecutionStrategyTests
         }
         finally
         {
-            // Restored whatever the assertions did. The context is scoped, so this instance goes away with
-            // the scope, but a flag left set on a context another assertion in this scope reached would make
-            // that assertion fail for a reason that has nothing to do with its subject.
             context.ExplicitTransactionOpen = false;
         }
     }

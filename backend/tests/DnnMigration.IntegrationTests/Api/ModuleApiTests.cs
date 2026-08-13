@@ -17,40 +17,16 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
 
-/// <summary>
-/// Covers the module resource end to end, across the real HTTP pipeline and the real database.
-/// </summary>
+/// <summary>Covers the module resource end to end, across the real HTTP pipeline and the real database.</summary>
 /// <remarks>
-/// <para>
-/// The class name is fixed by validation gate 5, which names this suite and requires the four documented
-/// status codes for the module resource - <c>201</c> on a create, <c>200</c> on a read and an update, and
-/// <c>204</c> on a delete.
-/// </para>
 /// <para>
 /// Two behaviours of the module resource shape how these tests are written, and neither is obvious from the
 /// route table.
 /// </para>
 /// <para>
 /// The first is that reading and writing a module are gated by permission policies rather than by a role.
-/// The handler behind those policies does not read the caller's token to decide whether it is a host account:
-/// it resolves the account from the database and reads the stored super-user flag. A token that merely claims
-/// to be a super-user therefore proves nothing. The suite consequently drives the permission-gated routes
-/// with the seeded host account, whose stored row carries that flag, and it uses the seeded member account -
-/// which has no grant rows at all - to prove that the gate really refuses.
-/// </para>
-/// <para>
-/// The second is that a module delete addressed at the module rather than at one of its placements is a soft
-/// delete: the row survives with its deleted marker set, because the legacy application let an administrator
-/// restore a removed module from the recycle bin. A test that asserted the module had become unreadable would
-/// therefore be asserting the wrong thing. What changes is the collection, which hides deleted modules unless
-/// they are explicitly asked for, so that is what these tests assert.
-/// </para>
-/// <para>
-/// Content export and import are exercised as the refusals they currently are. The seeded package declares no
-/// business controller, and this installation registers none, so a request for content is answered with a
-/// clear refusal rather than an empty document. That is the behaviour worth pinning: it records that content
-/// portability is unavailable here, and it would fail loudly if a future change started returning an empty
-/// document instead of saying so.
+/// The handler behind those policies does not read the caller's token to decide whether it is a host
+/// account: it resolves the account from the database and reads the stored super-user flag.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -58,11 +34,6 @@ namespace DnnMigration.IntegrationTests.Api;
 public sealed class ModuleApiTests
 {
     /// <summary>Failure code reported when a request names a page the module is not placed on.</summary>
-    /// <remarks>
-    /// Stated as the value a client observes, because it is the value a client branches on: it distinguishes
-    /// "this module has no placement on that page" from "there is no such module", and the two need different
-    /// remedies.
-    /// </remarks>
     private const string PlacementNotFoundCode = "module.placement_not_found";
     /// <summary>An identifier no seeded or created row can hold, used for the absent-resource paths.</summary>
     private const int UnknownModuleId = 987654;
@@ -71,11 +42,6 @@ public sealed class ModuleApiTests
     /// The widest window the paging contract admits, spelled out here rather than referenced from the
     /// validator so a fact does not silently follow a change to the rule it is measuring against.
     /// </summary>
-    /// <remarks>
-    /// <c>PagedRequestValidator.MaximumPageSize</c> is 100 and the request is refused past it, so a fact that
-    /// wants "the whole collection in one window" has to ask for exactly this and then confirm the collection
-    /// fits. An earlier draft asked for a thousand and was answered <c>400</c>.
-    /// </remarks>
     private const int MaximumPageSize = 100;
 
     /// <summary>A page identifier no seeded row can hold.</summary>
@@ -92,9 +58,7 @@ public sealed class ModuleApiTests
     /// <remarks>
     /// The address carries no portal segment and no portal query value. The catalogue endpoint takes its
     /// tenant from the request host, which the fixture registers as an alias of the seeded portal, so the
-    /// definitions asserted below are that portal's. This is the same tenant the administrator policy is
-    /// evaluated against, which is why the endpoint accepts no caller-supplied portal identifier: one would
-    /// let a request be authorised against one portal and answered about another.
+    /// definitions asserted below are that portal's.
     /// </remarks>
     [Fact]
     public async Task ListModuleDefinitions_ReturnsOkIncludingSeededDefinition()
@@ -108,12 +72,6 @@ public sealed class ModuleApiTests
 
         string body = await response.Content.ReadAsStringAsync();
 
-        // Rule T7 at the wire. The definition's default cache period is a non-nullable integer precisely so
-        // that a stored -1 - which the legacy settings screen read as "caching does not apply, hide the
-        // field" - reaches the caller as -1 rather than as null or as nothing at all. The seed stores 0,
-        // which is the harder case to keep honest: a serialiser configured to omit default values would
-        // drop the member entirely and a reader could not tell 0 from absent. Asserting the member is
-        // present proves the configuration writes it whatever its value, and therefore that -1 survives too.
         body.Should().Contain("\"defaultCacheTime\"");
 
         CollectionEnvelope<ModuleDefinitionDto>? envelope =
@@ -151,16 +109,14 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The definition catalogue is administrator-only. A member of the tenant holding a perfectly valid token
-    /// is refused, which proves the gate is portal administrator membership read from stored role assignments
-    /// rather than mere authentication.
+    /// The definition catalogue is administrator-only. A member of the tenant holding a perfectly valid
+    /// token is refused, which proves the gate is portal administrator membership read from stored role
+    /// assignments rather than mere authentication.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The catalogue is installation-time reference data that only an administrator has any reason to browse,
-    /// and the legacy screens it feeds were themselves administrator-gated. It is deliberately not guarded by
-    /// a module permission policy: those resolve their scope from a module identifier in the route, and this
-    /// route carries a definition identifier at most, so such a policy could only ever refuse.
+    /// The catalogue is installation-time reference data that only an administrator has any reason to
+    /// browse, and the legacy screens it feeds were themselves administrator-gated.
     /// </remarks>
     [Fact]
     public async Task ListModuleDefinitions_AsMemberWithoutAdministratorRole_ReturnsForbidden()
@@ -175,11 +131,6 @@ public sealed class ModuleApiTests
 
     /// <summary>One definition is readable by its own identifier.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Restores the legacy per-definition read. The legacy member answered from the whole installation; this
-    /// address answers within the tenant the request host resolves to, which is the deliberate narrowing the
-    /// contract records.
-    /// </remarks>
     [Fact]
     public async Task GetModuleDefinition_ByIdentifier_ReturnsOkWithTheSeededDefinition()
     {
@@ -191,9 +142,6 @@ public sealed class ModuleApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // Read through the ENVELOPE, which is what every payload-bearing success in this API publishes. An
-        // earlier revision read the bare payload here and silently succeeded against defaults, because
-        // deserialising an envelope as its own payload type yields an object with every member unset.
         ModuleDefinitionDto? definition = await response.Content
             .ReadEnvelopeAsync<ModuleDefinitionDto>();
 
@@ -249,10 +197,6 @@ public sealed class ModuleApiTests
     /// A package identifier naming nothing answers <c>200 OK</c> with an empty array, never <c>404</c>.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// A catalogue read answers with a sequence, and an empty sequence is a legitimate answer. Reporting a
-    /// missing collection would make an empty result indistinguishable from a failure.
-    /// </remarks>
     [Fact]
     public async Task ListDesktopModuleDefinitions_WhenPackageUnknown_ReturnsOkWithAnEmptyArray()
     {
@@ -271,25 +215,13 @@ public sealed class ModuleApiTests
         envelope.Data!.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Every definition read is refused to a caller who may place a module NOWHERE in the tenant.
-    /// </summary>
+    /// <summary>Every definition read is refused to a caller who may place a module NOWHERE in the tenant.</summary>
     /// <param name="path">The address to attempt.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THE CONDITION IS "NO PAGE GRANT", NOT "NO ADMINISTRATOR ROLE", and the difference is the whole point
-    /// of the policy change these three addresses now carry. The catalogue backs the module-type selector on
-    /// the placement form, and the create action deliberately carries no policy at all because
-    /// <c>ModuleSettings.ascx.vb:L191</c> admitted the tenant's administrator OR an administrator of the page
-    /// being edited. Tenant administration on the catalogue therefore refused a caller the create action
-    /// admits, in the way hardest to notice: the form opened and its type selector was empty.
-    /// </para>
-    /// <para>
-    /// The precondition is CLEARED rather than assumed, because the suites share one database with no ordering
-    /// guarantee: a sibling case granting EDIT to the registered role would otherwise decide this one's
-    /// outcome by execution order.
-    /// </para>
+    /// The precondition is CLEARED rather than assumed, because the suites share one database with no
+    /// ordering guarantee: a sibling case granting EDIT to the registered role would otherwise decide this
+    /// one's outcome by execution order.
     /// </remarks>
     [Theory]
     [InlineData("/api/v1/module-definitions")]
@@ -312,21 +244,7 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// THE POSITIVE HALF OF THE POLICY, AND THE ONE THAT FAILED BEFORE. Asserting only the refusal above could
-    /// not distinguish "the grant is consulted" from "the catalogue is simply closed to everybody but an
-    /// administrator" - which is exactly the state that made the create capability reachable and unusable.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>ModuleSettings.ascx.vb:L214-L219</c> disabled four controls for a caller outside the
-    /// administrators role - <c>chkAllTabs</c>, <c>chkDefault</c>, <c>chkAllModules</c> and <c>cboTab</c> - and
-    /// <c>cboModuleType</c>, the selector this catalogue backs, is conspicuously NOT among them. A page
-    /// administrator picked a module type; what they could not do was promote the module across the tenant's
-    /// pages, which is a restriction on the page listing rather than on this one.
-    /// </para>
-    /// <para>
     /// The grant is removed in a <c>finally</c> because it is tenant-wide state other suites read.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task ListModuleDefinitions_AsMemberHoldingOnePageEditGrant_ReturnsOk()
@@ -361,17 +279,12 @@ public sealed class ModuleApiTests
 
     /// <summary>
     /// The definition catalogue exposes no mutator. Every write verb on both the collection address and a
-    /// per-definition address is unroutable, because definitions are written only by module installation and
-    /// that subsystem lies beyond this migration's scope.
+    /// per-definition address is unroutable, because definitions are written only by module installation
+    /// and that subsystem lies beyond this migration's scope.
     /// </summary>
     /// <param name="method">The write verb to attempt.</param>
     /// <param name="path">The catalogue address to attempt it against.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>405 Method Not Allowed</c> is accepted alongside <c>404 Not Found</c> because which of the two the
-    /// router produces depends on whether any action is registered for the address at all, and the assertion
-    /// worth making is that no write reaches a handler - not which refusal the router happens to choose.
-    /// </remarks>
     [Theory]
     [InlineData("POST", "/api/v1/module-definitions")]
     [InlineData("PUT", "/api/v1/module-definitions")]
@@ -513,11 +426,7 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A create by a caller holding no edit grant on the target page is REFUSED, and writes nothing. This is
-    /// the regression test for the missing authorisation on creation: the endpoint carried the bare
-    /// authentication requirement, the service verified only that the page belonged to the tenant, and the
-    /// commentary on both claimed a permission check that no code performed - so any authenticated caller
-    /// could place a module on any page of any tenant.
+    /// A create by a caller holding no edit grant on the target page is REFUSED, and writes nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -543,10 +452,10 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The refusal above is a real permission evaluation rather than a blanket denial: an edit grant recorded
-    /// against the caller's role on the target page admits the same create, and a deny recorded beside it
-    /// closes it again. Proving the denial alone could not distinguish "the grant is consulted" from "creation
-    /// is simply closed to everybody but a host account".
+    /// The refusal above is a real permission evaluation rather than a blanket denial: an edit grant
+    /// recorded against the caller's role on the target page admits the same create, and a deny recorded
+    /// beside it closes it again. Proving the denial alone could not distinguish "the grant is consulted"
+    /// from "creation is simply closed to everybody but a host account".
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -593,35 +502,15 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A create presented with a credential minted for ANOTHER tenant is refused, and nothing is persisted -
-    /// even though the account holds administration of the tenant the request reaches.
+    /// A create presented with a credential minted for ANOTHER tenant is refused, and nothing is persisted
+    /// - even though the account holds administration of the tenant the request reaches.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// THE REGRESSION TEST FOR THE ONE MUTATION WITHOUT AN ITEM POLICY. Every other module mutation names its
-    /// module in the route, so its named policy reconciles three tenant identities before the action runs: the
-    /// tenant the token was minted for, the tenant the request arrived through, and the tenant the operation
-    /// targets. Creation names its target page in the BODY, so it carries no such policy and fell back to the
-    /// bare authentication requirement plus the service's grant reads - and those reads cannot supply the
-    /// missing identity, because they ask what authority the ACCOUNT holds and an installation-wide account
-    /// holds authority in several portals at once.
-    /// </para>
-    /// <para>
-    /// ONE ACCOUNT IN TWO PORTALS, WHICH IS THE REPORTED SHAPE AND NOT AN APPROXIMATION. The member account
-    /// is provisioned into a second, genuinely existing tenant and presents a token minted for THAT tenant
-    /// against the seed tenant's host name and page. A token naming a portal the installation does not have
-    /// would not reach this action at all - the restricted-session stage cannot evaluate a remediation state
-    /// for a tenant that does not exist and refuses first with its own code - so the second tenant has to be
-    /// real for the comparison under test to be the one that answers.
-    /// </para>
-    /// <para>
-    /// The account is given the page EDIT grant in the SEED tenant for the duration, so every grant the
-    /// operation consults answers yes and the only remaining reason for refusal is the credential's own
-    /// tenant: without the comparison this create would succeed. The stored count is asserted as well as the
-    /// status, because a refusal that had already staged the module would depend on nobody committing
-    /// afterwards.
-    /// </para>
+    /// THE REGRESSION TEST FOR THE ONE MUTATION WITHOUT AN ITEM POLICY. Every other module mutation names
+    /// its module in the route, so its named policy reconciles three tenant identities before the action
+    /// runs: the tenant the token was minted for, the tenant the request arrived through, and the tenant
+    /// the operation targets.
     /// </remarks>
     [Fact]
     public async Task CreateModule_WithATokenMintedForAnotherTenant_ReturnsForbiddenAndWritesNothing()
@@ -629,8 +518,6 @@ public sealed class ModuleApiTests
         using HttpClient host = await _fixture.CreateHostClientAsync();
         (int foreignPortalId, _, _) = await CreateForeignPortalAsync(host);
 
-        // Membership of the OTHER tenant, so the session's own remediation state can be evaluated there and
-        // the request reaches the action rather than being refused by the pipeline.
         await _fixture.Database.ExecuteAsync(
             """
             IF NOT EXISTS (SELECT 1 FROM [dbo].[UserPortals] WHERE [UserId] = @userId AND [PortalId] = @portalId)
@@ -678,9 +565,7 @@ public sealed class ModuleApiTests
         }
     }
 
-    /// <summary>
-    /// Asserts that a refusal came from the service's tenant comparison and that it wrote nothing.
-    /// </summary>
+    /// <summary>Asserts that a refusal came from the service's tenant comparison and that it wrote nothing.</summary>
     /// <param name="response">The refusal to examine.</param>
     /// <param name="moduleTitle">The title the refused request carried.</param>
     /// <returns>A task representing the assertions.</returns>
@@ -688,9 +573,7 @@ public sealed class ModuleApiTests
     /// THE PROBLEM TYPE IS ASSERTED, NOT JUST THE STATUS, because this route can answer 403 for more than
     /// one reason: the pipeline refuses an unresolvable arrival tenant, and a restricted session, each with
     /// its own code and before the action runs. A status-only assertion would therefore pass whether or not
-    /// the comparison inside the service exists at all, which is precisely the defect being pinned. The type
-    /// is the code in URI-shaped form, and the code's <c>forbidden</c> token is what makes the status 403 -
-    /// spelled <c>tenant_mismatch</c> the same refusal would have reached the caller as a 400.
+    /// the comparison inside the service exists at all, which is precisely the defect being pinned.
     /// </remarks>
     private async Task AssertTenantRefusalAsync(HttpResponseMessage response, string? moduleTitle)
     {
@@ -710,24 +593,14 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A page editor asking for an ALL-PAGES placement is refused, and nothing is persisted - while the same
-    /// caller may still place the module on the one page it administers.
+    /// A page editor asking for an ALL-PAGES placement is refused, and nothing is persisted - while the
+    /// same caller may still place the module on the one page it administers.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// THE REGRESSION TEST FOR THE ALL-PAGES ESCALATION ON CREATION. The legacy settings screen disabled
     /// <c>chkAllTabs</c> outright for any caller outside the portal administrator role, and the UPDATE path
-    /// has gated that field on stored authority since the four portal-wide fields were grouped. CREATION
-    /// applied none of it, so a caller holding the edit grant on ONE page could place a module across every
-    /// content page of the tenant: the fan-out reads the portal's content pages directly and consults no
-    /// grant for the pages it adds.
-    /// </para>
-    /// <para>
-    /// The edit grant on the addressed page is GRANTED throughout, which is what makes the refusal
-    /// attributable to the portal-wide request rather than to the page - and the admitted single-page create
-    /// in the same test proves the gate refuses the EFFECT rather than the caller.
-    /// </para>
+    /// has gated that field on stored authority since the four portal-wide fields were grouped.
     /// </remarks>
     [Fact]
     public async Task CreateModule_AllPagesWithoutPortalAdministration_ReturnsForbiddenAndWritesNothing()
@@ -783,11 +656,12 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The page edit grant is recorded against the ADMINISTRATOR role for the duration, because the two gates
-    /// ask different questions and administering a tenant does not by itself produce a grant row: the
-    /// permission service reads stored grants, and a tenant administrator whose pages carry no explicit grant
-    /// holds no page EDIT. Granting it is what isolates this test to the portal-wide gate - without it the
-    /// create would be refused by the page gate and the assertion would pass or fail for the wrong reason.
+    /// The page edit grant is recorded against the ADMINISTRATOR role for the duration, because the two
+    /// gates ask different questions and administering a tenant does not by itself produce a grant row: the
+    /// permission service reads stored grants, and a tenant administrator whose pages carry no explicit
+    /// grant holds no page EDIT. Granting it is what isolates this test to the portal-wide gate - without
+    /// it the create would be refused by the page gate and the assertion would pass or fail for the wrong
+    /// reason.
     /// </remarks>
     [Fact]
     public async Task CreateModule_AllPagesAsPortalAdministrator_IsAdmittedAndPlacedOnEveryContentPage()
@@ -815,7 +689,7 @@ public sealed class ModuleApiTests
             // JOINED RATHER THAN CORRELATED, because the title is a column of [Modules] and not of
             // [TabModules]: an unqualified reference to it inside a subquery over the placement table
             // resolves against the enclosing query instead, which is a correlated read that answers a
-            // different question. Every column here is therefore qualified.
+            // different question.
             int placements = await _fixture.Database.ScalarAsync<int>(
                 """
                 SELECT COUNT(*)
@@ -844,16 +718,6 @@ public sealed class ModuleApiTests
     /// because no legacy rule and no schema constraint forbids it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: this test previously asserted <c>400 Bad Request</c>, and that assertion recorded an
-    /// invented rule rather than a ported one. <c>valCacheTime</c> (<c>modulesettings.ascx</c> L172) declared
-    /// <c>Operator="DataTypeCheck" Type="Integer"</c> and nothing else, the code-behind stored the parsed
-    /// value with no comparison (<c>ModuleSettings.ascx.vb</c> L349-L350), and the column is a plain
-    /// <c>int NOT NULL</c> with no check constraint anywhere in the eighty-eight-script chain. The whole
-    /// vertical is asserted - the validator no longer refuses, the projection no longer clamps, and the
-    /// stored column is read back through a fresh request - because the floor existed in two places and a
-    /// removal from only one of them would return 201 and still store a rewritten value.
-    /// </remarks>
     [Fact]
     public async Task CreateModule_WithNegativeCacheTime_PersistsItVerbatim()
     {
@@ -888,35 +752,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// A create whose end date precedes its start date is ACCEPTED, and both bounds are stored verbatim.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: this fact asserted a <c>400</c> until the rule behind it was measured against the screen it
-    /// claimed to preserve, where no such rule exists.
-    /// <c>Website/admin/Modules/modulesettings.ascx</c> declares EXACTLY FOUR validators - <c>valtxtStartDate</c>
-    /// at L78-L79, <c>valtxtEndDate</c> at L88-L89, <c>valBorder</c> at L137-L138 and <c>valCacheTime</c> at
-    /// L172-L173 - and every one of them is a <c>CompareValidator</c> carrying
-    /// <c>Operator="DataTypeCheck"</c>, which asserts only that the submitted text parses as its declared
-    /// type. That page contains no <c>RangeValidator</c>, no <c>RequiredFieldValidator</c>, and no
-    /// <c>CompareValidator</c> that compares one control against another. <c>ModuleSettings.ascx.vb</c>
-    /// L367-L375 then reads each bound independently - <c>If txtStartDate.Text &lt;&gt; "" Then
-    /// objModule.StartDate = Convert.ToDateTime(txtStartDate.Text) Else objModule.StartDate =
-    /// Null.NullDate</c>, and the identical block for the end date - and compares the two nowhere.
-    /// </para>
-    /// <para>
-    /// So a window ending before it began was accepted and stored by the legacy application, which simply
-    /// rendered the module in no period at all. Refusing it here would be a NARROWING: input the legacy
-    /// application accepted would be rejected, which AAP Rule T5 and clauses MC3 and MC4 forbid as squarely
-    /// as they forbid a widening. Both bounds are read back from the response, from a fresh read and from the
-    /// column itself, because an acceptance that quietly reordered or dropped one would satisfy a
-    /// status-code assertion on its own.
-    /// </para>
-    /// <para>
-    /// What remains enforced is the storability of each date taken separately, and that bound belongs to the
-    /// store rather than to any rule invented here: <c>datetime</c> cannot hold a value below its own
-    /// calendar, so <c>Null.NullDate</c> - <c>Date.MinValue</c>, per <c>Null.vb</c> L66-L68 - is refused by
-    /// the request validator field by field. That is asserted by the storage-bound facts, not here.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task CreateModule_WithEndBeforeStart_IsAcceptedAndStoredVerbatim()
@@ -960,14 +795,11 @@ public sealed class ModuleApiTests
         storedEnd.Should().Be(end, "nothing between the caller and the column may rewrite the window");
     }
 
-    /// <summary>
-    /// An update whose end date precedes its start date is accepted on the same terms as a create.
-    /// </summary>
+    /// <summary>An update whose end date precedes its start date is accepted on the same terms as a create.</summary>
     /// <remarks>
-    /// MIGRATION: asserted on both write paths deliberately. One legacy screen served create and edit alike,
-    /// so a rule present on one path and absent from the other would be a divergence introduced by this
-    /// migration rather than one inherited from it. The measurement is recorded on the create-path fact
-    /// above and is not repeated.
+    /// MIGRATION: asserted on both write paths deliberately. One legacy screen served create and edit
+    /// alike, so a rule present on one path and absent from the other would be a divergence introduced by
+    /// this migration rather than one inherited from it.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1004,26 +836,10 @@ public sealed class ModuleApiTests
     /// continues to identify the page the module was read from.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// ⚠ THIS IS THE FACT THAT WAS MISSING WHEN THE MOVE-TO-PAGE AFFORDANCE COULD NOT MOVE ANYTHING. The
     /// contract carried ONE page identifier, which the service reads to SELECT which placement is being
     /// updated - a module placed on several pages has one row per page, so without it there is no way to
-    /// say which row the submitted values belong to. Carrying the destination on that same member is
-    /// therefore worse than inert: naming a page the module does not yet occupy makes the selection fail,
-    /// so the caller was answered <c>module.placement_not_found</c> and the module stayed exactly where it
-    /// was. Measured before the second member existed: a PUT naming its own page returned 200 while the
-    /// same PUT naming any other page returned 404 with "is not placed on page".
-    /// </para>
-    /// <para>
-    /// MIGRATION: the move reproduces <c>ModuleController.MoveModule</c>, which was deliberately NOT a page
-    /// reassignment - it called <c>CopyModule(..., includeSettings:=True)</c> and then
-    /// <c>DeleteTabModule(fromTabId, moduleId)</c>. So the placement row is REPLACED rather than edited,
-    /// which is why the surrogate key changes and why this test asserts the row count on each page rather
-    /// than only the response body. The legacy sequencing is preserved too: the relocation is applied after
-    /// every other effect, under the legacy's own instruction that the copy and move statements "must be at
-    /// the end of the Update as the Controller code assumes all the Updates to the Module have been carried
-    /// out".
-    /// </para>
+    /// say which row the submitted values belong to.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1084,16 +900,7 @@ public sealed class ModuleApiTests
         placementsOnDestination.Should().Be(1, "the destination holds it exactly once");
     }
 
-    /// <summary>
-    /// Naming the page the module already occupies is not a move, and changes no placement.
-    /// </summary>
-    /// <remarks>
-    /// The guard mirrors <c>ModuleSettings.ascx.vb</c> line 405, <c>If TabId &lt;&gt; newTabId</c>, so an
-    /// ordinary save that leaves the page picker alone carries no relocation at all rather than one that
-    /// happens to cancel itself out. Asserted on the surrogate key because that is the only observable
-    /// difference between "did nothing" and "moved the module to where it already was": the latter would
-    /// delete and recreate the row, changing its identity and discarding its position.
-    /// </remarks>
+    /// <summary>Naming the page the module already occupies is not a move, and changes no placement.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task UpdateModule_NamingItsOwnPageAsTheDestination_MovesNothing()
@@ -1131,9 +938,7 @@ public sealed class ModuleApiTests
     /// The reason code matters as much as the status. <c>module.placement_not_found</c> answers "the page
     /// you named does not hold this module", which is a statement about the placement being SELECTED;
     /// <c>module.move_destination_invalid</c> answers "the page you named cannot receive this module".
-    /// Reporting both through one code is what made the earlier behaviour unreadable. Existence is also
-    /// settled BEFORE the page-grant check, so an absent page is not reported as a permission problem - the
-    /// same misdirection this suite refuses elsewhere for an unknown module.
+    /// Reporting both through one code is what made the earlier behaviour unreadable.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1181,11 +986,9 @@ public sealed class ModuleApiTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// ⚠ ONE OF THE THREE EXCLUSIONS THAT DEFINE "A CONTENT PAGE OF THIS PORTAL", and the one most easily
-    /// lost. The page repository deliberately returns recycled pages - the legacy read applied no predicate to
-    /// <c>IsDeleted</c> and projected the column instead, so the exclusion is the caller's policy - and the
-    /// destination check now reads ONE page rather than filtering the tenant's whole page set. A single-row
-    /// read that forgot to test the column would accept a recycled page as a destination and move a module
-    /// into the recycle bin, where no operator would find it.
+    /// lost. The page repository deliberately returns recycled pages - the legacy read applied no predicate
+    /// to <c>IsDeleted</c> and projected the column instead, so the exclusion is the caller's policy - and
+    /// the destination check now reads ONE page rather than filtering the tenant's whole page set.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_NamingARecycledPageAsTheDestination_ReportsADestinationProblem()
@@ -1242,8 +1045,6 @@ public sealed class ModuleApiTests
     /// ⚠ THE TENANT IS PART OF THE LOOKUP AND NOT A TEST APPLIED AFTERWARDS, which is what this pins. The
     /// destination is now read with a single seek on both the page key and the portal, so a page owned by a
     /// neighbouring tenant does not come back at all and is indistinguishable from one that does not exist.
-    /// A member that read the page by key and then compared its portal would be equally correct in its answer
-    /// and would have pulled another tenant's row into this process to get there.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_NamingAnotherTenantsPageAsTheDestination_ReportsADestinationProblem()
@@ -1385,20 +1186,10 @@ public sealed class ModuleApiTests
     /// Found</c>, and does so even for a host account.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is deliberate and is asserted rather than worked around. Authorisation runs before the action, and
-    /// it cannot answer a question about a module it is unable to resolve, so it declines. Declining is also
-    /// the safer answer: the same route reaches a module that exists in a different tenant, and answering
-    /// <c>404</c> there would tell an unauthorised caller which module identifiers exist and which do not.
-    /// Uniform refusal removes that distinction, at the cost of a slightly less informative answer for a
-    /// privileged caller.
-    /// </para>
-    /// <para>
-    /// The routes that carry no permission gate behave differently on purpose, and the tests beside this one
-    /// prove it: a create naming a definition that does not exist answers <c>404</c>, and so does a read of a
-    /// collection belonging to a tenant that does not exist. Those routes are reached by callers already
-    /// entitled to know the tenant's contents, so nothing is disclosed by being precise.
-    /// </para>
+    /// The routes that carry no permission gate behave differently on purpose, and the tests beside this
+    /// one prove it: a create naming a definition that does not exist answers <c>404</c>, and so does a
+    /// read of a collection belonging to a tenant that does not exist. Those routes are reached by callers
+    /// already entitled to know the tenant's contents, so nothing is disclosed by being precise.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1409,13 +1200,6 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.GetAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -1445,13 +1229,11 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    /// <summary>
-    /// A token issued by portal A cannot exercise a real user-specific module grant in portal B.
-    /// </summary>
+    /// <summary>A token issued by portal A cannot exercise a real user-specific module grant in portal B.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// SEC-005: the member is deliberately provisioned into both portals and receives a direct VIEW grant on
-    /// portal B's module. Without token-to-route tenant binding every stored permission check below the policy
+    /// the member is deliberately provisioned into both portals and receives a direct VIEW grant on portal
+    /// B's module. Without token-to-route tenant binding every stored permission check below the policy
     /// would answer yes; the only reason for refusal is that the presented token was issued by portal A.
     /// </remarks>
     [Fact]
@@ -1491,9 +1273,10 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A caller with no permission grant is refused the read. This is the assertion that proves the policy is
-    /// enforced from stored grants rather than from the caller's own claims: the member account holds a valid
-    /// token and is a member of the tenant, and is still refused because nothing grants it this module.
+    /// A caller with no permission grant is refused the read. This is the assertion that proves the policy
+    /// is enforced from stored grants rather than from the caller's own claims: the member account holds a
+    /// valid token and is a member of the tenant, and is still refused because nothing grants it this
+    /// module.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1520,11 +1303,7 @@ public sealed class ModuleApiTests
     /// <remarks>
     /// THE GRANT THIS EXERCISES IS EDIT, BECAUSE THAT IS WHAT THE DETAIL READ NOW REQUIRES. It used to
     /// grant VIEW, which is how it came to certify the disclosure recorded on the action itself: a caller
-    /// holding nothing but a view grant received the module's whole administrative record. Granting EDIT
-    /// keeps the mechanism under test - a grant admits, a deny recorded beside it wins - and asserts it
-    /// against the policy the action actually carries. <see
-    /// cref="GetModule_WithViewGrantButWithoutEdit_ReturnsForbidden"/> pins the other half: the view grant
-    /// alone no longer opens this address.
+    /// holding nothing but a view grant received the module's whole administrative record.
     /// </remarks>
     [Fact]
     public async Task GetModule_WithRoleGrant_IsAdmittedAndThenRefusedByADeny()
@@ -1568,21 +1347,6 @@ public sealed class ModuleApiTests
     /// administrative record.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// THE DISCLOSURE THIS PINS WAS MEASURED, NOT SUPPOSED. Runtime testing signed in as a plain registered
-    /// account holding nothing but the public home page's All-Users VIEW grant and read three modules'
-    /// detail successfully, receiving payloads byte-identical to the administrator's - cacheTime,
-    /// visibility, moduleOrder, header, footer, inheritViewPermissions and isDeleted - including two rows
-    /// whose isDeleted was true. The legacy application never handed a module's configuration to that
-    /// caller: <c>ModuleSettings.ascx.vb</c> L191 admitted the portal administrator or the page's
-    /// administrator and redirected everybody else. A view grant buys the module's rendered CONTENT, which
-    /// this API does not serve.
-    ///
-    /// The grant is asserted to be present and effective rather than assumed: the same account and the same
-    /// grant admit the LISTING's tenant-scoped sibling nowhere, so the refusal below could otherwise be
-    /// read as "no grant was ever written". The write to the module's own row switching inheritance off is
-    /// what makes the module-scope grant the deciding one.
-    /// </remarks>
     [Fact]
     public async Task GetModule_WithViewGrantButWithoutEdit_ReturnsForbidden()
     {
@@ -1625,27 +1389,12 @@ public sealed class ModuleApiTests
     /// never refused where a write succeeds.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// THE INVERSION THIS FORBIDS WAS MEASURED ON A LIVE INSTALLATION. On one module the administrator was
-    /// refused the detail read with 403 while the settings read answered 200, the update answered and the
-    /// delete answered 204 - reading refused while mutating and destroying were permitted, which is the
-    /// inverse of least privilege. It was reachable because a module may carry an EDIT grant with no VIEW
-    /// grant beside it, and the read was gated on VIEW while every one of its consumers was gated on EDIT.
-    ///
-    /// Asserted as a RELATIONSHIP between two addresses rather than as two independent statuses: what makes
-    /// the arrangement correct is not that either answers 200, but that they answer the same way for the
-    /// same caller. The pairing is checked with no module-scope grant in existence, which is the state a
-    /// module created through this API is actually in.
-    /// </remarks>
     [Fact]
     public async Task GetModule_AdmitsExactlyTheCallersItsSettingsReadAdmits()
     {
         using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        // The state the create form's own untouched default produces, and the state that made a module
-        // unopenable by the administrator who had just created it: inheritance off, so no page grant
-        // answers for the module, and no module-scope grant of any kind.
         await _fixture.Database.ExecuteAsync(
             "UPDATE [dbo].[Modules] SET [InheritViewPermissions] = 0 WHERE [ModuleID] = @moduleId;",
             new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
@@ -1730,26 +1479,12 @@ public sealed class ModuleApiTests
         persisted.Footer.Should().Be("Footer text");
     }
 
-    /// <summary>
-    /// A <c>tabId</c> naming a page the module is not placed on is REFUSED, and nothing is moved.
-    /// </summary>
+    /// <summary>A <c>tabId</c> naming a page the module is not placed on is REFUSED, and nothing is moved.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>tabId</c> SELECTS the placement being updated; it does not relocate one. This fact
-    /// asserted the opposite for a while - that naming another page moved the placement and its page-scoped
-    /// settings there, appending to the destination pane the way the legacy administration screen did - and the
-    /// reconciled contract withdrew that reading deliberately. One page identifier cannot express a move: it is
-    /// the same field the request uses to say WHICH of a module's placements it is about, so a value that meant
-    /// "move to here" and a value that meant "the one on here" would be indistinguishable, and an ordinary edit
-    /// submitted against the wrong page would silently relocate a module instead of failing. A move needs a
-    /// source and a destination, and the surface offers no way to name both.
-    /// </para>
-    /// <para>
     /// The absence is asserted with everything the withdrawn behaviour would have disturbed - the source
-    /// placement, its order, its page-scoped setting and the absence of any placement on the named page - so a
-    /// re-introduction fails here rather than passing as a 200 nobody inspected.
-    /// </para>
+    /// placement, its order, its page-scoped setting and the absence of any placement on the named page -
+    /// so a re-introduction fails here rather than passing as a 200 nobody inspected.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_NamingAPageTheModuleIsNotPlacedOn_IsRefusedAndMovesNothing()
@@ -1826,9 +1561,7 @@ public sealed class ModuleApiTests
             "the page-scoped setting belongs to the surviving placement and is not carried anywhere");
     }
 
-    /// <summary>
-    /// Omitting the selected page is a malformed update rather than an implicit move to page zero.
-    /// </summary>
+    /// <summary>Omitting the selected page is a malformed update rather than an implicit move to page zero.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task UpdateModule_WithoutTabId_ReturnsBadRequest()
@@ -1849,22 +1582,8 @@ public sealed class ModuleApiTests
     /// contract, and omitting one is accepted just as setting it is.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: these seven columns are EXCLUDED from the update contract, and this test asserts that
-    /// exclusion end to end. They are NOT accepted as write-only fields: pane, alignment, colour, border,
-    /// the print and syndicate flags and the
-    /// container source are all Web Forms pane-layout, server-side rendering or skinning concerns, excluded by
-    /// AAP 0.2.2.1 and 0.2.2.4, so no request or response contract in the module group declares any of them.
-    /// The absence is asserted positively against all three contracts below, so a later change that quietly
-    /// reintroduces one fails here.
-    /// </para>
-    /// <para>
     /// Because no caller can name them, the write path must PRESERVE the stored values rather than clear
-    /// them - the pane column is NOT NULL, so clearing it would fail the write outright. That preservation is
-    /// verified at unit level by the <c>ApplyUpdate</c> tests, which observe the entity directly; what is
-    /// asserted here is that an update naming only the members the contract does carry is accepted, and that
-    /// unknown appearance properties in the payload cannot smuggle a value through.
-    /// </para>
+    /// them - the pane column is NOT NULL, so clearing it would fail the write outright.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1933,28 +1652,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// A value longer than the column is refused by the request validator rather than by the store.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: this asserted the border bound until the border was excluded from the update contract along
-    /// with the rest of the pane-layout and rendering columns - and with it went the fourth of the legacy
-    /// screen's four validators, whose message read "Invalid Border (must be a number between 0 and 9)". The
-    /// test's INTENT is preserved against a bound that still exists: <c>TabModules.IconFile</c> is
-    /// <c>nvarchar(100)</c>. Letting a longer value reach SQL Server would surface as a truncation error
-    /// rather than a field-level message, so the bound is asserted at the boundary. Note that the icon carries
-    /// no legacy validator either, so this bound comes from the terminal schema alone.
-    /// </para>
-    /// <para>
-    /// MIGRATION: and the border validator's message was DEFECTIVE, which is why nothing in this suite ever
-    /// reinstates the range it advertised. <c>valBorder</c> at <c>modulesettings.ascx</c> L137-L138 promised
-    /// "a number between 0 and 9" while declaring <c>Operator="DataTypeCheck"</c>, which asserts the type and
-    /// nothing more - so the range was NEVER ENFORCED, and the field's only real limit was the
-    /// <c>MaxLength="1"</c> on the textbox, which truncates rather than validates and which a programmatic
-    /// post bypasses entirely. Adding a range rule here would refuse values the legacy application stored,
-    /// which is a narrowing forbidden by MC4 rather than an improvement. The defect is recorded and NOT
-    /// fixed, per MC1; that no such rule was introduced anywhere is verifiable by the absence of any
-    /// range assertion in this file.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task UpdateModule_WithAnOverlongIconFile_ReturnsBadRequest()
@@ -1975,7 +1672,6 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-
     /// <summary>
     /// An update against a module the permission gate cannot resolve is refused before the action runs, for
     /// the reasons set out on the read above.
@@ -1991,13 +1687,6 @@ public sealed class ModuleApiTests
             new UpdateModuleRequest { ModuleTitle = "No such module" },
             ApiTestFixture.Json);
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -2007,9 +1696,9 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The update counterpart of the create assertion. Both paths are asserted because the removed floor was
-    /// declared twice - once on each request validator and once on each projection - so a fix applied to one
-    /// path would leave the two disagreeing about the same column.
+    /// The update counterpart of the create assertion. Both paths are asserted because the removed floor
+    /// was declared twice - once on each request validator and once on each projection - so a fix applied
+    /// to one path would leave the two disagreeing about the same column.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WithNegativeCachePeriod_PersistsItVerbatim()
@@ -2032,40 +1721,18 @@ public sealed class ModuleApiTests
         stored.Should().Be(-1);
     }
 
-    // MIGRATION: A FACT ASSERTING THAT AN ADMINISTRATOR'S SUBMISSION MOVES THE PLACEMENT WAS WITHDRAWN HERE.
-    // It read the submitted page as the legacy screen's page picker and asserted the stored page, the stored
-    // order and a single surviving placement row afterwards. The reconciled contract reads that member as the
-    // SELECTOR of which placement the request is about, so a request naming a page the module does not occupy
-    // is refused before anything is written and no authority can turn it into a move. Its coverage is not
-    // lost: UpdateModule_NamingAPageTheModuleIsNotPlacedOn_IsRefusedAndMovesNothing above asserts the same
-    // stored state - the source placement, its order, its page-scoped setting, and the absence of any
-    // placement on the named page - against the refusal instead of against a relocation, and the divergence
-    // from the legacy screen is recorded in MIGRATION_NOTES.md. Reinstating a move needs a second member
-    // naming the destination, and this fact would then be the right shape for it.
+    // MIGRATION: A FACT ASSERTING THAT AN ADMINISTRATOR'S SUBMISSION MOVES THE PLACEMENT WAS WITHDRAWN
+    // HERE. It read the submitted page as the legacy screen's page picker and asserted the stored page, the
+    // stored order and a single surviving placement row afterwards.
 
     /// <summary>
     /// Each administrator-only field is refused for a caller that holds the module edit grant but does not
     /// administer the portal, and nothing is written.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The legacy settings screen disabled the page picker, the every-page checkbox and both propagation
     /// checkboxes outright for any caller outside the portal administrator role, in the page load and again
-    /// in the save handler. That is a rule about four FIELDS of one request rather than about reaching the
-    /// route, so no policy attribute can express it: the route's own policy admits a caller holding the
-    /// module edit grant, correctly, because such a caller may legitimately edit the module in front of them.
-    /// </para>
-    /// <para>
-    /// Until the service enforced it, the rule was documented in three places and enforced in none, and the
-    /// consequence was four portal-wide effects reachable from a page-scoped grant: move a module onto a page
-    /// the caller does not administer, fan it out across every page of the tenant, name its appearance as the
-    /// tenant's default, or rewrite the appearance of every module on every content page.
-    /// </para>
-    /// <para>
-    /// All four are asserted in one test because they share one gate, and a single representative field would
-    /// leave three able to regress silently. The stored placement is re-read afterwards to prove the refusal
-    /// happened before anything was written rather than after.
-    /// </para>
+    /// in the save handler.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2076,9 +1743,9 @@ public sealed class ModuleApiTests
 
         using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
 
-        // The caller genuinely holds the module edit grant, which is what makes this a test of the field rule
-        // rather than of the route policy: without the grant every request below would be refused for a
-        // different reason and would prove nothing.
+        // The caller genuinely holds the module edit grant, which is what makes this a test of the field
+        // rule rather than of the route policy: without the grant every request below would be refused for
+        // a different reason and would prove nothing.
         await GrantModulePermissionAsync(
             created.ModuleId,
             _fixture.Seed.ModuleEditPermissionId,
@@ -2097,20 +1764,11 @@ public sealed class ModuleApiTests
             _fixture.Seed.RegisteredRoleId,
             allowAccess: true);
 
-        // MIGRATION: SEC-F2. THE WITHDRAWAL BELOW MOVED INTO A finally, and the reason is a consequence of
-        // that change rather than tidiness. A page EDIT grant is now one of the three alternatives that
-        // admit a module edit, so a grant leaked onto the SEEDED root page by an early return from this
-        // fact would widen the member persona for every later fact in this suite - and the ones asserting a
-        // refusal would then be satisfied by a grant they never asked for, passing while reporting nothing.
         try
         {
-            // MIGRATION: THREE FIELDS, NOT FOUR. A submission naming a DIFFERENT page was the first entry here,
-            // because the revision that wrote this fact read the page as a move command and counted it among the
-            // administrator-only fields. Under the reconciled contract the page SELECTS the placement, so such a
-            // request is refused earlier - and with the placement-not-found answer rather than a forbidden one -
-            // which is asserted by its own fact. It is removed from this array rather than left to fail for a
-            // reason that has nothing to do with the gate this fact exists to prove. The three portal-wide effects
-            // that remain are exactly the ones the gate covers.
+            // THREE FIELDS, NOT FOUR. A submission naming a DIFFERENT page was the first entry here,
+            // because the revision that wrote this fact read the page as a move command and counted it
+            // among the administrator-only fields.
             UpdateModuleRequest[] administratorOnly =
             [
                 new() { TabId = _fixture.Seed.RootTabId, ModuleTitle = created.ModuleTitle, AllTabs = true },
@@ -2140,9 +1798,6 @@ public sealed class ModuleApiTests
                     "a page-scoped grant does not carry authority over the tenant");
             }
 
-            // An ordinary save by the same caller still works, which is the half that proves the gate is a DELTA
-            // test rather than a presence test. The contract requires the page identifier on every request, so a
-            // gate that refused whenever the field was present would refuse every non-administrator save.
             using HttpResponseMessage ordinary = await client.PutAsJsonAsync(
                 ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
                 new UpdateModuleRequest
@@ -2181,19 +1836,12 @@ public sealed class ModuleApiTests
         }
     }
 
-    /// <summary>
-    /// A page in another tenant, and a page that does not exist, are refused identically.
-    /// </summary>
+    /// <summary>A page in another tenant, and a page that does not exist, are refused identically.</summary>
     /// <remarks>
-    /// The two answer alike on purpose. Distinguishing them would tell an administrator of one tenant which
-    /// page identifiers exist in tenants it cannot see, which is an enumeration oracle.
-    /// <para>
-    /// MIGRATION: this was written as a fact about a MOVE's destination being validated before the projection
-    /// assigned it. Under the reconciled contract the submitted page selects the placement instead, so both
-    /// values are refused one step earlier and for a stronger reason - no placement of this module exists on
-    /// either page - and neither can reach a column because nothing is projected at all. The status and the
-    /// non-enumerating property, which are what this fact protects, are unchanged.
-    /// </para>
+    /// This was written as a fact about a MOVE's destination being validated before the projection assigned
+    /// it. Under the reconciled contract the submitted page selects the placement instead, so both values
+    /// are refused one step earlier and for a stronger reason - no placement of this module exists on
+    /// either page - and neither can reach a column because nothing is projected at all.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2226,31 +1874,9 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// An import into a module whose package names a business controller this installation does not register
-    /// is REFUSED, and nothing is committed or recorded.
+    /// An import into a module whose package names a business controller this installation does not
+    /// register is REFUSED, and nothing is committed or recorded.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This is the state every installation of this migration is permanently in for every module: the
-    /// lifecycle factory resolves from a closed set fixed in code, AAP section 0.2.2.2 places every bundled
-    /// module out of scope, and the set is therefore empty. The factory previously reported that as a
-    /// SUCCESS carrying an advisory, and the module service reads a successful import as licence to commit
-    /// its unit of work, evict the placement caches and write an <c>Operation=Import</c> audit record - so
-    /// the caller was answered <c>200 OK</c> and the audit trail recorded content that had never been
-    /// imported into a module the installation cannot even ask.
-    /// </para>
-    /// <para>
-    /// The seeded package is temporarily made to declare portability and to name a controller, because the
-    /// suite's package otherwise declares none and the request is refused earlier for that different and
-    /// entirely correct reason - which is exactly why this path had never been reached over HTTP. The row is
-    /// restored afterwards so the rest of the suite sees the package it expects.
-    /// </para>
-    /// <para>
-    /// The absence of an audit record is asserted as well as the status code. A refusal that had already
-    /// written the record would still answer the caller correctly while leaving a trail that says an import
-    /// happened, and the trail is what an operator reads afterwards.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ImportModule_WhenTheControllerIsNotRegistered_RefusesAndRecordsNothing()
@@ -2274,9 +1900,9 @@ public sealed class ModuleApiTests
 
         try
         {
-            // The host has one process-wide recording sink, shared by every suite in this serial collection.
-            // Count only this module's import records before and after the request instead of assuming that
-            // every log written while this fact runs belongs to it.
+            // The host has one process-wide recording sink, shared by every suite in this serial
+            // collection. Count only this module's import records before and after the request instead of
+            // assuming that every log written while this fact runs belongs to it.
             bool IsThisModulesImportRecord(LogRecord record) =>
                 Equals(record.Properties.GetValueOrDefault("AuditEvent"), "MODULE_UPDATED")
                 && Equals(record.Properties.GetValueOrDefault("AuditResourceType"), "Module")
@@ -2415,10 +2041,8 @@ public sealed class ModuleApiTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The intermediate assertion is <c>401</c> rather than <c>200</c> BECAUSE THE DETAIL READ MOVED TO THE
-    /// EDIT POLICY, and the change is what this test now certifies for the anonymous caller: an unauthorised
-    /// grant, whatever it permits, reaches no address that returns the module's configuration. The anonymous
-    /// VIEW grant is still written and is still the point of the test - it proves the refusal comes from the
-    /// gate rather than from an absent permission row.
+    /// EDIT POLICY, and the change is what this test now certifies for the anonymous caller: an
+    /// unauthorised grant, whatever it permits, reaches no address that returns the module's configuration.
     /// </remarks>
     [Fact]
     public async Task GetModuleSettings_WithAnonymousViewGrant_ReturnsUnauthorized()
@@ -2451,11 +2075,6 @@ public sealed class ModuleApiTests
     /// settings nor its administrative record.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Both assertions read <c>403</c>, and the first used to read <c>200</c>: that was the disclosure. The
-    /// two addresses return the same record and now admit the same callers, which is the property <see
-    /// cref="GetModule_AdmitsExactlyTheCallersItsSettingsReadAdmits"/> states as a relationship.
-    /// </remarks>
     [Fact]
     public async Task GetModuleSettings_WithViewButWithoutEdit_ReturnsForbidden()
     {
@@ -2483,34 +2102,14 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// SEC-F2: the administrator of a tenant this API provisioned can carry out every module administration
+    /// the administrator of a tenant this API provisioned can carry out every module administration
     /// operation on that tenant's own module, without any module-scope grant existing anywhere.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE THIRD LEGACY ALTERNATIVE, asserted end to end. <c>PortalModuleBase.vb:L222-L227</c> decides module
-    /// editability as a disjunction of three things - the module's own authorized-edit roles, the page's
-    /// administrator roles, and the tenant's Administrators role - and only the first was implemented. The
-    /// consequence was not a narrow gap: nothing in the exposed contract writes a module-scope grant at all,
-    /// so a tenant created through this API had NO principal able to update, configure, export, import or
-    /// remove a module it had just created. The tenant administrator could list and read, and every write was
-    /// refused 403.
-    /// </para>
-    /// <para>
     /// Every write endpoint is exercised in ONE test on purpose. They share a single decision, so a
     /// representative endpoint would leave the rest able to regress silently, and the whole point of the
-    /// finding was that the surface failed uniformly. The two content operations are asserted to reach their
-    /// CAPABILITY refusal - the seeded package declares no business controller - which is the only way to
-    /// prove authorisation admitted them: a 400 naming the missing capability can only be reached past the
-    /// permission gate, whereas a 403 is the gate itself.
-    /// </para>
-    /// <para>
-    /// The tenant is a freshly created one addressed at its own alias, signed in to with its own credential,
-    /// because that is the state the finding was reported in and the only state in which the third
-    /// alternative is the ONLY thing that can admit the caller. Deliberately NOT the seeded administrator:
-    /// the seeded fixture grants that persona rows the finding's subject does not have.
-    /// </para>
+    /// finding was that the surface failed uniformly.
     /// </remarks>
     [Fact]
     public async Task ModuleAdministration_IsAvailableToTheTenantsOwnAdministrator()
@@ -2524,8 +2123,8 @@ public sealed class ModuleApiTests
             tenant.AdministratorUserName);
 
         // Created by the administrator itself rather than by the host, so the create endpoint is measured
-        // under the same authority as every write below it. It is admitted by the page EDIT grant the portal
-        // provisioning writes for the tenant's administrator role.
+        // under the same authority as every write below it. It is admitted by the page EDIT grant the
+        // portal provisioning writes for the tenant's administrator role.
         using HttpResponseMessage created = await administrator.PostAsJsonAsync(
             ModulesRoute(tenant.PortalId),
             NewModuleRequest(tenant.HomeTabId),
@@ -2618,25 +2217,13 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// SEC-F2: an ordinary member holding the EDIT grant on the page a module sits on may administer that
-    /// module, and the same grant on a page the module does NOT sit on admits nothing.
+    /// an ordinary member holding the EDIT grant on the page a module sits on may administer that module,
+    /// and the same grant on a page the module does NOT sit on admits nothing.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE SECOND LEGACY ALTERNATIVE, and its scope. <c>PortalModuleBase.vb:L222-L227</c> consults
-    /// <c>PortalSettings.ActiveTab.AdministratorRoles</c>, which is the EDIT grant of the page the module is
-    /// being administered from - so a caller entrusted with a page is entrusted with what sits on it. The
-    /// negative half is what keeps that from becoming "any page anywhere": the grant is evaluated against the
-    /// pages the module actually occupies, so an editor of some OTHER page of the same tenant gains nothing.
-    /// </para>
-    /// <para>
     /// The member holds no module-scope grant in either half, which is what makes the page grant the only
-    /// thing under examination. The page grants are withdrawn in a <c>finally</c> because the seeded pages
-    /// are shared by every test in this suite: a leaked page EDIT grant on the seeded root page would widen
-    /// the member persona for every later fact, and after SEC-F2 that would silently satisfy assertions about
-    /// refusal.
-    /// </para>
+    /// thing under examination.
     /// </remarks>
     [Fact]
     public async Task ModuleAdministration_FollowsThePagesEditGrantAndOnlyForThePagesTheModuleOccupies()
@@ -2651,8 +2238,8 @@ public sealed class ModuleApiTests
         try
         {
             // The negative half FIRST, so the refusal cannot be explained by a grant that had not been
-            // written yet: the member administers a different page of the same tenant, and the module is not
-            // on it.
+            // written yet: the member administers a different page of the same tenant, and the module is
+            // not on it.
             await GrantTabPermissionAsync(
                 _fixture.Seed.ChildTabId,
                 _fixture.Seed.TabEditPermissionId,
@@ -2698,27 +2285,13 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// SEC-F2: the installation host account administers a module in a tenant it holds no membership row in.
+    /// the installation host account administers a module in a tenant it holds no membership row in.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// A SECOND DEFECT WITH THE SAME SYMPTOM, and it was not in the permission service at all. The remediation
-    /// stage of the pipeline composed its own decision from a PORTAL-SCOPED account read, so for any tenant in
-    /// which the host account held no <c>dbo.UserPortals</c> row the read answered nothing, the stage read that
-    /// as "state could not be verified", and the installation operator was refused
-    /// <c>auth.remediation_required</c> on EVERY authenticated endpoint of that tenant - not merely the module
-    /// ones. Portal creation provisions no host membership row, so this applied to every tenant this API had
-    /// just created. The legacy host account was installation-wide and administered every portal without a
-    /// membership row, so the refusal was a parity break as well as an operability one.
-    /// </para>
-    /// <para>
-    /// The absence of the membership row is ASSERTED rather than assumed, because the finding was originally
-    /// diagnosed by inserting one and watching the refusal turn into success: a fixture that happened to
-    /// provision the row would make this test pass while the defect was still present. The token is obtained
-    /// by a real sign-in AT THE TENANT'S OWN ALIAS, which is what makes its tenant claim name that tenant -
-    /// a host token issued at the seeded alias names the seeded tenant and never reaches the defect.
-    /// </para>
+    /// The absence of the membership row is ASSERTED rather than assumed, because the finding was
+    /// originally diagnosed by inserting one and watching the refusal turn into success: a fixture that
+    /// happened to provision the row would make this test pass while the defect was still present.
     /// </remarks>
     [Fact]
     public async Task ModuleAdministration_IsAvailableToTheHostAccountInATenantItIsNotAMemberOf()
@@ -2810,15 +2383,9 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A module that is placed on no page can still hold module-scoped settings, and is told plainly that it
-    /// cannot hold placement-scoped ones.
+    /// A module that is placed on no page can still hold module-scoped settings, and is told plainly that
+    /// it cannot hold placement-scoped ones.
     /// </summary>
-    /// <remarks>
-    /// The two halves belong together because each is the other's control. A refusal alone could mean the
-    /// endpoint rejects every request from an unplaced module; a success alone could mean the endpoint accepts
-    /// placement settings it silently discards. Asserting both pins the boundary exactly where the service
-    /// draws it: the module scope needs no placement, the placement scope cannot exist without one.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task UpdateModuleSettings_ForAnUnplacedModule_AcceptsModuleScopeAndRefusesPlacementScope()
@@ -2879,13 +2446,6 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -2906,13 +2466,6 @@ public sealed class ModuleApiTests
             },
             ApiTestFixture.Json);
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -2997,7 +2550,9 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>A delete against a module the permission gate cannot resolve is refused before the action runs.</summary>
+    /// <summary>
+    /// A delete against a module the permission gate cannot resolve is refused before the action runs.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task DeleteModule_WhenUnresolvable_ReturnsNotFound()
@@ -3007,13 +2562,6 @@ public sealed class ModuleApiTests
         using HttpResponseMessage response = await client.DeleteAsync(
             ModuleRoute(_fixture.Seed.PortalId, UnknownModuleId));
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -3070,13 +2618,6 @@ public sealed class ModuleApiTests
             new ModuleExportRequest { FileName = "content.xml" },
             ApiTestFixture.Json);
 
-        // MIGRATION: 404, NOT 403, FOR AN IDENTIFIER THAT NAMES NOTHING - and only for a caller who
-        // administers the tenant. The permission service establishes that the item exists before it resolves
-        // the caller, so an unknown identifier used to be refused even for a host account and the endpoint
-        // never ran; runtime testing recorded the console telling an operator "the authenticated caller is
-        // not permitted to perform this operation" for a module that simply did not exist, which points at
-        // the wrong repair and disagrees with the 404 the portal, user and role endpoints give for the same
-        // class of fault. An unprivileged caller still receives 403, so nothing here is an existence oracle.
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
@@ -3116,9 +2657,9 @@ public sealed class ModuleApiTests
 
     /// <summary>
     /// An import by a caller holding no edit grant on the target module is REFUSED, and the module's stored
-    /// content is untouched. The import's target arrives in the body, so no route-reading policy could reach
-    /// it and the endpoint carried the bare authentication requirement - which meant any authenticated caller
-    /// could overwrite any tenant's module content.
+    /// content is untouched. The import's target arrives in the body, so no route-reading policy could
+    /// reach it and the endpoint carried the bare authentication requirement - which meant any
+    /// authenticated caller could overwrite any tenant's module content.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -3142,9 +2683,10 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The import refusal is likewise a real evaluation: an edit grant on the module carries the request past
-    /// authorisation and on to the capability check, which refuses it for an entirely different and
-    /// non-authorisation reason. Reaching that reason is the proof that the grant was consulted and honoured.
+    /// The import refusal is likewise a real evaluation: an edit grant on the module carries the request
+    /// past authorisation and on to the capability check, which refuses it for an entirely different and
+    /// non-authorisation reason. Reaching that reason is the proof that the grant was consulted and
+    /// honoured.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -3153,21 +2695,7 @@ public sealed class ModuleApiTests
         using HttpClient host = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(host, _fixture.Seed.RootTabId);
 
-        // TWO gates stand in front of the capability check, and the caller has to clear both. The route names
-        // a tenant, so it carries the tenant-bound administrator policy - without which a caller holding a
-        // grant in its own tenant could import into another one, because the grant evaluation would judge its
-        // own tenant's roles against the named tenant's grants. Past that, the service evaluates the module
-        // EDIT decision, and the grant written below is what satisfies it: reaching the capability refusal is
-        // the proof that the grant was consulted and honoured.
-        //
-        // MIGRATION: SEC-F2. A CLAIM MADE HERE WAS CORRECTED RATHER THAN LEFT STANDING. This comment used to
-        // assert that the module EDIT decision "is not implied by administering the tenant: only a host
-        // account is answered affirmatively without a grant". That was a description of the defect, not of
-        // the contract - PortalModuleBase.vb:L222-L227 decides editability as a disjunction whose third arm
-        // is membership of the tenant's Administrators role, so the administrator persona used here is now
-        // admitted with or without the grant below. The grant is retained deliberately: it keeps this fact
-        // about the CAPABILITY refusal rather than about which arm admitted the caller, and the arms
-        // themselves are asserted by the ModuleAdministration_* facts above.
+        // TWO gates stand in front of the capability check, and the caller has to clear both.
         using HttpClient client = await _fixture.CreateAdministratorClientAsync();
 
         await GrantModulePermissionAsync(
@@ -3271,18 +2799,11 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The three module endpoints that name no module — the collection listing, creation and content import —
-    /// are administrative, so an ordinary member of the tenant holding a perfectly valid token is refused all
-    /// three.
+    /// The three module endpoints that name no module — the collection listing, creation and content import
+    /// — are administrative, so an ordinary member of the tenant holding a perfectly valid token is refused
+    /// all three.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// These endpoints were previously guarded by bare authentication, on the reasoning that a module-scoped
-    /// permission policy has no module to evaluate against. That is true and beside the point: naming no module
-    /// is a reason to choose a different policy, not a reason to have none. Any authenticated caller of any
-    /// tenant could enumerate this tenant's content, add modules to its pages and import arbitrary content into
-    /// it. The policy that applies is the tenant the request host and caller context resolve.
-    /// </remarks>
     [Fact]
     public async Task ModuleEndpointsThatNameNoModule_AreRefusedToAnOrdinaryMember()
     {
@@ -3335,31 +2856,9 @@ public sealed class ModuleApiTests
     /// <param name="pseudoRoleId">The negative role identifier the grant is recorded against.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THIS ASSERTION WAS INVERTED, AND THE INVERSION IS THE FIX. It used to require <c>200 OK</c> here,
-    /// which made it the sharpest statement of the disclosure now closed: a visitor with no account at all,
-    /// reaching a public page whose stock configuration grants All-Users VIEW, received the module's
-    /// configuration - cache duration, visibility, pane order, header and footer markup, inheritance flag and
-    /// soft-delete state. The legacy application gave that visitor the module's RENDERED CONTENT and nothing
-    /// else; its configuration lived behind <c>ModuleSettings.ascx.vb</c> L191, which admitted the portal
-    /// administrator or the page's administrator only. This API serves no module content, so a VIEW grant has
-    /// no address here to open.
-    /// </para>
-    /// <para>
-    /// WHAT THE OLD ASSERTION PROTECTED IS STILL PROTECTED, ELSEWHERE. Its real subject was that the two VIEW
-    /// policies do not demand an authenticated caller, so a grant recorded against a pseudo-role can actually
-    /// be evaluated rather than being a row that only looks like a grant. That property now lives where the
-    /// VIEW policy is still carried by an address - the page read - and is asserted there twice over, for the
-    /// unauthenticated pseudo-role and for the all-users pseudo-role, in <c>TabApiTests</c>. Both identifiers
-    /// remain real principals in the migrated data: <c>-1</c> reaches everybody and <c>-3</c> reaches exactly
-    /// the callers with no account.
-    /// </para>
-    /// <para>
-    /// The refusal is asserted BEFORE and AFTER the grant is written, and the grant is verified present in
-    /// between, so the second refusal cannot be read as a grant that failed to land. The grant is recorded
-    /// against the module's PAGE rather than the module, because the module is created inheriting its view
-    /// permission, which is the stock configuration.
-    /// </para>
+    /// WHAT THE OLD ASSERTION PROTECTED IS STILL PROTECTED, ELSEWHERE. Its real subject was that the two
+    /// VIEW policies do not demand an authenticated caller, so a grant recorded against a pseudo-role can
+    /// actually be evaluated rather than being a row that only looks like a grant.
     /// </remarks>
     [Theory]
     [InlineData(-1)]
@@ -3418,15 +2917,16 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// An anonymous caller is still refused a module EDIT, because no legacy grant reaches the unauthenticated
-    /// pseudo-role for a mutation and an anonymous change has no account to attribute itself to.
+    /// An anonymous caller is still refused a module EDIT, because no legacy grant reaches the
+    /// unauthenticated pseudo-role for a mutation and an anonymous change has no account to attribute
+    /// itself to.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The companion to the test above, and the reason the two view policies and the two edit policies are
-    /// composed differently: relaxing authentication is correct for reading a public page and wrong for writing
-    /// to one. Asserting only the relaxation would not distinguish "anonymous reads are permitted" from
-    /// "authentication was removed everywhere".
+    /// composed differently: relaxing authentication is correct for reading a public page and wrong for
+    /// writing to one. Asserting only the relaxation would not distinguish "anonymous reads are permitted"
+    /// from "authentication was removed everywhere".
     /// </remarks>
     [Fact]
     public async Task UpdateModule_IsRefusedToAnAnonymousCallerEvenWhenThePageIsPublic()
@@ -3481,33 +2981,9 @@ public sealed class ModuleApiTests
     /// An empty title round-trips as the empty string and stays distinguishable from an absent one.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is AAP Rule T7 at the boundary - "sentinels survive at the boundary, not in the domain" - and it
-    /// is asserted on <c>Modules.ModuleTitle</c> because that is the module column which both survives to the
-    /// terminal schema and admits the distinction. <c>Null.vb</c> L71-L73 defines <c>NullString</c> as the
-    /// EMPTY STRING rather than as <see langword="null"/>, so legacy code that wrote "absent" wrote
-    /// <c>''</c>, while a column left alone held SQL <c>NULL</c> - and the baseline seed proves the two
-    /// coexisted in one column: <c>01.00.00.SqlDataProvider</c> gives modules 2, 3 and 4 an
-    /// <c>AuthorizedViewRoles</c> of <c>''</c> and modules 29 through 316 a <c>NULL</c>, against a column
-    /// declared <c>[AuthorizedViewRoles] [nvarchar] (256) NULL</c> at L230.
-    /// </para>
-    /// <para>
-    /// MIGRATION: that particular column cannot carry the assertion, because it no longer exists.
-    /// <c>03.00.01.SqlDataProvider</c> L1402 and L1405 drop <c>AuthorizedEditRoles</c> and
-    /// <c>AuthorizedViewRoles</c> from <c>Modules</c> outright, superseded by the permission tables, and the
-    /// same script's L198 drops the appearance columns onto the new <c>TabModules</c> table. AAP 0.7.1.2
-    /// requires the model to follow the CUMULATIVE TERMINAL schema rather than the baseline, so the
-    /// distinction is asserted on the column that terminal schema does declare -
-    /// <c>[ModuleTitle] nvarchar(256) NULL</c> - which admits <c>''</c> and <c>NULL</c> exactly as the
-    /// dropped one did.
-    /// </para>
-    /// <para>
     /// The failure this guards against is a serialiser policy, not a mapping: <c>WhenWritingNull</c> or
     /// <c>WhenWritingDefault</c> on the ignore condition would erase one of the two states from the wire
-    /// and no status-code assertion anywhere would notice. Both states are therefore read out of the RAW
-    /// JSON as well as out of the typed contract, because a typed read cannot tell an omitted member from
-    /// one present and null.
-    /// </para>
+    /// and no status-code assertion anywhere would notice.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -3585,15 +3061,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// The negative placement-order sentinel survives to the wire as <c>-1</c> rather than as an absence.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>Null.vb</c> L41-L43 defines <c>NullInteger</c> as <c>-1</c>, and
-    /// <c>CreateModuleRequest.ModuleOrder</c> defaults to that value to mean "append", which is the legacy
-    /// convention. Because <c>-1</c> is also the default a serialiser would drop under
-    /// <c>WhenWritingDefault</c>, the value is asserted in the RAW document as a number: an integer sentinel
-    /// silently converted to <see langword="null"/> or omitted is indistinguishable from an unset field, and
-    /// the same collision is what makes <c>Portals.PortalID</c> - <c>IDENTITY(-1, 1)</c> at
-    /// <c>01.00.00.SqlDataProvider</c> L77 - unsafe to treat as absent when it holds <c>-1</c>.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task CreateModule_WithTheAppendOrderSentinel_PublishesItAsMinusOne()
@@ -3626,29 +3093,10 @@ public sealed class ModuleApiTests
             "zero would mean the sentinel had been coerced away rather than honoured or resolved");
     }
 
-    /// <summary>
-    /// Module zero is a legitimate identifier, in the route segment and in a request body alike.
-    /// </summary>
+    /// <summary>Module zero is a legitimate identifier, in the route segment and in a request body alike.</summary>
     /// <remarks>
-    /// <para>
-    /// <c>Modules.ModuleID</c> is <c>IDENTITY (0, 1)</c> - <c>01.00.00.SqlDataProvider</c> L221 - so the
-    /// first module an installation ever creates is numbered zero and zero is an ordinary key. Anything that
-    /// treats an identifier as absent when it is falsy therefore loses a real row. The row is inserted with
-    /// <c>IDENTITY_INSERT</c> rather than by the API, because the API cannot choose an identifier and this
-    /// installation's sequence has long passed zero.
-    /// </para>
-    /// <para>
-    /// Two positions are covered, because they fail differently. In the ROUTE, a zero must reach the action
-    /// and be answered about; it must not miss the <c>{moduleId:int}</c> constraint and it must not be read
-    /// as "no module named" by the permission policy, which resolves its scope identifier from route data
-    /// alone and would otherwise fail closed and refuse every request. In the BODY, the same zero must be
-    /// accepted by <c>ModuleImportRequest.ModuleId</c> - the member that carries the module for an import
-    /// precisely because that route names none - and must not be read as unspecified.
-    /// </para>
-    /// <para>
     /// The row is removed afterwards so the shared collection is left as it was found. It is placed on no
     /// page, so the read that matters is the detail read.
-    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -3671,9 +3119,6 @@ public sealed class ModuleApiTests
             ModuleDetailDto detail = await ReadDetailAsync(response);
             detail.ModuleId.Should().Be(0);
 
-            // The same identifier in the ROUTE of an edit-guarded action: the refusal that matters is a
-            // permission decision, and a fail-closed refusal caused by reading zero as "no module" would
-            // be indistinguishable from one - so the assertion is that the request is NOT refused.
             var update = new UpdateModuleRequest
             {
                 TabId = _fixture.Seed.RootTabId,
@@ -3690,9 +3135,6 @@ public sealed class ModuleApiTests
                 "a zero parsed out of the route is a valid scope identifier, so the edit policy must "
                 + "evaluate a grant rather than fail closed");
 
-            // And in a request BODY, where the import contract carries the module because its route
-            // cannot. The outcome is a capability refusal about the seeded definition, never a complaint
-            // that no module was named.
             var import = new ModuleImportRequest
             {
                 ModuleId = 0,
@@ -3719,29 +3161,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// A refused write publishes one RFC 7807 document, as JSON, naming the field that caused the refusal.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: THE MEDIA TYPE IS MEASURED, NOT ASSUMED, AND IT IS NOT RFC 7807's OWN. The validation
-    /// filter builds its result with <c>ContentTypes = { "application/problem+json" }</c>, so the expectation
-    /// was that a refused write would carry that media type - and it does not. Measured against this host, a
-    /// refusal answers <c>application/json; charset=utf-8</c>: the JSON output formatter advertises
-    /// <c>application/*+json</c> among its supported types and negotiation resolves the response to its
-    /// concrete <c>application/json</c>. The value asserted below is therefore the one the API genuinely
-    /// serves, and the assertion is deliberately written to admit RFC 7807's media type as well, so that
-    /// correcting the deviation later does not require this fact to be edited. The sibling problem-details
-    /// suite declines to pin the value at all for the same measurement; recording it here as a permitted set
-    /// rather than as a silence keeps the two consistent while still asserting that a JSON problem document
-    /// is what arrives.
-    /// </para>
-    /// <para>
-    /// The SHAPE carries the weight, because the shape is what a client parses. All five RFC 7807 members
-    /// the requirements name are asserted - <c>type</c>, <c>title</c>, <c>status</c>, <c>detail</c> and the
-    /// per-field <c>errors</c> map - and the map is asserted BY KEY rather than by presence, because a
-    /// document that reported a fault against the wrong member, or against none, would satisfy an assertion
-    /// on the status code and on the envelope alike. <c>traceId</c> is asserted for the reason it is
-    /// populated: it is what ties the refusal to the request that caused it.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task CreateModule_WithAnUnknownVisibility_PublishesAFieldKeyedProblemDocument()
@@ -3809,29 +3228,6 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <param name="operation">Which operation to exercise: the export or the import.</param>
     /// <param name="expectedKey">The member the error map must be keyed on.</param>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: BOTH OPERATIONS ADVERTISED THIS DOCUMENT AND NEITHER COULD PRODUCE IT. Each declares
-    /// <c>ValidationProblemDetails</c> for <c>400</c> - the shape carrying the per-field <c>errors</c> map -
-    /// while no validator was registered for either request type, so the only 400 either could raise was the
-    /// service's plain problem document with no map in it at all. A client written against the published
-    /// description read <c>errors</c> and found nothing. The declaration described a response that could not
-    /// occur, which is a published-contract defect rather than a missing convenience.
-    /// </para>
-    /// <para>
-    /// The assertion is on the KEY, not merely on the presence of the map, because a document keyed on the
-    /// wrong member - or on none - satisfies both a status assertion and an envelope assertion while leaving
-    /// the caller no better off. The export row omits the file name, which the legacy click handler required;
-    /// the import row omits the module, which the legacy screen never had to require because its route
-    /// carried the target and this one does not.
-    /// </para>
-    /// <para>
-    /// The bodies are raw documents rather than typed contracts, so that a member can be genuinely ABSENT.
-    /// Serialising a typed request would emit the member with a null value, which is a different submission
-    /// from one that never named it - and for the import's identifier the distinction is the whole reason
-    /// that member is nullable.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Theory]
     [InlineData("export", "FileName")]
@@ -3873,14 +3269,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// An export whose file name is only whitespace is refused at the BOUNDARY, with the member named.
     /// </summary>
-    /// <remarks>
-    /// The row the presence rule exists for, and the reason it is a predicate rather than
-    /// <c>NotEmpty</c>: FluentValidation treats a run of spaces as a supplied value, so a rule spelled
-    /// <c>NotEmpty</c> would let this submission through the boundary to be refused one layer deeper by a
-    /// plain problem document - which is the drift the validator was added to close. The sibling fact that
-    /// asserts the same request answers 400 with the sentence naming a file name is retained separately: it
-    /// pins the WORDING, which both enforcement points share, while this pins WHICH point answered.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ExportModule_WithAWhitespaceFileName_IsRefusedAtTheBoundary()
@@ -3907,16 +3295,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// A refusal decided by the module service is identified by its own failure code, never by a number.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy export and import pages reported their outcomes as localised prose - the keys
-    /// <c>ExportNotSupported</c> (<c>Export.ascx.vb</c> L195 and L201), <c>NoContent</c> (L192) and
-    /// <c>DiskSpaceExceeded</c> (L189), and <c>NotValidXml</c> (<c>Import.ascx.vb</c> L192),
-    /// <c>NotCorrectType</c> (L204, L217) and <c>ImportNotSupported</c> (L208, L214) - rendered into a skin
-    /// message that only a person could read. Each becomes a STABLE, NAMED failure code published in the
-    /// problem document's <c>type</c> member, so a client branches on a name rather than on prose or on a
-    /// bare status number. The assertion is on the name for that reason: a status code alone cannot
-    /// distinguish "this module cannot be exported" from any other refused request.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ExportModule_WhenNotPortable_IdentifiesTheRefusalByItsNamedCode()
@@ -3952,27 +3330,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// An export answers with the document in the response body and writes nothing to a file system.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Export.ascx.vb</c> L157-L192 obtained the module's content, then wrote it to a file in
-    /// the portal's home directory, checked the portal's remaining disk space and reported
-    /// <c>DiskSpaceExceeded</c> when the write would not fit. BOTH the write and the space check are DROPPED:
-    /// the API has no portal home directory, a stateless request cannot own a file the caller then has to
-    /// fetch by another route, and a quota check whose subject no longer exists cannot be preserved. The
-    /// document travels in the response instead, which is why the action declares
-    /// <c>application/xml</c> for its success status rather than the controller-wide
-    /// <c>application/json</c>. A caller saves the body, exactly as the legacy page produced a saveable file.
-    /// </para>
-    /// <para>
-    /// The declaration is asserted rather than a successful body, and that is a limitation stated plainly: a
-    /// success requires a business controller registered under the addressed module's declared class name,
-    /// the registered set is closed by design and empty in this delivery, and the seeded desktop module
-    /// declares no class at all - <c>BusinessControllerClass</c> is <c>NULL</c> in the seed. Asserting the
-    /// declaration pins the contract that the XML is the RESPONSE rather than a file; the refusal path that
-    /// is reachable is asserted by the sibling facts. No response contract in the module group offers a
-    /// path, a URL or a disk-space figure, and that absence is asserted too.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ExportModule_DeclaresTheDocumentAsTheResponseBodyAndNoFileDestination()
@@ -4014,10 +3371,6 @@ public sealed class ModuleApiTests
         typeof(ModuleImportRequest).GetProperty("ModuleId").Should().NotBeNull(
             "the import route names no module, so the request must");
 
-        // The declaration is then held against the route it describes, because an advertised media type on an
-        // action nobody can reach would prove nothing. The reachable outcome for the seeded definition is a
-        // refusal, and what matters is that the refusal is a problem document rather than a reference to a
-        // file the caller would have to collect from somewhere.
         using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
@@ -4052,13 +3405,13 @@ public sealed class ModuleApiTests
     /// appeared unchanged.
     /// </para>
     /// <para>
-    /// THE TWO ACTIONS ARE NOT INTERCHANGEABLE, AND ASSERTING ONE NUMBER FOR BOTH WAS THE DEFECT. An export
+    /// THE TWO ACTIONS ARE NOT INTERCHANGEABLE, SO ONE NUMBER CANNOT DESCRIBE BOTH. An export
     /// request carries a file name and nothing else, so the global mebibyte is three orders of magnitude more
     /// than it needs. An import request carries a whole document, and the service accepts one of
     /// <see cref="ModuleImportRequest.ContentCharacterMaximum"/> characters - which cannot fit in a mebibyte
     /// of BODY once the member names, the quotes and the JSON escaping are counted. Pinning both to the
-    /// global limit therefore described a contract that could not be satisfied: the accepted document was
-    /// undeliverable. The import limit is now derived from that character ceiling, and the relationship is
+    /// global limit therefore describes a contract that cannot be satisfied: the accepted document is
+    /// undeliverable. The import limit is derived from that character ceiling, and the relationship is
     /// asserted below rather than the literal, so the arithmetic cannot drift out of step with the ceiling it
     /// is computed from.
     /// </para>
@@ -4088,9 +3441,6 @@ public sealed class ModuleApiTests
             "an import request carries a document, and its ceiling is the one computed from the document "
             + "ceiling the contract publishes");
 
-        // The coherence itself, asserted as a relationship. A body limit smaller than the encoded form of the
-        // largest accepted document makes that document undeliverable, which is exactly the state this fact
-        // exists to prevent recurring.
         const long worstCaseJsonBytesPerCharacter = 6L;
 
         ServiceCollectionExtensions.MaximumImportRequestBodyBytes.Should().BeGreaterThan(
@@ -4104,9 +3454,6 @@ public sealed class ModuleApiTests
             "the import action raises the limit for itself precisely because the global one is too small "
             + "for it, and the global one stays small for everything else");
 
-        // The client-visible file limit is the innermost derivation and must be satisfiable: a file of this
-        // many bytes decoded as UTF-8 cannot exceed the character ceiling, so the two are equal by
-        // construction and neither may be raised without the other.
         ModuleImportRequest.FileByteMaximum.Should().Be(
             ModuleImportRequest.ContentCharacterMaximum,
             "a UTF-8 sequence of N bytes yields at most N UTF-16 code units, which is what makes a byte "
@@ -4116,15 +3463,6 @@ public sealed class ModuleApiTests
     /// <summary>
     /// A listing publishes the items-plus-total envelope, and the total is never the legacy sentinel.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy listings reported their size through a <c>ByRef totalRecords</c> argument and
-    /// signalled "unpaged" by passing a page index of <c>-1</c>, so a count and a sentinel travelled in the
-    /// same integer. The envelope separates them: the total is a count and nothing else, and the unpaged
-    /// case is an explicit factory rather than a magic index. The page-index BASE is deliberately not
-    /// asserted - the legacy data layer computed <c>@PageSize * @PageIndex</c> from a zero base while its
-    /// screens passed <c>CurrentPage - 1</c> to reach it, so an assertion on a base would pin one
-    /// convention's arithmetic rather than the contract.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListModules_PublishesTheItemsAndTotalEnvelopeWithoutASentinelTotal()
@@ -4132,9 +3470,7 @@ public sealed class ModuleApiTests
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         // Two are created rather than one, and neither the seed nor a sibling fact is relied on for the
-        // second. The collection is shared and this suite's facts do not run in a declared order, so a fact
-        // that assumed rows another fact had created would pass or fail according to the order it happened to
-        // run in. Creating both here makes the total strictly greater than the window by construction.
+        // second.
         ModuleDetailDto first = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
         ModuleDetailDto second = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
 
@@ -4178,32 +3514,14 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A module sitting on two pages does not widen the window it appears in, and does not shrink the total.
+    /// A module sitting on two pages does not widen the window it appears in, and does not shrink the
+    /// total.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: THE LISTING'S WINDOW USED TO BE CUT IN THE WRONG UNIT, and this fact is the end-to-end
-    /// proof that it no longer is. The rows this collection returns are PLACEMENTS - a module placed on two
-    /// pages contributes two - while the window was taken over MODULES, so one module entering a window of
-    /// one brought every placement it had out with it. The published metadata was then patched with
-    /// <c>Math.Max</c> so the envelope's own guards would accept the mismatch: the width came back larger
-    /// than the width asked for, and the total came back as a count of modules although the items were
-    /// placements. Both are now exact.
-    /// </para>
-    /// <para>
     /// The second placement is written directly with SQL rather than by asking for every page. The
     /// all-pages switch fans a module out across every content page of the tenant, which would add rows to
     /// pages that other facts in this shared collection read - so the narrowest possible change is made, on
-    /// one extra page, and it is removed again in a <c>finally</c>. The pane, order and every other
-    /// <c>NOT NULL</c> column are supplied so the row is one the schema would have accepted from the
-    /// application.
-    /// </para>
-    /// <para>
-    /// The total is compared against a WIDE read rather than against a literal, because the collection is
-    /// shared and its size is not known to this fact. What is asserted is the relationship the arithmetic
-    /// depends on: the total counts rows, it does not change when the window narrows, and the window is
-    /// never wider than it was asked to be.
-    /// </para>
+    /// one extra page, and it is removed again in a <c>finally</c>.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -4281,20 +3599,7 @@ public sealed class ModuleApiTests
         }
     }
 
-    /// <summary>
-    /// The listing's title filter matches case-insensitively anywhere in the title.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: this is a NET-NEW surface and the semantics are stated rather than inherited, because there
-    /// is nothing to inherit them from. There is no module-list administration page in the migrated scope,
-    /// and <c>Library/Components/Modules/ModuleController.vb</c> declares no title filter of any kind - its
-    /// only search-related member, <c>GetSearchModules</c> at L1032, returns the modules that implement the
-    /// legacy searchable contract and has nothing to do with matching a title. So no parity obligation binds
-    /// the matching rule here, and the mid-string match is asserted as the contract this delivery defines
-    /// rather than one measured elsewhere. Stated explicitly because the account and role listings, whose
-    /// legacy procedures did filter with <c>@text + '%'</c>, match from the START of the value - and a reader
-    /// who assumed one rule covered every listing would be wrong in both directions.
-    /// </remarks>
+    /// <summary>The listing's title filter matches case-insensitively anywhere in the title.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListModules_FilteredByTitle_MatchesAnywhereInTheTitleIgnoringCase()
@@ -4338,10 +3643,9 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <remarks>
     /// Asserted on a REFUSED request as well as on a satisfied one, because the refusal is the case that
-    /// matters operationally: a caller reporting a failure has nothing but the identifier to hand back, and a
-    /// short-circuiting stage that answered without the header would take it away at exactly the moment it is
-    /// needed. The middleware registers the header through a response callback before the pipeline continues,
-    /// which is what makes it survive a response no controller produced.
+    /// matters operationally: a caller reporting a failure has nothing but the identifier to hand back, and
+    /// a short-circuiting stage that answered without the header would take it away at exactly the moment
+    /// it is needed.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -4383,9 +3687,7 @@ public sealed class ModuleApiTests
             "a problem document carries the correlation identifier, because that is when a caller needs it");
     }
 
-    /// <summary>
-    /// A request that supplies no correlation identifier is answered with one that was generated.
-    /// </summary>
+    /// <summary>A request that supplies no correlation identifier is answered with one that was generated.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ModuleRequests_WithoutACorrelationId_AreAnsweredWithAGeneratedOne()
@@ -4407,9 +3709,7 @@ public sealed class ModuleApiTests
     /// <remarks>
     /// The two unusable shapes are covered together because they fail for one reason: an identifier is
     /// reflected into a response header, so a value long enough to be abusive or one carrying a line break
-    /// must not be reflected at all. Replacing it rather than refusing the request is the deliberate choice -
-    /// a caller's malformed diagnostic header is not a reason to withhold the resource it asked for, and
-    /// answering <c>400</c> would turn a logging concern into a functional failure.
+    /// must not be reflected at all.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -4498,9 +3798,10 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// Records or replaces one module permission grant. The grant is written directly because the API exposes
-    /// no grant-management endpoint - permission catalogues are read-only over HTTP in this migration - and the
-    /// point of the test is the evaluation of stored grants, not the means of storing them.
+    /// Records or replaces one module permission grant. The grant is written directly because the API
+    /// exposes no grant-management endpoint - permission catalogues are read-only over HTTP in this
+    /// migration - and the point of the test is the evaluation of stored grants, not the means of storing
+    /// them.
     /// </summary>
     /// <param name="moduleId">The module the grant is recorded against.</param>
     /// <param name="permissionId">The catalogue entry being granted or denied.</param>
@@ -4533,9 +3834,8 @@ public sealed class ModuleApiTests
     /// <remarks>
     /// ⚠ REQUIRED BECAUSE THE DEFINITION CATALOGUE'S POLICY IS A TENANT-WIDE CAPABILITY QUESTION. Admission
     /// depends on whether ANY page of the tenant grants the caller EDIT, so a case asserting a refusal is
-    /// asserting something about stored rows rather than about the caller's role. The suites share one database
-    /// and xUnit gives no ordering guarantee within a collection. Only the EDIT key and only the seeded
-    /// tenant's pages are touched; no case writes a grant and then depends on it surviving another case.
+    /// asserting something about stored rows rather than about the caller's role. The suites share one
+    /// database and xUnit gives no ordering guarantee within a collection.
     /// </remarks>
     private async Task ClearTenantEditGrantsAsync()
     {
@@ -4555,16 +3855,12 @@ public sealed class ModuleApiTests
 
     /// <summary>
     /// Records or replaces one page permission grant, written directly for the same reason the module grant
-    /// above is: the API exposes no grant-management endpoint, and the point of the test is the evaluation of
-    /// stored grants rather than the means of storing them.
+    /// above is: the API exposes no grant-management endpoint, and the point of the test is the evaluation
+    /// of stored grants rather than the means of storing them.
     /// </summary>
     /// <param name="tabId">The page the grant is recorded against.</param>
     /// <param name="permissionId">The catalogue entry being granted or denied.</param>
-    /// <param name="roleId">
-    /// The role the grant applies to. Negative identifiers are genuine principals rather than sentinels here:
-    /// <c>-1</c> is the all-users pseudo-role and <c>-3</c> the unauthenticated one, and both are written
-    /// unaltered.
-    /// </param>
+    /// <param name="roleId">The role the grant applies to.</param>
     /// <param name="allowAccess">Whether the grant allows or denies.</param>
     /// <returns>A task representing the write.</returns>
     private async Task GrantTabPermissionAsync(int tabId, int permissionId, int roleId, bool allowAccess)
@@ -4591,10 +3887,6 @@ public sealed class ModuleApiTests
     /// <param name="permissionId">The catalogue entry.</param>
     /// <param name="roleId">The role the grant applied to.</param>
     /// <returns>A task representing the write.</returns>
-    /// <remarks>
-    /// The seeded pages are shared by every test in this suite, so a test that widens a page's grants withdraws
-    /// them again rather than leaving an unrelated assertion to be satisfied by a grant it never asked for.
-    /// </remarks>
     private async Task RevokeTabPermissionAsync(int tabId, int permissionId, int roleId)
     {
         await _fixture.Database.ExecuteAsync(
@@ -4615,17 +3907,13 @@ public sealed class ModuleApiTests
     private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
 
     /// <summary>
-    /// The facts about a tenant this suite provisioned that an authorisation assertion needs: how to address
-    /// it, which page its provisioning created, and which account administers it.
+    /// The facts about a tenant this suite provisioned that an authorisation assertion needs: how to
+    /// address it, which page its provisioning created, and which account administers it.
     /// </summary>
     /// <param name="PortalId">The created tenant.</param>
     /// <param name="Alias">The host name that resolves it.</param>
     /// <param name="HomeTabId">The home page its provisioning created.</param>
-    /// <param name="AdministratorUserName">
-    /// The account its provisioning created as its administrator. Named rather than identified, because the
-    /// only thing a test does with it is sign in, and signing in with the name is what proves the credential
-    /// the provisioning stored is usable.
-    /// </param>
+    /// <param name="AdministratorUserName">The account its provisioning created as its administrator.</param>
     private readonly record struct TenantFacts(
         int PortalId,
         string Alias,
@@ -4639,10 +3927,7 @@ public sealed class ModuleApiTests
     /// <returns>The created tenant's identity, alias, home page and administrator account name.</returns>
     /// <remarks>
     /// Distinct from <see cref="CreateForeignPortalAsync"/>, which exists to be a tenant a request must NOT
-    /// reach and therefore never reports an account to act as. This one is the subject rather than the foil,
-    /// so it also carries the administrator's name - and it is created through the API rather than by insert
-    /// so that the rows its provisioning writes, including the home page's permission grants, are exactly the
-    /// ones production writes.
+    /// reach and therefore never reports an account to act as.
     /// </remarks>
     private static async Task<TenantFacts> CreateTenantWithAdministratorAsync(HttpClient host)
     {
@@ -4682,12 +3967,6 @@ public sealed class ModuleApiTests
     /// <summary>Renders a response as an assertion message, so an unexpected status names its own reason.</summary>
     /// <param name="response">The response whose status did not match.</param>
     /// <returns>The status line and the body, bounded.</returns>
-    /// <remarks>
-    /// Written for the authorisation facts, where every refusal arrives on the same status as several
-    /// unrelated ones: <c>403</c> is the permission gate, the tenant binding AND the remediation gate, and
-    /// each carries a different problem type. An assertion that reported only "expected 200, found 403" would
-    /// therefore leave the reader unable to tell which gate answered.
-    /// </remarks>
     private static async Task<string> Diagnose(HttpResponseMessage response)
     {
         string body = await response.Content.ReadAsStringAsync();
@@ -4801,9 +4080,7 @@ public sealed class ModuleApiTests
             });
     }
 
-    /// <summary>
-    /// Inserts one placed administrative module carrying a security-owned setting.
-    /// </summary>
+    /// <summary>Inserts one placed administrative module carrying a security-owned setting.</summary>
     /// <returns>The administrative module identifier.</returns>
     private async Task<int> InsertAdministrativeModuleAsync()
     {
@@ -4917,26 +4194,14 @@ public sealed class ModuleApiTests
     };
 
     /// <summary>
-    /// Creation, the single read and the listing all report the SAME definition and package for one
-    /// module, and every one of those five values matches the definition catalogue.
+    /// Creation, the single read and the listing all report the SAME definition and package for one module,
+    /// and every one of those five values matches the definition catalogue.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// Three endpoints project these five values, from three different code paths, so nothing but a test
-    /// keeps them in step. The failure this guards against was all three disagreeing at once about one
-    /// module: the creation response named package 0, the single read named the real package but reported
-    /// no package name, description or version, and the listing carried none of the five at all. A
-    /// consumer therefore could not learn which package a module came from without knowing which endpoint
-    /// happened to be truthful.
-    /// </para>
-    /// <para>
     /// The catalogue is consulted as the independent control, so this asserts agreement with the STORE
     /// rather than merely agreement among the three projections - three endpoints that agree on a wrong
-    /// value would otherwise pass. A package key of 0 is asserted impossible for the same reason it is
-    /// impossible in the schema: <c>dbo.DesktopModules.DesktopModuleID</c> is a plain <c>IDENTITY</c>, so
-    /// it seeds at 1.
-    /// </para>
+    /// value would otherwise pass.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -5009,9 +4274,6 @@ public sealed class ModuleApiTests
                     FormattableString.Invariant(
                         $"{source} must not fabricate a package key; DesktopModuleID seeds at 1"));
 
-                // The remaining four are compared against the CATALOGUE's own answer rather than against
-                // literals, so the control is the store in every case and a fixture change cannot turn a
-                // real disagreement into a passing test.
                 friendly.Should().Be(
                     definition.FriendlyName,
                     FormattableString.Invariant($"{source} must carry the definition's display name"));
@@ -5050,16 +4312,9 @@ public sealed class ModuleApiTests
         return detail!;
     }
 
-    /// <summary>
-    /// Reads a module settings representation from a response, failing the test when it is absent.
-    /// </summary>
+    /// <summary>Reads a module settings representation from a response, failing the test when it is absent.</summary>
     /// <param name="response">The response to read.</param>
     /// <returns>The representation.</returns>
-    /// <remarks>
-    /// The settings projection is the contract that owns the placement scope - the pane, the appearance
-    /// columns and both key-value collections - so a test asserting on any of those reads through here
-    /// rather than through <see cref="ReadDetailAsync"/>.
-    /// </remarks>
     private static async Task<ModuleSettingsDto> ReadSettingsAsync(HttpResponseMessage response)
     {
         ModuleSettingsDto? settings = await response.Content
@@ -5142,18 +4397,16 @@ public sealed class ModuleApiTests
         return page!.Items;
     }
 
-    /// <summary>
-    /// Reads one member out of a success envelope's payload as raw JSON.
-    /// </summary>
+    /// <summary>Reads one member out of a success envelope's payload as raw JSON.</summary>
     /// <param name="client">A client entitled to perform the read.</param>
     /// <param name="route">The resource to read.</param>
     /// <param name="member">The camel-cased member name to return.</param>
     /// <returns>The member, cloned so that it outlives the document it was parsed from.</returns>
     /// <remarks>
-    /// Necessary because a typed read cannot distinguish a member the response OMITTED from one it published
-    /// as <see langword="null"/> - both deserialise to the same value - and that distinction is the whole
-    /// subject of the sentinel facts. The element is cloned before the document is disposed, because a
-    /// <see cref="JsonElement"/> borrowed from a disposed document throws on access.
+    /// Necessary because a typed read cannot distinguish a member the response OMITTED from one it
+    /// published as <see langword="null"/> - both deserialise to the same value - and that distinction is
+    /// the whole subject of the sentinel facts. The element is cloned before the document is disposed,
+    /// because a <see cref="JsonElement"/> borrowed from a disposed document throws on access.
     /// </remarks>
     private static async Task<JsonElement> ReadDataMemberAsync(HttpClient client, Uri route, string member)
     {
@@ -5176,18 +4429,10 @@ public sealed class ModuleApiTests
     /// </summary>
     /// <returns>A task representing the write.</returns>
     /// <remarks>
-    /// <c>Modules.ModuleID</c> is <c>IDENTITY (0, 1)</c>, so zero is the first identifier an installation
-    /// issues and an ordinary key thereafter - but this installation's sequence is long past it, so the row
-    /// is written with the identity override rather than through the API. Any existing row is removed first
-    /// so the helper is safe to call after a failed run left one behind.
-    /// <para>
     /// The PLACEMENT is written alongside the module, and it is not optional: a module the terminal schema
     /// holds without a <c>TabModules</c> row is an unplaced module, and a read that addresses one reports
     /// absence - so a module numbered zero and placed nowhere would answer <c>404</c> for a reason that has
-    /// nothing to do with its identifier and would prove nothing about the sentinel. Every column
-    /// <c>TabModules</c> declares <c>NOT NULL</c> is supplied for the same reason: the row must be one the
-    /// schema would have accepted from the application.
-    /// </para>
+    /// nothing to do with its identifier and would prove nothing about the sentinel.
     /// </remarks>
     private async Task InsertModuleWithIdentifierZeroAsync()
     {

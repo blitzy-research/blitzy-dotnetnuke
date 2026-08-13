@@ -9,32 +9,19 @@ using Xunit;
 
 namespace DnnMigration.UnitTests.Services;
 
-/// <summary>
-/// Guards the eviction bound on the process-wide cache of tenant-authored validation expressions.
-/// </summary>
+/// <summary>Guards the eviction bound on the process-wide cache of tenant-authored validation expressions.</summary>
 /// <remarks>
 /// <para>
-/// INFO-01. A profile property's validation expression, and the membership e-mail rule, are TENANT DATA -
-/// authored by any account entitled to write those definitions - and the compiled-expression cache that holds
-/// them is static, so it is shared by every tenant the process serves. At its ceiling the cache used to call
-/// <c>Clear()</c>. Nothing grew without bound, which is why this was a hardening note rather than a defect,
-/// but the cost of reaching the ceiling fell on the wrong party: one privileged writer introducing distinct
-/// expressions could discard every compiled expression belonging to OTHER tenants, each of which then paid a
-/// recompilation on its next validation.
-/// </para>
-/// <para>
-/// The fix removes exactly one entry per newly admitted expression, so a writer can displace no more than the
-/// work it brought. THAT PROPORTIONALITY IS WHAT THESE FACTS MEASURE, and they are written to fail loudly
-/// against the old behaviour: a wholesale clear leaves the cache holding a single entry, so the observed count
-/// after an admission at capacity is the discriminator.
+/// The fix removes exactly one entry per newly admitted expression, so a writer can displace no more than
+/// the work it brought. THAT PROPORTIONALITY IS WHAT THESE FACTS MEASURE, and they are written to fail
+/// loudly against the old behaviour: a wholesale clear leaves the cache holding a single entry, so the
+/// observed count after an admission at capacity is the discriminator.
 /// </para>
 /// <para>
 /// The cache is reached by reflection because it is deliberately private static implementation detail - the
 /// alternative, widening it for a test, would make an internal bound part of the service's surface. The
-/// ceiling is read from the constant rather than restated, so the facts cannot drift from the implementation.
-/// Every key these facts introduce is removed again in a <see langword="finally"/> block, because the cache
-/// outlives the test class and a test that permanently occupied a shared cache would slow every later
-/// validation in the run.
+/// ceiling is read from the constant rather than restated, so the facts cannot drift from the
+/// implementation.
 /// </para>
 /// </remarks>
 public sealed class ValidationExpressionCacheTests
@@ -51,14 +38,7 @@ public sealed class ValidationExpressionCacheTests
     /// <summary>The private compile-and-cache entry point under test.</summary>
     private static readonly MethodInfo GetValidationExpression = ReadMethod();
 
-    /// <summary>
-    /// Admitting an expression while the cache is at its ceiling displaces at most ONE entry.
-    /// </summary>
-    /// <remarks>
-    /// This is the proportionality property stated as a measurement. Under the previous wholesale clear the
-    /// count would fall from the ceiling to 1, so the delta is the whole difference between the two
-    /// behaviours.
-    /// </remarks>
+    /// <summary>Admitting an expression while the cache is at its ceiling displaces at most ONE entry.</summary>
     [Fact]
     public void AdmittingAnExpressionAtCapacityDisplacesAtMostOneEntry()
     {
@@ -90,9 +70,7 @@ public sealed class ValidationExpressionCacheTests
         }
     }
 
-    /// <summary>
-    /// The cache saturates at its ceiling and stays there, rather than emptying and refilling.
-    /// </summary>
+    /// <summary>The cache saturates at its ceiling and stays there, rather than emptying and refilling.</summary>
     /// <remarks>
     /// Sustained pressure is the case the old behaviour handled worst: every admission past the ceiling
     /// emptied the cache, so a writer introducing many expressions in succession repeatedly reduced every

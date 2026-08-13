@@ -3,69 +3,37 @@ import { environment } from '../../../environments/environment';
 import { API_ENDPOINTS, AUTH_ENDPOINTS, apiUrl, isApiRequest } from './api-endpoints';
 
 /**
- * The exact production API base, spelled out here rather than read from the module under
- * test.
- *
- * ⚠ THE LITERAL IS THE WHOLE POINT AND MUST NOT BE REPLACED BY A REFERENCE. Comparing
- * `environment.apiBaseUrl` against itself, or against anything derived from it, would pass
- * for every value it could ever hold — including each of the three absolute values that
- * break the deployed application. The assertions below are only evidence because this
- * string is written out independently.
+ * The exact production API base, spelled out here rather than read from the module under test. ⚠ THE
+ * LITERAL IS THE WHOLE POINT AND MUST NOT BE REPLACED BY A REFERENCE. Comparing `environment.apiBaseUrl`
+ * against itself, or against anything derived from it, would pass for every value it could ever hold —
+ * including each of the three absolute values that break the deployed application.
  */
 const PRODUCTION_API_BASE = '/api/v1';
 
 describe('the production API base', () => {
-  /*
-   * WHY THIS SUITE EXISTS, AND WHY NO OTHER CHECK COVERS IT.
-   *
-   * `docker/nginx.conf` proxies `location /api/` to `http://api:8080/api/` on the origin
-   * that served the bundle, so the browser must address the API through a ROOT-RELATIVE
-   * path. An absolute value type-checks, lints, bundles, deploys and leaves both containers
-   * reporting healthy — nothing in the toolchain detects the substitution — and then fails
-   * for every browser, in a different way depending on which absolute value was written:
-   * a compose service name resolves only inside the Docker network; `http://localhost:8080`
-   * works from the machine that published the port and nowhere else; any other host bypasses
-   * the proxy and becomes a cross-origin request the API's policy is not written to admit.
-   *
-   * The behavioural suite below cannot catch it either, and that gap is the finding these
-   * cases close. `isApiRequest` classifies by resolving both the candidate and the base
-   * against the document, so it answers identically for the relative base and for an
-   * absolute base whose origin happens to match the document's — which is exactly what
-   * `http://localhost:8080/api/v1` is under a Karma run served from `localhost`. A suite
-   * that only exercises classification therefore passes for a bundle that is broken in
-   * production.
-   *
-   * ⚠ THE `test` TARGET DECLARES NO `fileReplacements`, which is what makes these
-   * assertions meaningful. Verified in `angular.json`: only the `development` build
-   * configuration substitutes the environment module, so every Karma spec compiles against
-   * `environment.ts` — the PRODUCTION module — and the value asserted here is the value that
-   * ships in the container image.
-   */
+  // `docker/nginx.conf` proxies `location /api/` to `http://api:8080/api/` on the origin that served the
+  // bundle, so the browser must address the API through a ROOT-RELATIVE path.
 
   it('is exactly the root-relative path the reverse proxy serves', () => {
     expect(environment.apiBaseUrl).toBe(PRODUCTION_API_BASE);
   });
 
   it('is the production module rather than the development override', () => {
-    // Pins the OTHER permitted divergence between the twins, so a specification that
-    // accidentally compiled against the override could not pass the case above by
-    // coincidence.
+    // Pins the OTHER permitted divergence between the twins, so a specification that accidentally compiled
+    // against the override could not pass the case above by coincidence.
     expect(environment.production).toBeTrue();
   });
 
   it('is root-relative and carries no origin of any kind', () => {
-    // Stated as three independent clauses rather than one equality, so the failure names
-    // which property was lost. Each rules out one of the three absolute values that break
-    // the deployed bundle.
     expect(environment.apiBaseUrl.startsWith('/')).toBeTrue();
     expect(environment.apiBaseUrl.startsWith('//')).toBeFalse();
     expect(/^[a-z][a-z0-9+.-]*:/i.test(environment.apiBaseUrl)).toBeFalse();
   });
 
   it('composes every generated address as a root-relative path beneath that base', () => {
-    // The base being correct is necessary but not sufficient: the endpoint registry could
-    // still compose an absolute address from it. These are the concrete addresses the
-    // application issues, sampled across every collection plus the anonymous auth paths.
+    // The base being correct is necessary but not sufficient: the endpoint registry could still compose an
+    // absolute address from it. These are the concrete addresses the application issues, sampled across
+    // every collection plus the anonymous auth paths.
     const generated: readonly string[] = [
       apiUrl('portals'),
       API_ENDPOINTS.portals.collection(),
@@ -137,30 +105,10 @@ describe('isApiRequest', () => {
 });
 
 describe('a child portal addressed beneath a path segment', () => {
-  /*
-   * WHY THIS SUITE EXISTS.
-   *
-   * The legacy product let a child portal be reached at `domain/segment` - the signup screen
-   * composes and stores exactly that (`Website/admin/Portal/Signup.ascx.vb` L232-L236) - and the
-   * API reproduces it: `TenantPathBaseMiddleware` resolves the tenant from the host AND the path
-   * before routing runs, then moves the segment into the request's path base so
-   * `/child/api/v1/portals` routes to the same action as `/api/v1/portals` while resolving the
-   * CHILD.
-   *
-   * The prefixed target has to ARRIVE for any of that to happen, and one built bundle is served
-   * to every tenant, so the browser is the only place it can be restored. Before it was, a caller
-   * who opened `https://host/child` was served this application and every request it made was
-   * addressed to the ROOT - so the API resolved the bare-host tenant, sign-in authenticated
-   * against the wrong portal, and every later request operated in the wrong arrival context.
-   * Nothing failed visibly: the document loads and both containers report healthy.
-   *
-   * ⚠ BOTH HALVES ARE ASSERTED, AND THE SECOND IS THE ONE THAT WOULD BE MISSED. Composing the
-   * prefixed URL is not enough: the same base is what `isApiRequest` compares against, and that
-   * predicate is what the authentication and correlation interceptors use to decide whether a
-   * request belongs to this API. A builder that prefixed while the predicate did not would drop
-   * the bearer token from every call under a child portal, and a signed-in operator would be
-   * answered 401 with nothing in the build to say why.
-   */
+  // The legacy product let a child portal be reached at `domain/segment` - the signup screen composes and
+  // stores exactly that - and the API reproduces it: `TenantPathBaseMiddleware` resolves the tenant from
+  // the host AND the path before routing runs, then moves the segment into the request's path base so
+  // `/child/api/v1/portals` routes to the same action as `/api/v1/portals` while resolving the CHILD.
 
   const originalUrl = window.location.href;
 
@@ -203,10 +151,9 @@ describe('a child portal addressed beneath a path segment', () => {
   });
 
   it('classifies the ROOT API path as somebody else, because it addresses another tenant', () => {
-    // `/api/v1/...` under a child document is the PARENT tenant's API. Nothing in this
-    // application composes it - every URL comes from this module - so declining to recognise it
-    // costs nothing, and recognising it would mean this session's credential travelled to a
-    // tenant the caller did not ask for.
+    // `/api/v1/...` under a child document is the PARENT tenant's API. Nothing in this application composes
+    // it - every URL comes from this module - so declining to recognise it costs nothing, and recognising
+    // it would mean this session's credential travelled to a tenant the caller did not ask for.
     expect(isApiRequest('/api/v1/portals')).toBeFalse();
   });
 

@@ -7,20 +7,24 @@ using Microsoft.EntityFrameworkCore.Storage;
 namespace DnnMigration.Infrastructure.Persistence;
 
 /// <summary>
-/// The approval, lock-out and activity facts an account carries in the external ASP.NET membership
-/// store. Deliberately carries no credential material.
+/// The approval, lock-out and activity facts an account carries in the external ASP.NET membership store.
+/// Deliberately carries no credential material.
 /// </summary>
 /// <param name="IsApproved">Whether the account is approved for use.</param>
 /// <param name="IsLockedOut">Whether the account is locked out.</param>
-/// <param name="CreatedDate">When the credential record was created, or <see langword="null"/> when never recorded.</param>
+/// <param name="CreatedDate">
+/// When the credential record was created, or <see langword="null"/> when never recorded.
+/// </param>
 /// <param name="LastLoginDate">The last successful sign-in, or <see langword="null"/> when never recorded.</param>
 /// <param name="LastActivityDate">The last recorded activity, or <see langword="null"/> when never recorded.</param>
 /// <param name="LastLockoutDate">The last lock-out, or <see langword="null"/> when never recorded.</param>
-/// <param name="LastPasswordChangeDate">The last password change, or <see langword="null"/> when never recorded.</param>
+/// <param name="LastPasswordChangeDate">
+/// The last password change, or <see langword="null"/> when never recorded.
+/// </param>
 /// <remarks>
 /// This type exists separately from <see cref="MembershipCredentialSnapshot"/> so that a password hash
-/// cannot reach a listing by accident: the members that populate a <see cref="Domain.Entities.User"/>
-/// can only obtain this shape, and it has no field capable of carrying one.
+/// cannot reach a listing by accident: the members that populate a <see cref="Domain.Entities.User"/> can
+/// only obtain this shape, and it has no field capable of carrying one.
 /// </remarks>
 internal sealed record MembershipAccountSnapshot(
     bool IsApproved,
@@ -31,17 +35,17 @@ internal sealed record MembershipAccountSnapshot(
     DateTime? LastLockoutDate,
     DateTime? LastPasswordChangeDate);
 
-/// <summary>
-/// The credential state authentication needs in order to decide a sign-in.
-/// </summary>
-/// <param name="PasswordValue">The stored credential representation, or <see langword="null"/> when none is stored.</param>
+/// <summary>The credential state authentication needs in order to decide a sign-in.</summary>
+/// <param name="PasswordValue">
+/// The stored credential representation, or <see langword="null"/> when none is stored.
+/// </param>
 /// <param name="Format">The persisted legacy format discriminator, or <see langword="null"/> when invalid.</param>
 /// <param name="PasswordSalt">The base-64 membership salt, or <see langword="null"/> when none is stored.</param>
 /// <param name="IsApproved">Whether the account is approved for use.</param>
 /// <param name="IsLockedOut">Whether the account is locked out.</param>
 /// <remarks>
-/// Obtained only by <see cref="MembershipStore.GetCredentialStateAsync"/>. None of its credential
-/// material may be placed in a result returned across the API boundary, in a log entry or in a message.
+/// Obtained only by <see cref="MembershipStore.GetCredentialStateAsync"/>. None of its credential material
+/// may be placed in a result returned across the API boundary, in a log entry or in a message.
 /// </remarks>
 internal sealed record MembershipCredentialSnapshot(
     string? PasswordValue,
@@ -50,81 +54,35 @@ internal sealed record MembershipCredentialSnapshot(
     bool IsApproved,
     bool IsLockedOut);
 
-/// <summary>
-/// Addresses the external ASP.NET membership store that holds DotNetNuke credentials.
-/// </summary>
+/// <summary>Addresses the external ASP.NET membership store that holds DotNetNuke credentials.</summary>
 /// <remarks>
-/// MIGRATION: credentials are not columns on <c>dbo.Users</c>. The original
-/// <c>[Password] nvarchar(20) NOT NULL</c> column was dropped by the 02.02.01 upgrade script and
-/// credentials moved into the <c>aspnet_Membership</c> store, which the DotNetNuke scripts only ever
-/// <c>ALTER</c> - see <c>ALTER PROCEDURE dbo.aspnet_Membership_UpdateUser</c> at
-/// <c>Website/Providers/DataProviders/SqlDataProvider/04.00.00.SqlDataProvider</c> line 31 and
-/// <c>aspnet_Membership_UpdateUserInfo</c> at line 119 of the same script. Those objects are installed
-/// by the ASP.NET SQL registration tool, so replaying the ninety-odd DotNetNuke scripts against an
-/// empty database cannot produce them and neither can any migration generated from the target model.
-/// <para>
-/// The store is therefore treated as an external legacy dependency that the <c>User</c> entity maps
-/// alongside, never as something this model owns. It is reached through explicit parameterised
-/// statements rather than through mapped entity types, which is what keeps the Entity Framework model
-/// at exactly the twenty-one tables the migration plan enumerates and keeps the baseline migration
-/// empty. Every value crosses as a <see cref="DbParameter"/>; no value is ever concatenated into a
-/// command.
-/// </para>
-/// <para>
-/// <strong>Linkage is by user name, not by identifier.</strong>
-/// <c>Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb</c>
-/// resolves a DotNetNuke account to a membership account with
-/// <c>GetMembershipUser(user.Username)</c> at line 432, which reaches
-/// <c>Membership.GetUser(userName)</c> at line 446. <c>aspnet_Users.UserId</c> is a
-/// <c>uniqueidentifier</c> while <c>dbo.Users.UserID</c> is an <c>int</c>; there is no shared key, so a
-/// caller resolves its integer identifier to a user name first and this type keys on the user name
-/// within one application.
-/// </para>
-/// <para>
-/// <strong>Application scope.</strong> The membership tables are keyed by application, and the legacy
-/// procedures all filter on <c>aa.LoweredApplicationName</c>. The name is
-/// <c>applicationName="DotNetNuke"</c>, measured at <c>Website/release.config</c> line 246, and every
-/// statement here applies that filter so that an installation sharing its database with another
-/// ASP.NET application can never read or write the wrong application's accounts.
-/// </para>
-/// <para>
 /// <strong>Availability.</strong> Because the objects are provisioned outside this repository's schema
-/// chain, they are absent from a greenfield database and from every non-SQL-Server provider.
-/// <see cref="IsAvailableAsync"/> establishes their presence once per instance and every member fails
-/// closed when they are missing, reporting the truthful "no credential record" answer rather than
-/// fabricating one or throwing an object-name error.
-/// </para>
+/// chain, they are absent from a greenfield database and from every non-SQL-Server provider. <see
+/// cref="IsAvailableAsync"/> establishes their presence once per instance and every member fails closed
+/// when they are missing, reporting the truthful "no credential record" answer rather than fabricating one
+/// or throwing an object-name error.
 /// </remarks>
 internal sealed class MembershipStore
 {
     /// <summary>The ASP.NET membership application that owns DotNetNuke's accounts.</summary>
-    /// <remarks>MIGRATION: <c>applicationName="DotNetNuke"</c>, <c>Website/release.config</c> line 246.</remarks>
     private const string MembershipApplicationName = "DotNetNuke";
 
     /// <summary>The stored <c>PasswordFormat</c> discriminator for a one-way hash.</summary>
     /// <remarks>
     /// Matches <see cref="Domain.Enums.PasswordFormat.Hashed"/>. The legacy store wrote <c>2</c>
-    /// (<c>Encrypted</c>), so this value additionally marks a row whose credential has been migrated to
-    /// a one-way hash and distinguishes it from one that has not.
+    /// (<c>Encrypted</c>), so this value additionally marks a row whose credential has been migrated to a
+    /// one-way hash and distinguishes it from one that has not.
     /// </remarks>
     private const int HashedPasswordFormat = 1;
 
     /// <summary>The number of user names bound into a single batched read.</summary>
-    /// <remarks>
-    /// SQL Server accepts at most 2,100 parameters in one command, and an unpaged listing can exceed
-    /// that, so batched reads are chunked well below the limit rather than assuming a page is small.
-    /// </remarks>
     private const int UserNameBatchSize = 500;
 
-    /// <summary>
-    /// The instant the ASP.NET membership schema uses to mean "never".
-    /// </summary>
+    /// <summary>The instant the ASP.NET membership schema uses to mean "never".</summary>
     /// <remarks>
-    /// MIGRATION: the legacy procedures write <c>CONVERT(datetime, '17540101', 112)</c> - see the
-    /// correct-password branch of <c>aspnet_Membership_UpdateUserInfo</c> in the 04.00.00 script. The
-    /// columns are <c>NOT NULL</c>, so the sentinel is how the schema expresses absence. It is
-    /// translated to <see langword="null"/> on the way out and written back on the way in, so the
-    /// domain never sees a fabricated 1754 date and the store never sees a null it cannot hold.
+    /// The legacy procedures write <c>CONVERT(datetime, '17540101', 112)</c> - see the correct-password
+    /// branch of <c>aspnet_Membership_UpdateUserInfo</c> in the 04.00.00 script. The columns are <c>NOT
+    /// NULL</c>, so the sentinel is how the schema expresses absence.
     /// </remarks>
     private static readonly DateTime NeverRecorded = new(1754, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
 
@@ -142,12 +100,6 @@ internal sealed class MembershipStore
     /// <summary>Determines whether the external membership store can be reached.</summary>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when both membership tables are present on a SQL Server connection.</returns>
-    /// <remarks>
-    /// The answer is cached for the lifetime of this instance, which is the lifetime of the scoped
-    /// context, so one request costs at most one probe. A non-SQL-Server provider is reported as
-    /// unavailable without probing at all, because the statements this type issues are Transact-SQL and
-    /// the objects they name are not part of the model any other provider would have created.
-    /// </remarks>
     public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
     {
         if (_available.HasValue)
@@ -181,24 +133,16 @@ SELECT CASE
     }
 
     /// <summary>
-    /// Returns the <c>dbo.Users</c> query root restricted to accounts whose credential record carries
-    /// the requested approval state.
+    /// Returns the <c>dbo.Users</c> query root restricted to accounts whose credential record carries the
+    /// requested approval state.
     /// </summary>
     /// <param name="isApproved">The approval state to select.</param>
     /// <returns>A composable query root over <see cref="Domain.Entities.User"/>.</returns>
     /// <remarks>
-    /// The approval flag lives in the external store, so it cannot be expressed in the mapped model - but
-    /// it still has to be applied by the database <em>before</em> paging, because a page that is filtered
-    /// after it has been read is not a page of the filtered set. This member therefore hands back a
-    /// query root built with <c>FromSqlInterpolated</c>: every subsequent filter, ordering and
-    /// skip-and-take composes onto it as a subquery, so one statement reaches the store and no unbounded
-    /// list of identifiers is ever materialised.
-    /// <para>
     /// The approval state and the application name cross as bound parameters, not as text. Callers must
     /// establish <see cref="IsAvailableAsync"/> first: the statement names objects that a greenfield
     /// database and every non-SQL-Server provider lack, and issuing it against either would raise an
     /// object-name error rather than return an empty set.
-    /// </para>
     /// </remarks>
     public IQueryable<Domain.Entities.User> ApprovedUsers(bool isApproved)
     {
@@ -236,13 +180,8 @@ WHERE EXISTS (
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// A case-insensitive map from user name to snapshot, containing only the names the store holds a
-    /// record for. An empty map is returned when the store is unavailable.
+    /// record for.
     /// </returns>
-    /// <remarks>
-    /// This member exists so that populating a page of accounts costs a bounded number of reads rather
-    /// than one read per row, which is what the legacy administration grid achieved by joining the two
-    /// stores in a single result set.
-    /// </remarks>
     public async Task<IReadOnlyDictionary<string, MembershipAccountSnapshot>> GetAccountSnapshotsAsync(
         IReadOnlyCollection<string> userNames,
         CancellationToken cancellationToken = default)
@@ -323,17 +262,9 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when a credential record was created.</returns>
     /// <remarks>
-    /// The application row and the membership user row are created on demand, reproducing what
-    /// <c>aspnet_Membership_CreateUser</c> did through <c>aspnet_Applications_CreateApplication</c>. The
-    /// whole sequence is one command so that it cannot half-succeed, and the closing projection reports
-    /// whether a credential record now exists rather than inferring it from an affected-row count that
-    /// would also count the application and user rows.
-    /// <para>
-    /// <c>PasswordSalt</c> is written empty because BCrypt embeds its salt inside the hash, and the
-    /// column is <c>NOT NULL</c> so it cannot simply be omitted. The membership <c>Email</c> columns are
-    /// left null: this member takes no address, and <c>dbo.Users.Email</c> is authoritative in the
-    /// target. That divergence is recorded in <c>MIGRATION_NOTES.md</c>.
-    /// </para>
+    /// <c>PasswordSalt</c> is written empty because BCrypt embeds its salt inside the hash, and the column
+    /// is <c>NOT NULL</c> so it cannot simply be omitted. The membership <c>Email</c> columns are left
+    /// null: this member takes no address, and <c>dbo.Users.Email</c> is authoritative in the target.
     /// </remarks>
     public async Task<bool> CreateAsync(
         string userName,
@@ -418,54 +349,28 @@ SELECT @created;";
             && Convert.ToInt32(created, System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
-    /// <summary>Replaces the stored password hash of an account, only while it is still the one the caller read.</summary>
+    /// <summary>
+    /// Replaces the stored password hash of an account, only while it is still the one the caller read.
+    /// </summary>
     /// <param name="userName">The DotNetNuke user name.</param>
     /// <param name="passwordHash">The new one-way hash.</param>
     /// <param name="expectedPasswordValue">
-    /// The stored representation the caller read and decided against, or <see langword="null"/> when it read
-    /// no stored value at all.
+    /// The stored representation the caller read and decided against, or <see langword="null"/> when it
+    /// read no stored value at all.
     /// </param>
     /// <param name="utcNow">The change instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
-    /// <see cref="CredentialWriteOutcome.Replaced"/> when the credential was replaced,
-    /// <see cref="CredentialWriteOutcome.Superseded"/> when it had already changed,
-    /// <see cref="CredentialWriteOutcome.NoRecord"/> when the account holds no credential record, and
-    /// <see cref="CredentialWriteOutcome.StoreUnavailable"/> when the store could not be reached.
+    /// <see cref="CredentialWriteOutcome.Replaced"/> when the credential was replaced, <see
+    /// cref="CredentialWriteOutcome.Superseded"/> when it had already changed, <see
+    /// cref="CredentialWriteOutcome.NoRecord"/> when the account holds no credential record, and <see
+    /// cref="CredentialWriteOutcome.StoreUnavailable"/> when the store could not be reached.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// The format discriminator is rewritten alongside the hash, so a row migrated from the legacy
-    /// reversible store stops claiming to be encrypted the moment its credential becomes one-way.
-    /// </para>
-    /// <para>
     /// ⚠ THE EXPECTATION IS PART OF THE STATEMENT, WHICH IS WHAT MAKES THIS SAFE ACROSS REPLICAS. The
-    /// predicate is evaluated by the database in the same statement that performs the update, so two callers
-    /// that read the same representation cannot both write: the second finds the row no longer matching and
-    /// affects nothing. No application lock could give that guarantee, because two API instances share no
-    /// lock - they share one row. <see cref="CredentialWriteOutcome"/> records the races this closes.
-    /// </para>
-    /// <para>
-    /// THE COMPARISON IS FORCED TO A BINARY COLLATION. A database whose collation is case- or
-    /// accent-insensitive would otherwise judge two different stored representations equal, and the whole
-    /// value of the expectation is that it is exact. <c>Latin1_General_BIN2</c> is present on every SQL Server
-    /// instance and is applied to the column side of the comparison, which is enough to fix the comparison's
-    /// collation. It is not a sargability concern: the row has already been located by the two joins and the
-    /// application and user predicates, so this clause filters one row.
-    /// </para>
-    /// <para>
-    /// A NULL EXPECTATION IS COMPARED AS ABSENCE, not skipped. An account whose stored value is null is a
-    /// real state - the membership row exists and holds no credential - so a caller that read null is
-    /// entitled to write only while that is still true. Expressing it as an <c>IS NULL</c> pair rather than
-    /// with equality is required because SQL equality against null is unknown, and an unknown predicate
-    /// would silently affect nothing and be reported as a supersession.
-    /// </para>
-    /// <para>
-    /// THE FAILURE PATH COSTS ONE EXTRA READ, and it buys the only answer worth giving. Zero affected rows
-    /// means either that the expectation no longer held or that there was no row at all, and those demand
-    /// opposite handling from every caller - a conflict to report versus an account to repair. The read
-    /// happens only when the write did not, so the successful path is a single statement.
-    /// </para>
+    /// predicate is evaluated by the database in the same statement that performs the update, so two
+    /// callers that read the same representation cannot both write: the second finds the row no longer
+    /// matching and affects nothing.
     /// </remarks>
     public async Task<CredentialWriteOutcome> SetPasswordHashAsync(
         string userName,
@@ -520,9 +425,9 @@ WHERE aa.[LoweredApplicationName] = @app
     /// <returns><see langword="true"/> when a membership credential row exists for the account.</returns>
     /// <remarks>
     /// Reads NOTHING about the credential - not the representation, not the format, not the salt - because
-    /// the only question it answers is whether a row is there. Its one caller is the replacement above, which
-    /// needs to tell a refused expectation from an absent record without widening the surface through which
-    /// credential material can be read.
+    /// the only question it answers is whether a row is there. Its one caller is the replacement above,
+    /// which needs to tell a refused expectation from an absent record without widening the surface through
+    /// which credential material can be read.
     /// </remarks>
     private async Task<bool> CredentialRecordExistsAsync(
         string userName,
@@ -550,25 +455,15 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="utcNow">The sign-in instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
-    /// <see cref="MembershipWriteOutcome.Recorded"/> when a credential record was updated,
-    /// <see cref="MembershipWriteOutcome.NoRecord"/> when no record matched, and
-    /// <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or not reachable.
+    /// <see cref="MembershipWriteOutcome.Recorded"/> when a credential record was updated, <see
+    /// cref="MembershipWriteOutcome.NoRecord"/> when no record matched, and <see
+    /// cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or not reachable.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces the correct-password branch of <c>aspnet_Membership_UpdateUserInfo</c>
-    /// together with its <c>@UpdateLastLoginActivityDate = 1</c> path. The counter reset is expressed as
-    /// a conditional rather than applied unconditionally, because the legacy procedure guarded it with
-    /// <c>IF (FailedPasswordAttemptCount &gt; 0 OR FailedPasswordAnswerAttemptCount &gt; 0)</c>:
-    /// resetting unconditionally would additionally erase a genuine <c>LastLockoutDate</c> on an account
-    /// whose counters were already zero, which the legacy code left alone.
-    /// </para>
-    /// <para>
     /// The three outcomes are reported separately because an absent store and an absent record are not the
     /// same fact and must not be answered with one value: the first means the counter reset never ran, the
     /// second means there was nothing to reset. A boolean forced them together, and a caller could then not
     /// tell a working control from a broken one.
-    /// </para>
     /// </remarks>
     public async Task<MembershipWriteOutcome> RecordSuccessfulLoginAsync(
         string userName,
@@ -624,25 +519,16 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// <see cref="MembershipWriteOutcome.RecordedAndLocked"/> when the account is locked out after this
-    /// failure, <see cref="MembershipWriteOutcome.Recorded"/> when the failure was counted and the account is
-    /// not locked, <see cref="MembershipWriteOutcome.NoRecord"/> when the account holds no credential record,
-    /// and <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or not
-    /// reachable - in which case THE FAILURE WAS NOT COUNTED AT ALL.
+    /// failure, <see cref="MembershipWriteOutcome.Recorded"/> when the failure was counted and the account
+    /// is not locked, <see cref="MembershipWriteOutcome.NoRecord"/> when the account holds no credential
+    /// record, and <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store is not installed or
+    /// not reachable - in which case THE FAILURE WAS NOT COUNTED AT ALL.
     /// </returns>
     /// <remarks>
-    /// MIGRATION: reproduces the incorrect-password branch of
-    /// <c>aspnet_Membership_UpdateUserInfo</c> as added by the 04.00.00 script, including two details
-    /// that look accidental but are measured behaviour and are preserved deliberately. First, an account
-    /// that is already locked receives no further bookkeeping at all - the legacy code jumps straight to
-    /// its cleanup label - which is why the update excludes locked rows. Second, the window start is
-    /// moved to the current instant on <em>every</em> failure, not only when the previous window had
-    /// expired, which makes the window a rolling one rather than a fixed one.
-    /// <para>
     /// The new lock-out state is read back through the update's <c>OUTPUT</c> clause so that the decision
     /// and the report are one atomic statement; a separate read afterwards could observe a concurrent
-    /// change. The follow-up read runs only when nothing was updated, which distinguishes an account
-    /// that was already locked - and is therefore still locked out - from one that does not exist.
-    /// </para>
+    /// change. The follow-up read runs only when nothing was updated, which distinguishes an account that
+    /// was already locked - and is therefore still locked out - from one that does not exist.
     /// </remarks>
     public async Task<MembershipWriteOutcome> RecordFailedLoginAsync(
         string userName,
@@ -654,9 +540,7 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
         ArgumentNullException.ThrowIfNull(userName);
 
         // The one outcome that is NOT about the account: the counter that produces a lock-out could not be
-        // incremented, so this attempt is unrecorded and the control did not run. Reporting it as "counted but
-        // not yet locked" - which the previous boolean did - is what let an attacker guess without limit
-        // against an unreachable store while every response looked ordinary.
+        // incremented, so this attempt is unrecorded and the control did not run.
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
             return MembershipWriteOutcome.StoreUnavailable;
@@ -718,15 +602,9 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
 
         if (existing is null)
         {
-            // No row at all, so there was nothing to count against. Distinct from an unreachable store: the
-            // control ran and found nothing, which on a sign-in path means the record was removed between the
-            // read that found it and this write.
             return MembershipWriteOutcome.NoRecord;
         }
 
-        // A row exists but the update matched nothing, which the WHERE clause makes conclusive: the only rows
-        // it excludes are already-locked ones. An account that was already locked is reported as locked, so a
-        // caller cannot distinguish it from one this attempt locked.
         return Convert.ToInt32(existing, System.Globalization.CultureInfo.InvariantCulture) == 1
             ? MembershipWriteOutcome.RecordedAndLocked
             : MembershipWriteOutcome.Recorded;
@@ -801,41 +679,14 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns><see langword="true"/> when a credential record was deleted.</returns>
     /// <remarks>
-    /// <para>
     /// REPRODUCES THE STOCK DELETION ORDER, AND THE ORDER IS THE WHOLE POINT. The membership user row is
     /// referenced by four other tables through NON-CASCADING foreign keys, so removing it first - or
-    /// removing only it and the credential row - is refused by the store for any account that has ever
-    /// held a membership role, stored a profile or personalised a page. <c>aspnet_Users_DeleteUser</c>
+    /// removing only it and the credential row - is refused by the store for any account that has ever held
+    /// a membership role, stored a profile or personalised a page. <c>aspnet_Users_DeleteUser</c>
     /// (<c>Website/Providers/DataProviders/SqlDataProvider/InstallCommon.sql</c> lines 421-541, ALTERed at
     /// <c>04.00.00.SqlDataProvider</c> lines 475-595) clears the dependants first and in a fixed sequence:
     /// the credential row, then the role memberships, then the profile, then the personalisation, and only
-    /// then the user row. The same sequence is issued here.
-    /// </para>
-    /// <para>
-    /// EACH DEPENDANT IS GUARDED BY AN EXISTENCE TEST, as the stock procedure guarded each of its blocks -
-    /// it tested for the corresponding view, this tests for the table itself, which is the more direct
-    /// question and is also answerable on an installation whose views were never created. A deployment that
-    /// registered only the membership feature therefore deletes cleanly instead of failing on a table it
-    /// never installed. The credential row and the user row carry no such guard: without them there is no
-    /// credential store to speak of, and <see cref="IsAvailableAsync"/> has already established that both
-    /// are present.
-    /// </para>
-    /// <para>
-    /// THE WHOLE SEQUENCE IS ONE TRANSACTION, and it joins an ambient one rather than nesting inside it.
-    /// A batch that removed a dependant and then failed would leave an account with its role memberships
-    /// gone and its credential intact - the half-cleaned state a later account reusing the identifier
-    /// inherits. The stock procedure opened a transaction only when it was not already inside one
-    /// (<c>IF @@TRANCOUNT = 0</c>) and this does the same, so the account-deletion cascade's own scope
-    /// remains the durability boundary and this batch simply enlists in it. The error handler rolls back
-    /// only a transaction this batch itself opened, and always re-raises, so an enclosing caller decides
-    /// the fate of its own scope.
-    /// </para>
-    /// <para>
-    /// The application row is left in place, because it is installation-wide and every other account
-    /// depends on it. The reported result remains "a credential record was deleted", taken from the
-    /// credential row's own affected count rather than from the dependants: an account with no profile has
-    /// still had its credential removed.
-    /// </para>
+    /// then the user row.
     /// </remarks>
     public async Task<bool> DeleteAsync(string userName, CancellationToken cancellationToken = default)
     {
@@ -908,10 +759,6 @@ SELECT @deleted;";
     /// <param name="snapshots">The map to populate.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task that completes when the batch has been read.</returns>
-    /// <remarks>
-    /// The <c>IN</c> list is built from generated parameter <em>names</em> only; every user name crosses
-    /// as a bound parameter value, so no caller-supplied text ever reaches the command text.
-    /// </remarks>
     private async Task ReadAccountBatchAsync(
         List<string> batch,
         Dictionary<string, MembershipAccountSnapshot> snapshots,
@@ -1001,10 +848,10 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] IN ("
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The operation's result.</returns>
     /// <remarks>
-    /// The context's connection is borrowed rather than a new one opened, so these statements observe
-    /// the same session - and, critically, enlist in the same transaction - as everything the unit of
-    /// work has staged. The connection is closed again only when this call is what opened it, so a
-    /// caller that had deliberately kept it open is left undisturbed.
+    /// The context's connection is borrowed rather than a new one opened, so these statements observe the
+    /// same session - and, critically, enlist in the same transaction - as everything the unit of work has
+    /// staged. The connection is closed again only when this call is what opened it, so a caller that had
+    /// deliberately kept it open is left undisturbed.
     /// </remarks>
     private async Task<TResult> ExecuteAsync<TResult>(
         string sql,

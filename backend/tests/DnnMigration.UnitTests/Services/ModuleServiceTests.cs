@@ -27,16 +27,7 @@ namespace DnnMigration.UnitTests.Services;
 /// <para>
 /// A module and its placement are two separate rows, and almost every operation here has to decide which
 /// placement it is acting on before it can act at all. When the caller names one, it must belong to the
-/// module; when the caller names none, the lowest-numbered placement is chosen. The two cases are asserted
-/// separately for every member that resolves a placement, because the consequence of getting it wrong is
-/// silently editing the appearance of a module on a page the caller was not looking at.
-/// </para>
-/// <para>
-/// Three operations deliberately reach beyond the row the caller addressed: asking for a module to appear on
-/// every page, withdrawing it from every page, and copying one placement's appearance onto every other. Each
-/// reports what it did through an advisory carried on a successful result rather than through the status
-/// alone, and the assertions below check the advisory text as well as the writes, because the advisory is
-/// the only signal an operator has that a single edit changed several pages.
+/// module; when the caller names none, the lowest-numbered placement is chosen.
 /// </para>
 /// <para>
 /// The settings reconciliation is a full replacement rather than a merge: a name the caller omitted is
@@ -82,11 +73,6 @@ public class ModuleServiceTests
 
     private const string PackageName = "DNN_HTML";
 
-    // MIGRATION: the type attribute of a portability document carries the module name with the legacy
-    //            CleanName set removed - ". ~`!@#$%^&*()-_+={[}]|\:;<,>?/" plus both quotation marks,
-    //            measured from Website/admin/Modules/Export.ascx.vb L204-L218. PackageName contains an
-    //            underscore and FriendlyName a solidus, both members of that set, so the two cleaned
-    //            forms differ visibly from the raw names and a regression is immediately legible.
     private const string CleanedPackageName = "DNNHTML";
 
     private const string CleanedFriendlyName = "TextHTML";
@@ -97,19 +83,6 @@ public class ModuleServiceTests
     /// The opening tag of an importable document, up to but not including the closing angle bracket, so a
     /// version attribute can be appended before the element is closed.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L196-L197 read the document's <c>type</c>
-    /// attribute and refused the import unless it named the module's own sanitised name or its sanitised
-    /// friendly name, with "The import file specified is not the correct type for this module". A document
-    /// carrying no type attribute was therefore never importable, so every fact below that expects an import
-    /// to SUCCEED composes its document from this prefix. The refusal itself is asserted on its own, by the
-    /// facts that exist for it, rather than incidentally by facts about something else.
-    /// <para>
-    /// Declared as a <c>const</c> rather than as a helper method because several of these documents are
-    /// <c>[InlineData]</c> arguments, which must be compile-time constants. Const string concatenation is
-    /// evaluated by the compiler, so the composed literal is still a constant.
-    /// </para>
-    /// </remarks>
     private const string TypedDocumentPrefix = "<content type=\"" + PackageName + "\"";
 
     private const string SiteSettingsDefinitionName = "Site Settings";
@@ -136,9 +109,7 @@ public class ModuleServiceTests
 
     private const string ContentInvalidCode = "module.content_invalid";
 
-    /// <summary>
-    /// The refusal a payload the module cannot represent as XML content produces at export.
-    /// </summary>
+    /// <summary>The refusal a payload the module cannot represent as XML content produces at export.</summary>
     private const string ExportFailedCode = "module.export_failed";
 
     private const string WideEffectCode = "module.update.wide_effect";
@@ -149,13 +120,11 @@ public class ModuleServiceTests
     /// </summary>
     private const string ModuleUpdatedEventName = "MODULE_UPDATED";
 
-    /// <summary>
-    /// The stable audit event name a module EXPORT carries.
-    /// </summary>
+    /// <summary>The stable audit event name a module EXPORT carries.</summary>
     /// <remarks>
     /// Net-new, because the legacy export page wrote no audit record at all. It is distinct from the update
-    /// name because an export changes nothing, and recording a read as a change states something untrue in a
-    /// trail whose whole value is that it is believed.
+    /// name because an export changes nothing, and recording a read as a change states something untrue in
+    /// a trail whose whole value is that it is believed.
     /// </remarks>
     private const string ModuleExportedEventName = "MODULE_EXPORTED";
 
@@ -178,9 +147,9 @@ public class ModuleServiceTests
     private const string ModuleRestoredEventName = "MODULE_RESTORED";
 
     /// <summary>
-    /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the module
-    /// whose content is being replaced. The token <c>forbidden</c> is what makes the shared status translator
-    /// answer <c>403</c> rather than <c>400</c>, so the spelling is part of the contract.
+    /// Reported when the caller holds no edit grant on the page a module is being placed on, or on the
+    /// module whose content is being replaced. The token <c>forbidden</c> is what makes the shared status
+    /// translator answer <c>403</c> rather than <c>400</c>, so the spelling is part of the contract.
     /// </summary>
     private const string EditForbiddenCode = "module.edit_forbidden";
 
@@ -193,29 +162,15 @@ public class ModuleServiceTests
     /// <summary>
     /// Reported when the tenant the caller's credential was minted for is not the tenant the request acts
     /// on. A code of its own because the caller may hold every grant the operation needs - in a different
-    /// tenant - so neither of the two refusals above describes it. The <c>forbidden</c> token is what makes
-    /// the shared status translator answer 403; spelled <c>tenant_mismatch</c> the same refusal would reach
-    /// the caller as a 400, which is why the spelling is asserted here rather than only the behaviour.
+    /// tenant - so neither of the two refusals above describes it.
     /// </summary>
     private const string TenantForbiddenCode = "module.tenant_forbidden";
 
-    /// <summary>
-    /// The module contract exposes exactly these twelve asynchronous operations and nothing else.
-    /// </summary>
+    /// <summary>The module contract exposes exactly these twelve asynchronous operations and nothing else.</summary>
     /// <remarks>
-    /// <para>
     /// The inventory is named rather than merely counted. A count alone fails just as loudly when a member
     /// is added correctly as when one is added by mistake, and it tells the reader neither which member
-    /// arrived nor which one it displaced - so the first thing anyone did with the failure was go and
-    /// look. Naming them makes the diff itself the explanation.
-    /// </para>
-    /// <para>
-    /// The two catalogue reads at the end of the list are deliberate additions: the legacy
-    /// <c>DesktopModuleController</c> and <c>ModuleDefinitionController</c> answered a definition by its
-    /// own identifier and by the package that declares it, and neither question had an expression on this
-    /// contract before. If this assertion fails, the correct response is to update the list to match the
-    /// contract - never to relax the assertion.
-    /// </para>
+    /// arrived nor which one it displaced - so the first thing anyone did with the failure was go and look.
     /// </remarks>
     [Fact]
     public void ModuleContract_OffersExactlyTwelveOperations()
@@ -247,9 +202,7 @@ public class ModuleServiceTests
         }
     }
 
-    /// <summary>
-    /// The service refuses to be constructed without every collaborator it depends on.
-    /// </summary>
+    /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -311,9 +264,7 @@ public class ModuleServiceTests
         });
     }
 
-    /// <summary>
-    /// Listing modules requires a paging request.
-    /// </summary>
+    /// <summary>Listing modules requires a paging request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_RequiresARequest()
@@ -324,9 +275,7 @@ public class ModuleServiceTests
             () => harness.Service.ListModulesAsync(PortalId, null!, null, false, CancellationToken.None));
     }
 
-    /// <summary>
-    /// A malformed paging request is refused with its own measured wording.
-    /// </summary>
+    /// <summary>A malformed paging request is refused with its own measured wording.</summary>
     /// <param name="violation">The single field to spoil.</param>
     /// <param name="expectedMessage">The message the service is measured to report.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -363,27 +312,12 @@ public class ModuleServiceTests
         outcome.Reason!.Message.Should().Be(expectedMessage);
     }
 
-    /// <summary>
-    /// An ordering this listing cannot honour is refused before any read is spent.
-    /// </summary>
+    /// <summary>An ordering this listing cannot honour is refused before any read is spent.</summary>
     /// <param name="field">A field name a caller might reach for.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The shared request validator applies the union of every collection's sortable set, so each of
-    /// these names passes it and would reach this listing. Silently discarding it is the defect being
-    /// closed. Each name below is unhonourable HERE for a measured reason: a placement position belongs to
-    /// the pane rather than to the module and carries the append sentinel, a derived display title does
-    /// not exist until after the ordering has run, and the remainder belong to other collections. The read
-    /// is asserted never to happen, because a refusal issued after the read would still have spent the
-    /// query.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this listing is NOT orderless, and an earlier revision of this fact said it was. The
-    /// ordering is applied to the modules before the page window is taken, so it orders the collection
-    /// rather than one arbitrary page; the companion fact below asserts the accepted half, so the admitted
-    /// set and the ordering arms cannot drift apart in either direction.
-    /// </para>
+    /// The shared request validator applies the union of every collection's sortable set, so each of these
+    /// names passes it and would reach this listing. Silently discarding it is the defect being closed.
     /// </remarks>
     [Theory]
     [InlineData("ModuleOrder")]
@@ -457,8 +391,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A request that names no ordering is answered normally, so the refusal above is scoped to an
-    /// explicit preference and does not make the listing unusable.
+    /// A request that names no ordering is answered normally, so the refusal above is scoped to an explicit
+    /// preference and does not make the listing unusable.
     /// </summary>
     /// <param name="sortBy">The absent-or-blank sort field to submit.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -501,9 +435,7 @@ public class ModuleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Listing modules of a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Listing modules of a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_RefusesAnUnknownTenant()
@@ -525,11 +457,9 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This is the fact that pins the fix for the listing's cost. Every argument is checked because each one
-    /// that failed to travel would be silently applied by nobody: a tenant read plus in-process narrowing
-    /// produced the same rows for a small tenant, which is exactly why the old shape survived. The two
-    /// negative assertions are the substance - neither the tenant's whole module set nor the addressed
-    /// page's whole placement set is read, so the work is bounded by the page rather than by the tenant.
+    /// This is the fact that pins the fix for the listing's cost. Every argument is checked because each
+    /// one that failed to travel would be silently applied by nobody: a tenant read plus in-process
+    /// narrowing produced the same rows for a small tenant, which is exactly why the old shape survived.
     /// </remarks>
     [Fact]
     public async Task ListModules_ReadsOnePageFromTheStoreAndNothingTenantWide()
@@ -581,10 +511,6 @@ public class ModuleServiceTests
     /// than as blank text or a magic number, and still reads nothing tenant-wide.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// One canonical representation of "not stated" reaches the store, so the store has one default to
-    /// apply rather than three spellings of nothing to recognise.
-    /// </remarks>
     [Fact]
     public async Task ListModules_PassesTheAbsencesThroughAsAbsences()
     {
@@ -701,9 +627,7 @@ public class ModuleServiceTests
         included.Value.Items.Should().ContainSingle();
     }
 
-    /// <summary>
-    /// No definition catalogue is read for an empty page, because there is nothing to name.
-    /// </summary>
+    /// <summary>No definition catalogue is read for an empty page, because there is nothing to name.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_ReadsNoDefinitionNamesForAnEmptyPage()
@@ -745,9 +669,7 @@ public class ModuleServiceTests
         outcome.Value.Items.Should().OnlyContain(row => row.ModuleId == ModuleId);
     }
 
-    /// <summary>
-    /// A page filter restricts the rows to the placements on that page.
-    /// </summary>
+    /// <summary>A page filter restricts the rows to the placements on that page.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_RestrictsRowsToTheRequestedPage()
@@ -789,9 +711,7 @@ public class ModuleServiceTests
         outcome.Value.Items.Select(row => row.TabModuleId).Should().Equal(new[] { 7, 4, 9 });
     }
 
-    /// <summary>
-    /// The definition's display name comes from the tenant's catalogue.
-    /// </summary>
+    /// <summary>The definition's display name comes from the tenant's catalogue.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModules_NamesTheDefinitionFromTheCatalogue()
@@ -854,19 +774,8 @@ public class ModuleServiceTests
         outcome.Value.TotalCount.Should().Be(2);
     }
 
-    /// <summary>
-    /// A windowed answer counts the ROWS it returns and echoes the width it was asked for.
-    /// </summary>
+    /// <summary>A windowed answer counts the ROWS it returns and echoes the width it was asked for.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The total is computed in the service rather than returned by the store, because the legacy module
-    /// block of the data provider carries no paging member and none was invented on the repository contract.
-    /// Thirty-one live modules, one placement each, a request for the second window of ten: thirty-one rows,
-    /// a total of thirty-one and a width of ten. Every module carrying exactly one placement is what makes
-    /// this fact insensitive to the unit the window is cut in, which is precisely why the sibling fact below
-    /// gives a module two placements - one row per module cannot distinguish the two units, and the defect
-    /// this pair guards against only appears when they differ.
-    /// </remarks>
     [Fact]
     public async Task ListModules_CountsTheRowsItReturnsWhenAWindowWasAsked()
     {
@@ -898,25 +807,6 @@ public class ModuleServiceTests
     /// published metadata is exact in the unit of the rows returned.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: THIS IS THE FACT THAT WOULD HAVE CAUGHT THE PAGING DEFECT, and it is written with numbers
-    /// chosen so that the old behaviour and the new one cannot both satisfy it. Two modules, three placements
-    /// between them, a window one row wide. The window used to be cut over MODULES while the rows emitted
-    /// were PLACEMENTS, so one module entered the window and every one of its placements came out with it -
-    /// two rows for a window of one. The envelope's own guards refuse a row count above the declared width,
-    /// so the metadata was patched with <c>Math.Max</c> to get past them: the width was reported as two
-    /// although one was asked for, and the total was reported as the MODULE count of two although three rows
-    /// existed. Both figures are now exact, and the item count can no longer exceed the width.
-    /// </para>
-    /// <para>
-    /// The consequence for a caller is what makes this a data-contract defect rather than a cosmetic one:
-    /// <c>totalPages</c> is computed from the total and the width, so patching either made the page count
-    /// depend on WHICH page was asked for. A pager built from the envelope could not enumerate the
-    /// collection, and no assertion on a single page would have revealed it - which is why the second window
-    /// is read below and the two are required to agree about the collection while disagreeing about the rows.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListModules_WhenAModuleSitsOnSeveralPages_PublishesExactRowMetadata()
     {
@@ -977,15 +867,14 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Every row of the collection is reachable by walking the windows, with none repeated and none skipped.
+    /// Every row of the collection is reachable by walking the windows, with none repeated and none
+    /// skipped.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The companion of the fact above, and the one that pins the property a pager actually depends on.
     /// Asserting one window proves the arithmetic of that window; walking every window proves the windows
-    /// PARTITION the collection. Under the withdrawn behaviour this could not hold at any width: the offset
-    /// was applied to modules while the rows were placements, so a module with two placements both shifted
-    /// every later row and inflated the window it appeared in.
+    /// PARTITION the collection.
     /// </remarks>
     [Fact]
     public async Task ListModules_WindowsPartitionTheRowsExactly()
@@ -1037,9 +926,7 @@ public class ModuleServiceTests
             "the windows must reproduce the unpaged order exactly, with nothing repeated and nothing lost");
     }
 
-    /// <summary>
-    /// A module that does not exist is reported as absent rather than as a failure.
-    /// </summary>
+    /// <summary>A module that does not exist is reported as absent rather than as a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModule_ReportsAbsenceForAnUnknownModule()
@@ -1054,9 +941,7 @@ public class ModuleServiceTests
         outcome.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// A module belonging to another tenant is indistinguishable from one that does not exist.
-    /// </summary>
+    /// <summary>A module belonging to another tenant is indistinguishable from one that does not exist.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModule_ReportsAbsenceForAModuleOfAnotherTenant()
@@ -1072,7 +957,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The tenant is never probed separately, because the module row already names the tenant it belongs to.
+    /// The tenant is never probed separately, because the module row already names the tenant it belongs
+    /// to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1150,8 +1036,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Placements are read from the store when the loaded row carries none, so the answer does not depend on
-    /// whether the caller's read included them.
+    /// Placements are read from the store when the loaded row carries none, so the answer does not depend
+    /// on whether the caller's read included them.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1170,9 +1056,7 @@ public class ModuleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// The detail projection names the definition and carries both the module and placement facts.
-    /// </summary>
+    /// <summary>The detail projection names the definition and carries both the module and placement facts.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModule_NamesTheDefinition()
@@ -1193,9 +1077,7 @@ public class ModuleServiceTests
             + "the settings projection that owns the placement scope");
     }
 
-    /// <summary>
-    /// Creating a module requires a request.
-    /// </summary>
+    /// <summary>Creating a module requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_RequiresARequest()
@@ -1209,20 +1091,6 @@ public class ModuleServiceTests
     /// <summary>
     /// A schedule that ends before it starts is ACCEPTED, and both bounds are carried through unaltered.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: this asserted a refusal until the refusal was measured against the screen it claimed to
-    /// preserve and found to have no counterpart there.
-    /// <c>Website/admin/Modules/modulesettings.ascx</c> declares exactly four validators - at L78-L79,
-    /// L88-L89, L137-L138 and L172-L173 - and every one is a <c>CompareValidator</c> with
-    /// <c>Operator="DataTypeCheck"</c>, which asserts only that the text parses as its declared type. No
-    /// validator on that page compares one control against another. <c>ModuleSettings.ascx.vb</c> L367-L375
-    /// then parses each bound independently and never compares them either. A window ending before it began
-    /// was therefore stored verbatim by the legacy application, so refusing it here would narrow the
-    /// accepted input set - which AAP Rule T5 and clauses MC3 and MC4 forbid as squarely as widening it.
-    /// The two neighbouring fields whose legacy validators are equally type-only are treated the same way
-    /// and pinned by their own facts: a negative cache period is stored, and a border outside the range its
-    /// own error message advertises is admitted.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_AcceptsAScheduleThatEndsBeforeItStarts()
@@ -1242,9 +1110,7 @@ public class ModuleServiceTests
         outcome.Value.EndDate.Should().Be(request.EndDate);
     }
 
-    /// <summary>
-    /// A schedule with only one bound is accepted, because an open-ended appearance is legitimate.
-    /// </summary>
+    /// <summary>A schedule with only one bound is accepted, because an open-ended appearance is legitimate.</summary>
     /// <param name="hasStart">Whether the request carries a start date.</param>
     /// <param name="hasEnd">Whether the request carries an end date.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -1266,8 +1132,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A definition the tenant's catalogue does not offer is refused, which is how a premium module withheld
-    /// from the tenant is kept out.
+    /// A definition the tenant's catalogue does not offer is refused, which is how a premium module
+    /// withheld from the tenant is kept out.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1326,9 +1192,7 @@ public class ModuleServiceTests
         outcome.Reason!.Message.Should().Be($"Page {TabId} does not belong to portal {PortalId}.");
     }
 
-    /// <summary>
-    /// A page that does not exist is refused with the same reason.
-    /// </summary>
+    /// <summary>A page that does not exist is refused with the same reason.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_RefusesAnUnknownPage()
@@ -1344,14 +1208,12 @@ public class ModuleServiceTests
         harness.AddedModules.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A caller holding no edit grant on the target page is refused, and nothing is written.
-    /// </summary>
+    /// <summary>A caller holding no edit grant on the target page is refused, and nothing is written.</summary>
     /// <remarks>
-    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR CREATION. This member verified only that the page belonged
-    /// to the tenant and never asked whether the caller could edit it, while its own commentary asserted that it
-    /// did - so any authenticated caller could place a module on any page of any tenant. The check cannot live in
-    /// a route-reading policy because the target page arrives in the request BODY.
+    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR CREATION. This member verified only that the page
+    /// belonged to the tenant and never asked whether the caller could edit it, while its own commentary
+    /// asserted that it did - so any authenticated caller could place a module on any page of any tenant.
+    /// The check cannot live in a route-reading policy because the target page arrives in the request BODY.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1374,9 +1236,9 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The grant is asked for against the PAGE THE REQUEST NAMES and for the EDIT key, not against some other
-    /// page or a weaker key. A check that consulted the wrong scope would pass this suite's other facts while
-    /// authorising nothing in particular.
+    /// The grant is asked for against the PAGE THE REQUEST NAMES and for the EDIT key, not against some
+    /// other page or a weaker key. A check that consulted the wrong scope would pass this suite's other
+    /// facts while authorising nothing in particular.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1397,9 +1259,9 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A page that does not exist and a page the caller may not edit are refused for DIFFERENT reasons, and the
-    /// tenant test comes first. That ordering is deliberate: the tenant test is what keeps the permission
-    /// question from being asked about another tenant's page at all.
+    /// A page that does not exist and a page the caller may not edit are refused for DIFFERENT reasons, and
+    /// the tenant test comes first. That ordering is deliberate: the tenant test is what keeps the
+    /// permission question from being asked about another tenant's page at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1425,9 +1287,9 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A permission evaluator that FAILS - rather than answering no - is treated as a refusal. Treating a failed
-    /// evaluation as a grant is the classic fail-open defect, and nothing about a failed read tells this member
-    /// that the caller was entitled.
+    /// A permission evaluator that FAILS - rather than answering no - is treated as a refusal. Treating a
+    /// failed evaluation as a grant is the classic fail-open defect, and nothing about a failed read tells
+    /// this member that the caller was entitled.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1451,9 +1313,7 @@ public class ModuleServiceTests
         harness.AddedModules.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// The submitted shape reaches both rows, with the tenant taken from the route.
-    /// </summary>
+    /// <summary>The submitted shape reaches both rows, with the tenant taken from the route.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_StoresTheSubmittedShape()
@@ -1522,16 +1382,6 @@ public class ModuleServiceTests
     /// screen stored whatever parsed and nothing in the schema forbids it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this test previously asserted the opposite, and the assertion was the defect rather than
-    /// the record of a decision. <c>valCacheTime</c> (<c>modulesettings.ascx</c> L172) declared
-    /// <c>Operator="DataTypeCheck" Type="Integer"</c> and nothing further, and the code-behind stored the
-    /// parsed value with no comparison (<c>ModuleSettings.ascx.vb</c> L349-L350), so a negative period was
-    /// an accepted legacy submission. The column is a plain <c>int NOT NULL</c> with no check constraint
-    /// anywhere in the eighty-eight-script chain. Clamping accepted the caller's value and then silently
-    /// rewrote it, so the record read back was not the record submitted - which is a worse outcome than
-    /// either storing it or refusing it, because the caller cannot detect a substitution.
-    /// </remarks>
     [Fact]
     public async Task CreateModule_StoresANegativeCacheTimeVerbatim()
     {
@@ -1564,9 +1414,7 @@ public class ModuleServiceTests
             + "the content pane every shipped skin declares");
     }
 
-    /// <summary>
-    /// A module that was not asked to appear everywhere is placed on the requested page only.
-    /// </summary>
+    /// <summary>A module that was not asked to appear everywhere is placed on the requested page only.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_PlacesOnOneRequestedPageOnly()
@@ -1586,22 +1434,8 @@ public class ModuleServiceTests
     /// account itself holds there.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// THE REGRESSION TEST FOR THE BODY-SCOPED AUTHORISATION EXCEPTION. Every other module mutation names
-    /// its module in the route, so a named policy reconciles three tenant identities before the action runs:
-    /// the tenant the token was minted for, the tenant the request arrived through, and the tenant the
-    /// operation targets. Creation names its target page in the BODY, carries no such policy, and used to
-    /// fall back to the bare authenticated-user requirement plus the grant reads - which cannot supply the
-    /// missing identity, because they ask what authority the ACCOUNT holds and an installation-wide account
-    /// holds authority in several portals at once.
-    /// </para>
-    /// <para>
     /// The caller here is deliberately given EVERYTHING except a matching credential: the edit grant on the
-    /// target page and administration of the portal both answer yes. That is what makes the refusal
-    /// attributable to the credential's tenant rather than to a missing grant, and it is the exact shape of
-    /// the reported defect - one account belonging to two portals, presenting the second portal's token
-    /// against the first portal's host name and page.
-    /// </para>
+    /// target page and administration of the portal both answer yes.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1658,9 +1492,10 @@ public class ModuleServiceTests
     /// portal claim that could ever equal one.
     /// </summary>
     /// <remarks>
-    /// The exemption is read from STORED state rather than from the credential's own super-user claim, so an
-    /// account demoted since sign-in loses it on its next request. The credential here names another tenant
-    /// AND the account is reported as a host account, which is the combination the exemption exists for.
+    /// The exemption is read from STORED state rather than from the credential's own super-user claim, so
+    /// an account demoted since sign-in loses it on its next request. The credential here names another
+    /// tenant AND the account is reported as a host account, which is the combination the exemption exists
+    /// for.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1697,8 +1532,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// An unanswerable host-account question is a refusal rather than an admission, when the credential names
-    /// another tenant.
+    /// An unanswerable host-account question is a refusal rather than an admission, when the credential
+    /// names another tenant.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1722,22 +1557,14 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Placing a module on every page requires administering the portal, and a page editor who asks for it is
-    /// refused with nothing written.
+    /// Placing a module on every page requires administering the portal, and a page editor who asks for it
+    /// is refused with nothing written.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// THE REGRESSION TEST FOR THE ALL-PAGES ESCALATION. The legacy settings screen disabled
     /// <c>chkAllTabs</c> outright for any caller outside the portal administrator role, and the UPDATE path
     /// has gated the four portal-wide fields on that authority since they were grouped; CREATION applied
-    /// none of it. A caller holding the edit grant on ONE page could therefore fan a module out across every
-    /// content page of the tenant, including every page it holds no grant on - the fan-out reads the
-    /// portal's content pages directly and consults no grant for the pages it adds.
-    /// </para>
-    /// <para>
-    /// The edit grant on the addressed page is deliberately left GRANTED, so the refusal is attributable to
-    /// the portal-wide request rather than to the page.
-    /// </para>
+    /// none of it.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1818,17 +1645,8 @@ public class ModuleServiceTests
         stored.TabModules.Select(placement => placement.TabId).Should().NotContain(AdminChildTabId);
     }
 
-    /// <summary>
-    /// The append instruction never reaches a column, on any path that writes one.
-    /// </summary>
+    /// <summary>The append instruction never reaches a column, on any path that writes one.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the fact the defect would have failed, and it is stated over EVERY placement rather than
-    /// over the addressed one because the every-page fan-out built each of its placements from the same
-    /// unresolved request. The harm is specific: stored positions are non-negative, so a persisted -1
-    /// sorts an appended module ahead of every deliberately positioned one - the exact opposite of the
-    /// bottom of the pane the caller asked for.
-    /// </remarks>
     [Fact]
     public async Task CreateModule_NeverStoresTheAppendInstruction()
     {
@@ -1848,15 +1666,8 @@ public class ModuleServiceTests
             .Should().OnlyContain(order => order >= 0);
     }
 
-    /// <summary>
-    /// Appending to a pane that already holds a module steps past the highest position in it.
-    /// </summary>
+    /// <summary>Appending to a pane that already holds a module steps past the highest position in it.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The step of two is measured rather than chosen: the legacy resolver added exactly two
-    /// (<c>ModuleController.vb</c>:L1170) so that an appended position stays on the odd sequence the
-    /// renumbering pass produces, leaving the even numbers free for an insertion between two modules.
-    /// </remarks>
     [Fact]
     public async Task CreateModule_WhenAppendingToAnOccupiedPane_StepsPastTheHighestPosition()
     {
@@ -1872,15 +1683,8 @@ public class ModuleServiceTests
         harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(3);
     }
 
-    /// <summary>
-    /// Appending to an empty pane yields the first position.
-    /// </summary>
+    /// <summary>Appending to an empty pane yields the first position.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// One is the legacy arithmetic rather than a special case: the legacy loop left its variable at the
-    /// incoming -1 when the pane read returned no rows and then added the step, so -1 + 2 = 1. A pane
-    /// therefore never starts at zero, and zero stays available as a position a caller can name.
-    /// </remarks>
     [Fact]
     public async Task CreateModule_WhenAppendingToAnEmptyPane_StoresTheFirstPosition()
     {
@@ -1892,15 +1696,8 @@ public class ModuleServiceTests
         harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(1);
     }
 
-    /// <summary>
-    /// A named position is stored exactly as submitted, including zero.
-    /// </summary>
+    /// <summary>A named position is stored exactly as submitted, including zero.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Zero is the case worth pinning. It is a legitimate position rather than an absent value, and it is
-    /// also what a naive "treat anything without a real value as append" rule would have swallowed, so the
-    /// resolver has to distinguish the one submitted number that means append from every other one.
-    /// </remarks>
     /// <param name="submitted">The position the caller names.</param>
     [Theory]
     [InlineData(0)]
@@ -1916,17 +1713,11 @@ public class ModuleServiceTests
         harness.AddedModules.Single().TabModules.Single().ModuleOrder.Should().Be(submitted);
     }
 
-    /// <summary>
-    /// Appending onto every page appends to each page's own pane rather than reusing one position.
-    /// </summary>
+    /// <summary>Appending onto every page appends to each page's own pane rather than reusing one position.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The legacy resolver was keyed on the page AND the pane
-    /// (<c>GetTabModuleOrder(TabId, PaneName)</c>), so appending to one pane says nothing about where the
-    /// bottom of another page's pane is. The seeded world makes the distinction visible without any
-    /// arrangement: the addressed page already holds a module at the first position and the second page
-    /// holds none, so the two placements must land at different positions. Copying one computed position
-    /// across both pages would make them equal and this fact would fail.
+    /// The legacy resolver was keyed on the page AND the pane (<c>GetTabModuleOrder(TabId, PaneName)</c>),
+    /// so appending to one pane says nothing about where the bottom of another page's pane is.
     /// </remarks>
     [Fact]
     public async Task CreateModule_WhenAppendingEverywhere_AppendsToEachPagesOwnPane()
@@ -1943,9 +1734,7 @@ public class ModuleServiceTests
         placements.Single(placement => placement.TabId == SecondTabId).ModuleOrder.Should().Be(1);
     }
 
-    /// <summary>
-    /// The module and every placement commit together, once.
-    /// </summary>
+    /// <summary>The module and every placement commit together, once.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_CommitsOnceAndDiscardsEveryAffectedPage()
@@ -1960,9 +1749,7 @@ public class ModuleServiceTests
         harness.InvalidatedTabIds.Should().HaveCount(2);
     }
 
-    /// <summary>
-    /// The answer describes the placement on the page the caller named and names the definition.
-    /// </summary>
+    /// <summary>The answer describes the placement on the page the caller named and names the definition.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateModule_NamesTheDefinitionInTheAnswer()
@@ -1976,9 +1763,7 @@ public class ModuleServiceTests
         outcome.Value.TabId.Should().Be(TabId);
     }
 
-    /// <summary>
-    /// Updating a module requires a request.
-    /// </summary>
+    /// <summary>Updating a module requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_RequiresARequest()
@@ -1992,14 +1777,6 @@ public class ModuleServiceTests
     /// <summary>
     /// A schedule that ends before it starts is ACCEPTED on the update path too, and both bounds persist.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the same measurement recorded on the create-path fact governs here, and it must govern both
-    /// or the two paths would disagree about one field of one contract. The legacy screen behind both is the
-    /// same one - <c>Website/admin/Modules/modulesettings.ascx</c> served create and edit alike - and its four
-    /// <c>Operator="DataTypeCheck"</c> validators compare no control against another, while
-    /// <c>ModuleSettings.ascx.vb</c> L367-L375 parses each bound on its own. Refusing the pair would narrow
-    /// the accepted input set, which AAP Rule T5 and clauses MC3 and MC4 forbid.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_AcceptsAScheduleThatEndsBeforeItStarts()
@@ -2018,9 +1795,7 @@ public class ModuleServiceTests
         outcome.Value!.EndDate.Should().Be(request.EndDate);
     }
 
-    /// <summary>
-    /// An unknown module, or one of another tenant, is reported as absent.
-    /// </summary>
+    /// <summary>An unknown module, or one of another tenant, is reported as absent.</summary>
     /// <param name="moduleMissing">Whether the module is missing rather than foreign.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -2050,15 +1825,6 @@ public class ModuleServiceTests
     /// amend.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: THIS USED TO REPORT A BARE ABSENCE and now names the reason. Both answer 404 - the
-    /// <c>not_found</c> token in the code is what the shared status table keys on - so no caller sees a new
-    /// class of failure; what changes is that the document says the module is not placed on the page the
-    /// request named, rather than "the requested resource does not exist", which was indistinguishable from
-    /// the module itself being unknown. The distinction is worth having precisely because the placement is
-    /// now SELECTED by the request: a caller that named the wrong page needs to be told that, and the sibling
-    /// fact below asserts the same answer for a module that is placed, just not there.
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_RefusesWhenTheModuleSitsNowhere()
     {
@@ -2082,23 +1848,11 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: THIS IS THE FACT THAT WOULD HAVE CAUGHT THE DEFECT. <c>UpdateModuleRequest.TabId</c> is
-    /// documented as required and as the key identifying WHICH placement is being updated, and
-    /// <c>ModuleMappings.ApplyUpdate</c> documents that it deliberately does not assign the value because the
-    /// service resolves the placement first - yet the service resolved the placement with the lowest
-    /// identifier and never read the member. For a module on one page the two agree by accident, which is why
-    /// no existing fact revealed it; this one seeds the module on TWO pages and names the SECOND, so the two
-    /// answers differ.
-    /// </para>
-    /// <para>
-    /// The old behaviour was worse than an ignored field. A caller editing the instance on page two saw its
-    /// submission accepted while page one was silently rewritten, and the response described the placement it
-    /// had not addressed - so the response could not be used to detect the substitution either. Both
-    /// placements are inspected below for that reason: the addressed one must carry the change and the other
-    /// must be untouched, because asserting only the first would pass just as happily if BOTH had been
-    /// written.
-    /// </para>
+    /// THIS IS THE FACT THAT WOULD HAVE CAUGHT THE DEFECT. <c>UpdateModuleRequest.TabId</c> is documented
+    /// as required and as the key identifying WHICH placement is being updated, and
+    /// <c>ModuleMappings.ApplyUpdate</c> documents that it deliberately does not assign the value because
+    /// the service resolves the placement first - yet the service resolved the placement with the lowest
+    /// identifier and never read the member.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_AmendsThePlacementOnThePageTheRequestNames()
@@ -2115,8 +1869,8 @@ public class ModuleServiceTests
             "the withdrawn behaviour picked the lowest identifier, so the addressed placement must not be it");
 
         // Seeded so the assertion below distinguishes "unchanged" from "cleared". The stored value starts
-        // null on this fixture, and null is also what a cleared column holds, so a fact comparing against the
-        // initial null would pass even if the write had reached the wrong placement.
+        // null on this fixture, and null is also what a cleared column holds, so a fact comparing against
+        // the initial null would pass even if the write had reached the wrong placement.
         first.IconFile = "first.gif";
 
         UpdateModuleRequest request = ValidUpdateRequest();
@@ -2148,11 +1902,6 @@ public class ModuleServiceTests
     /// elsewhere.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The other half of the selection rule. Falling back to another placement is exactly the behaviour being
-    /// removed, so the fallback's absence is asserted directly: the module has a placement, the request names
-    /// a different page, and nothing is written.
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_RefusesAPageTheModuleIsNotPlacedOn()
     {
@@ -2173,9 +1922,7 @@ public class ModuleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// The submitted shape is applied to both the module row and the placement row.
-    /// </summary>
+    /// <summary>The submitted shape is applied to both the module row and the placement row.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_AppliesTheSubmittedShapeToBothRows()
@@ -2206,9 +1953,9 @@ public class ModuleServiceTests
         module.InheritViewPermissions.Should().BeFalse();
         module.Header.Should().Be("head");
         module.Footer.Should().Be("foot");
-        // MIGRATION: the pane is excluded from UpdateModuleRequest as Web Forms pane-layout state, so the
-        // update must PRESERVE the stored value rather than clear it. Its column is NOT NULL, so clearing it
-        // would fail the write outright.
+        // The pane is excluded from UpdateModuleRequest as Web Forms pane-layout state, so the update must
+        // PRESERVE the stored value rather than clear it. Its column is NOT NULL, so clearing it would fail
+        // the write outright.
         placement.PaneName.Should().Be(storedPane);
         placement.ModuleOrder.Should().Be(8);
         placement.CacheTime.Should().Be(45);
@@ -2217,24 +1964,11 @@ public class ModuleServiceTests
         placement.DisplayTitle.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Naming a page the module is not placed on is REFUSED, and nothing is moved.
-    /// </summary>
+    /// <summary>Naming a page the module is not placed on is REFUSED, and nothing is moved.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: DIVERGENCE, and a deliberate one. The legacy screen offered a page picker whose change
-    /// performed a move - a new placement appended on the destination, its scoped settings copied and the
-    /// source removed. This endpoint does not reproduce that: <c>UpdateModuleRequest.TabId</c> SELECTS the
-    /// placement being edited, so a value naming another page is a caller error rather than an instruction,
-    /// and the request is refused with <c>module.placement_not_found</c>. Moving a placement is a separate
-    /// operation on a separate contract, and inferring it from an edit is what made an earlier revision
-    /// rewrite whichever placement happened to have the lowest identifier.
-    /// </para>
-    /// <para>
-    /// Asserted as a REFUSAL rather than as a no-op, because a silent no-op would leave the caller believing
-    /// the move had happened. Nothing is added, nothing is removed and nothing is committed.
-    /// </para>
+    /// Asserted as a REFUSAL rather than as a no-op, because a silent no-op would leave the caller
+    /// believing the move had happened. Nothing is added, nothing is removed and nothing is committed.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenTheNamedPageHoldsNoPlacement_RefusesWithoutMovingAnything()
@@ -2275,15 +2009,13 @@ public class ModuleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A selected page owned by another tenant is refused before either row is changed.
-    /// </summary>
+    /// <summary>A selected page owned by another tenant is refused before either row is changed.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The refusal is the same one a page of this tenant that holds no placement receives, and deliberately
-    /// so: the selection is resolved by module AND page together, so a page this module is not on and a page
-    /// this portal does not own are the same miss. Answering them identically also keeps the response from
-    /// revealing whether another tenant's page exists.
+    /// so: the selection is resolved by module AND page together, so a page this module is not on and a
+    /// page this portal does not own are the same miss. Answering them identically also keeps the response
+    /// from revealing whether another tenant's page exists.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenTheSelectedPageIsOutsideThePortal_IsRefused()
@@ -2312,18 +2044,9 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A request that omits the cache lifetime stores zero, disabling caching, because this endpoint replaces
-    /// rather than patches and zero is a real value rather than an absent one.
+    /// A request that omits the cache lifetime stores zero, disabling caching, because this endpoint
+    /// replaces rather than patches and zero is a real value rather than an absent one.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: 5.5 - this asserts the LEGACY behaviour, which is the opposite of the intuitive
-    /// expectation. The legacy save read the cache-time box and stored a parsed integer when it was non-empty
-    /// and LITERALLY ZERO when it was empty, so a blank field disabled caching rather than preserving the
-    /// stored lifetime. CacheTime is consequently a non-nullable integer with no "unspecified" state to
-    /// exempt: treating zero as unset would silently enable caching on a module the caller asked not to
-    /// cache. Callers wanting to retain a lifetime must send it, which is the documented consequence of
-    /// full-replacement semantics.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_StoresZeroCacheTimeWhenNoneWasAsked()
@@ -2408,21 +2131,10 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The update contract initialises the position to the append instruction just as the create contract
     /// does, which under full-replacement semantics means an update that says nothing about position MOVES
     /// the module to the bottom of its pane. That is the documented contract; what must not happen is the
     /// instruction being written as though it were a position.
-    /// </para>
-    /// <para>
-    /// The module being moved is the only one in its pane here, so the answer is the first position. That
-    /// is the LEGACY answer and not an accident of ordering: the legacy update wrote the row carrying -1
-    /// and only then called the resolver, whose pane read selected from the placement table and therefore
-    /// included the row it had just written. With nothing else in the pane the greatest position it could
-    /// see was that -1, and -1 + 2 = 1. Resolving before the write reaches the same number by seeding the
-    /// running maximum with the same sentinel, so a module moved to the bottom of a pane it already has to
-    /// itself stays where it is rather than drifting upward by the step on every save.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenAppending_ResolvesAgainstThePlacementsOwnPane()
@@ -2439,15 +2151,12 @@ public class ModuleServiceTests
         harness.PlacementsById[TabModuleId]!.ModuleOrder.Should().Be(1);
     }
 
-    /// <summary>
-    /// An update that appends steps past the other modules sharing the pane.
-    /// </summary>
+    /// <summary>An update that appends steps past the other modules sharing the pane.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This is the case that distinguishes a resolver from a constant. With a neighbour occupying the pane
     /// at a higher position, the bottom of the pane is past that neighbour rather than at the first
-    /// position, and the module moves. An implementation that always answered one - which the single-module
-    /// fact above cannot tell apart from a correct one - fails here.
+    /// position, and the module moves.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenAppendingBelowANeighbour_StepsPastIt()
@@ -2478,17 +2187,13 @@ public class ModuleServiceTests
         harness.PlacementsById[TabModuleId]!.ModuleOrder.Should().Be(neighbourPosition + 2);
     }
 
-    /// <summary>
-    /// An update that both appends and asks for every page appends on each page's own pane.
-    /// </summary>
+    /// <summary>An update that both appends and asks for every page appends on each page's own pane.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This is the path on which the legacy application was itself inconsistent. Its copy-to-another-page
     /// routine passed the append instruction to the insert under the comment "Add a copy of the module to
     /// the bottom of the Pane for the new Tab" and then, unlike the add and update paths, never called the
-    /// resolver - so the instruction stayed in the row. The stated intent is honoured here and the
-    /// omission is not reproduced, which is why the new placement carries the first position of an empty
-    /// pane rather than either the instruction or the addressed page's position.
+    /// resolver - so the instruction stayed in the row.
     /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenAppendingEverywhere_AppendsToEachPagesOwnPane()
@@ -2508,15 +2213,8 @@ public class ModuleServiceTests
             + "position computed for the addressed page, and certainly not the instruction");
     }
 
-    /// <summary>
-    /// An update that names a position copies that position onto every new placement.
-    /// </summary>
+    /// <summary>An update that names a position copies that position onto every new placement.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Stated beside the appending case so the two rules are visible together. When the caller names a
-    /// position there is nothing to resolve and the template's position is what copying a template means,
-    /// so this fact pins that the append handling did not quietly change the named-position behaviour.
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_WhenNamingAPositionEverywhere_CopiesThatPosition()
     {
@@ -2532,9 +2230,7 @@ public class ModuleServiceTests
         harness.AddedPlacements.Should().ContainSingle().Which.ModuleOrder.Should().Be(8);
     }
 
-    /// <summary>
-    /// Withdrawing the every-page instruction removes the other placements and says how many.
-    /// </summary>
+    /// <summary>Withdrawing the every-page instruction removes the other placements and says how many.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_WithdrawsFromOtherPagesWhenAllPagesIsWithdrawn()
@@ -2652,9 +2348,7 @@ public class ModuleServiceTests
         harness.AddedSettings.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// An existing default-module setting is overwritten rather than duplicated.
-    /// </summary>
+    /// <summary>An existing default-module setting is overwritten rather than duplicated.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_OverwritesAnExistingPortalDefaultSetting()
@@ -2749,9 +2443,7 @@ public class ModuleServiceTests
         administrative.IconFile.Should().Be("untouched.gif");
     }
 
-    /// <summary>
-    /// Several wide effects in one request are reported as one advisory listing each of them.
-    /// </summary>
+    /// <summary>Several wide effects in one request are reported as one advisory listing each of them.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_JoinsSeveralWideEffectsIntoOneAdvisory()
@@ -2772,9 +2464,7 @@ public class ModuleServiceTests
             .Be("placed on 1 further page(s); named as the portal default module.");
     }
 
-    /// <summary>
-    /// The change commits once, however many pages it reached.
-    /// </summary>
+    /// <summary>The change commits once, however many pages it reached.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModule_CommitsOnceAndDiscardsEveryAffectedPage()
@@ -2790,9 +2480,7 @@ public class ModuleServiceTests
         harness.InvalidatedTabIds.Should().BeEquivalentTo(new[] { TabId, SecondTabId });
     }
 
-    /// <summary>
-    /// Deleting a module the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Deleting a module the tenant does not have is refused.</summary>
     /// <param name="moduleMissing">Whether the module is missing rather than foreign.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -2819,9 +2507,7 @@ public class ModuleServiceTests
             .Be($"Module {ModuleId} does not exist in portal {PortalId}.");
     }
 
-    /// <summary>
-    /// A named placement belonging to another module is refused with the placement reason.
-    /// </summary>
+    /// <summary>A named placement belonging to another module is refused with the placement reason.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteModule_RefusesAPlacementThatBelongsToAnotherModule()
@@ -2861,9 +2547,7 @@ public class ModuleServiceTests
         harness.InvalidatedTabIds.Should().Equal(new[] { TabId });
     }
 
-    /// <summary>
-    /// Withdrawing a placement removes its settings too.
-    /// </summary>
+    /// <summary>Withdrawing a placement removes its settings too.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteModule_RemovesThePlacementsSettingsToo()
@@ -2881,8 +2565,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Naming no placement marks the module deleted rather than erasing it, which is what allows the recycle
-    /// bin to restore it, and leaves every placement in place.
+    /// Naming no placement marks the module deleted rather than erasing it, which is what allows the
+    /// recycle bin to restore it, and leaves every placement in place.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2906,16 +2590,8 @@ public class ModuleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    /// <summary>
-    /// Recycling a whole module is recorded under the legacy removal event, after it commits.
-    /// </summary>
+    /// <summary>Recycling a whole module is recorded under the legacy removal event, after it commits.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy recycle bin audited a module removal as <c>MODULE_DELETED</c>
-    /// (<c>RecycleBin.ascx.vb:L156</c>) and this boundary recorded nothing at all, which left the one
-    /// operation in this service that destroys a caller's work as the only one with no trail. The page that
-    /// audited it is excluded; the deletion it audited is not, and this is where the deletion happens.
-    /// </remarks>
     [Fact]
     public async Task DeleteModule_RecordsTheRemovalUnderTheLegacyEventName()
     {
@@ -2947,22 +2623,6 @@ public class ModuleServiceTests
     /// Withdrawing one placement is recorded under its OWN event name, because the module survives it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required this arm to carry the same
-    /// MODULE_DELETED name as a whole-module recycling on the reasoning that "the same thing happened to a
-    /// caller's work". It did not. Removing a named placement hard-deletes one <c>TabModules</c> row: the
-    /// module still exists, its content and settings still exist, and every other placement of it still
-    /// renders. The trail asserted a deletion that had not happened, sending anyone investigating to look for
-    /// a module that is still there - and, in the other direction, made a real module removal
-    /// indistinguishable from the far more common act of taking a module off one page, so neither could be
-    /// counted or found without knowing to filter on a property.
-    /// </para>
-    /// <para>
-    /// The <c>Operation</c> fact is KEPT rather than replaced, so an existing search on it still matches and a
-    /// reader filtering on either the name or the fact sees the same distinction.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task DeleteModule_RecordsWhichPlacementWasWithdrawnUnderThePlacementEventName()
     {
@@ -2987,23 +2647,6 @@ public class ModuleServiceTests
     /// not as plain updates.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS WAS A SILENCE, NOT MERELY A MISLABEL. Recycling and restoring are carried on the
-    /// update request as its delete flag, and the update path's audit record was gated on the change having
-    /// "effects" - a relocation, a portal default, a propagated appearance. A recycling has none of those: the
-    /// effect list is empty, the gate stayed shut, and a module could be taken off every page it appeared on,
-    /// or brought back onto them, with NOTHING in the trail at all. The transition is now recorded
-    /// independently of that gate.
-    /// </para>
-    /// <para>
-    /// The two names are asymmetric on purpose and the asymmetry is measured, not arbitrary. A restoration is
-    /// MODULE_RESTORED (RecycleBin.ascx.vb:L392). A recycling is MODULE_DELETED, which is what the legacy
-    /// recycle bin itself raised for a soft-deletion (RecycleBin.ascx.vb:L156) - MODULE_SENT_TO_RECYCLE_BIN is
-    /// declared in the legacy enumeration but no in-scope legacy site raises it, so using it here would invent
-    /// an event rather than port one.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_RecordsTheRecycleAndRestoreTransitionsUnderTheirOwnNames()
     {
@@ -3045,12 +2688,6 @@ public class ModuleServiceTests
     /// changed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The narrowing matters as much as the two records above. Keying the event name on the NEW value rather
-    /// than on a transition would have made every ordinary save of an already-recycled module read as a fresh
-    /// recycling, which trades one false reading for another and inflates any count taken from the trail. This
-    /// is the assertion that forbids it.
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_RecordsNoLifecycleTransitionWhenTheDeleteFlagIsUnchanged()
     {
@@ -3070,23 +2707,13 @@ public class ModuleServiceTests
             || (record.EventName == ModuleDeletedEventName && record.Properties["Operation"] == "Recycle"));
     }
 
-    /// <summary>
-    /// A declared version that is not a plain version string is replaced rather than recorded.
-    /// </summary>
+    /// <summary>A declared version that is not a plain version string is replaced rather than recorded.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The version is read from an attribute of a CALLER-SUPPLIED document, so nothing about it is validated
-    /// by the request contract or bounded by the schema. Recording it verbatim let a caller put a secret, a
-    /// personal identifier, control text or an unbounded high-cardinality value into the audit trail simply by
-    /// declaring it as a version.
-    /// </para>
-    /// <para>
-    /// It is REPLACED rather than dropped, so the record still says the document declared something and that
-    /// what it declared was not usable - dropping it would make a hostile document indistinguishable from one
-    /// that declared no version at all. And it is replaced rather than stripped of its unwelcome characters,
-    /// because stripping reshapes a hostile value into something that reads as authentic provenance.
-    /// </para>
+    /// The version is read from an attribute of a CALLER-SUPPLIED document, so nothing about it is
+    /// validated by the request contract or bounded by the schema. Recording it verbatim let a caller put a
+    /// secret, a personal identifier, control text or an unbounded high-cardinality value into the audit
+    /// trail simply by declaring it as a version.
     /// </remarks>
     [Fact]
     public async Task ImportModule_ReplacesADeclaredVersionThatIsNotAVersion()
@@ -3112,9 +2739,7 @@ public class ModuleServiceTests
             .Should().NotContain(value => value!.Contains("AKIA-secret", StringComparison.Ordinal));
     }
 
-    /// <summary>
-    /// Reading settings for a module the tenant does not have reports absence.
-    /// </summary>
+    /// <summary>Reading settings for a module the tenant does not have reports absence.</summary>
     /// <param name="moduleMissing">Whether the module is missing rather than foreign.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -3140,8 +2765,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A named placement of another module yields absence rather than a refusal here, because the reader has
-    /// nothing to report rather than an instruction to reject.
+    /// A named placement of another module yields absence rather than a refusal here, because the reader
+    /// has nothing to report rather than an instruction to reject.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3159,9 +2784,7 @@ public class ModuleServiceTests
         outcome.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// Both scopes of settings are projected, keyed by name.
-    /// </summary>
+    /// <summary>Both scopes of settings are projected, keyed by name.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModuleSettings_ProjectsBothScopes()
@@ -3186,9 +2809,7 @@ public class ModuleServiceTests
         settings.TabModuleSettings.Should().ContainKey("colour").WhoseValue.Should().Be("red");
     }
 
-    /// <summary>
-    /// Security-owned names never cross the generic open-key read contract.
-    /// </summary>
+    /// <summary>Security-owned names never cross the generic open-key read contract.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModuleSettings_RedactsSecurityOwnedNames()
@@ -3222,9 +2843,7 @@ public class ModuleServiceTests
         outcome.Value.TabModuleSettings.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Administrative modules are configured only through typed privileged endpoints.
-    /// </summary>
+    /// <summary>Administrative modules are configured only through typed privileged endpoints.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetModuleSettings_RefusesAnAdministrativeModule()
@@ -3245,19 +2864,10 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Storing settings requires both maps, even when one of them is to be left empty, and an absent map
-    /// is REFUSED rather than thrown on.
+    /// Storing settings requires both maps, even when one of them is to be left empty, and an absent map is
+    /// REFUSED rather than thrown on.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This test previously asserted an argument-null throw, and the assertion was changed because the
-    /// behaviour it pinned was the defect. Both members are non-nullable reference types carrying an
-    /// initialiser on the request contract, which makes null look unreachable - but an initialiser only
-    /// runs when the deserialiser does not assign, and a body carrying an explicit null assigns over it.
-    /// Throwing therefore turned a syntactically valid request body into a server fault. The refusal is
-    /// asserted rather than merely the absence of a throw, so a future change that silently accepted an
-    /// absent map and wrote nothing would still fail here.
-    /// </remarks>
     [Fact]
     public async Task UpdateModuleSettings_RefusesAnAbsentMap()
     {
@@ -3286,8 +2896,7 @@ public class ModuleServiceTests
     /// The per-entry bounds on a setting's name and value were already enforced, but nothing bounded the
     /// NUMBER of entries, and the two limits multiply: a body well inside the request size limit could
     /// carry tens of thousands of short settings, each becoming a tracked entity and a row in one
-    /// transaction. The count is asserted one past the bound rather than at some arbitrary large number,
-    /// so the test pins the boundary itself.
+    /// transaction.
     /// </remarks>
     [Fact]
     public async Task UpdateModuleSettings_RefusesMoreEntriesThanAScopePermits()
@@ -3321,8 +2930,8 @@ public class ModuleServiceTests
     /// <remarks>
     /// This is the case the per-scope bound alone does not catch, and it is the one that matters for the
     /// size of the single transaction the service opens. Both maps below sit inside the per-scope bound of
-    /// 250 and exceed the aggregate bound of 400 between them, so a pass here would mean the aggregate
-    /// rule had been lost.
+    /// 250 and exceed the aggregate bound of 400 between them, so a pass here would mean the aggregate rule
+    /// had been lost.
     /// </remarks>
     [Fact]
     public async Task UpdateModuleSettings_RefusesMoreEntriesThanTheTwoScopesPermitTogether()
@@ -3352,9 +2961,7 @@ public class ModuleServiceTests
         outcome.Error!.Code.Should().Be("module.setting_invalid");
     }
 
-    /// <summary>
-    /// Storing settings for a module the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Storing settings for a module the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModuleSettings_RefusesAnUnknownModule()
@@ -3374,9 +2981,7 @@ public class ModuleServiceTests
         outcome.Reason!.Code.Should().Be(NotFoundCode);
     }
 
-    /// <summary>
-    /// Generic module editors cannot alter an administrative module's settings.
-    /// </summary>
+    /// <summary>Generic module editors cannot alter an administrative module's settings.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModuleSettings_RefusesAnAdministrativeModule()
@@ -3456,13 +3061,6 @@ public class ModuleServiceTests
     [InlineData("placement", "blank-name", "A placement setting name must not be blank.")]
     [InlineData("module", "long-name", "The module setting name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds 50 characters.")]
     [InlineData("placement", "long-name", "The placement setting name \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" exceeds 50 characters.")]
-    // MIGRATION: both scopes are bounded at 2000, not one at 256 and the other at 2000. The module
-    // table's baseline column was nvarchar(256) (01.00.00 line 353), but 01.00.08 lines 6248-6286
-    // rebuild the table with SettingValue nvarchar(2000) NOT NULL (line 6256) and nothing narrows it
-    // again; the terminal AddModuleSetting and UpdateModuleSetting procedures declare
-    // @SettingValue nvarchar(2000) (01.00.08 line 6295, 02.00.00 lines 4147 and 4171). Expecting 256
-    // here would pin a bound that refuses values the legacy
-    // application accepted, which Minimal Change Clause item 3 forbids.
     [InlineData("module", "long-value", "The value of the module setting \"editor\" exceeds 2000 characters.")]
     [InlineData("placement", "long-value", "The value of the placement setting \"editor\" exceeds 2000 characters.")]
     public async Task UpdateModuleSettings_RefusesAMalformedSetting(
@@ -3558,9 +3156,7 @@ public class ModuleServiceTests
             $"Module {ModuleId} is not placed on any page, so placement-scoped settings cannot be stored.");
     }
 
-    /// <summary>
-    /// Module-scoped settings are still accepted for a module that sits on no page.
-    /// </summary>
+    /// <summary>Module-scoped settings are still accepted for a module that sits on no page.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModuleSettings_AcceptsModuleSettingsWhenTheModuleSitsNowhere()
@@ -3640,9 +3236,7 @@ public class ModuleServiceTests
         harness.RemovedSettings.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Placement-scoped settings are reconciled against the resolved placement in the same way.
-    /// </summary>
+    /// <summary>Placement-scoped settings are reconciled against the resolved placement in the same way.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateModuleSettings_ReconcilesThePlacementScopeToo()
@@ -3727,8 +3321,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A multiplier of nothing disables caching entirely and reads straight through, rather than caching for
-    /// no time at all.
+    /// A multiplier of nothing disables caching entirely and reads straight through, rather than caching
+    /// for no time at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3792,9 +3386,7 @@ public class ModuleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// The catalogue projection carries the package facts alongside the definition facts.
-    /// </summary>
+    /// <summary>The catalogue projection carries the package facts alongside the definition facts.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListModuleDefinitions_ProjectsThePackageFacts()
@@ -3813,15 +3405,8 @@ public class ModuleServiceTests
         row.IsPortable.Should().BeTrue();
     }
 
-    /// <summary>
-    /// A definition the portal may instantiate is returned by its own identifier.
-    /// </summary>
+    /// <summary>A definition the portal may instantiate is returned by its own identifier.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Restores the legacy per-definition read that <c>ModuleDefinitionController</c> offered. The legacy
-    /// member answered from the whole installation; this one answers within a portal, which is the
-    /// deliberate narrowing recorded on the contract.
-    /// </remarks>
     [Fact]
     public async Task GetModuleDefinition_ReturnsADefinitionThePortalMayInstantiate()
     {
@@ -3836,15 +3421,8 @@ public class ModuleServiceTests
         outcome.Value.FriendlyName.Should().Be(FriendlyName);
     }
 
-    /// <summary>
-    /// A definition identifier that names nothing is reported as absent rather than as a failure.
-    /// </summary>
+    /// <summary>A definition identifier that names nothing is reported as absent rather than as a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// A successful outcome carrying no value is how this solution says "asked, and it is not there", which
-    /// the shared translator answers as 404. It is a different answer from a failed outcome and the two are
-    /// never collapsed (AAP Rule T7).
-    /// </remarks>
     [Fact]
     public async Task GetModuleDefinition_ReportsAnUnknownDefinitionAsAbsent()
     {
@@ -3857,23 +3435,12 @@ public class ModuleServiceTests
         outcome.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// A definition the portal is not entitled to instantiate is reported as absent, not refused.
-    /// </summary>
+    /// <summary>A definition the portal is not entitled to instantiate is reported as absent, not refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the load-bearing property of answering these reads by narrowing the portal's catalogue
-    /// rather than by reading the definition table directly by key. The catalogue read is portal-scoped and
-    /// so applies the entitlement rule; a direct read by key would apply nothing at all, and
-    /// re-implementing the rule beside it would create a second copy that would eventually disagree with
-    /// the first.
-    /// </para>
-    /// <para>
     /// Reporting ABSENCE rather than refusal is also deliberate: a caller must not be able to tell "no such
     /// definition" from "not yours", because the difference between those two answers is itself a fact
     /// about another tenant's installation.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task GetModuleDefinition_ReportsADefinitionOutsideTheEntitlementAsAbsent()
@@ -3896,9 +3463,7 @@ public class ModuleServiceTests
             "a definition the portal cannot instantiate is indistinguishable from one that does not exist");
     }
 
-    /// <summary>
-    /// The definitions of one package are returned, and only that package's.
-    /// </summary>
+    /// <summary>The definitions of one package are returned, and only that package's.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListDesktopModuleDefinitions_ReturnsOnlyThatPackagesDefinitions()
@@ -3919,9 +3484,7 @@ public class ModuleServiceTests
         outcome.Value.Should().OnlyContain(row => row.DesktopModuleId == DesktopModuleId);
     }
 
-    /// <summary>
-    /// A package identifier that names nothing yields an empty sequence rather than a failure.
-    /// </summary>
+    /// <summary>A package identifier that names nothing yields an empty sequence rather than a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListDesktopModuleDefinitions_ReportsAnUnknownPackageAsEmpty()
@@ -3935,9 +3498,7 @@ public class ModuleServiceTests
         outcome.Value.Should().BeEmpty("a catalogue read answers with a sequence, never with an absence");
     }
 
-    /// <summary>
-    /// Exporting content requires a request.
-    /// </summary>
+    /// <summary>Exporting content requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ExportModule_RequiresARequest()
@@ -3948,9 +3509,7 @@ public class ModuleServiceTests
             () => harness.Service.ExportModuleAsync(PortalId, ModuleId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// A blank file name is refused, because the returned document has to be labelled.
-    /// </summary>
+    /// <summary>A blank file name is refused, because the returned document has to be labelled.</summary>
     /// <param name="fileName">The blank name to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -3972,9 +3531,7 @@ public class ModuleServiceTests
             .Be("A file name is required so the returned document can be labelled.");
     }
 
-    /// <summary>
-    /// Exporting a module the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Exporting a module the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ExportModule_RefusesAnUnknownModule()
@@ -4035,29 +3592,6 @@ public class ModuleServiceTests
     /// embedded verbatim and the type attribute carrying the SANITISED package name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The literal below is deliberately spelled out rather than computed, because it IS the wire format
-    /// and a computed expectation would agree with whatever the implementation did. Every part of it is
-    /// measured against <c>Website/admin/Modules/Export.ascx.vb</c> L157-L165: the declaration, including
-    /// the space before its closing bracket pair; the <c>type</c> attribute holding
-    /// <c>CleanName(objModule.ModuleName)</c>, which is why <c>DNN_HTML</c> appears here as
-    /// <c>DNNHTML</c>; the <c>version</c> attribute; and the module's payload placed between the tags
-    /// exactly as it was handed over.
-    /// </para>
-    /// <para>
-    /// MIGRATION: AN EARLIER REVISION ASSERTED A DOUBLY-ESCAPED PAYLOAD AND A RAW TYPE NAME, and it is
-    /// worth spelling out what that document looked like, because the expectation itself was the record of
-    /// the defect. It read
-    /// <c>&lt;content type="DNN_HTML" version="04.09.00"&gt;&amp;amp;lt;item&amp;amp;gt;...&lt;/content&gt;</c>:
-    /// the service HTML-encoded the payload, turning <c>&lt;</c> into <c>&amp;lt;</c>, and the XML writer
-    /// then escaped that ampersand into <c>&amp;amp;</c>. Any reader but this service recovered
-    /// <c>&amp;lt;item&amp;gt;one&amp;lt;/item&amp;gt;</c> instead of <c>&lt;item&gt;one&lt;/item&gt;</c>,
-    /// and the raw type name would have been refused outright by the legacy importer as naming another
-    /// module. Both came from the PORTAL TEMPLATE writer at <c>ModuleController.vb</c> L244, which is a
-    /// different format with a different reader; neither belongs to this workflow.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ExportModule_WrapsTheExportedContentInTheLegacyDocument()
     {
@@ -4088,10 +3622,6 @@ public class ModuleServiceTests
     /// <remarks>
     /// The sibling fact above pins the whole document as a literal; this one pins the single property that
     /// decides interoperability, and pins it against the SANITISER rather than against a spelled-out value.
-    /// The two are complementary: a literal proves what is written today, and this proves the value is
-    /// derived from the module name by the same transformation the legacy importer applies before comparing.
-    /// A package name whose punctuation the sanitiser strips is what makes the distinction observable, which
-    /// is why the seeded name carries an underscore.
     /// </remarks>
     [Fact]
     public async Task ExportModule_NamesTheTypeWithTheSanitisedPackageName()
@@ -4124,22 +3654,9 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The payloads exercise the shapes the format has to carry without altering: an element, an entity
     /// reference that must survive AS a reference rather than being resolved and re-escaped, characters an
-    /// XML writer would have escaped but a verbatim embedding must not touch, and nothing at all. Because
-    /// neither side escapes anything, the guarantee is byte identity rather than a round trip through two
-    /// cancelling transformations.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE PAYLOAD <c>"a &amp; b &lt; c &gt; d"</c> USED TO BE A ROW HERE AND IS NOW ASSERTED AS
-    /// A REFUSAL by the fact below. It is not well-formed XML, so the legacy exporter wrote a corrupt file
-    /// and the legacy importer refused that file with "The file you selected does not contain a valid XML
-    /// structure" - the content was never importable by the workflow this endpoint migrates. It appeared to
-    /// round-trip here only because the withdrawn HTML encode and decode cancelled each other out inside
-    /// this one service. The obligation the portability contract carries is to hand back XML, and a module
-    /// that does not is now told so.
-    /// </para>
+    /// XML writer would have escaped but a verbatim embedding must not touch, and nothing at all.
     /// </remarks>
     [Theory]
     [InlineData("<item>one</item>")]
@@ -4189,23 +3706,9 @@ public class ModuleServiceTests
     /// <param name="payload">Content the composed document cannot carry.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The payload is embedded verbatim, exactly as <c>Website/admin/Modules/Export.ascx.vb</c> L157-L165
-    /// embedded it, so a payload that is not well-formed makes the DOCUMENT not well-formed. The legacy
-    /// wrote that file anyway and its importer refused it afterwards; the composed document is parsed here
-    /// before it is returned, so the same content is refused at the point the operator can act on it.
-    /// </para>
-    /// <para>
-    /// Both rows are faults in the MODULE rather than in the request, which is why the reason token is
-    /// classified as a server fault: the caller asked correctly and can do nothing to fix the answer. The
-    /// bare ampersand is the ordinary case; the C0 control character is the case no escaping in the XML
-    /// specification can represent at all, so it would fail even if the payload were escaped.
-    /// </para>
-    /// <para>
     /// The message must not quote the payload, and it must not quote the parser's message either, because a
     /// parser message quotes the fragment it choked on. Export content is module data and may carry the
     /// portal's users' data, while a failure message is published verbatim as the problem detail.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData("a & b < c > d")]
@@ -4236,29 +3739,10 @@ public class ModuleServiceTests
     /// <param name="accepted">Whether the import must be admitted.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L196-L197 -
-    /// <c>If strType = CleanName(objModule.ModuleName) Or strType = CleanName(objModule.FriendlyName)</c>,
-    /// otherwise "The import file specified is not the correct type for this module". THIS CHECK WAS
-    /// PROMISED AND NOT PERFORMED: <c>ModuleImportRequest.FileName</c> documents at length that the legacy
-    /// name-based check was deliberately re-sourced onto the type attribute so the refusal would survive,
-    /// and nothing performed it - so a document belonging to another module was imported into this one
-    /// without complaint, handing a module content it could not interpret.
-    /// </para>
-    /// <para>
     /// The rows cover each accepted spelling and each rejected one. The sanitised module name and the
     /// sanitised friendly name are the legacy's two accepted values; the RAW module name is accepted as
     /// well, because sanitising the submitted value too is what keeps documents this endpoint produced
-    /// before the export fix was applied importable - a bounded widening, recorded on the service. A
-    /// different module's name, an empty attribute and an absent attribute are all refused, and the absent
-    /// case is the legacy's own behaviour: <c>GetAttribute</c> returns the empty string for a missing
-    /// attribute, which matched neither name.
-    /// </para>
-    /// <para>
-    /// The comparison is case-SENSITIVE, which is asserted by the lower-cased row. VB's default string
-    /// comparison is binary, so the legacy refused a document whose type differed only in case; admitting
-    /// it here would accept documents the legacy did not.
-    /// </para>
+    /// before the export fix was applied importable - a bounded widening, recorded on the service.
     /// </remarks>
     [Theory]
     [InlineData("DNNHTML", true)]
@@ -4312,14 +3796,6 @@ public class ModuleServiceTests
     /// with a reason, which is what replaces the legacy deferred-import event-queue branch.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <c>ModuleController.vb</c> L422 tested the capability field against the integer sentinel -1 and
-    /// parked the payload on a queue for replay after an application restart, because it could not discover
-    /// a freshly installed module's capabilities mid-request. That queue subsystem is excluded, and
-    /// resolving behaviour from a closed registered set makes the deferral pointless - so the sentinel
-    /// produces a clear refusal the caller can retry rather than a silent parking they cannot observe.
-    /// Nothing is handed to the module and nothing is recorded.
-    /// </remarks>
     [Fact]
     public async Task ImportModule_RefusesAPackageWhoseCapabilitiesAreUndetermined()
     {
@@ -4355,9 +3831,7 @@ public class ModuleServiceTests
     /// A C0 control character has no representation in XML - no escaping in the specification encodes one -
     /// so the writer refuses it. The failure code's reason token is classified as a server fault, which is
     /// the correct reading: the caller submitted a valid request and cannot correct a module that returns
-    /// unrepresentable content. The legacy path wrapped this in a <c>Catch</c> whose body was
-    /// <c>'ignore errors</c> and produced a document with the content element silently missing; that
-    /// swallow is deliberately not reproduced.
+    /// unrepresentable content.
     /// </remarks>
     [Fact]
     public async Task ExportModule_ReportsContentThatCannotBeSerialised()
@@ -4419,29 +3893,8 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The boundary is asserted from both sides and against the PUBLISHED constant rather than a literal,
-    /// which is the whole point of the transfer contract this number anchors. Every other limit on the path
-    /// is derived from it - the client's file-byte limit, the API's per-action body limit and the reverse
-    /// proxy's body limit - so a ceiling that had quietly moved would leave three derived numbers describing
-    /// a contract that no longer existed. Asserting a literal here would let exactly that happen: the literal
-    /// and the constant would drift apart and this fact would keep passing.
-    /// </para>
-    /// <para>
-    /// The refused half deliberately does NOT assert the ceiling in the caller-facing message. The parse
-    /// refusal publishes one fixed sentence and keeps the diagnostic in the protected audit channel, which is
-    /// a deliberate information-disclosure decision asserted by its own fact; the number reaches the caller
-    /// through the published contract constant instead, which is what the client checks its file against.
-    /// </para>
-    /// <para>
-    /// THE PAYLOAD IS SPREAD ACROSS SEVERAL TEXT NODES, AND THAT IS A PROPERTY OF THE CONTRACT RATHER THAN A
-    /// CONVENIENCE OF THE FIXTURE. A separate parse-work budget bounds any ONE text-like node well below the
-    /// document ceiling, so a document that is a single enormous run of text is refused by that budget however
-    /// small the transfer limits are. The two bounds answer different questions - one bounds the TRANSFER, the
-    /// other bounds the WORK a single node can demand - and this fact is about the first, so its fixture
-    /// satisfies the second rather than colliding with it. Measured, not assumed: a fixture built as one
-    /// 1 048 576-character text node is refused, which is how the distinction was found.
-    /// </para>
+    /// which is the whole point of the transfer contract this number anchors.
     /// </remarks>
     [Fact]
     public async Task ImportModule_BoundsTheDocumentAtExactlyThePublishedCharacterCeiling()
@@ -4512,16 +3965,15 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Exporting content records the movement on the audit trail, carrying the payload's LENGTH and no
-    /// part of the payload itself.
+    /// Exporting content records the movement on the audit trail, carrying the payload's LENGTH and no part
+    /// of the payload itself.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The no-payload assertion is the load-bearing one. An export payload is module content: it may be
     /// arbitrarily large and it may carry data belonging to the portal's users, so putting any of it in the
-    /// trail would move user data into a log store where it is neither access-controlled with the module nor
-    /// removable with it. The fact is written so that it fails if any recorded property ever contains the
-    /// payload, rather than merely checking the properties that exist today.
+    /// trail would move user data into a log store where it is neither access-controlled with the module
+    /// nor removable with it.
     /// </remarks>
     [Fact]
     public async Task ExportModule_RecordsTheMovementWithoutRecordingTheContent()
@@ -4557,22 +4009,6 @@ public class ModuleServiceTests
     /// provenance text.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The facts an operator needs are taken from the SERVER wherever they can be - the package's own name
-    /// and installed version, the content type the document was accepted against and the payload length -
-    /// and only the document's declared version comes from the request, recorded under a name that says so,
-    /// so a record cannot be read as though the server had vouched for it.
-    /// </para>
-    /// <para>
-    /// PLACEMENTCOUNT IS ASSERTED ABSENT, WHICH IS AN INVERSION OF WHAT THIS TEST USED TO REQUIRE. Reading it
-    /// meant querying the module's placements, and that query observes the cancellation token - so the record
-    /// could only carry the count by being emitted BEHIND a cancellable read, which is what let a caller
-    /// disconnecting in the moment after the flush have third-party content written into a tenant with no
-    /// record of the import at all. The count described a consequence of the import rather than the import,
-    /// and it was the only fact that could not be had from memory, so it is the one that goes.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ImportModule_RecordsTheProvenanceWithoutRecordingTheContent()
     {
@@ -4604,13 +4040,7 @@ public class ModuleServiceTests
             "the count could only be obtained from a cancellable placement query, and the record must not "
             + "depend on a read that a disconnecting caller can abandon");
 
-        // The caller's own description of where the document came from is NOT recorded. Both facts were
-        // copied verbatim from the request, ModuleImportRequest documents them as accepted-and-unused parity
-        // metadata with no length bound, and nothing validated or read them - so a caller could put a secret,
-        // a personal identifier, control text or an unbounded high-cardinality value into the audit trail by
-        // naming a file that way. The module, the version and the size describe what actually happened; the
-        // caller's description describes only what the caller said. The version that
-        // IS recorded is reduced to digits, dots and hyphens within a length bound before it is offered.
+        // The caller's own description of where the document came from is NOT recorded.
         record.Properties.Should().NotContainKey("SourceFileName");
         record.Properties.Should().NotContainKey("SourceFolder");
 
@@ -4625,19 +4055,8 @@ public class ModuleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to follow a read of the module's placements - an
-    /// AWAITED query that observes the cancellation token - because it reported how many of them were
-    /// cache-invalidated. A caller who disconnected in the moment after the flush therefore had externally
-    /// supplied content written into a tenant's module, durably, with nothing in the trail to say an import had
-    /// occurred: the token was signalled, the read threw, and the record was never reached.
-    /// </para>
-    /// <para>
-    /// An import is the one module operation that admits third-party content into a tenant, so its record is
-    /// the last that may depend on the caller still being connected. The exception still escapes - placements
-    /// whose caches were not invalidated will serve stale content, which is a real condition - and the placement
-    /// count is gone from the record, which is the price of the order and is asserted by the sibling above.
-    /// </para>
+    /// An import is the one module operation that admits third-party content into a tenant, so its record
+    /// is the last that may depend on the caller still being connected.
     /// </remarks>
     [Fact]
     public async Task ImportModule_RecordsTheImportEvenWhenThePostFlushPlacementReadFails()
@@ -4685,15 +4104,10 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// An ordinary single-module edit writes no audit record, while an edit whose effect reaches beyond
-    /// the addressed module does.
+    /// An ordinary single-module edit writes no audit record, while an edit whose effect reaches beyond the
+    /// addressed module does.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The trail records consequential change, not every field edit. The legacy application recorded
-    /// neither, so recording the wide-effect case alone is the narrowest addition that satisfies this
-    /// contract's promise that a change whose blast radius exceeds the addressed module is recorded.
-    /// </remarks>
     [Fact]
     public async Task UpdateModule_RecordsOnlyWhenTheChangeReachesBeyondTheModule()
     {
@@ -4734,26 +4148,6 @@ public class ModuleServiceTests
     /// <c>InnerXml</c> did.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Website/admin/Modules/Import.ascx.vb</c> L200 passes
-    /// <c>xmlDoc.DocumentElement.InnerXml</c>, and <c>InnerXml</c> returns MARKUP - a CDATA child comes back
-    /// as <c>&lt;![CDATA[...]]&gt;</c>, delimiters and all. The module admin exporter never wrote a CDATA
-    /// section, so this shape did not arise in that workflow and the legacy behaviour for it is simply
-    /// whatever <c>InnerXml</c> yielded. Reproducing it exactly is what makes the payload rule a single rule
-    /// with no branch.
-    /// </para>
-    /// <para>
-    /// MIGRATION: AN EARLIER REVISION OF THIS FACT ASSERTED THAT THE SECTION WAS UNWRAPPED AND HTML-DECODED
-    /// to <c>&lt;item&gt;one&lt;/item&gt;</c>, and it was named for accepting a legacy exporter's document.
-    /// Both were wrong about WHICH legacy exporter: the CDATA-and-encode shape is written by
-    /// <c>ModuleController.vb</c> L244-L246, the PORTAL TEMPLATE writer, whose documents are read by the
-    /// portal template parser and never by the module import screen. Unwrapping it here required a branch on
-    /// whether the content element had child elements, and that branch silently mangled a payload whose own
-    /// markup legitimately contained a CDATA section - a real shape, since module content is arbitrary XML.
-    /// The single verbatim rule replaces it and the divergence is recorded in MIGRATION_NOTES.md.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ImportModule_HandsOnACdataSectionWithItsDelimitersIntact()
     {
@@ -4786,9 +4180,7 @@ public class ModuleServiceTests
             "InnerXml returns markup, so the section arrives at the module exactly as it sat in the document");
     }
 
-    /// <summary>
-    /// A failure from the content controller is carried through rather than translated.
-    /// </summary>
+    /// <summary>A failure from the content controller is carried through rather than translated.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ExportModule_ReportsTheControllersOwnFailure()
@@ -4853,9 +4245,7 @@ public class ModuleServiceTests
             $"Module {ModuleId} could not be asked for content: no registered business controller covers this module.");
     }
 
-    /// <summary>
-    /// Importing content requires a request.
-    /// </summary>
+    /// <summary>Importing content requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_RequiresARequest()
@@ -4871,12 +4261,11 @@ public class ModuleServiceTests
     /// that names module zero.
     /// </summary>
     /// <remarks>
-    /// THE REGRESSION TEST FOR THE IDENTITY-SEED COLLISION. <c>Modules.ModuleID</c> is
-    /// <c>IDENTITY (0, 1)</c>, so zero is a real module - and it is the very value this fixture uses as its
-    /// canonical module. <c>ModuleImportRequest.ModuleId</c> is therefore nullable, so that an omitted
-    /// identifier arrives as <see langword="null"/> rather than being deserialised into a live request
-    /// against module zero. Nothing upstream can catch the omission - this request has no validator - so the
-    /// discrimination has to happen in the service, and it must be made on ABSENCE rather than on sign.
+    /// THE REGRESSION TEST FOR THE IDENTITY-SEED COLLISION. <c>Modules.ModuleID</c> is <c>IDENTITY (0,
+    /// 1)</c>, so zero is a real module - and it is the very value this fixture uses as its canonical
+    /// module. <c>ModuleImportRequest.ModuleId</c> is therefore nullable, so that an omitted identifier
+    /// arrives as <see langword="null"/> rather than being deserialised into a live request against module
+    /// zero.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4903,9 +4292,7 @@ public class ModuleServiceTests
         zero.IsSuccess.Should().BeTrue();
     }
 
-    /// <summary>
-    /// Importing into a module the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Importing into a module the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_RefusesAnUnknownModule()
@@ -4928,9 +4315,9 @@ public class ModuleServiceTests
     /// A caller holding no edit grant on the target module is refused, and the module keeps its content.
     /// </summary>
     /// <remarks>
-    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR IMPORT. As with creation, the target arrives in the request
-    /// body and the only check performed was tenant ownership, so any authenticated caller could overwrite any
-    /// tenant's module content.
+    /// THE MISSING-AUTHORISATION REGRESSION TEST FOR IMPORT. As with creation, the target arrives in the
+    /// request body and the only check performed was tenant ownership, so any authenticated caller could
+    /// overwrite any tenant's module content.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4960,8 +4347,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The grant is asked for on the MODULE THE REQUEST NAMES and for the EDIT key - the same key the update and
-    /// delete endpoints are gated on, because an import replaces the module's stored content.
+    /// The grant is asked for on the MODULE THE REQUEST NAMES and for the EDIT key - the same key the
+    /// update and delete endpoints are gated on, because an import replaces the module's stored content.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4986,9 +4373,7 @@ public class ModuleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// An empty document is refused before the package is examined.
-    /// </summary>
+    /// <summary>An empty document is refused before the package is examined.</summary>
     /// <param name="content">The empty content to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -5008,9 +4393,7 @@ public class ModuleServiceTests
         outcome.Reason!.Message.Should().Be("The submitted document is empty.");
     }
 
-    /// <summary>
-    /// A module that cannot accept content is refused.
-    /// </summary>
+    /// <summary>A module that cannot accept content is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_RefusesAModuleThatIsNotPortable()
@@ -5030,8 +4413,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// Content that is not well-formed is refused with a fixed public explanation while a bounded diagnostic
-    /// is retained in the protected audit channel.
+    /// Content that is not well-formed is refused with a fixed public explanation while a bounded
+    /// diagnostic is retained in the protected audit channel.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5056,9 +4439,7 @@ public class ModuleServiceTests
         diagnostic.Properties.Should().NotContainValue(outcome.Reason.Message);
     }
 
-    /// <summary>
-    /// A well-formed document with the wrong root element is refused.
-    /// </summary>
+    /// <summary>A well-formed document with the wrong root element is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_RefusesADocumentWithTheWrongRoot()
@@ -5077,8 +4458,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// The root element name is matched without regard to case, so a document written by a different tool is
-    /// still accepted.
+    /// The root element name is matched without regard to case, so a document written by a different tool
+    /// is still accepted.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5090,11 +4471,8 @@ public class ModuleServiceTests
             PortalId,
             new ModuleImportRequest
             {
-                // The ROOT NAME is what varies here; the type attribute must still name this module, because
-                // the two rules are independent and this fact is about the first of them. Its counterpart -
-                // that the type comparison is case-SENSITIVE while this one is not - is asserted by the type
-                // fact, and the asymmetry is deliberate: the legacy compared the root name through an XML
-                // reader and the type attribute with VB's binary string equality.
+                // The ROOT NAME is what varies here; the type attribute must still name this module,
+                // because the two rules are independent and this fact is about the first of them.
                 ModuleId = ModuleId,
                 Content = TypedDocumentPrefix.Replace("<content", "<Content", StringComparison.Ordinal)
                     + ">x</Content>",
@@ -5134,10 +4512,6 @@ public class ModuleServiceTests
         outcome.IsSuccess.Should().Be(accepted);
         if (!accepted)
         {
-            // A document naming the wrong package, or naming none, is a WRONG-FILE refusal and carries its
-            // own reason code, which the published problem-details contract maps to 400. The malformed and
-            // unsafe-document facts below keep module.content_invalid, so the two classes stay separable by
-            // a caller that reads the code rather than the sentence.
             outcome.Error!.Code.Should().Be(ContentTypeMismatchCode);
             harness.BusinessControllers.Verify(
                 factory => factory.ImportModuleContentAsync(
@@ -5257,8 +4631,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A document whose root carries child elements hands the inner markup to the controller verbatim, while
-    /// one carrying only text hands over the text.
+    /// A document whose root carries child elements hands the inner markup to the controller verbatim,
+    /// while one carrying only text hands over the text.
     /// </summary>
     /// <param name="content">The document to submit.</param>
     /// <param name="expectedPayload">The payload the controller is measured to receive.</param>
@@ -5323,9 +4697,7 @@ public class ModuleServiceTests
         harness.ImportedUserId.Should().Be(expectedUserId);
     }
 
-    /// <summary>
-    /// A failure from the content controller is carried through, and nothing is committed.
-    /// </summary>
+    /// <summary>A failure from the content controller is carried through, and nothing is committed.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_ReportsTheControllersOwnFailure()
@@ -5346,22 +4718,6 @@ public class ModuleServiceTests
     /// <summary>
     /// Every state in which no content was restored is a refusal that writes nothing and records nothing.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// THIS FACT REPLACES ONE THAT PINNED THE OPPOSITE. The earlier fact asserted that an advisory attached
-    /// to a SUCCESSFUL import outcome was carried through to the caller, and in doing so it pinned the
-    /// defect: this service reads a successful import as licence to commit its unit of work, evict the
-    /// placement caches of every page the module sits on, and write an <c>Operation=Import</c> audit record.
-    /// An installation whose closed controller set does not cover the module's stored controller class
-    /// therefore answered the caller 200 and told the audit trail content had been imported when the module
-    /// had never been asked for anything.
-    /// </para>
-    /// <para>
-    /// The four codes below are the factory's complete "nothing was restored" set and are each declared on
-    /// its contract. They are exercised as data rather than as one representative case because the service's
-    /// obligation is identical for all four and a single case would leave three able to regress silently.
-    /// </para>
-    /// </remarks>
     /// <param name="code">The factory failure code standing for one way of not restoring content.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -5395,9 +4751,7 @@ public class ModuleServiceTests
             "an audit record claiming an import happened is worse than no record at all");
     }
 
-    /// <summary>
-    /// A successful import carries no advisory, because success now means content arrived.
-    /// </summary>
+    /// <summary>A successful import carries no advisory, because success now means content arrived.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ImportModule_OnSuccessCarriesNoAdvisory()
@@ -5406,9 +4760,6 @@ public class ModuleServiceTests
 
         Result outcome = await harness.Service.ImportModuleAsync(
             PortalId,
-            // The document names the target module's own type. That check was added independently of this
-            // fact and is asserted by its own theory; a document without the attribute is refused, so a
-            // fact about what SUCCESS carries has to submit a document that can succeed.
             new ModuleImportRequest
             {
                 ModuleId = ModuleId,
@@ -5423,7 +4774,8 @@ public class ModuleServiceTests
     }
 
     /// <summary>
-    /// A successful import commits once and discards the cached module list of every page the module sits on.
+    /// A successful import commits once and discards the cached module list of every page the module sits
+    /// on.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5447,23 +4799,13 @@ public class ModuleServiceTests
         harness.InvalidatedTabIds.Should().BeEquivalentTo(new[] { TabId, SecondTabId });
     }
 
-    /// <summary>
-    /// Wraps a payload in a portability document naming the fixture package's cleaned type.
-    /// </summary>
+    /// <summary>Wraps a payload in a portability document naming the fixture package's cleaned type.</summary>
     /// <param name="payload">The inner XML the document carries.</param>
     /// <returns>A document the import path accepts as the correct type for the module under test.</returns>
-    /// <remarks>
-    /// MIGRATION: a document that does NOT name a matching type is refused, exactly as
-    /// <c>Website/admin/Modules/Import.ascx.vb</c> lines 195-205 refused one, so every fixture that expects
-    /// an import to proceed has to carry the attribute. Its absence is a case in its own right and is
-    /// asserted separately rather than left implicit in these fixtures.
-    /// </remarks>
     private static string ImportDocument(string payload) =>
         FormattableString.Invariant($"<content type=\"{CleanedPackageName}\">{payload}</content>");
 
-    /// <summary>
-    /// Builds the module fixture the store returns, bearing the measured identifier seed of zero.
-    /// </summary>
+    /// <summary>Builds the module fixture the store returns, bearing the measured identifier seed of zero.</summary>
     /// <returns>A module belonging to the tenant under test.</returns>
     private static Module StoredModule() => new()
     {
@@ -5476,9 +4818,7 @@ public class ModuleServiceTests
         InheritViewPermissions = true,
     };
 
-    /// <summary>
-    /// Builds a placement of the module under test.
-    /// </summary>
+    /// <summary>Builds a placement of the module under test.</summary>
     /// <param name="tabModuleId">The placement identifier to carry.</param>
     /// <param name="tabId">The page the placement sits on.</param>
     /// <returns>A placement row.</returns>
@@ -5494,9 +4834,7 @@ public class ModuleServiceTests
         DisplayTitle = true,
     };
 
-    /// <summary>
-    /// Builds a definition sharing the one package fixture.
-    /// </summary>
+    /// <summary>Builds a definition sharing the one package fixture.</summary>
     /// <param name="moduleDefinitionId">The definition identifier to carry.</param>
     /// <param name="friendlyName">The display name to carry.</param>
     /// <returns>A definition row.</returns>
@@ -5508,9 +4846,7 @@ public class ModuleServiceTests
         DefaultCacheTime = 0,
     };
 
-    /// <summary>
-    /// Builds a create request that passes every check the service performs.
-    /// </summary>
+    /// <summary>Builds a create request that passes every check the service performs.</summary>
     /// <returns>A well-formed create request.</returns>
     private static CreateModuleRequest ValidCreateRequest() => new()
     {
@@ -5519,33 +4855,21 @@ public class ModuleServiceTests
         ModuleTitle = ModuleTitle,
     };
 
-    /// <summary>
-    /// Builds an update request that passes every check the service performs.
-    /// </summary>
+    /// <summary>Builds an update request that passes every check the service performs.</summary>
     /// <remarks>
     /// The page identifier names the page the module is ALREADY on, so the canonical request is a save in
-    /// place rather than a move. It has to be stated rather than left defaulted: the contract declares the
-    /// member mandatory, page identity seeds at zero so a defaulted integer is a legitimate page rather than
-    /// an absence, and a request that named page zero would therefore ask to move the module to the first
-    /// page of the portal. A fact that means to move the module says so by overriding this member.
+    /// place rather than a move.
     /// </remarks>
     /// <returns>A well-formed update request.</returns>
     private static UpdateModuleRequest ValidUpdateRequest() => new()
     {
-        // The page the seeded placement sits on, and NOT a value this helper may leave at its default.
-        //
-        // MIGRATION: the page key SELECTS the placement a full replacement addresses, and an omitted member
-        // deserialises to zero, which dbo.Tabs.TabID being IDENTITY(0, 1) makes a real page rather than an
-        // absence. This helper used to omit it, and every fact built on it passed only because the service
-        // ignored the member and amended the placement with the lowest identifier instead. Naming the page
-        // here is what makes those facts assert the behaviour they describe.
         TabId = TabId,
         ModuleTitle = ModuleTitle,
     };
 
     /// <summary>
-    /// Builds a valid update request and amends it, so a lifecycle assertion changes exactly the member it is
-    /// about and inherits every other value from the shared shape.
+    /// Builds a valid update request and amends it, so a lifecycle assertion changes exactly the member it
+    /// is about and inherits every other value from the shared shape.
     /// </summary>
     /// <param name="amend">The amendment to apply.</param>
     /// <returns>The amended request.</returns>
@@ -5639,30 +4963,20 @@ public class ModuleServiceTests
             BusinessControllers = new Mock<IModuleBusinessControllerFactory>(MockBehavior.Loose);
 
             // The permission evaluator answers "granted" by default, so every existing fact continues to
-            // exercise the behaviour it was written for rather than the new authorisation guard. The facts
-            // that exercise the guard itself override this, which is also what makes them read as being
-            // about authorisation.
+            // exercise the behaviour it was written for rather than the new authorisation guard.
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             GrantEdit(granted: true);
 
             // Tenant authority answers "administers" by default, for the same reason and with the same
-            // consequence: the wide-effect facts below were written about what a portal administrator's save
-            // does, and that is who the baseline caller now is. It is a SEPARATE default from the edit grant
-            // rather than folded into it, because the two questions are separate - holding an edit grant on
-            // one module says nothing about authority over the tenant - and a fact that flips one while
-            // leaving the other alone is exactly how that separation is proved.
+            // consequence: the wide-effect facts below were written about what a portal administrator's
+            // save does, and that is who the baseline caller now is.
             AdministerPortal(administers: true);
 
             // The host-account question answers NO by default, which is the closed answer and the one that
             // makes the tenant comparison meaningful in every fact that does not deliberately exempt itself
-            // from it. Declared explicitly rather than left to the loose mock, because the mock's default for
-            // a Result-returning member is a null outcome, and a null outcome is not a decision.
+            // from it.
             HostAccount(isHost: false);
 
-            // The audit sink records what it is handed so the facts below can assert on the trail without
-            // reaching a log store. A loose mock would swallow the calls silently; capturing them is what
-            // lets a fact prove that a record was written, that it was written only once, and - the rule
-            // that matters most - that no content payload was ever put into it.
             Audit = new Mock<IAuditSink>(MockBehavior.Loose);
             AuditRecords = [];
             Audit.Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
@@ -5806,9 +5120,7 @@ public class ModuleServiceTests
                 .ReturnsAsync(Result<bool>.Success(granted));
         }
 
-        /// <summary>
-        /// Sets the answer tenant authority gives for this portal.
-        /// </summary>
+        /// <summary>Sets the answer tenant authority gives for this portal.</summary>
         /// <param name="administers">Whether the caller is to be reported as administering the portal.</param>
         public void AdministerPortal(bool administers)
             => Permissions
@@ -5818,20 +5130,16 @@ public class ModuleServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<bool>.Success(administers));
 
-        /// <summary>
-        /// Presents an AUTHENTICATED caller whose credential was minted for one particular tenant.
-        /// </summary>
+        /// <summary>Presents an AUTHENTICATED caller whose credential was minted for one particular tenant.</summary>
         /// <param name="tokenPortalId">
-        /// The portal the credential names, which the service reconciles against the portal the request acts
-        /// on. Pass <see langword="null"/> to present an authenticated caller whose credential carries no
-        /// portal at all.
+        /// The portal the credential names, which the service reconciles against the portal the request
+        /// acts on.
         /// </param>
         /// <remarks>
         /// The baseline caller this harness builds is ANONYMOUS - a loose mock reports
         /// <c>IsAuthenticated</c> as false - which is what keeps every fact written before the tenant
         /// comparison existed exercising the behaviour it was written for: an anonymous caller carries no
-        /// authority from any tenant, so there is nothing for the comparison to refuse. A fact about the
-        /// comparison therefore signs a caller in explicitly, and says which tenant it signed in to.
+        /// authority from any tenant, so there is nothing for the comparison to refuse.
         /// </remarks>
         public void SignIn(int? tokenPortalId)
         {
@@ -5840,16 +5148,11 @@ public class ModuleServiceTests
             CurrentUser.SetupGet(caller => caller.PortalId).Returns(tokenPortalId);
         }
 
-        /// <summary>
-        /// Decides whether the store reports the caller as an installation-wide host account.
-        /// </summary>
+        /// <summary>Decides whether the store reports the caller as an installation-wide host account.</summary>
         /// <param name="isHost">The answer the store is to give.</param>
         /// <remarks>
-        /// Answered <see langword="false"/> by default, like the loose mock it replaces, so the exemption is
-        /// only ever in play in a fact that asks for it. The question is deliberately separate from portal
-        /// administration: a host account is exempt from the tenant comparison because it belongs to no
-        /// tenant, whereas an administrator OF THE TARGET tenant must still present a credential minted for
-        /// it.
+        /// Answered <see langword="false"/> by default, like the loose mock it replaces, so the exemption
+        /// is only ever in play in a fact that asks for it.
         /// </remarks>
         public void HostAccount(bool isHost)
             => Permissions
@@ -5859,9 +5162,7 @@ public class ModuleServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<bool>.Success(isHost));
 
-        /// <summary>
-        /// Makes tenant authority unanswerable, as an unreachable store would.
-        /// </summary>
+        /// <summary>Makes tenant authority unanswerable, as an unreachable store would.</summary>
         /// <param name="code">The failure code the authority question is to report.</param>
         public void FailPortalAuthority(string code)
             => Permissions
@@ -5893,9 +5194,7 @@ public class ModuleServiceTests
 
         public Mock<IAuditSink> Audit { get; }
 
-        /// <summary>
-        /// Every audit event the service recorded, in the order it recorded them.
-        /// </summary>
+        /// <summary>Every audit event the service recorded, in the order it recorded them.</summary>
         public List<AuditEvent> AuditRecords { get; }
 
         public CachingOptions Caching { get; }
@@ -5910,13 +5209,11 @@ public class ModuleServiceTests
 
         public Dictionary<int, List<TabModule>> PlacementsByModuleId { get; }
 
-        /// <summary>
-        /// A failure raised by the by-module placement read, or <see langword="null"/> for none.
-        /// </summary>
+        /// <summary>A failure raised by the by-module placement read, or <see langword="null"/> for none.</summary>
         /// <remarks>
-        /// On the import path that read is post-flush maintenance and it observes the cancellation token, so
-        /// it is the one step a disconnecting caller can make fail after the content is already durable. This
-        /// knob lets an assertion prove that the record of the import no longer depends on it.
+        /// On the import path that read is post-flush maintenance and it observes the cancellation token,
+        /// so it is the one step a disconnecting caller can make fail after the content is already durable.
+        /// This knob lets an assertion prove that the record of the import no longer depends on it.
         /// </remarks>
         public Exception? PlacementReadFault { get; set; }
 
@@ -5992,9 +5289,6 @@ public class ModuleServiceTests
                 .Setup(t => t.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.TenantTabs);
 
-            // The page-centric placement read belongs to ITabRepository, and the service now uses it to
-            // answer "which modules sit on this page" in one call. It is derived from the same placement
-            // world the module stubs below serve, so the harness stays internally consistent.
             harness.Tabs
                 .Setup(t => t.GetTabModulesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int tabId, CancellationToken _) =>
@@ -6019,10 +5313,6 @@ public class ModuleServiceTests
                             harness.PlacementsByModuleId.TryGetValue(moduleId, out List<TabModule>? found)
                                 ? (IReadOnlyList<TabModule>)found
                                 : Array.Empty<TabModule>()));
-            // The set-based placement read the listing uses. Served from the same placement world as every
-            // other placement stub, so the harness describes one reality: the listing asks for many modules
-            // in one call so that its cost cannot grow with the number of modules, and answering from a
-            // separate seam would leave that property untested.
             harness.Modules
                 .Setup(m => m.GetTabModulesByModuleIdsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -6034,9 +5324,7 @@ public class ModuleServiceTests
                         .ToList());
             // The append instruction is resolved by reading the pane it is being appended to, so that read
             // is served from the same placement world every other placement stub serves rather than from a
-            // separate seam. Keeping it consistent is what lets a fact seed a pane and then assert the
-            // position the production path computes for it. The ordering mirrors the repository's, whose own
-            // ORDER BY mirrors the terminal legacy procedure's.
+            // separate seam.
             harness.Modules
                 .Setup(m => m.GetTabModuleOrderAsync(
                     It.IsAny<int>(),
@@ -6068,11 +5356,7 @@ public class ModuleServiceTests
 
             // THE LISTING'S PAGE NOW COMES FROM THE STORE, filtered, ordered, counted and windowed there,
             // so the seam the listing facts exercise is this one rather than the tenant-wide module read
-            // above. This fake reproduces the contract's documented semantics over the SAME module and
-            // placement world every other stub serves, which is what keeps those facts describing the
-            // listing's observable behaviour rather than describing a stub's canned answer: seed a module,
-            // seed its placements, and the row set, its order, its total and its window all follow from
-            // them exactly as the statement makes them follow.
+            // above.
             harness.Modules
                 .Setup(m => m.ListPlacementsAsync(
                     It.IsAny<int>(),

@@ -1,7 +1,7 @@
 <!--
-  A plain div, and deliberately not a section: a section maps to a region landmark once it
-  carries an accessible name and to a nameless region otherwise, so either spelling would add
-  a second landmark to a screen that already has one.
+  A plain div, and deliberately not a section: a section maps to a region landmark once it carries an
+  accessible name and to a nameless region otherwise, so either spelling would add a second landmark to
+  a screen that already has one.
 -->
 <div class="empty-state">
 
@@ -18,39 +18,16 @@
     </svg>
   </span>
 
-  <!--
-    A LEVEL TWO, ALWAYS, because every screen that mounts this component already carries a
-    level-one heading of its own.
-
-    Eight screens pair it with the shared page header, which owns the page-level heading, so a
-    level one here would give each of them a second. The ninth is the route table's
-    unmatched-address fallback, and it composes the page header too - so the outline is page
-    `<h1>` then this `<h2>` on every caller without exception, and no caller has to say which
-    kind it is.
-
-    MIGRATION: a `standalone` input briefly selected between an `<h1>` and this `<h2>`, for a
-    caller that turned out not to exist: the fallback screen's component declares no such input,
-    so the route data that set it reached nothing and the `<h1>` branch was unreachable in
-    production. Both are removed rather than wired up, because wiring them would have produced
-    the second page-level heading the default exists to avoid.
-  -->
   <h2 class="empty-state__title">Nothing to Display</h2>
 
-  <!--
-    Interpolation escapes by default, which is what makes untrusted wording safe to render here.
-    No live-region or alert semantics: an empty state is steady-state content rather than a
-    change, so announcing it would interrupt without informing.
-  -->
+  <!-- Interpolation escapes by default, which is what makes untrusted wording safe to render here. -->
   <p class="empty-state__message">{{ message }}</p>
 
   <!--
-    The action is the caller's to supply, which keeps this component free of any assumption about
-    what it does or whether the current user may perform it. The wrapper is unconditional and the
-    stylesheet owns collapsing it when nothing is projected; guarding it here would need a content
-    query and would duplicate a decision made there.
+    The action is the caller's to supply, which keeps this component free of any assumption about what
+    it does or whether the current user may perform it.
   -->
   <div class="empty-state__actions">
     <ng-content />
   </div>
-
 </div>

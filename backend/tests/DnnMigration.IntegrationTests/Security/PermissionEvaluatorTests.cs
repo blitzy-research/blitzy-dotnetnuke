@@ -17,9 +17,6 @@ using Microsoft.Extensions.Options;
 using Moq;
 using Xunit;
 
-// The reflection namespace and the domain both declare a type called Module. The contract-shape tests
-// below need the reflection namespace, and every Module in this file means the domain entity, so the
-// ambiguity is resolved once here rather than by qualifying each of its use sites.
 using Module = DnnMigration.Domain.Entities.Module;
 
 namespace DnnMigration.IntegrationTests.Security;
@@ -31,27 +28,12 @@ namespace DnnMigration.IntegrationTests.Security;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The suite has two subjects, and the split follows where each rule actually lives. Allow-and-deny
-/// precedence, principal reachability and catalogue scoping belong to
-/// <c>DnnMigration.Infrastructure.Security.PermissionEvaluator</c>, and the concrete-evaluator section
-/// constructs that very type over substituted repositories - so a refusal beating an allowance, a
-/// pseudo-role reaching the right callers and a scope code admitting the right entries are all the
-/// production rules rather than a model of them. Everything above the reduction belongs to
-/// <c>DnnMigration.Application.Services.PermissionService</c>, and the sections around it drive that real
-/// service over a substituted evaluator: which scope is being asked about, which roles the caller is
-/// evaluated under, whether a host account short-circuits the question entirely, and - the one place it
-/// composes rather than delegates - how a module that inherits its view permission from the pages it sits
-/// on is resolved. That last rule is genuine deny-over-allow behaviour at the service layer: a view
-/// allowance recorded against the module is withheld unless some page the module sits on also grants view.
+/// The suite has two subjects, and the split follows where each rule actually lives.
 /// </para>
 /// <para>
 /// Substituting the evaluator in the service tests is isolation rather than avoidance. A service test that
 /// also exercised the reduction could not say which of the two produced a wrong answer, and the reduction
 /// is exercised directly a few hundred lines below with nothing between the test and the arithmetic.
-/// </para>
-/// <para>
-/// The suite also pins the six failure codes. They are the sole input to the status code the caller sees, so
-/// a renamed code silently turns a not-found into a bad-request without any other test noticing.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -67,10 +49,7 @@ public sealed class PermissionEvaluatorTests
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="PermissionEvaluatorTests"/> class.</summary>
-    /// <param name="fixture">
-    /// The shared composed host. Used solely as the composition root, to read which type the application
-    /// registers for the evaluation contract; no test here opens a connection or sends a request.
-    /// </param>
+    /// <param name="fixture">The shared composed host.</param>
     public PermissionEvaluatorTests(ApiTestFixture fixture) => _fixture = fixture;
 
     private const int PortalId = -1;
@@ -83,28 +62,19 @@ public sealed class PermissionEvaluatorTests
 
     private const int ModuleId = 0;
 
-    /// <summary>
-    /// The definition identifier the <c>Entry</c> fixture declares its catalogue rows against.
-    /// </summary>
-    /// <remarks>
-    /// Named rather than repeated as a literal because the module-scoped catalogue read resolves the
-    /// module's definition and then takes a union with the product-wide scope, so a test of that read has
-    /// to be able to say which half of the union it is exercising.
-    /// </remarks>
+    /// <summary>The definition identifier the <c>Entry</c> fixture declares its catalogue rows against.</summary>
     private const int EntryModuleDefinitionId = 1;
 
     private const int TabId = 12;
 
     private const int SecondTabId = 13;
 
-    /// <summary>
-    /// The role the tenant designates as its administrator role.
-    /// </summary>
+    /// <summary>The role the tenant designates as its administrator role.</summary>
     /// <remarks>
     /// Deliberately zero. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so zero is the first real role a
     /// portal ever gets and is exactly the value that a defaulted-integer bug would also produce. Pinning
-    /// the designation to it means an authority check that answered from an unset field rather than from the
-    /// stored designation cannot pass by coincidence.
+    /// the designation to it means an authority check that answered from an unset field rather than from
+    /// the stored designation cannot pass by coincidence.
     /// </remarks>
     private const int AdministratorRoleId = 0;
 
@@ -112,13 +82,9 @@ public sealed class PermissionEvaluatorTests
     private const int OrdinaryRoleId = 4;
 
     /// <summary>
-    /// The key of the module's placement on <see cref="TabId"/>, used when a test addresses a placement by its
-    /// own key rather than by the page it sits on.
+    /// The key of the module's placement on <see cref="TabId"/>, used when a test addresses a placement by
+    /// its own key rather than by the page it sits on.
     /// </summary>
-    /// <remarks>
-    /// Deliberately unrelated to either page identifier, so a test that resolves a placement by its key cannot
-    /// appear to pass because the key happened to be a page identifier as well.
-    /// </remarks>
     private const int FirstPlacementId = 501;
 
     /// <summary>The key of the module's placement on <see cref="SecondTabId"/>.</summary>
@@ -139,23 +105,11 @@ public sealed class PermissionEvaluatorTests
     /// <summary>Reported when the named role does not exist within the portal.</summary>
     private const string RoleNotFoundCode = "permission.role_not_found";
 
-    // Aliases for the domain constants, not copies of their values. Restating the literals here is how a
-    // suite comes to assert a name the production code no longer uses, and these two names are the exact
-    // strings matched against Roles.RoleName - so a drifted copy would pass while the application matched
-    // nothing. The one place a literal IS written out is the fact that asserts the constants hold the
-    // legacy values, which is where a change to either name has to be noticed.
+    // Aliases for the domain constants, not copies of their values.
     private const string AllUsersRoleName = SpecialRoleNames.AllUsers;
 
     private const string UnauthenticatedRoleName = SpecialRoleNames.Unauthenticated;
 
-    // The three negative role identifiers below are REAL PERSISTED PRINCIPALS, not absence markers, and
-    // that is the single most dangerous thing about this table. Roles.RoleID is IDENTITY (0, 1)
-    // (01.00.00.SqlDataProvider:L115), so 0 is an ordinary role, and the shipped pseudo-roles occupy the
-    // negative range beneath it. Seeded Tabs.AuthorizedRoles values in the same script include '-1;',
-    // '0;' and '-2;', which is direct evidence that both zero and the negatives are stored and matched.
-    // Library/Components/Shared/Null.vb:L41-L45 separately defines the legacy integer absence sentinel as
-    // -1, so -1 carried two incompatible meanings in the legacy source at once. The target keeps them
-    // apart structurally: absence is a null nullable, and -1 in a role column is All Users.
     private const int AllUsersRoleId = -1;
 
     private const int SuperUserRoleId = -2;
@@ -165,9 +119,7 @@ public sealed class PermissionEvaluatorTests
     /// <summary>An ordinary role whose identifier is zero, which this schema issues first.</summary>
     private const int ZeroRoleId = 0;
 
-    /// <summary>
-    /// The legacy "Nothing" pseudo-role, which reaches nobody and needs no special case to do so.
-    /// </summary>
+    /// <summary>The legacy "Nothing" pseudo-role, which reaches nobody and needs no special case to do so.</summary>
     /// <remarks>
     /// <c>glbRoleNothing = "-4"</c>. It is listed among the pseudo-roles for completeness and asserted
     /// because a reader who finds a <c>-4</c> in a grant row deserves to know what governs it: nothing
@@ -212,49 +164,26 @@ public sealed class PermissionEvaluatorTests
 
     private const string ModuleDefinitionScopeCode = "SYSTEM_MODULE_DEFINITION";
 
-    // A scope code an installed module contributes under its own name. It is a fabricated value rather
-    // than a shipped one, which is the point: the admission rule must accept an entry declared by the
-    // module's own definition WHATEVER code it carries, because every installed module chooses its own
-    // and a check recognising only the shipped code would revoke every permission they define.
     private const string InstalledModuleScopeCode = "MEASURED_MODULE";
 
     private const string PageScopeCode = "SYSTEM_TAB";
 
-    // A scope code belonging to a subsystem this migration excludes. The excluded subsystem's real code
-    // is deliberately NOT spelled here: this folder is checked for that subsystem's vocabulary, and
-    // writing the literal would report the suite as reintroducing the very feature it proves is absent.
-    // What matters to the assertion is only that the code differs from the one being asked for.
+    // A scope code belonging to a subsystem this migration excludes. The excluded subsystem's real code is
+    // deliberately NOT spelled here: this folder is checked for that subsystem's vocabulary, and writing
+    // the literal would report the suite as reintroducing the very feature it proves is absent.
     private const string ExcludedSubsystemScopeCode = "SYSTEM_EXCLUDED_SUBSYSTEM";
 
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>
-    /// Every permission key name the schema can hold, which is the closed enumeration itself.
-    /// </summary>
-    /// <remarks>
-    /// Derived from the enumeration rather than written out, so a member added to <c>PermissionKey</c>
-    /// widens the expectation automatically instead of leaving a stale literal behind. It is the answer the
-    /// unfiltered key listing owes - that listing reaches no store, because the catalogue of keys IS the
-    /// vocabulary - and it is also the number of candidate reads a code-scoped listing performs.
-    /// </remarks>
+    /// <summary>Every permission key name the schema can hold, which is the closed enumeration itself.</summary>
     private static readonly IReadOnlyList<string> AllKeyNames = Enum
         .GetValues<PermissionKey>()
         .Select(key => key.ToString())
         .ToList();
 
-    /// <summary>
-    /// The catalogue is projected upper-cased, without duplicates, and in ordinal order.
-    /// </summary>
+    /// <summary>The catalogue is projected upper-cased, without duplicates, and in ordinal order.</summary>
     /// <remarks>
-    /// MIGRATION: the upper-casing is now structural rather than defensive. Permission.PermissionKey is
-    /// the closed PermissionKey enumeration, whose member names are the stored spellings, so a catalogue
-    /// row carrying mixed case or surrounding whitespace is no longer representable at the entity
-    /// boundary at all - the persistence mapping resolves the stored text to a member on the way in and
-    /// re-emits the canonical name on the way out. What this test still pins is the part the service owns
-    /// and a closed vocabulary does not give away for free: duplicate rows collapse, and the answer is
-    /// ordered ordinally rather than in whatever order the store returned. The equivalent hazard for text
-    /// that never passes through the enumeration is covered by
-    /// <see cref="EffectiveKeys_DropAnUnusableStoredKey"/> on the grant path.
+    /// MIGRATION: the upper-casing is now structural rather than defensive.
     /// </remarks>
     [Fact]
     public async Task Catalogue_IsUpperCasedDistinctAndOrdinallySorted()
@@ -279,15 +208,13 @@ public sealed class PermissionEvaluatorTests
             + "repeatedly, and a caller comparing keys must not have to de-duplicate or sort them");
     }
 
-    /// <summary>
-    /// A grant naming no usable key contributes nothing.
-    /// </summary>
+    /// <summary>A grant naming no usable key contributes nothing.</summary>
     /// <param name="stored">The stored key text.</param>
     /// <remarks>
-    /// MIGRATION: this covers what <see cref="Catalogue_IsUpperCasedDistinctAndOrdinallySorted"/> no
-    /// longer can. The effective-key reads answer with the text the grant rows actually carried, which
-    /// the closed enumeration never filters, so a blank or whitespace-only key remains reachable on this
-    /// path and must still be dropped rather than surfaced as an empty permission.
+    /// MIGRATION: this covers what <see cref="Catalogue_IsUpperCasedDistinctAndOrdinallySorted"/> no longer
+    /// can. The effective-key reads answer with the text the grant rows actually carried, which the closed
+    /// enumeration never filters, so a blank or whitespace-only key remains reachable on this path and must
+    /// still be dropped rather than surfaced as an empty permission.
     /// </remarks>
     [Theory]
     [InlineData("")]
@@ -309,13 +236,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// A definition filter reaches the store as supplied, and a code filter narrows what it returned.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy reader took both filters in one call because a null in either argument was
-    /// a wildcard. The repository contract that replaces it declares the definition-scoped read the
-    /// provider actually had, so the definition goes to the store and the code narrows the result. The
-    /// narrowing is asserted rather than assumed: a definition declares a handful of entries, and a
-    /// filter that reached the store but was then ignored would look like a working query.
-    /// </remarks>
     [Fact]
     public async Task Catalogue_PassesTheDefinitionFilterToTheStoreAndAppliesTheCodeFilter()
     {
@@ -355,16 +275,8 @@ public sealed class PermissionEvaluatorTests
         result.Value.Should().Equal(new[] { "VIEW" }, "the entry under the other code is filtered away");
     }
 
-    /// <summary>
-    /// Omitting the code filter places no restriction, whereas supplying a blank one is a mistake.
-    /// </summary>
+    /// <summary>Omitting the code filter places no restriction, whereas supplying a blank one is a mistake.</summary>
     /// <param name="supplied">The supplied filter text.</param>
-    /// <remarks>
-    /// The distinction is deliberate. A caller that omits the filter is asking for everything; a caller that
-    /// sends an empty one has almost certainly bound an empty form field and is asking for rows whose code
-    /// is blank, of which there are none. Answering the second with an empty list would look like a working
-    /// query that found nothing.
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -392,15 +304,12 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A code filter on its own is answered by asking the store once per key in the closed set.
-    /// </summary>
+    /// <summary>A code filter on its own is answered by asking the store once per key in the closed set.</summary>
     /// <remarks>
-    /// MIGRATION: "which keys exist under this code" is exactly the question the legacy code-and-key
-    /// reader answered, one key at a time, so the service asks it once per member of the closed
-    /// PermissionKey enumeration - four reads, bounded by the schema rather than by the data. Only the
-    /// keys the store actually reported are returned, which is what distinguishes this answer from the
-    /// unfiltered one below.
+    /// "which keys exist under this code" is exactly the question the legacy code-and-key reader answered,
+    /// one key at a time, so the service asks it once per member of the closed PermissionKey enumeration -
+    /// four reads, bounded by the schema rather than by the data. Only the keys the store actually reported
+    /// are returned, which is what distinguishes this answer from the unfiltered one below.
     /// </remarks>
     [Fact]
     public async Task Catalogue_AnswersACodeFilterFromTheCodeAndKeyRead()
@@ -447,12 +356,10 @@ public sealed class PermissionEvaluatorTests
     /// Omitting both filters is accepted and answered from the closed key set without a store read.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy reader answered this by passing a null in both arguments, which its body
-    /// treated as a wildcard over the whole table. The repository contract takes no wildcard, and it
-    /// does not need to: Permission.PermissionKey IS the closed PermissionKey enumeration, so the
-    /// enumeration is the complete vocabulary any catalogue row could carry. Asking the store would put
-    /// a question whose answer the schema already fixes, and would answer "everything" with less than
-    /// everything on an installation whose catalogue is missing a row.
+    /// The legacy reader answered this by passing a null in both arguments, which its body treated as a
+    /// wildcard over the whole table. The repository contract takes no wildcard, and it does not need to:
+    /// Permission.PermissionKey IS the closed PermissionKey enumeration, so the enumeration is the complete
+    /// vocabulary any catalogue row could carry.
     /// </remarks>
     [Fact]
     public async Task Catalogue_AnswersAnAbsentFilterFromTheClosedKeySet()
@@ -481,9 +388,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A definition identifier that cannot name a row is refused rather than queried.
-    /// </summary>
+    /// <summary>A definition identifier that cannot name a row is refused rather than queried.</summary>
     /// <param name="supplied">The supplied identifier.</param>
     [Theory]
     [InlineData(0)]
@@ -504,9 +409,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Message.Should().Contain("identifiers start at 1");
     }
 
-    /// <summary>
-    /// A key filter narrows the catalogue listing to that one key.
-    /// </summary>
+    /// <summary>A key filter narrows the catalogue listing to that one key.</summary>
     [Fact]
     public async Task Catalogue_NarrowsToASingleKeyWhenOneIsNamed()
     {
@@ -547,26 +450,8 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <param name="undefinedKey">A numeric value outside the four defined members.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the review that prompted this test described the gap as an HTTP-reachable
-    /// input-validation exposure that echoed <c>["99"]</c> to a caller. Measured against the running API,
-    /// it is NOT reachable that way: <c>?permissionKey=99</c> is refused by MVC model binding with
-    /// <c>400</c> and <c>errors["permissionKey"] = ["The value '99' is invalid."]</c> before the action
-    /// body runs, because the enumeration binder tests defined membership for a non-flags enumeration -
-    /// while <c>?permissionKey=0</c> answers <c>["VIEW"]</c> and <c>?permissionKey=3</c> answers
-    /// <c>["WRITE"]</c>, proving numeric binding works and that the refusal is the membership check.
-    /// </para>
-    /// <para>
-    /// The gap in THIS member was real all the same. A CLR enumeration is an integer at run time, so
-    /// <c>(PermissionKey)99</c> is constructible, and the Application layer is callable without MVC. The
-    /// contract's own documentation had claimed no test was needed because "a value that reached the
-    /// service is by construction a member", and that reasoning was wrong for a non-HTTP caller. Without
-    /// the guard the unscoped branch answered a lone key filter by returning the FILTER ITSELF, so the
-    /// member reported <c>["99"]</c> - fabricating a key that names no member, no row and no grant - which
-    /// is why the projection assertion below matters more than the status. The two evaluation members of
-    /// this service already carried the identical guard, and those ARE reached from the authorization path;
-    /// this filter is nullable, so the test is on the value rather than on the presence.
-    /// </para>
+    /// The review that prompted this test described the gap as an HTTP-reachable input-validation exposure
+    /// that echoed <c>["99"]</c> to a caller.
     /// </remarks>
     [Theory]
     [InlineData(4)]
@@ -589,9 +474,6 @@ public sealed class PermissionEvaluatorTests
             undefinedKey.ToString(CultureInfo.InvariantCulture),
             "the refusal names the value the caller sent");
 
-        // Refused before any store is touched, and - decisively - the undefined value is never projected
-        // into an answer. This is the assertion that pins the fabrication down: the unscoped branch used to
-        // return the filter itself, so a caller received the undefined number back as a declared key.
         harness.Permissions.Verify(
             permissions => permissions.GetByModuleDefinitionIdAsync(
                 It.IsAny<int>(),
@@ -608,13 +490,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// An undefined key filter is refused on the SCOPED branches too, not only on the unscoped one.
     /// </summary>
-    /// <remarks>
-    /// The unscoped branch fabricated an answer, which is the loudest symptom, but the scoped branches used
-    /// the undefined value as a comparison operand and answered with an empty set - a quieter wrong answer
-    /// that reads as "that key is declared nowhere" rather than as "that key does not exist". The guard is
-    /// placed at the entry to the member so that all three branches are covered by one test, and both scoped
-    /// forms are exercised here to prove it.
-    /// </remarks>
     [Fact]
     public async Task Catalogue_RefusesAnUndefinedKeyFilterOnEveryScopedBranch()
     {
@@ -644,10 +519,6 @@ public sealed class PermissionEvaluatorTests
     /// narrowing it.
     /// </summary>
     /// <param name="definedKey">A defined member of the enumeration.</param>
-    /// <remarks>
-    /// The counterweight to the refusals above. A guard that refused a legitimate member would make the key
-    /// filter unusable, so all four members are asserted explicitly.
-    /// </remarks>
     [Theory]
     [InlineData(PermissionKey.VIEW)]
     [InlineData(PermissionKey.EDIT)]
@@ -671,12 +542,6 @@ public sealed class PermissionEvaluatorTests
     /// A key filter supplied with no other filter is answered from the closed enumeration without touching
     /// the store at all.
     /// </summary>
-    /// <remarks>
-    /// A DEFINED key needs no lookup: it is a member of the catalogue's key vocabulary by construction, so
-    /// querying would only risk reporting a key as absent because no row happened to declare it. That
-    /// reasoning holds only because the member now tests membership on entry - it was previously offered as
-    /// the reason no test was needed, and an undefined value was echoed straight back.
-    /// </remarks>
     [Fact]
     public async Task Catalogue_AnswersALoneKeyFilterFromTheClosedKeySet()
     {
@@ -698,15 +563,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A catalogue definition is returned in full by its own identifier.
-    /// </summary>
-    /// <remarks>
-    /// Restores <c>PermissionController.GetPermission(permissionID)</c>
-    /// (<c>PermissionController.vb:L30</c>). The record rather than the bare key is what a caller needs: a
-    /// key alone cannot say which scope code or which module definition declared it, and the same key is
-    /// declared repeatedly across scopes.
-    /// </remarks>
+    /// <summary>A catalogue definition is returned in full by its own identifier.</summary>
     [Fact]
     public async Task Definition_IsReturnedInFullByItsOwnIdentifier()
     {
@@ -725,9 +582,7 @@ public sealed class PermissionEvaluatorTests
         result.Value.PermissionName.Should().Be("EDIT");
     }
 
-    /// <summary>
-    /// An identifier naming no catalogue row is reported as absent, not as a failure.
-    /// </summary>
+    /// <summary>An identifier naming no catalogue row is reported as absent, not as a failure.</summary>
     [Fact]
     public async Task Definition_ReportsAnUnknownIdentifierAsAbsent()
     {
@@ -742,15 +597,9 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The module-scoped read answers with the union the terminal statement takes, not with the module's own
-    /// definition alone.
+    /// The module-scoped read answers with the union the terminal statement takes, not with the module's
+    /// own definition alone.
     /// </summary>
-    /// <remarks>
-    /// Measured from <c>GetPermissionsByModuleID</c> (04.05.03), whose body is
-    /// <c>WHERE ModuleDefID = (SELECT ModuleDefID FROM Modules WHERE ModuleID = @ModuleID)
-    /// OR PermissionCode = 'SYSTEM_MODULE_DEFINITION'</c>. Dropping the second arm would silently narrow
-    /// the answer for every module in the installation.
-    /// </remarks>
     [Fact]
     public async Task ModuleDefinitions_AnswerWithTheUnionOfTheDefinitionAndTheProductWideScope()
     {
@@ -793,9 +642,7 @@ public sealed class PermissionEvaluatorTests
                 + "and the page scope belongs to neither arm");
     }
 
-    /// <summary>
-    /// A module from another tenant is refused before any catalogue metadata is read.
-    /// </summary>
+    /// <summary>A module from another tenant is refused before any catalogue metadata is read.</summary>
     [Fact]
     public async Task ModuleDefinitions_RefuseAModuleOwnedByAnotherPortal()
     {
@@ -814,12 +661,10 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The page-scoped read answers with the page scope for each valid page in the tenant.
-    /// </summary>
+    /// <summary>The page-scoped read answers with the page scope for each valid page in the tenant.</summary>
     /// <remarks>
-    /// SEC-033 changes the precondition, not the catalogue: the page must exist in the addressed tenant, but
-    /// the terminal <c>GetPermissionsByTabID</c> scope remains shared by every valid page.
+    /// changes the precondition, not the catalogue: the page must exist in the addressed tenant, but the
+    /// terminal <c>GetPermissionsByTabID</c> scope remains shared by every valid page.
     /// </remarks>
     [Fact]
     public async Task TabDefinitions_AnswerWithThePageScopeForEachValidPage()
@@ -857,9 +702,7 @@ public sealed class PermissionEvaluatorTests
             "every valid page receives the shared SYSTEM_TAB catalogue");
     }
 
-    /// <summary>
-    /// A page from another tenant is refused before any catalogue metadata is read.
-    /// </summary>
+    /// <summary>A page from another tenant is refused before any catalogue metadata is read.</summary>
     [Fact]
     public async Task TabDefinitions_RefuseAPageOwnedByAnotherPortal()
     {
@@ -878,9 +721,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The identifying reads answer each definition once, in identifier order.
-    /// </summary>
+    /// <summary>The identifying reads answer each definition once, in identifier order.</summary>
     /// <remarks>
     /// Ordering and distinctness are promises the application contract makes, so they are asserted against
     /// the contract rather than left to whatever shape the store query happens to have.
@@ -915,9 +756,7 @@ public sealed class PermissionEvaluatorTests
         result.Value.Select(row => row.PermissionId).Should().Equal(new[] { 4, 9 });
     }
 
-    /// <summary>
-    /// A tenant-wide question is answered by the tenant-wide query alone.
-    /// </summary>
+    /// <summary>A tenant-wide question is answered by the tenant-wide query alone.</summary>
     [Fact]
     public async Task EffectiveKeys_ForTheWholeTenantUseTheTenantWideQuery()
     {
@@ -954,9 +793,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// An unknown tenant is reported as missing.
-    /// </summary>
+    /// <summary>An unknown tenant is reported as missing.</summary>
     [Fact]
     public async Task EffectiveKeys_RefuseAnUnknownTenant()
     {
@@ -999,9 +836,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Message.Should().Contain("-1");
     }
 
-    /// <summary>
-    /// An unidentified caller is evaluated under the two pseudo-roles and no account is read.
-    /// </summary>
+    /// <summary>An unidentified caller is evaluated under the two pseudo-roles and no account is read.</summary>
     /// <remarks>
     /// The legacy schema records these grants against reserved role identifiers rather than against real
     /// rows, so an anonymous visitor is a first-class subject of evaluation rather than an absence of one.
@@ -1036,11 +871,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// A member is evaluated under its assigned roles plus the everyone role, as of the current instant.
     /// </summary>
-    /// <remarks>
-    /// The instant matters because a role assignment carries effective and expiry dates. Reading the
-    /// assignments as of the clock rather than as of no particular time is what makes a lapsed assignment
-    /// stop granting anything.
-    /// </remarks>
     [Fact]
     public async Task EffectiveKeys_ForAMemberAppendTheEveryoneRole()
     {
@@ -1062,15 +892,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// The pseudo-role names are the immutable domain constants, and no configuration can move them.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: THIS FACT ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS THE DEFECT. It set
-    /// <c>Portal:AllUsersRoleName</c> to "Tout le monde" and <c>Portal:UnauthenticatedRoleName</c> to
-    /// "Visiteurs" and required the service to follow, which is exactly the mutable-authorization
-    /// boundary the review found: a deploy-time string decided which stored role receives every-caller
-    /// and anonymous-caller semantics. The settings are gone and the names are
-    /// <see cref="SpecialRoleNames"/>, so the fact now asserts what must be true instead of what used
-    /// to be configurable - the exact legacy values, and no configuration surface able to change them.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task EffectiveKeys_UseTheImmutablePseudoRoleConstants()
@@ -1101,9 +922,7 @@ public sealed class PermissionEvaluatorTests
                 "reintroducing either setting would make an authorization audience configurable again");
     }
 
-    /// <summary>
-    /// A host account holds the whole catalogue and no scope is consulted.
-    /// </summary>
+    /// <summary>A host account holds the whole catalogue and no scope is consulted.</summary>
     [Fact]
     public async Task EffectiveKeys_ForAHostAccountAreTheWholeCatalogue()
     {
@@ -1136,25 +955,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// A host account is answered before any scope is resolved, so an unresolvable scope is not reported.
     /// </summary>
-    /// <remarks>
-    /// This is a consequence of the order in which the checks run, and it is the desired one: the answer for
-    /// a host account is the same for every scope, so resolving the scope could only turn a correct answer
-    /// into a not-found. It also means the endpoint cannot be used by a host account to discover which
-    /// module identifiers exist, which is consistent with the refusal-not-absence rule the protected routes
-    /// follow.
-    /// <para>
-    /// MIGRATION: a host account is answered with the whole closed key set rather than with whichever
-    /// keys the catalogue table happens to contain. That reproduces the legacy rule rather than departing
-    /// from it: PortalSecurity.IsInRoles returned true for a host account at PortalSecurity.vb:L123
-    /// before examining a single grant, so the legacy answer was "everything" and was never derived from
-    /// the catalogue at all. Since Permission.PermissionKey IS the closed enumeration, the enumeration is
-    /// what "everything" means, and it is also the only answer the permission repository's contract can
-    /// support - that contract mirrors the legacy provider blocks, which offered no unfiltered catalogue
-    /// read. A catalogue-derived answer would additionally under-report on any installation whose
-    /// catalogue is missing a row, which is the one case where the two answers differ and the one case
-    /// where "everything" must not shrink.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task EffectiveKeys_ForAHostAccountIgnoreAnUnresolvableScope()
     {
@@ -1188,9 +988,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A module-scoped question is answered by the module query.
-    /// </summary>
+    /// <summary>A module-scoped question is answered by the module query.</summary>
     [Fact]
     public async Task EffectiveKeys_ForAModuleUseTheModuleQuery()
     {
@@ -1214,9 +1012,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A module belonging to another tenant is reported as missing.
-    /// </summary>
+    /// <summary>A module belonging to another tenant is reported as missing.</summary>
     [Fact]
     public async Task EffectiveKeys_RefuseAModuleFromAnotherTenant()
     {
@@ -1233,9 +1029,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(ModuleNotFoundCode);
     }
 
-    /// <summary>
-    /// A module owned by the installation rather than a tenant is evaluable in any tenant.
-    /// </summary>
+    /// <summary>A module owned by the installation rather than a tenant is evaluable in any tenant.</summary>
     [Fact]
     public async Task EffectiveKeys_AcceptAnInstallationOwnedModuleInAnyTenant()
     {
@@ -1253,9 +1047,7 @@ public sealed class PermissionEvaluatorTests
         result.Value.Should().Equal(new[] { "VIEW" });
     }
 
-    /// <summary>
-    /// A page-scoped question is answered by the page query.
-    /// </summary>
+    /// <summary>A page-scoped question is answered by the page query.</summary>
     [Fact]
     public async Task EffectiveKeys_ForAPageUseThePageQuery()
     {
@@ -1279,9 +1071,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A page belonging to another tenant is reported as missing.
-    /// </summary>
+    /// <summary>A page belonging to another tenant is reported as missing.</summary>
     [Fact]
     public async Task EffectiveKeys_RefuseAPageFromAnotherTenant()
     {
@@ -1298,9 +1088,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(TabNotFoundCode);
     }
 
-    /// <summary>
-    /// A page owned by the installation rather than a tenant is evaluable in any tenant.
-    /// </summary>
+    /// <summary>A page owned by the installation rather than a tenant is evaluable in any tenant.</summary>
     [Fact]
     public async Task EffectiveKeys_AcceptAnInstallationOwnedPageInAnyTenant()
     {
@@ -1318,9 +1106,7 @@ public sealed class PermissionEvaluatorTests
         result.Value.Should().Equal(new[] { "EDIT" });
     }
 
-    /// <summary>
-    /// Asking about a module on a page unions both scopes.
-    /// </summary>
+    /// <summary>Asking about a module on a page unions both scopes.</summary>
     [Fact]
     public async Task EffectiveKeys_ForAModuleOnAPageUnionBothScopes()
     {
@@ -1344,11 +1130,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// A module that inherits its view permission is not viewable when no page it sits on grants view.
     /// </summary>
-    /// <remarks>
-    /// This is the deny-over-allow rule this layer owns. The module's own grants say view is allowed; the
-    /// module is nevertheless not viewable, because a module that inherits defers the decision to the pages
-    /// it sits on and none of them allows it. Every other key the module grants is unaffected.
-    /// </remarks>
     [Fact]
     public async Task InheritedView_IsWithheldWhenNoPlacementPageGrantsIt()
     {
@@ -1393,9 +1174,7 @@ public sealed class PermissionEvaluatorTests
             "view is contributed by the page even though the module's own grants never mention it");
     }
 
-    /// <summary>
-    /// A module that does not inherit keeps its own view grant and no page is consulted.
-    /// </summary>
+    /// <summary>A module that does not inherit keeps its own view grant and no page is consulted.</summary>
     /// <param name="inherits">The stored inheritance flag.</param>
     /// <remarks>
     /// The flag is nullable in the schema, and an unrecorded value is not an inheriting module: the legacy
@@ -1436,10 +1215,9 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This test measured the opposite short circuit before the placement-insensitivity defect was corrected:
-    /// it stopped at the first page that GRANTED, which is the disjunction that let a permissive placement
-    /// admit callers to a restrictive one. The conjunction settles on the first page that WITHHOLDS instead,
-    /// so the remaining pages are still not worth a round trip — but the outcome it settles on is the safe one.
+    /// This test measured the opposite short circuit before the placement-insensitivity defect was
+    /// corrected: it stopped at the first page that GRANTED, which is the disjunction that let a permissive
+    /// placement admit callers to a restrictive one.
     /// </remarks>
     [Fact]
     public async Task InheritedView_StopsAtTheFirstWithholdingPage()
@@ -1471,24 +1249,10 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A question that names a module but no page is answered by EVERY placement at once, so a module placed
-    /// on one permissive and one restrictive page is not viewable.
+    /// A question that names a module but no page is answered by EVERY placement at once, so a module
+    /// placed on one permissive and one restrictive page is not viewable.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// This is the half of the placement defect that no route could otherwise reach. Every module route in
-    /// this application addresses a module WITHOUT naming a page, so had the unaddressed case kept granting
-    /// when any placement granted, the escalation would have remained fully exploitable however carefully the
-    /// addressed case was decided: place a module on a public page and again on a restricted one, and the
-    /// public placement would answer for both.
-    /// </para>
-    /// <para>
-    /// The conjunction is the only collective reading that cannot exceed the answer for an individual
-    /// placement. A caller genuinely entitled to the permissive placement names it, and is then decided by
-    /// that page alone.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task InheritedView_WithoutAnAddressedPlacementRequiresEveryPlacementToGrant()
     {
@@ -1527,19 +1291,12 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A placement addressed by its own key is decided by the page that placement sits on, so the restrictive
-    /// placement of a doubly-placed module is refused while the permissive one is allowed.
+    /// A placement addressed by its own key is decided by the page that placement sits on, so the
+    /// restrictive placement of a doubly-placed module is refused while the permissive one is allowed.
     /// </summary>
     /// <param name="addressedTabModuleId">The placement key the caller names.</param>
     /// <param name="expected">Whether the page that placement sits on grants view.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the form of address the module resource itself uses — <c>ModulesController.GetAsync</c> accepts
-    /// <c>tabModuleId</c> as a query field — so it is the form a real request arrives in, and reading it is
-    /// what lets a caller entitled to one particular placement be decided by that placement rather than by the
-    /// stricter collective answer. It is the more precise of the two forms because a module may be placed on
-    /// the same page more than once, which a page identifier alone could not distinguish.
-    /// </remarks>
     [Theory]
     [InlineData(FirstPlacementId, true)]
     [InlineData(SecondPlacementId, false)]
@@ -1571,10 +1328,6 @@ public sealed class PermissionEvaluatorTests
     /// A placement key the module does not occupy is refused rather than answered from any other placement.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Falling back would reinstate the collective answer for a request that asked a specific question, and
-    /// would let a caller enumerate a module's placements by observing which keys answer affirmatively.
-    /// </remarks>
     [Fact]
     public async Task HasModulePermission_ForAPlacementKeyTheModuleDoesNotOccupyIsRefused()
     {
@@ -1606,15 +1359,10 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// Addressing a placement by its own key and simultaneously naming a page that placement does not sit on
-    /// is a contradiction, and is refused rather than resolved in favour of either.
+    /// Addressing a placement by its own key and simultaneously naming a page that placement does not sit
+    /// on is a contradiction, and is refused rather than resolved in favour of either.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Whichever of the two were preferred would be preferred for the permissions it carries and not for what
-    /// the request meant, which is exactly the shape of a confused-deputy decision. Refusing is also the only
-    /// answer that cannot be widened by adding a second, contradictory field to a request.
-    /// </remarks>
     [Fact]
     public async Task HasModulePermission_ForContradictoryFormsOfAddressIsRefused()
     {
@@ -1673,14 +1421,6 @@ public sealed class PermissionEvaluatorTests
     /// its view decision from the page.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the one request shape that needs the placement set twice - once to check that the page and the
-    /// placement key name the same row, and once to decide the inherited view - and it used to read the set
-    /// twice to serve them, an identical round trip issued back to back within a single decision on the
-    /// authorization path. The set is now read once and handed to both, which is why the placements are left
-    /// in the STORE here rather than loaded onto the module: a loaded navigation would satisfy both consumers
-    /// without any read at all and the assertion would prove nothing.
-    /// </remarks>
     [Fact]
     public async Task HasModulePermission_ReadsThePlacementsOnceWhenItBothReconcilesAndInherits()
     {
@@ -1716,21 +1456,10 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The hoisted read is taken LAZILY, and this is the fact that keeps it that way. Reading unconditionally
-    /// at the top of the member would trade a duplicated round trip on one shape for a brand-new one on every
-    /// other, which is why the shape that must stay free of the read is asserted alongside the shape that must
-    /// issue it exactly once.
-    /// </para>
-    /// <para>
-    /// MIGRATION: SEC-F2 ADDED A THIRD CONSUMER, and this fact was amended rather than deleted. The consumers
-    /// were the reconciliation, which has something to reconcile only when BOTH forms of address are present,
-    /// and the inherited-view decision; the edit decision now also needs the set, because the page a module
-    /// sits on may grant edit independently of the module's own grants - the second of the three alternatives
-    /// at <c>PortalModuleBase.vb:L222-L227</c>. The shape asserted to make no read is therefore the one where
-    /// the module's OWN grant already answers, which is the shape that genuinely needs nothing further; the
-    /// laziness property this fact protects is unchanged, and the read is still taken at most once.
-    /// </para>
+    /// The hoisted read is taken LAZILY, and this is the fact that keeps it that way. Reading
+    /// unconditionally at the top of the member would trade a duplicated round trip on one shape for a
+    /// brand-new one on every other, which is why the shape that must stay free of the read is asserted
+    /// alongside the shape that must issue it exactly once.
     /// </remarks>
     [Fact]
     public async Task HasModulePermission_TakesTheHoistedPlacementReadLazily()
@@ -1798,15 +1527,13 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A module that inherits its view permission and sits on no page at all is not viewable.
-    /// </summary>
+    /// <summary>A module that inherits its view permission and sits on no page at all is not viewable.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The conjunction over an empty set is vacuously true, so this case has to be stated rather than left to
-    /// the loop: a module that takes its view permission from its pages and has no pages inherits nothing, and
-    /// must not thereby become visible to everyone — which is the exact shape of an accidental world-readable
-    /// grant.
+    /// The conjunction over an empty set is vacuously true, so this case has to be stated rather than left
+    /// to the loop: a module that takes its view permission from its pages and has no pages inherits
+    /// nothing, and must not thereby become visible to everyone — which is the exact shape of an accidental
+    /// world-readable grant.
     /// </remarks>
     [Fact]
     public async Task InheritedView_IsWithheldFromAModuleThatSitsOnNoPage()
@@ -1836,12 +1563,6 @@ public sealed class PermissionEvaluatorTests
     /// <param name="addressedTabId">The placement the caller names.</param>
     /// <param name="expected">Whether that placement grants view.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the case an earlier revision answered wrongly. It unioned every placement, so the permissive
-    /// placement admitted callers to the restrictive one - a module on a public page and again on a private
-    /// page became viewable on the private page by everybody. Both directions are asserted, because a fix
-    /// that merely denied more would be just as wrong as the union.
-    /// </remarks>
     [Theory]
     [InlineData(TabId, true)]
     [InlineData(SecondTabId, false)]
@@ -1885,11 +1606,6 @@ public sealed class PermissionEvaluatorTests
     /// Addressing a page the module is not placed on is a denial, and no page's grants are consulted.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Falling back to the module's real placements here would reinstate the union through the back door, and
-    /// would additionally let a caller map a module's placements by observing which page identifiers answer
-    /// affirmatively.
-    /// </remarks>
     [Fact]
     public async Task HasModulePermission_ForAPlacementTheModuleDoesNotOccupyIsRefused()
     {
@@ -1954,13 +1670,6 @@ public sealed class PermissionEvaluatorTests
     /// Inheritance considers every page until one withholds, so a granting page does not end the traversal.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The mirror of the short-circuit test above, and the reason both are kept: that one proves the traversal
-    /// STOPS at a withholding page, this one proves it does not stop at a granting one. Together they pin the
-    /// conjunction rather than merely one of its outcomes. Before the placement-insensitivity defect was
-    /// corrected this test asserted the opposite - that a later granting page rescued an earlier withholding
-    /// one - which is precisely the disjunction that made a permissive placement answer for a restrictive one.
-    /// </remarks>
     [Fact]
     public async Task InheritedView_ConsidersEveryPageUntilOneWithholds()
     {
@@ -1990,9 +1699,7 @@ public sealed class PermissionEvaluatorTests
             "the first page granting view is not the answer, so the second still has to be asked");
     }
 
-    /// <summary>
-    /// Inheritance reads the placements when the module was loaded without them.
-    /// </summary>
+    /// <summary>Inheritance reads the placements when the module was loaded without them.</summary>
     [Fact]
     public async Task InheritedView_ReadsThePlacementsWhenTheyWereNotLoaded()
     {
@@ -2014,9 +1721,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A module with no placement at all inherits nothing.
-    /// </summary>
+    /// <summary>A module with no placement at all inherits nothing.</summary>
     [Fact]
     public async Task InheritedView_GrantsNothingWhenTheModuleSitsNowhere()
     {
@@ -2036,9 +1741,7 @@ public sealed class PermissionEvaluatorTests
             "an unplaced module has no page to inherit from, so its own view grant is still withheld");
     }
 
-    /// <summary>
-    /// Asking whether an inheriting module is viewable is answered by the page.
-    /// </summary>
+    /// <summary>Asking whether an inheriting module is viewable is answered by the page.</summary>
     /// <param name="pageGrantsView">Whether the placement page allows view.</param>
     [Theory]
     [InlineData(true)]
@@ -2073,9 +1776,7 @@ public sealed class PermissionEvaluatorTests
             "an inheriting module's own view grant is not the answer, so it is not even read");
     }
 
-    /// <summary>
-    /// Inheritance applies to the view permission only.
-    /// </summary>
+    /// <summary>Inheritance applies to the view permission only.</summary>
     /// <param name="key">The permission asked about.</param>
     [Theory]
     [InlineData(PermissionKey.EDIT)]
@@ -2110,14 +1811,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A permission key that names no member of the vocabulary is refused.
-    /// </summary>
-    /// <remarks>
-    /// The keys arrive as an enumeration, and an enumeration in this language accepts any integer of its
-    /// underlying type. Without this check an unmapped value would be passed to the store, match nothing,
-    /// and be reported as a legitimate refusal rather than as a malformed request.
-    /// </remarks>
+    /// <summary>A permission key that names no member of the vocabulary is refused.</summary>
     [Fact]
     public async Task HasModulePermission_RefusesAKeyThatNamesNoMember()
     {
@@ -2144,16 +1838,9 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F2: module edit is granted by the EDIT grant on a page the module is placed on, which is the
-    /// second of the three alternatives the legacy edit test offered.
+    /// module edit is granted by the EDIT grant on a page the module is placed on, which is the second of
+    /// the three alternatives the legacy edit test offered.
     /// </summary>
-    /// <remarks>
-    /// <c>PortalModuleBase.vb:L222-L227</c> admitted a caller holding
-    /// <c>PortalSettings.ActiveTab.AdministratorRoles</c> - the roles carrying EDIT on the page the module was
-    /// being administered from - independently of the module's own grants. Before this fact existed the target
-    /// implemented only the module-scope alternative, and since nothing in the exposed contract writes a
-    /// module-scope grant, no principal could edit a module this API created.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task HasModulePermission_ForEditIsGrantedByThePagesEditGrant()
@@ -2175,9 +1862,6 @@ public sealed class PermissionEvaluatorTests
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         result.Value.Should().BeTrue("the page the module sits on grants edit to this caller");
 
-        // The pages are asked about COLLECTIVELY, in one call carrying the placement set, because a request
-        // that names no page is asking about all of them. Asking one page at a time made this arm cost a read
-        // set per placement.
         harness.Evaluator.Verify(
             evaluator => evaluator.HasAnyTabPermissionAsync(
                 It.Is<IReadOnlyCollection<int>>(tabIds => tabIds.Count == 1 && tabIds.Contains(TabId)),
@@ -2199,13 +1883,14 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F2: the page arm is a disjunction over the module's placements, so one editable page is enough -
-    /// and a request that names a page is answered from that page alone.
+    /// the page arm is a disjunction over the module's placements, so one editable page is enough - and a
+    /// request that names a page is answered from that page alone.
     /// </summary>
     /// <remarks>
-    /// The quantifier differs from inherited VIEW on purpose. Visibility asks whether the module is viewable
-    /// wherever it is placed, which is a conjunction; edit authority asks whether the caller may administer it
-    /// from a page it can edit, and the legacy caller reached a module through exactly one page.
+    /// The quantifier differs from inherited VIEW on purpose. Visibility asks whether the module is
+    /// viewable wherever it is placed, which is a conjunction; edit authority asks whether the caller may
+    /// administer it from a page it can edit, and the legacy caller reached a module through exactly one
+    /// page.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2275,23 +1960,13 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The tenant-administrator alternative is asked FIRST, so an administrative caller settles the question
-    /// without the module's placements being read or any page being evaluated.
+    /// The tenant-administrator alternative is asked FIRST, so an administrative caller settles the
+    /// question without the module's placements being read or any page being evaluated.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The three alternatives form a disjunction, and reordering the alternatives of a disjunction cannot
     /// change its verdict: none of the three writes anything, none observes the others, and all are pure
-    /// reads. What the order decides is COST. Tenant-administrator membership costs two reads whatever the
-    /// tenant looks like, and it is the arm that admits every administrative caller; the page arm costs a read
-    /// set for the pages a module occupies, and reaches its answer only for callers the first arm has already
-    /// admitted or declined. Asking the page arm first therefore made the common administrative path pay for
-    /// the uncommon one.
-    /// </para>
-    /// <para>
-    /// The module here carries NO loaded placements, so the placement read is a real read this fact can
-    /// observe being skipped rather than an artefact of what the aggregate happened to carry.
-    /// </para>
+    /// reads.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2350,14 +2025,9 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F2: module edit is granted to a member of the addressed tenant's own administrators role, which is
-    /// the third of the three alternatives the legacy edit test offered.
+    /// module edit is granted to a member of the addressed tenant's own administrators role, which is the
+    /// third of the three alternatives the legacy edit test offered.
     /// </summary>
-    /// <remarks>
-    /// <c>PortalModuleBase.vb:L222-L227</c> closed with <c>IsInRoles(PortalSettings.AdministratorRoleName)</c>.
-    /// The role is read from the ADDRESSED tenant's row rather than from the tenant the caller arrived
-    /// through, so the question answered is about the module's own tenant.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task HasModulePermission_ForEditIsGrantedToTheTenantsOwnAdministrator()
@@ -2392,8 +2062,8 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F2: the two added alternatives admit nobody else. A caller holding neither the module's grant, nor
-    /// an editable page, nor the tenant's administrators role is still refused.
+    /// the two added alternatives admit nobody else. A caller holding neither the module's grant, nor an
+    /// editable page, nor the tenant's administrators role is still refused.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2425,14 +2095,8 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F2: the two added alternatives apply to the edit key only, so a view question is unaffected by
-    /// them.
+    /// the two added alternatives apply to the edit key only, so a view question is unaffected by them.
     /// </summary>
-    /// <remarks>
-    /// The legacy member they reproduce decided <c>IsEditable</c> and nothing else. View is settled by the
-    /// module's own grant, or by the pages it sits on when it inherits, and neither reading may be widened by
-    /// an edit rule.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task HasModulePermission_ForViewIsNotWidenedByTheEditAlternatives()
@@ -2464,9 +2128,7 @@ public sealed class PermissionEvaluatorTests
             "a non-inheriting module's visibility is its own grant, which this caller does not hold");
     }
 
-    /// <summary>
-    /// A page question refuses an unrecognised key too.
-    /// </summary>
+    /// <summary>A page question refuses an unrecognised key too.</summary>
     [Fact]
     public async Task HasTabPermission_RefusesAKeyThatNamesNoMember()
     {
@@ -2483,9 +2145,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(KeyInvalidCode);
     }
 
-    /// <summary>
-    /// Every defined key is accepted.
-    /// </summary>
+    /// <summary>Every defined key is accepted.</summary>
     /// <param name="key">The permission asked about.</param>
     [Theory]
     [InlineData(PermissionKey.VIEW)]
@@ -2516,9 +2176,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once());
     }
 
-    /// <summary>
-    /// An unknown module is reported as missing.
-    /// </summary>
+    /// <summary>An unknown module is reported as missing.</summary>
     [Fact]
     public async Task HasModulePermission_RefusesAnUnknownModule()
     {
@@ -2542,9 +2200,7 @@ public sealed class PermissionEvaluatorTests
         result.Reason!.Code.Should().Be(ModuleNotFoundCode);
     }
 
-    /// <summary>
-    /// An unknown page is reported as missing.
-    /// </summary>
+    /// <summary>An unknown page is reported as missing.</summary>
     [Fact]
     public async Task HasTabPermission_RefusesAnUnknownPage()
     {
@@ -2567,12 +2223,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// An account that is not a member of the tenant is answered no rather than reported as missing.
     /// </summary>
-    /// <remarks>
-    /// The asymmetry with the effective-keys question is deliberate. "May this account do this?" always has
-    /// an answer, and for a non-member the answer is no; turning it into a failure would make the gate
-    /// harder to use and would leak the fact that the identifier names nobody. "What may this account do?"
-    /// has no answer at all for a non-member, so it fails.
-    /// </remarks>
     [Fact]
     public async Task HasPermission_AnswersNoForAnAccountThatIsNotAMember()
     {
@@ -2615,9 +2265,7 @@ public sealed class PermissionEvaluatorTests
         tabAnswer.Value.Should().BeFalse();
     }
 
-    /// <summary>
-    /// A host account is allowed without the grants being read at all.
-    /// </summary>
+    /// <summary>A host account is allowed without the grants being read at all.</summary>
     [Fact]
     public async Task HasPermission_AllowsAHostAccountWithoutReadingAnyGrant()
     {
@@ -2662,9 +2310,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The decision itself is delegated, and the caller's roles travel with the question.
-    /// </summary>
+    /// <summary>The decision itself is delegated, and the caller's roles travel with the question.</summary>
     /// <param name="storedAnswer">The decision the store reports.</param>
     [Theory]
     [InlineData(true)]
@@ -2691,9 +2337,7 @@ public sealed class PermissionEvaluatorTests
         harness.CapturedRoleNames.Should().Equal(new[] { "Subscribers", AllUsersRoleName });
     }
 
-    /// <summary>
-    /// A permission question does not verify the tenant separately.
-    /// </summary>
+    /// <summary>A permission question does not verify the tenant separately.</summary>
     /// <remarks>
     /// Confirming that the module or page belongs to the tenant is a stronger check than confirming the
     /// tenant exists, and it is one read rather than two. A separate existence check would be dead work on
@@ -2725,9 +2369,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// Removing an account's grants refuses an unknown tenant and touches nothing.
-    /// </summary>
+    /// <summary>Removing an account's grants refuses an unknown tenant and touches nothing.</summary>
     [Fact]
     public async Task RemoveGrants_RefusesAnUnknownTenant()
     {
@@ -2757,15 +2399,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// Removing an account's grants refuses an account that is not a member, and deletes nothing.
-    /// </summary>
-    /// <remarks>
-    /// Here a non-member is a failure rather than a no-op, which is the opposite of the permission question
-    /// above. A caller asking to remove grants believes the account exists; silently succeeding would report
-    /// that grants had been cleaned up when nothing had been examined, which is exactly the kind of quiet
-    /// success that leaves stale grants behind.
-    /// </remarks>
+    /// <summary>Removing an account's grants refuses an account that is not a member, and deletes nothing.</summary>
     [Fact]
     public async Task RemoveGrants_RefusesAnAccountThatIsNotAMember()
     {
@@ -2798,9 +2432,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// Removing an account's grants delegates the removal.
-    /// </summary>
+    /// <summary>Removing an account's grants delegates the removal.</summary>
     [Fact]
     public async Task RemoveGrants_DelegatesTheRemoval()
     {
@@ -2812,10 +2444,6 @@ public sealed class PermissionEvaluatorTests
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        // MIGRATION: both grant tables are cleaned, because the legacy provider declared the removal
-        //            as two members over two tables - DeleteModulePermissionsByUserID at core
-        //            DataProvider.vb:L296 and DeleteTabPermissionsByUserID at L305. A grant left
-        //            behind on either table would outlive the account that held it.
         harness.Permissions.Verify(
             permissions => permissions.DeleteModulePermissionsByUserIdAsync(
                 PortalId,
@@ -2831,35 +2459,10 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The removal lands inside one transaction rather than as two independently durable statements, and the
-    /// scope is obtained through the JOINING helper so the same member can also be used inside a cascade.
+    /// The removal lands inside one transaction rather than as two independently durable statements, and
+    /// the scope is obtained through the JOINING helper so the same member can also be used inside a
+    /// cascade.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy pair was unprotected. The provider declared transaction members at
-    /// <c>Library/Components/Providers/Data/DataProvider.vb</c>:L70-L74 and neither cleanup -
-    /// <c>ModulePermissionController.vb</c>:L218 nor <c>TabPermissionController.vb</c>:L209 - invoked them,
-    /// so each statement committed alone and a failure between them left the account's module grants gone
-    /// and its page grants intact.
-    /// </para>
-    /// <para>
-    /// AN EARLIER REVISION OF THIS FACT PINNED THE OPPOSITE, and the premise it rested on was false. It
-    /// asserted that no scope was opened, on the grounds that both repository members staged against the
-    /// change tracker so one <c>SaveChangesAsync</c> would apply them indivisibly. They do not stage: each
-    /// issues one set-based <c>ExecuteDeleteAsync</c> that reaches the store when it is called, and
-    /// <c>IPermissionRepository</c>'s own remarks say so and say the caller must open the boundary. Pinning
-    /// the absence of the scope was therefore pinning the defect - outside an enclosing transaction the pair
-    /// really was two independently durable statements, exactly as in the legacy.
-    /// </para>
-    /// <para>
-    /// WHICH HELPER IS USED IS PART OF THE CONTRACT, so it is asserted rather than left to inspection.
-    /// <c>BeginTransactionAsync</c> refuses to nest, which is what made an even earlier revision of the
-    /// SERVICE unusable inside the account-deletion cascade; <c>JoinOrBeginTransactionAsync</c> returns a
-    /// no-op join when a scope is already held, so one call site serves the standalone caller and the cascade
-    /// without either losing its guarantee. A future edit that swapped one for the other would break the
-    /// cascade at runtime and nowhere else, so both directions are asserted here.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task RemoveGrants_CommitsBothTablesInsideOneJoinableTransaction()
     {
@@ -2876,12 +2479,9 @@ public sealed class PermissionEvaluatorTests
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Once());
 
-        // ⚠ SEC-F13. THIS ASSERTED THAT NO TRANSACTION WAS OPENED, ON THE READING THAT BOTH REMOVALS WERE
-        // STAGED AGAINST THE CHANGE TRACKER AND APPLIED BY ONE FLUSH. They are not staged: both repository
-        // members issue a set-based ExecuteDeleteAsync, which runs when it is called. The first delete was
-        // therefore already durable when the second was issued, so a failure between them left the account's
-        // module grants gone and its page grants intact - the half-cleaned state this migration set out to
-        // eliminate. One scope now spans both statements and the flush.
+        // ⚠ THIS ASSERTED THAT NO TRANSACTION WAS OPENED, ON THE READING THAT BOTH REMOVALS WERE STAGED
+        // AGAINST THE CHANGE TRACKER AND APPLIED BY ONE FLUSH. They are not staged: both repository members
+        // issue a set-based ExecuteDeleteAsync, which runs when it is called.
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
                 It.IsAny<TransactionIsolation>(),
@@ -2903,10 +2503,8 @@ public sealed class PermissionEvaluatorTests
     /// modified.
     /// </summary>
     /// <remarks>
-    /// This is the fact the atomicity claim rests on, and it cannot be inferred from the fact above: a scope
-    /// that is opened and always committed proves nothing about the failure path. The page-grant removal is
-    /// made to fault AFTER the module-grant removal has already reached the store, which is precisely the
-    /// window the legacy left open, and the assertion is that the scope is abandoned rather than committed.
+    /// This is the fact the atomicity claim rests on, and it cannot be inferred from the fact above: a
+    /// scope that is opened and always committed proves nothing about the failure path.
     /// </remarks>
     [Fact]
     public async Task RemoveGrants_WhenTheSecondTableFails_AbandonsTheTransaction()
@@ -2940,26 +2538,9 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The cascade-facing form removes from both tables and neither flushes nor evicts, which is what lets it
-    /// join a larger unit of work.
+    /// The cascade-facing form removes from both tables and neither flushes nor evicts, which is what lets
+    /// it join a larger unit of work.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// THE REGRESSION THIS PINS is the partial-commit boundary the account-deletion cascade used to carry.
-    /// The cascade documents its permission step as joining its own unit of work, but it called the top-level
-    /// member, which committed the grant removals on its own; a credential removal failing afterwards then
-    /// left an account intact with its grants already destroyed - and the reply said the account had been left
-    /// alone. This member exists so the cascade can decide WHEN the removal becomes durable, so a flush or an
-    /// eviction here would reintroduce the defect exactly.
-    /// </para>
-    /// <para>
-    /// It asserts that <c>BeginTransactionAsync</c> is not used, and deliberately does NOT assert that no
-    /// scope is obtained at all. The two removals are immediate set-based deletes, so a boundary is required;
-    /// the JOINING helper supplies it without taking durability away from the cascade, because inside an
-    /// enclosing scope it is a no-op whose commit does nothing. The non-nesting member would fault the cascade
-    /// outright, which is the distinction worth pinning.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task StageGrantRemoval_RemovesFromBothTablesWithoutFlushingOrEvicting()
     {
@@ -2990,7 +2571,7 @@ public sealed class PermissionEvaluatorTests
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never());
 
-        // SEC-F13. The scope IS opened - the guards run inside it, so a refusal abandons a scope that has
+        // The scope IS opened - the guards run inside it, so a refusal abandons a scope that has
         // issued no statement - and what matters is that nothing COMMITS and nothing is evicted.
         harness.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
@@ -3052,28 +2633,14 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F8: the role-scoped sweep removes all three grant families, in the order the terminal legacy
-    /// procedure removed them, and neither commits nor evicts.
+    /// the role-scoped sweep removes all three grant families, in the order the terminal legacy procedure
+    /// removed them, and neither commits nor evicts.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>03.00.10.SqlDataProvider</c> is the terminal definition of <c>DeleteRole</c>, and it
-    /// deletes the storage grants, then the module grants, then the page grants, then the role row. The three
-    /// earlier definitions delete only the role row, so the sweep is a late addition to the legacy source
-    /// rather than a step it later dropped - which is why it is reproduced.
-    /// </para>
-    /// <para>
-    /// THREE families rather than two. The storage family has no entity in this migration, so its removal is
-    /// the one member expressed against the table rather than through the model; omitting it here would leave
-    /// a third of the legacy cleanup unreproduced, and the rows it removes carry file-system authority.
-    /// </para>
-    /// <para>
-    /// The sweep neither commits nor evicts for the same reason its account-scoped sibling does not: it is a
-    /// step of a larger removal whose caller decides when the batch becomes durable. Here that matters more
-    /// than it does there, because these removals are set-based and immediate - so a commit taken here would
-    /// make the grants durable ahead of the role row, and a role removal that then failed would leave the
-    /// role in place with its grants destroyed and no way to reconstruct them.
-    /// </para>
+    /// THREE families rather than two. The storage family has no entity in this migration, so its removal
+    /// is the one member expressed against the table rather than through the model; omitting it here would
+    /// leave a third of the legacy cleanup unreproduced, and the rows it removes carry file-system
+    /// authority.
     /// </remarks>
     [Fact]
     public async Task StageRoleGrantRemoval_SweepsAllThreeFamiliesInTheLegacyOrderWithoutCommittingOrEvicting()
@@ -3081,8 +2648,8 @@ public sealed class PermissionEvaluatorTests
         Harness harness = Harness.Ready();
 
         // The role store answers every lookup with this row, so a non-null value is what makes the role
-        // resolvable at all. The identifier is zero deliberately: Roles.RoleID is IDENTITY(0, 1), so zero is
-        // the first real role an installation issues and no truthiness test may stand in for a lookup.
+        // resolvable at all. The identifier is zero deliberately: Roles.RoleID is IDENTITY(0, 1), so zero
+        // is the first real role an installation issues and no truthiness test may stand in for a lookup.
         harness.AdministratorsRole = new Role
         {
             RoleId = AdministratorRoleId,
@@ -3165,19 +2732,13 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// SEC-F8: the role-scoped sweep refuses an unknown tenant or a role the tenant does not have, and
-    /// removes nothing at all.
+    /// the role-scoped sweep refuses an unknown tenant or a role the tenant does not have, and removes
+    /// nothing at all.
     /// </summary>
     /// <param name="unknownPortal">
     /// <see langword="true"/> to make the tenant unknown, <see langword="false"/> to make the role
     /// unresolvable within it.
     /// </param>
-    /// <remarks>
-    /// Both guards stand ahead of all three removals, so a caller that asks about the wrong thing changes
-    /// nothing. The tenant argument is what makes the second refusal possible: a role identifier belonging to
-    /// another portal must be reported as missing rather than swept, or a caller acting for one tenant could
-    /// destroy another tenant's grants with a mistyped identifier.
-    /// </remarks>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -3232,14 +2793,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// The eviction member evicts the catalogue entries this service actually writes, and reads nothing.
     /// </summary>
-    /// <remarks>
-    /// SEC-F8. It used to evict the two LEGACY grant key families - one tenant-keyed, one page-keyed - which
-    /// meant reading every page of the tenant after the commit purely to compose cache keys. Nothing in this
-    /// application writes either family, so the eviction invalidated nothing while giving a durable,
-    /// completed deletion one more chance to fail. The assertions below are the corrected set: the single
-    /// page-scoped catalogue key by name, and the module-definition family by prefix. No page read occurs,
-    /// which is asserted by leaving the tab repository unconfigured on a STRICT mock - a read would throw.
-    /// </remarks>
     [Fact]
     public void InvalidateGrantCaches_EvictsTheCatalogueEntriesItWrites()
     {
@@ -3261,9 +2814,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The removal evicts both grant families afterwards, the module family page by page.
-    /// </summary>
+    /// <summary>The removal evicts both grant families afterwards, the module family page by page.</summary>
     [Fact]
     public async Task RemoveGrants_EvictsTheCatalogueEntriesAndReadsNothing()
     {
@@ -3276,12 +2827,11 @@ public sealed class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
 
-        // ⚠ SEC-F8. THIS ASSERTED THE EVICTION OF TWO LEGACY GRANT KEY FAMILIES THAT NOTHING HERE WRITES.
-        // The service caches only the CATALOGUE projections - one entry per module definition, plus one
-        // installation-wide page key - so evicting `TabPermissions{portalId}` and `ModulePermissions{tabId}`
-        // invalidated nothing, and reaching the second of them meant reading every page of the tenant AFTER
-        // the commit, which let a durable, completed deletion answer 500. The corrected set is below, and
-        // the absence of the page read is asserted rather than assumed.
+        // ⚠ THIS ASSERTED THE EVICTION OF TWO LEGACY GRANT KEY FAMILIES THAT NOTHING HERE WRITES. The
+        // service caches only the CATALOGUE projections - one entry per module definition, plus one
+        // installation-wide page key - so evicting `TabPermissions{portalId}` and
+        // `ModulePermissions{tabId}` invalidated nothing, and reaching the second of them meant reading
+        // every page of the tenant AFTER the commit, which let a durable, completed deletion answer 500.
         harness.Cache.Verify(
             cache => cache.Remove("PermissionDefinitionsByTab|all"),
             Times.Once());
@@ -3299,9 +2849,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A removal refused before it starts neither commits nor evicts anything.
-    /// </summary>
+    /// <summary>A removal refused before it starts neither commits nor evicts anything.</summary>
     [Fact]
     public async Task RemoveGrants_TouchesNothingWhenThePortalIsUnknown()
     {
@@ -3321,7 +2869,7 @@ public sealed class PermissionEvaluatorTests
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
             Times.Never());
 
-        // SEC-F13. The scope IS opened - both guards run inside it, so a refusal abandons a scope that has
+        // The scope IS opened - both guards run inside it, so a refusal abandons a scope that has
         // issued no statement - and what matters is that nothing COMMITS and nothing is evicted.
         harness.Transaction.Verify(
             transaction => transaction.CommitAsync(It.IsAny<CancellationToken>()),
@@ -3336,11 +2884,6 @@ public sealed class PermissionEvaluatorTests
     [Fact]
     public async Task ContradictoryPlacementAddresses_AreRefusedForANonViewKey()
     {
-        // THE REGRESSION THIS PINS. The agreement rule used to be enforced only inside the
-        // inherited-view branch, so a contradictory pair asking about any other key never reached it and
-        // was answered from the module's own grants as though no placement had been named at all. The
-        // contract states the rule without qualification, and refusing is what the request meant:
-        // choosing either address would be choosing whichever granted more.
         const int placementTabModuleId = 900;
         const int otherTabId = TabId + 5;
 
@@ -3423,9 +2966,7 @@ public sealed class PermissionEvaluatorTests
         contradicting.Value.Should().BeFalse("hoisting the check must not weaken the path it came from");
     }
 
-    /// <summary>
-    /// A cached definition read asks for the legacy lifetime: twenty minutes times the multiplier.
-    /// </summary>
+    /// <summary>A cached definition read asks for the legacy lifetime: twenty minutes times the multiplier.</summary>
     [Fact]
     public async Task DefinitionRead_RequestsTheLegacyLifetime()
     {
@@ -3440,15 +2981,6 @@ public sealed class PermissionEvaluatorTests
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
 
-        // MIGRATION: both legacy permission timeouts were 20 and each was multiplied by the
-        //            installation-wide performance setting at its point of use
-        //            (ModulePermissionController.vb:L177 and L315, TabPermissionController.vb:L285).
-        //            The shipped multiplier is 3, so the lifetime is an hour.
-        //
-        // The lifetime is pinned through a DEFINITION read rather than through the filtered key listing,
-        // because the listing is deliberately uncached - its key space cannot be bounded, as the fact below
-        // records - and the two definition reads are now the only members that reach the read-through
-        // helper. The arithmetic being asserted is the helper's, so either cached read proves it.
         harness.CacheLifetimesRequested.Should().ContainSingle()
             .Which.Should().Be(TimeSpan.FromMinutes(60));
 
@@ -3472,10 +3004,7 @@ public sealed class PermissionEvaluatorTests
         harness.Catalogue = [Entry(PermissionKey.VIEW)];
 
         // The unfiltered shape is the closed enumeration itself, and the code-scoped shape asks the store
-        // which keys are declared under a code. Under the withdrawn cache both of these produced the key
-        // "PermissionCatalogueKeys|*|*|*": the absent-filter token was rendered as "*", and "*" is itself a
-        // legal scope code, so the request that FILTERED on it and the request that filtered on nothing were
-        // indistinguishable. Whichever warmed the entry first then answered both.
+        // which keys are declared under a code.
         Result<IReadOnlyList<string>> unfiltered = await harness.Service.GetPermissionKeysAsync(
             cancellationToken: CancellationToken.None);
         Result<IReadOnlyList<string>> filteredOnTheOldToken = await harness.Service.GetPermissionKeysAsync(
@@ -3512,9 +3041,7 @@ public sealed class PermissionEvaluatorTests
             Times.Exactly(AllKeyNames.Count));
     }
 
-    /// <summary>
-    /// A multiplier of zero bypasses the cache rather than writing an entry that expires at once.
-    /// </summary>
+    /// <summary>A multiplier of zero bypasses the cache rather than writing an entry that expires at once.</summary>
     [Fact]
     public async Task DefinitionRead_BypassesTheCacheWhenCachingIsDisabled()
     {
@@ -3527,15 +3054,6 @@ public sealed class PermissionEvaluatorTests
                 ModuleId,
                 CancellationToken.None);
 
-        // MIGRATION: the legacy writes were conditioned on the product being positive
-        //            (ModulePermissionController.vb:L183, TabPermissionController.vb:L290), so a zero
-        //            multiplier meant "do not cache". The store is still reached - only the cache is
-        //            skipped - because an entry with a zero lifetime is a write, an eviction and a miss
-        //            where the configuration asked for none of them.
-        //
-        // Asserted through a DEFINITION read because the two definition reads are the only members that
-        // reach the read-through helper the multiplier governs; the filtered key listing takes no entry at
-        // any multiplier, which is a property of its key space rather than of the configuration.
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
         harness.CacheKeysRequested.Should().BeEmpty();
         harness.Cache.Verify(
@@ -3572,23 +3090,13 @@ public sealed class PermissionEvaluatorTests
 
         harness.CacheKeysRequested.Should().HaveCount(2);
 
-        // THE DIMENSION IS THE MODULE DEFINITION, NOT THE MODULE. The read selects the entries of the
-        // module's own definition unioned with the product-wide definition scope, so two modules sharing a
-        // definition have the same answer by construction. Keying by module admitted one entry per
-        // identifier a caller chose to name, which is unbounded growth bought with well-formed requests.
-        //
-        // SEC-033 is upheld by the GUARD rather than by the key: a module that does not exist, or exists in
-        // another portal, is refused before the cache is consulted, and the rows an entry holds are
-        // product-wide definition metadata rather than one tenant's data.
+        // is upheld by the GUARD rather than by the key: a module that does not exist, or exists in another
+        // portal, is refused before the cache is consulted, and the rows an entry holds are product-wide
+        // definition metadata rather than one tenant's data.
         harness.CacheKeysRequested[0].Should().Be(
             FormattableString.Invariant(
                 $"PermissionDefinitionsByModuleDefinition|{harness.Module.ModuleDefinitionId}"));
 
-        // ONE ENTRY, WITH NO PAGE DIMENSION, and that is a measurement rather than a simplification: the
-        // terminal page-scoped statement filters on the product-wide page scope code and never references
-        // its page argument, so every page receives the identical rows. Keying by page stored one identical
-        // copy per page identifier a caller happened to name. Should a revision ever make the page
-        // distinction real, this assertion is what forces the key to regain the dimension alongside it.
         harness.CacheKeysRequested[1].Should().Be("PermissionDefinitionsByTab|all");
     }
 
@@ -3647,13 +3155,6 @@ public sealed class PermissionEvaluatorTests
     /// reached.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// An earlier revision answered every unknown identifier from one shared absent-module entry, which
-    /// bounded the key space but handed the product-wide catalogue to a caller naming a module that does not
-    /// exist. SEC-033 refuses instead, which bounds the space more tightly still - an unknown identifier
-    /// earns no entry at all - and keeps the tenant check ahead of every read. That is the shape a hostile
-    /// caller would otherwise have used to grow the store one invented identifier at a time.
-    /// </remarks>
     [Fact]
     public async Task DefinitionReads_RefuseAnAbsentModuleBeforeConsultingTheCache()
     {
@@ -3676,9 +3177,7 @@ public sealed class PermissionEvaluatorTests
             "an identifier naming no module is refused before the cache is consulted, so it earns no entry");
     }
 
-    /// <summary>
-    /// A host account is resolvable outside the tenant, and an ordinary account is not.
-    /// </summary>
+    /// <summary>A host account is resolvable outside the tenant, and an ordinary account is not.</summary>
     [Fact]
     public async Task CallerResolution_AcceptsAHostAccountOutsideTheTenantAndNothingElse()
     {
@@ -3712,10 +3211,9 @@ public sealed class PermissionEvaluatorTests
 
         hostAnswer.IsSuccess.Should().BeTrue(hostAnswer.Reason?.ToString());
 
-        // MIGRATION: the host answer is the closed key set, for the reason set out on
-        //            EffectiveKeys_ForAHostAccountIgnoreAnUnresolvableScope. What this test pins is that
-        //            the host account was RESOLVED from outside the tenant at all; the ordinary account
-        //            below is not.
+        // The host answer is the closed key set, for the reason set out on
+        // EffectiveKeys_ForAHostAccountIgnoreAnUnresolvableScope. What this test pins is that the host
+        // account was RESOLVED from outside the tenant at all; the ordinary account below is not.
         hostAnswer.Value.Should().Equal(new[] { "EDIT", "READ", "VIEW", "WRITE" });
 
         Harness outsider = Harness.Ready();
@@ -3748,21 +3246,10 @@ public sealed class PermissionEvaluatorTests
         outsiderAnswer.Reason!.Code.Should().Be(UserNotFoundCode);
     }
 
-    // =================================================================================================
-    // Portal authority.
-    //
     // Authority OVER a tenant is a different question from a grant ON a resource, and these tests exist to
-    // keep the two from collapsing into one another. A grant answers "may this caller change this thing";
-    // authority answers "may this caller change what this tenant is", which is what an operation that moves
-    // content between pages or overwrites every placement in the portal really asks. The answer is taken
-    // from stored state - the tenant's own administrator designation and the caller's currently valid
-    // assignments - and never from a claim, because a claim is minted at sign-in and a designation can be
-    // reassigned after it.
-    // =================================================================================================
+    // keep the two from collapsing into one another.
 
-    /// <summary>
-    /// An unidentified caller administers nothing, and nothing is read in order to say so.
-    /// </summary>
+    /// <summary>An unidentified caller administers nothing, and nothing is read in order to say so.</summary>
     [Fact]
     public async Task PortalAuthority_ForAnUnidentifiedCallerIsRefusedWithoutAnyRead()
     {
@@ -3776,8 +3263,6 @@ public sealed class PermissionEvaluatorTests
         answer.IsSuccess.Should().BeTrue(answer.Reason?.ToString());
         answer.Value.Should().BeFalse("an anonymous caller holds no designation to read");
 
-        // The refusal is decided before any store is touched, so an unauthenticated request cannot be used
-        // to probe whether a portal or an account exists.
         harness.Users.Verify(
             users => users.GetAsync(It.IsAny<int?>(), It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never);
@@ -3789,9 +3274,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never);
     }
 
-    /// <summary>
-    /// An account that resolves nowhere administers nothing.
-    /// </summary>
+    /// <summary>An account that resolves nowhere administers nothing.</summary>
     [Fact]
     public async Task PortalAuthority_ForAnUnresolvableAccountIsRefused()
     {
@@ -3812,9 +3295,7 @@ public sealed class PermissionEvaluatorTests
         answer.Value.Should().BeFalse("an account that resolves neither inside nor outside the tenant holds nothing");
     }
 
-    /// <summary>
-    /// A host account administers every tenant, and the designation is never consulted for it.
-    /// </summary>
+    /// <summary>A host account administers every tenant, and the designation is never consulted for it.</summary>
     [Fact]
     public async Task PortalAuthority_ForAHostAccountIsGrantedWithoutReadingTheDesignation()
     {
@@ -3850,9 +3331,7 @@ public sealed class PermissionEvaluatorTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A tenant that designates no administrator role confers authority on nobody.
-    /// </summary>
+    /// <summary>A tenant that designates no administrator role confers authority on nobody.</summary>
     [Fact]
     public async Task PortalAuthority_ForAPortalWithNoDesignationIsRefused()
     {
@@ -3872,9 +3351,7 @@ public sealed class PermissionEvaluatorTests
         answer.Value.Should().BeFalse("an unset designation names no role, so no assignment can match it");
     }
 
-    /// <summary>
-    /// A tenant row that cannot be loaded confers authority on nobody.
-    /// </summary>
+    /// <summary>A tenant row that cannot be loaded confers authority on nobody.</summary>
     [Fact]
     public async Task PortalAuthority_ForAnAbsentPortalIsRefused()
     {
@@ -3938,9 +3415,7 @@ public sealed class PermissionEvaluatorTests
             "a pending or lapsed administrator membership is not authority, and the dates are the only thing that says so");
     }
 
-    /// <summary>
-    /// Holding some other role, however many, is not authority.
-    /// </summary>
+    /// <summary>Holding some other role, however many, is not authority.</summary>
     [Fact]
     public async Task PortalAuthority_ForAnOrdinaryMembershipIsRefused()
     {
@@ -3982,9 +3457,7 @@ public sealed class PermissionEvaluatorTests
             Times.Once);
     }
 
-    /// <summary>
-    /// Builds a role assignment for the harness account.
-    /// </summary>
+    /// <summary>Builds a role assignment for the harness account.</summary>
     /// <param name="roleId">The role held.</param>
     /// <param name="effectiveDate">When the membership starts, or <c>null</c> for no start bound.</param>
     /// <param name="expiryDate">When the membership lapses, or <c>null</c> for no end bound.</param>
@@ -4002,9 +3475,7 @@ public sealed class PermissionEvaluatorTests
             ExpiryDate = expiryDate,
         };
 
-    /// <summary>
-    /// Every collaborator is required.
-    /// </summary>
+    /// <summary>Every collaborator is required.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -4020,10 +3491,6 @@ public sealed class PermissionEvaluatorTests
         Mock<IClock> clock = new();
         CachingOptions caching = new();
 
-        // One case per constructor parameter, each passing null in exactly one position. Written out rather
-        // than driven from a loop because the compiler then checks the arity of every case: adding a
-        // collaborator without adding its case leaves this test failing to compile rather than silently
-        // covering one parameter less than the constructor declares.
         Assert.Throws<ArgumentNullException>(() =>
         {
             _ = new PermissionService(
@@ -4092,40 +3559,11 @@ public sealed class PermissionEvaluatorTests
         });
     }
 
-    // =================================================================================================
-    // Contract shape.
-    //
-    // These tests read the three permission contracts through reflection and never construct anything.
-    // Reflection over an abstraction is inspection, not reach: it asks what a contract declares without
-    // naming a single implementation. The concrete precedence reducer is deliberately NOT reachable from
-    // this project and is not reached here by any means - see the coverage-placement note below.
-    // =================================================================================================
-
-    /// <summary>
-    /// The three permission contracts this project can legitimately see.
-    /// </summary>
+    /// <summary>The three permission contracts this project can legitimately see.</summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: coverage placement is a deliberate architectural choice, not an oversight. The concrete
-    /// precedence reducer lives in the infrastructure assembly, which this test project does not
-    /// reference and must never reference - AAP Rule T1 makes the dependency direction a compile error
-    /// rather than a review finding, and AAP section 0.8.3 baseline B1 states the layering is enforced by
-    /// the compiler rather than by convention. That class is additionally declared internal to its own
-    /// assembly, so it is unreachable twice over: the assembly is off the reference graph, and the type is
-    /// not public within it. Algorithm-level verification of the concrete reducer therefore belongs to the
-    /// integration project, which reaches it legitimately through its api reference and the container, and
-    /// proves it over real rows and real HTTP.
-    /// </para>
-    /// <para>
-    /// What lives here instead is the executable <em>specification</em> that reducer must satisfy, written
-    /// against the domain repository contract and the real grant entities. A specification a future
-    /// implementer can run is worth more than a description of one, and it costs no layering violation.
-    /// </para>
-    /// <para>
     /// Note which contract is which. The precedence <em>abstraction</em> is an application-layer contract
     /// and so is fully reachable and legitimately substitutable; only its concrete implementation is
-    /// infrastructure. Conflating the two would either forbid a legal test or excuse an illegal one.
-    /// </para>
+    /// infrastructure.
     /// </remarks>
     private static IReadOnlyList<Type> PermissionContracts =>
     [
@@ -4134,16 +3572,7 @@ public sealed class PermissionEvaluatorTests
         typeof(IPermissionEvaluator),
     ];
 
-    /// <summary>
-    /// The assemblies a permission contract is allowed to mention on its surface.
-    /// </summary>
-    /// <remarks>
-    /// Described by example rather than by name so the set cannot drift from reality: the two assemblies
-    /// this project references, plus the framework assemblies that supply the primitives, tasks and
-    /// read-only sequence types the contracts are built from. Anything else - a persistence library, a
-    /// mapping library, a web framework, or an infrastructure type - is absent by construction rather
-    /// than by a blacklist that a new dependency could slip past.
-    /// </remarks>
+    /// <summary>The assemblies a permission contract is allowed to mention on its surface.</summary>
     private static IReadOnlySet<Assembly> PermittedSurfaceAssemblies =>
         new HashSet<Assembly>
         {
@@ -4155,18 +3584,14 @@ public sealed class PermissionEvaluatorTests
             typeof(CancellationToken).Assembly,
         };
 
-    /// <summary>
-    /// Every method the three permission contracts declare.
-    /// </summary>
+    /// <summary>Every method the three permission contracts declare.</summary>
     /// <returns>The declared methods, paired with the contract that declares them.</returns>
     private static IEnumerable<(Type Contract, MethodInfo Member)> ContractMembers()
         => PermissionContracts.SelectMany(contract => contract
             .GetMethods()
             .Select(member => (Contract: contract, Member: member)));
 
-    /// <summary>
-    /// Unwraps a declared return type down to the value it ultimately produces.
-    /// </summary>
+    /// <summary>Unwraps a declared return type down to the value it ultimately produces.</summary>
     /// <param name="declared">The declared return type.</param>
     /// <returns>
     /// The produced value type: <see cref="void"/> for a bare task, and the innermost argument once any
@@ -4199,9 +3624,7 @@ public sealed class PermissionEvaluatorTests
         return current;
     }
 
-    /// <summary>
-    /// Expands a type into itself and every generic argument it is built from.
-    /// </summary>
+    /// <summary>Expands a type into itself and every generic argument it is built from.</summary>
     /// <param name="type">The type to expand.</param>
     /// <returns>The type and, recursively, its generic arguments.</returns>
     private static IEnumerable<Type> Flatten(Type type)
@@ -4219,9 +3642,7 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// Every type that appears on a member's surface, in its parameters or its return value.
-    /// </summary>
+    /// <summary>Every type that appears on a member's surface, in its parameters or its return value.</summary>
     /// <param name="member">The member to inspect.</param>
     /// <returns>The surface types.</returns>
     private static IEnumerable<Type> SurfaceTypes(MethodInfo member)
@@ -4234,14 +3655,6 @@ public sealed class PermissionEvaluatorTests
     /// <summary>
     /// Every permission contract member performs input or output, so every one is a cancellable task.
     /// </summary>
-    /// <remarks>
-    /// AAP Rule T6 and section 0.8.3 baseline B4: asynchronous throughout, with no synchronous-over-
-    /// asynchronous bridging anywhere in the request path. This pins all three halves of that - the task
-    /// return, the naming that tells a caller to await it, and the token that lets a caller abandon it.
-    /// The token is required to be last because a trailing optional token is the convention the whole
-    /// solution is written to; a token buried mid-list is the shape that gets silently dropped at a call
-    /// site.
-    /// </remarks>
     [Fact]
     public void Contract_EveryMemberIsAnAwaitableCancellableTask()
     {
@@ -4249,11 +3662,6 @@ public sealed class PermissionEvaluatorTests
         {
             string described = $"{contract.Name}.{member.Name}";
 
-            // SEC-F8. The one deliberate exception, and it is deliberate for a reason this rule cannot
-            // express: the cache eviction runs AFTER its caller's commit, so it must not be able to fail or
-            // to be cancelled half-done. It reads nothing and awaits nothing - it evicts two in-memory key
-            // families by name and by prefix - and it used to be a cancellable Task only because it read
-            // every page of the tenant to compose keys nothing ever wrote.
             if (member.Name == nameof(IPermissionService.InvalidateUserPermissionCaches))
             {
                 continue;
@@ -4279,16 +3687,7 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// No permission contract member reports anything through an output or reference parameter.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy status-by-reference idiom is gone. AAP section 0.7.4 measured 30 in-scope
-    /// mutate-and-report-by-reference signatures and states flatly that no output or reference parameter
-    /// appears in any target public api. The replacement is visible in the return types the previous test
-    /// pins: an outcome wrapper carries both the produced value and the reason it could not be produced,
-    /// so a caller can no longer read a status it forgot to pass a variable for.
-    /// </remarks>
+    /// <summary>No permission contract member reports anything through an output or reference parameter.</summary>
     [Fact]
     public void Contract_DeclaresNoOutputOrReferenceParameter()
     {
@@ -4307,24 +3706,7 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// The persistence surface answers no access question at all.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// This is the single-reducer guard, and it is the assertion that actually protects the architecture.
-    /// AAP section 0.5.1.2 relocates permission evaluation out of the three legacy controllers and into a
-    /// dedicated component; the repository contract's own documentation states that nothing on it returns
-    /// an access decision. Two reducers that can disagree about whether a caller may act is the worst
-    /// available outcome in this area, so the way to prevent a second one appearing is to keep the shape
-    /// of a decision off the layer that holds the rows. A repository member that started returning a
-    /// verdict would be exactly that second reducer, and this test fails the moment one does.
-    /// </para>
-    /// <para>
-    /// Stated as a property of the produced value rather than of the member name, so it cannot be evaded
-    /// by choosing a name the guard does not recognise.
-    /// </para>
-    /// </remarks>
+    /// <summary>The persistence surface answers no access question at all.</summary>
     [Fact]
     public void Contract_ThePersistenceSurfaceReturnsNoAccessDecision()
     {
@@ -4336,61 +3718,12 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// A decision is an outcome carrying a boolean, never a bare boolean.
-    /// </summary>
+    /// <summary>A decision is an outcome carrying a boolean, never a bare boolean.</summary>
     /// <remarks>
-    /// <para>
     /// The distinction this pins is the one that matters most to a caller and is the easiest to lose. A
     /// refusal and a failure are not the same event: "you may not do this" is a successful answer whose
     /// value happens to be false, whereas "the store could not be reached" is a failure with no answer at
-    /// all. A bare boolean cannot express the difference and would force the second case to masquerade as
-    /// the first, which reads to an operator as a permissions problem when it is an availability problem.
-    /// </para>
-    /// <para>
-    /// This test also replaces a weaker check that could not be written honestly. The decision members do
-    /// live on the application contract - deliberately, because the api authorisation handler must have a
-    /// single authorised route to ask the question - so asserting that no decision exists there would be
-    /// asserting something false. The prohibition that carries the architectural weight is "no second
-    /// reducer anywhere", which the previous test enforces where it can actually be broken.
-    /// </para>
-    /// <para>
-    /// The membership of the set is pinned by name as well as by count. Two of the four are grant questions
-    /// about ONE RESOURCE - "may this caller act on this module", "may this caller act on this page" - and
-    /// those are the only two scopes a grant is recorded against. One is deliberately NOT a grant question:
-    /// authority over a tenant asks whether the caller is the portal's administrator, which is answered from
-    /// the tenant's own designation rather than from any permission row, and which no grant on a single
-    /// resource can stand in for. Naming them keeps a decision from being added silently, and keeps tenant
-    /// authority from being mistaken for a third grant scope.
-    /// </para>
-    /// <para>
-    /// THE FOURTH IS A CAPABILITY QUESTION AND NOT A THIRD GRANT SCOPE, which is the distinction this list
-    /// exists to keep visible. <c>HasAnyTabPermissionInPortalAsync</c> asks whether the caller holds a key
-    /// SOMEWHERE in a tenant, and it is answered by disjoining the page scope that already exists rather than
-    /// by consulting any new kind of grant row. It was added because some operations cannot be scoped to a
-    /// resource at all: module creation names no page, since the target arrives in the request body, so a
-    /// caller has to be admitted to the form before any page identifier exists to scope a permission to.
-    /// </para>
-    /// <para>
-    /// THE FIFTH IS AN ACCOUNT CLASSIFICATION, WHICH IS A FOURTH KIND, and it is named here rather than
-    /// admitted silently. <c>IsHostAccountAsync</c> asks what the ACCOUNT IS - installation-wide or not -
-    /// rather than what it may do, and it reads one column of the account row rather than reducing any grant.
-    /// It is published because the Application layer needs the same store-backed host exemption the api
-    /// layer's tenant-binding evaluator applies: a write whose target arrives in the request BODY carries no
-    /// route-reading policy, so <c>IModuleService.CreateModuleAsync</c> has to reconcile the credential's
-    /// tenant itself, and a host account belongs to no tenant and therefore holds no portal claim that could
-    /// ever equal a target portal's identifier. It lives on THIS contract because this service already
-    /// resolves exactly that fact internally - <c>IsPortalAdministratorAsync</c> admits a host account before
-    /// reading any role - so publishing it reuses the one implementation instead of creating a second one
-    /// elsewhere. It is deliberately NOT interchangeable with tenant authority as an exemption: using the
-    /// administration question would exempt an administrator OF THE TARGET tenant from the comparison, which
-    /// is the very mismatch that comparison exists to close.
-    /// </para>
-    /// <para>
-    /// Anyone adding a sixth decision here should be able to say which of these four kinds it is - one
-    /// resource, tenant authority, capability, or account classification - and if it is none of them it
-    /// probably does not belong.
-    /// </para>
+    /// all.
     /// </remarks>
     [Fact]
     public void Contract_ADecisionIsAnOutcomeCarryingABooleanNeverABareBoolean()
@@ -4428,44 +3761,12 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// Every member of the evaluation contract reports through an outcome, not bare.
-    /// </summary>
+    /// <summary>Every member of the evaluation contract reports through an outcome, not bare.</summary>
     /// <remarks>
-    /// <para>
-    /// M-10: this contract previously handed back its verdicts bare - three sequences and two booleans -
-    /// which left it able to say the verdict and nothing else. One consequence was concrete rather than
-    /// theoretical: a denial and a question about a module or page that does not exist produced byte-for-byte
-    /// the same answer, so a caller needing to tell them apart had to read the subject again to discover
-    /// which of the two it had been given.
-    /// </para>
-    /// <para>
-    /// What this pins is only the SHAPE. The verdict semantics are asserted elsewhere in this file and are
-    /// deliberately unchanged by the conversion: a denial remains a successful outcome carrying false, and
-    /// absence still denies. Wrapping is what gives the contract somewhere to put the advisory, not a licence
-    /// to start reporting refusals as errors.
-    /// </para>
-    /// <para>
-    /// Asserted over every member by reflection rather than over a written list, so a member added later
-    /// cannot be introduced bare without failing here.
-    /// </para>
-    /// <para>
-    /// The membership is pinned by NAME as well as by count, so growth stays deliberate. The sixth member is
-    /// the set-based page verdict: it answers the same question as the single-page verdict over a set of
-    /// pages, and it exists because asking the single-page member once per page made one authorisation check
-    /// cost a read set per page a module was placed on. It is a second ROUTE to an existing question rather
-    /// than a second reducer - the precedence rule still lives in exactly one place, which the neighbouring
-    /// "no second reducer anywhere" fact is what actually guards.
-    /// </para>
-    /// <para>
-    /// THE SEVENTH MEMBER IS THE SAME QUESTION REPORTED DIFFERENTLY, AND IT IS NOT A SECOND REDUCER EITHER.
-    /// <c>ListTabsWithPermissionAsync</c> names which of the given pages grant the key instead of whether any
-    /// of them does; both are implemented over ONE private body in the evaluator, so they cannot reach
-    /// different verdicts about the same page and the precedence rule is still applied in exactly one place.
-    /// It exists to narrow a PROJECTION - a page listing offered as a set of placement choices has to contain
-    /// the pages the caller may actually choose - and answering that by asking the single-page member once per
-    /// page would restore precisely the per-page cost the existential member was introduced to remove.
-    /// </para>
+    /// The membership is pinned by NAME as well as by count, so growth stays deliberate. The sixth member
+    /// is the set-based page verdict: it answers the same question as the single-page verdict over a set of
+    /// pages, and it exists because asking the single-page member once per page made one authorisation
+    /// check cost a read set per page a module was placed on.
     /// </remarks>
     [Fact]
     public void Contract_TheEvaluatorReportsEveryVerdictThroughAnOutcome()
@@ -4514,17 +3815,7 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// Every sequence a permission contract hands back is a read-only generic sequence.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the untyped and pre-generics collection types are gone, and so is any bespoke wrapper.
-    /// Six of the nine legacy catalogue members returned an untyped list, and the two grant controllers
-    /// were fronted by hand-written pre-generics wrapper classes; AAP section 0.5.1.10 records that those
-    /// wrappers produce no target type at all. Asserting the positive shape rather than listing the
-    /// banished type names is both stronger and self-maintaining: a newly invented wrapper, a mutable
-    /// list, or an untyped sequence all fail this, including ones nobody thought to blacklist.
-    /// </remarks>
+    /// <summary>Every sequence a permission contract hands back is a read-only generic sequence.</summary>
     [Fact]
     public void Contract_HandsBackOnlyReadOnlyGenericSequences()
     {
@@ -4543,23 +3834,11 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// A permission contract mentions only domain, application and framework types.
-    /// </summary>
+    /// <summary>A permission contract mentions only domain, application and framework types.</summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the reflection-driven row hydrator and the reflection-created static provider accessor
-    /// are both gone, replaced by the object-relational materializer and constructor injection, and
-    /// neither leaves a trace on these contracts. This test is what makes that verifiable rather than
-    /// merely asserted: it proves no persistence type, no query type, no mapping library type and no
-    /// infrastructure type can appear on the surface, because every surface type must come from an
-    /// assembly this project already legitimately depends on.
-    /// </para>
-    /// <para>
-    /// Expressed as an allow-list of assemblies rather than a deny-list of names on purpose. A deny-list
-    /// only rejects what its author remembered; this rejects everything that was not explicitly permitted,
-    /// which includes dependencies that do not exist yet.
-    /// </para>
+    /// The reflection-driven row hydrator and the reflection-created static provider accessor are both
+    /// gone, replaced by the object-relational materializer and constructor injection, and neither leaves a
+    /// trace on these contracts.
     /// </remarks>
     [Fact]
     public void Contract_MentionsOnlyDomainApplicationAndFrameworkTypes()
@@ -4587,31 +3866,9 @@ public sealed class PermissionEvaluatorTests
     /// deliberate exception that is a removal rather than a feature.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the path-scoped catalogue lookup and the eight file-system grant members are not
-    /// ported. The subsystem they serve is out of scope, so there is no target feature for a grant keyed
-    /// by a storage path to serve, and the target declares no file-system grant entity. The excluded
-    /// vocabulary is checked as separate short tokens rather than as the subsystem's full type names,
-    /// because quoting them would report the suite as reintroducing what it proves is absent.
-    /// </para>
-    /// <para>
-    /// MIGRATION: SEC-F8. THE ONE EXCEPTION IS THE ROLE-SCOPED CLEANUP, and it is admitted because the
-    /// terminal <c>DeleteRole</c> procedure performed it - <c>03.00.10.SqlDataProvider</c> deletes the
-    /// storage grants of the role being removed as its FIRST statement. The plan lists that grant triad
-    /// among the authorising reference sources of the in-scope security domain and counts its legacy
-    /// controller's cache sites among in-scope call sites, so the ROWS are within the migration's
-    /// knowledge even though the FEATURE is not. Leaving them behind is a data-integrity fault rather
-    /// than a scope reduction: neither the role table nor the grant table declares a key between them,
-    /// so the rows survive their principal, and the role identifier is reissued.
-    /// </para>
-    /// <para>
-    /// So this test now pins the BOUNDARY rather than banning a token, and it is stricter than the ban it
-    /// replaces on everything except that one member. The exception must be exactly one member, it must
-    /// produce nothing - a removal cannot disclose a grant, whereas a read could - and it must be
-    /// addressable only by role, never by a storage location. Those three conditions together are what
-    /// make it incapable of growing into the feature the subsystem exclusion forbids: no caller can ask
-    /// it about a folder, and no caller can learn anything from it.
-    /// </para>
+    /// MIGRATION: the path-scoped catalogue lookup and the eight file-system grant members are not ported.
+    /// The subsystem they serve is out of scope, so there is no target feature for a grant keyed by a
+    /// storage path to serve, and the target declares no file-system grant entity.
     /// </remarks>
     [Fact]
     public void Contract_CarriesNoMemberForTheExcludedStorageSubsystem()
@@ -4656,72 +3913,15 @@ public sealed class PermissionEvaluatorTests
             "it is addressable by role alone - a storage argument would make it the feature this exclusion forbids");
     }
 
-    // =================================================================================================
-    // The concrete evaluator.
-    //
-    // Every test in this section constructs DnnMigration.Infrastructure.Security.PermissionEvaluator
-    // itself over substituted repositories, so the reachability test, the pseudo-role rules, the
-    // catalogue scope admissions and the allow-and-deny reduction are all the production ones.
-    //
-    // An earlier revision of this file asserted those rules against a private specification class
-    // instead, on the ground that the concrete type lived in an assembly this project must not
-    // reference, and it additionally specified a grant-replacement rule the application contract does
-    // not publish at all. BOTH DECISIONS WERE WRONG and are replaced rather than softened. The
-    // replacement tests exercised no production member, so they could not fail however production
-    // behaved; and the precedence specification had drifted from the implementation it claimed to
-    // describe - it modelled a superuser short circuit and an installation-wide account rule that the
-    // real evaluator does not have, and it lacked the scope correlation that the real reduction does
-    // have. A specification that can disagree with the code it specifies is worse than no
-    // specification, because it reads as evidence.
-    //
-    // MIGRATION: DENY PRECEDENCE UNIFIES TWO INCONSISTENT LEGACY PATHS. THIS IS A DELIBERATE
-    //            BEHAVIOURAL DIVERGENCE, AND IT IS THE HEADLINE FINDING OF THIS FILE.
-    //
-    //            The legacy source decided the same question two different ways and did not reconcile
-    //            them. TabPermissionController.vb:L38-L54 and its module twin walked the grant rows and
-    //            returned True on the FIRST row whose principal the caller matched. Neither one tested
-    //            the allow-or-deny flag at all, so a row recorded specifically to REFUSE a role the
-    //            caller held would GRANT that caller access - the refusal was not merely ignored, it was
-    //            read as permission. Meanwhile ModulePermissionController.vb:L239-L252 and its tab twin,
-    //            which flattened grants into a delimited string, DID filter on that flag being set.
-    //
-    //            The two paths met inside one method. PortalSecurity.vb:L521 computed view access from
-    //            the flag-FILTERED delimited string, while L522 computed edit access from the UNFILTERED
-    //            first-match-wins walk. The measured consequence is that in the legacy application VIEW
-    //            honoured the allow-or-deny flag and EDIT silently did not.
-    //
-    //            The target unifies both paths under one rule: deny beats allow, for every key, WITHIN
-    //            THE SCOPE THAT CARRIES THE DENIAL. Every test below pins the TARGET rule, never the
-    //            legacy first-match-wins behaviour - so a reader who expects legacy parity here should
-    //            read this note as the explanation rather than these tests as a defect.
-    //
-    // MIGRATION: the suppression is SCOPED rather than global, and that is a second deliberate decision
-    //            with a measurable consequence. The portal-wide read spans every module and page of a
-    //            tenant, so applying one denial across that whole union would let a single forgotten page
-    //            strip a key the caller genuinely holds everywhere else. Two tests below exist only to
-    //            pin the correlation, one across two modules and one across a module and a page sharing
-    //            an identifier - which they can, because Modules.ModuleID and Tabs.TabID both seed at 0.
-    // =================================================================================================
-
     /// <summary>
-    /// The evaluator every test below activates is the one the composed host resolves for the contract,
-    /// and it is scoped, internal and sealed.
+    /// The evaluator every test below activates is the one the composed host resolves for the contract, and
+    /// it is scoped, internal and sealed.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the assertion that ties the whole concrete section to production, and it is the one a
-    /// direct construction could never make. Every other test here activates an implementation type over
-    /// substituted repositories; if that type were not the type a request resolves, all of them would be
-    /// exercising something the application does not use. Reading the type from the registration and then
-    /// resolving an instance through the real container closes both halves: the registration names it, and
-    /// the container can actually build it.
-    /// </para>
-    /// <para>
     /// Scoped rather than singleton is asserted because the evaluator holds repositories, which hold the
-    /// per-request data context: a singleton would share one change tracker across concurrent requests
-    /// and answer one tenant's question from another tenant's pending state. Two resolutions inside one
-    /// scope must be the same instance, and resolutions in different scopes must not be.
-    /// </para>
+    /// per-request data context: a singleton would share one change tracker across concurrent requests and
+    /// answer one tenant's question from another tenant's pending state. Two resolutions inside one scope
+    /// must be the same instance, and resolutions in different scopes must not be.
     /// </remarks>
     [Fact]
     public void Evaluator_IsTheImplementationTheContainerRegistersAndResolves()
@@ -4760,22 +3960,8 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// The evaluator refuses to be constructed without any one of its four collaborators.
-    /// </summary>
+    /// <summary>The evaluator refuses to be constructed without any one of its four collaborators.</summary>
     /// <param name="omitted">Which collaborator is withheld.</param>
-    /// <remarks>
-    /// Four arguments and every one of them earns its place: the grants and the catalogue, the roles a
-    /// name resolves through, and the module and page reads that establish which portal owns the scope
-    /// under evaluation - without which a role name could only be resolved installation-wide, which is
-    /// the cross-tenant escalation the contract forbids. A missing collaborator must fail at
-    /// construction rather than produce a decision that quietly consulted less than it should.
-    ///
-    /// MIGRATION: a fifth argument used to appear here, an options accessor supplying the two built-in
-    /// role display names. It is gone: those names are the immutable domain constants
-    /// <see cref="SpecialRoleNames.AllUsers"/> and <see cref="SpecialRoleNames.Unauthenticated"/>, so no
-    /// collaborator can supply, override or blank them.
-    /// </remarks>
     [Theory]
     [InlineData("permissions")]
     [InlineData("roles")]
@@ -4796,18 +3982,16 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The evaluator takes no configuration at all, so no configured value can redefine the built-in
-    /// role names.
+    /// The evaluator takes no configuration at all, so no configured value can redefine the built-in role
+    /// names.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: THIS REPLACES A FACT THAT ASSERTED A BLANK CONFIGURED ROLE NAME WAS REFUSED AT
-    /// CONSTRUCTION. Refusing a blank value was the right guard for the wrong design: while the names
-    /// were settings, a deployment could also set them to a NON-blank value that named a different row of
-    /// the <c>Roles</c> table, which silently moved every-caller or anonymous-caller semantics onto a
-    /// role an administrator had created for another purpose - and no start-up refusal can catch that,
-    /// because the value is perfectly well formed. The names are now compiled-in constants, so the whole
-    /// class of failure is unreachable and there is nothing left to validate. What is asserted instead is
-    /// the structural property that makes it unreachable: this type accepts no options of any kind.
+    /// THIS REPLACES A FACT THAT ASSERTED A BLANK CONFIGURED ROLE NAME WAS REFUSED AT CONSTRUCTION.
+    /// Refusing a blank value was the right guard for the wrong design: while the names were settings, a
+    /// deployment could also set them to a NON-blank value that named a different row of the <c>Roles</c>
+    /// table, which silently moved every-caller or anonymous-caller semantics onto a role an administrator
+    /// had created for another purpose - and no start-up refusal can catch that, because the value is
+    /// perfectly well formed.
     /// </remarks>
     [Fact]
     public void Evaluator_TakesNoConfigurationThatCouldRedefineTheBuiltInRoleNames()
@@ -4832,9 +4016,7 @@ public sealed class PermissionEvaluatorTests
                 "reintroducing either setting would make the audience configurable again");
     }
 
-    /// <summary>
-    /// Every member refuses an absent role-name collection.
-    /// </summary>
+    /// <summary>Every member refuses an absent role-name collection.</summary>
     /// <remarks>
     /// An empty collection is a legitimate caller - it describes someone holding no named role, who is
     /// still reachable through the everyone, anonymous and account-scoped grants - so absence cannot be
@@ -4862,9 +4044,7 @@ public sealed class PermissionEvaluatorTests
             .Should().ThrowAsync<ArgumentNullException>();
     }
 
-    /// <summary>
-    /// An allowing grant the caller reaches confers its key.
-    /// </summary>
+    /// <summary>An allowing grant the caller reaches confers its key.</summary>
     [Fact]
     public async Task ModuleKeys_AnAllowingGrantConfersItsKey()
     {
@@ -4880,13 +4060,11 @@ public sealed class PermissionEvaluatorTests
         keys.Should().Equal("VIEW");
     }
 
-    /// <summary>
-    /// A denying grant on its own confers nothing, which is the same answer absence produces.
-    /// </summary>
+    /// <summary>A denying grant on its own confers nothing, which is the same answer absence produces.</summary>
     /// <remarks>
-    /// Under the legacy first-match-wins walk this row would have GRANTED the key, because that walk
-    /// never read the allow-or-deny flag. This test is the point at which the divergence recorded above
-    /// becomes executable.
+    /// Under the legacy first-match-wins walk this row would have GRANTED the key, because that walk never
+    /// read the allow-or-deny flag. This test is the point at which the divergence recorded above becomes
+    /// executable.
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_ADenyingGrantAloneConfersNothing()
@@ -4911,12 +4089,6 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <param name="withCatalogue">Whether the catalogue defines the key at all.</param>
     /// <param name="withGrant">Whether any grant row exists for it.</param>
-    /// <remarks>
-    /// Two distinct absences, one answer. An empty catalogue means the permission is not defined for
-    /// this scope; an empty grant set means it is defined but conferred on nobody. Neither is an error:
-    /// a caller asking "may I?" is entitled to be told "no" rather than handed an exception to
-    /// interpret, and absence must produce exactly the answer an explicit denial does.
-    /// </remarks>
     [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
@@ -4947,16 +4119,12 @@ public sealed class PermissionEvaluatorTests
             .Should().BeFalse();
     }
 
-    /// <summary>
-    /// A denial suppresses an allowance of the same key on the same module, in either row order.
-    /// </summary>
+    /// <summary>A denial suppresses an allowance of the same key on the same module, in either row order.</summary>
     /// <param name="denyFirst">Whether the refusing row is returned before the allowing one.</param>
     /// <remarks>
-    /// The order-independence proof, and the single most valuable assertion in this section. A grant and
-    /// a denial of one key on one scope is a legitimate configuration, so "whichever row came first
-    /// wins" would make an access decision depend on a query plan. The implementation collects every
-    /// denial in a separate pass before judging any allowance, which is what makes the outcome a
-    /// property of the data rather than of its ordering.
+    /// The order-independence proof, and the single most valuable assertion in this section. A grant and a
+    /// denial of one key on one scope is a legitimate configuration, so "whichever row came first wins"
+    /// would make an access decision depend on a query plan.
     /// </remarks>
     [Theory]
     [InlineData(true)]
@@ -4990,13 +4158,11 @@ public sealed class PermissionEvaluatorTests
             .Should().BeFalse();
     }
 
-    /// <summary>
-    /// A denial recorded on one module leaves the same key intact on another.
-    /// </summary>
+    /// <summary>A denial recorded on one module leaves the same key intact on another.</summary>
     /// <remarks>
     /// The suppression is correlated to the scope that carries the denial. Applying it across the
-    /// tenant-wide union instead would let one forgotten module strip a key the caller genuinely holds
-    /// on every other one, which is a silent revocation rather than a visible configuration.
+    /// tenant-wide union instead would let one forgotten module strip a key the caller genuinely holds on
+    /// every other one, which is a silent revocation rather than a visible configuration.
     /// </remarks>
     [Fact]
     public async Task PortalKeys_ADenialOnOneModuleLeavesTheKeyIntactOnAnother()
@@ -5024,14 +4190,8 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A denial recorded on a page does not suppress the same key on a module that shares its
-    /// identifier.
+    /// A denial recorded on a page does not suppress the same key on a module that shares its identifier.
     /// </summary>
-    /// <remarks>
-    /// Both identity columns seed at zero, so an identifier on its own does not say what it identifies.
-    /// This test uses module zero and page zero deliberately: a reduction keyed on the identifier alone
-    /// rather than on the pair of kind and identifier would collapse the two scopes and fail here.
-    /// </remarks>
     [Fact]
     public async Task PortalKeys_ADenialOnAPageDoesNotSuppressTheSameKeyOnAModuleSharingItsIdentifier()
     {
@@ -5054,34 +4214,14 @@ public sealed class PermissionEvaluatorTests
             + "what it identifies");
     }
 
-    /// <summary>
-    /// The principal matrix: which stored role identifier reaches which caller.
-    /// </summary>
+    /// <summary>The principal matrix: which stored role identifier reaches which caller.</summary>
     /// <param name="grantedRoleId">The role identifier recorded on the grant row.</param>
     /// <param name="identified">Whether the caller carries an account identifier.</param>
     /// <param name="expected">Whether the row should reach the caller.</param>
     /// <remarks>
-    /// <para>
-    /// Ported from the legacy membership loop at <c>PortalSecurity.vb:L115-L136</c>: the all-users
-    /// pseudo-role was admitted unconditionally at L125 and the unauthenticated one only while the
-    /// request was in fact unauthenticated at L124, so the two are genuinely different widths and not
-    /// interchangeable. The contract carries no authentication flag of its own - an absent account
-    /// identifier <em>is</em> the anonymous caller.
-    /// </para>
-    /// <para>
-    /// The superuser identifier reaches NOBODY here, which is deliberate rather than an omission. No
-    /// member of this contract accepts a host-account flag, so admitting <c>-2</c> would have to admit
-    /// every caller; a host account is answered by the application service before a grant is read, just
-    /// as <c>PortalSecurity.vb:L123</c> answered it before examining a role. The legacy "Nothing" role
-    /// <c>-4</c> needs no special case and gets none: <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so
-    /// no role name can ever resolve to it and it therefore reaches nobody, which is exactly what it
-    /// asks for.
-    /// </para>
-    /// <para>
     /// The row identified by zero is the case worth stating out loud. Zero is the first role the schema
     /// ever issues and grants exactly like any other, so a future reader who "tidies" this rule into a
     /// positive-identifier test would break the shipped administrators role of a real installation.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(AllUsersRoleId, true, true)]
@@ -5121,22 +4261,11 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// A grant naming an account reaches that account and no other, and its role column is not
-    /// consulted at all.
+    /// A grant naming an account reaches that account and no other, and its role column is not consulted at
+    /// all.
     /// </summary>
     /// <param name="callerUserId">The account asking, or <see langword="null"/> when anonymous.</param>
     /// <param name="expected">Whether the row should reach that caller.</param>
-    /// <remarks>
-    /// MIGRATION: the bracketed pseudo-role encoding is gone. A legacy account-scoped grant was tested by
-    /// synthesising the literal <c>"["</c>, the account identifier and <c>"]"</c> and passing that through
-    /// the very same role-name membership helper a real role name went through, so an account and a role
-    /// were indistinguishable to the matcher. The target records an account-scoped grant in its own
-    /// nullable account column, so the two principals are different columns rather than different string
-    /// shapes and no encoding has to be parsed to tell them apart. The account column also takes
-    /// precedence, which is the order the legacy code tested in
-    /// (<c>ModulePermissionController.vb:L37-L45</c>) - the row below names the everyone pseudo-role as
-    /// well, and it still reaches only the one account.
-    /// </remarks>
     [Theory]
     [InlineData(UserId, true)]
     [InlineData(UserId + 1, false)]
@@ -5166,14 +4295,7 @@ public sealed class PermissionEvaluatorTests
             "the account column decides on its own, so the everyone role beside it confers nothing");
     }
 
-    /// <summary>
-    /// A grant naming neither a role nor an account reaches nobody.
-    /// </summary>
-    /// <remarks>
-    /// Both columns became nullable in the same upgrade, so the combination is representable in the
-    /// terminal schema. The closed reading is the only safe one: a row that names no principal describes
-    /// no principal, and guessing that it means "everybody" would turn a broken row into an open door.
-    /// </remarks>
+    /// <summary>A grant naming neither a role nor an account reaches nobody.</summary>
     [Fact]
     public async Task ModuleKeys_AGrantNamingNeitherRoleNorAccountReachesNobody()
     {
@@ -5191,9 +4313,7 @@ public sealed class PermissionEvaluatorTests
             .Should().BeFalse();
     }
 
-    /// <summary>
-    /// A role name resolves only within the portal that owns the module under evaluation.
-    /// </summary>
+    /// <summary>A role name resolves only within the portal that owns the module under evaluation.</summary>
     /// <remarks>
     /// Role names are unique per portal rather than per installation, so resolving one installation-wide
     /// would let a grant to one tenant's "Administrators" be honoured for another tenant's. That is a
@@ -5220,17 +4340,9 @@ public sealed class PermissionEvaluatorTests
             + "identifier here");
     }
 
-    /// <summary>
-    /// A declared role name is compared to the stored one exactly.
-    /// </summary>
+    /// <summary>A declared role name is compared to the stored one exactly.</summary>
     /// <param name="declaredName">The name the caller declares.</param>
     /// <param name="expected">Whether it should resolve to the stored role.</param>
-    /// <remarks>
-    /// Nothing is trimmed, case-folded or localised, because the value in <c>Roles.RoleName</c> is the
-    /// value a grant was made against. Normalising the comparison here would make the evaluator disagree
-    /// with the store on any installation whose collation does not, and disagreeing about who holds a
-    /// permission is the one thing this component cannot do.
-    /// </remarks>
     [Theory]
     [InlineData(MemberRoleName, true)]
     [InlineData("measured members", false)]
@@ -5254,15 +4366,11 @@ public sealed class PermissionEvaluatorTests
         held.Should().Be(expected);
     }
 
-    /// <summary>
-    /// A blank declared role name is discarded rather than matched.
-    /// </summary>
+    /// <summary>A blank declared role name is discarded rather than matched.</summary>
     /// <remarks>
     /// This is the <c>role &lt;&gt; ""</c> guard at <c>PortalSecurity.vb:L123</c>, which existed because
     /// the semicolon-delimited string the legacy code split carried a leading delimiter and so always
-    /// produced an empty first element. The target takes a collection rather than a delimited string, so
-    /// the empty element no longer arises by construction - but a caller can still send one, and a role
-    /// row whose name is blank must not become a principal everybody reaches.
+    /// produced an empty first element.
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_DiscardABlankDeclaredRoleName()
@@ -5283,19 +4391,11 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The built-in everyone role participates for every caller, and the built-in anonymous role only for
-    /// a caller with no account.
+    /// The built-in everyone role participates for every caller, and the built-in anonymous role only for a
+    /// caller with no account.
     /// </summary>
     /// <param name="identified">Whether the caller carries an account identifier.</param>
     /// <param name="expectedKeys">The keys the caller should hold.</param>
-    /// <remarks>
-    /// Both names are matched against real role rows by exact string comparison, and both are compiled-in
-    /// domain constants rather than settings - see <see cref="SpecialRoleNames"/> for why an authorization
-    /// audience may not be chosen at deploy time. Neither name has to be declared by the caller, which is
-    /// the whole point of them, and the two are asserted together because the difference between
-    /// "unconditionally" and "only when anonymous" is the difference between a public grant and a narrower
-    /// one.
-    /// </remarks>
     [Theory]
     [InlineData(true, new[] { "VIEW" })]
     [InlineData(false, new[] { "EDIT", "VIEW" })]
@@ -5325,13 +4425,11 @@ public sealed class PermissionEvaluatorTests
     /// other name is an ordinary role.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: THIS FACT ASSERTED THE INVERSE, AND THE INVERSE WAS THE DEFECT. It set
-    /// <c>Portal:AllUsersRoleName</c> to "Everybody" and then required a role called "Everybody" to
-    /// receive every-caller reach while the role genuinely called "All Users" became an ordinary role -
-    /// which is precisely the mutable authorization boundary the review found. The direction is now
-    /// fixed by <see cref="SpecialRoleNames.AllUsers"/>: the role carrying the legacy name is the one
-    /// that stands for every caller, a role called anything else grants only what a caller declares, and
-    /// no deployment value can swap them.
+    /// The built-in name is fixed in code and no configuration value may move it, which is what this
+    /// arrangement proves: <c>Portal:AllUsersRoleName</c> is set to "Everybody" and a role is created under
+    /// that name, yet every-caller reach stays with the role genuinely called "All Users". Were the setting
+    /// able to redesignate the every-caller role, the authorization boundary would be operator-mutable - an
+    /// operator could grant every caller the reach of any role by renaming it in configuration.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -5362,15 +4460,6 @@ public sealed class PermissionEvaluatorTests
     /// <param name="permissionCode">The scope code on the catalogue entry.</param>
     /// <param name="entryModuleDefinitionId">The definition the entry declares.</param>
     /// <param name="expected">Whether the entry should be admitted.</param>
-    /// <remarks>
-    /// Two admissions, and both are needed. An entry carrying the product-wide code applies to every
-    /// module; an entry declared by the module's own definition applies to that module. The second
-    /// admission is why this is not a fixed list of known codes - every installed module contributes
-    /// catalogue entries under a code of its own choosing, and a check recognising only the shipped code
-    /// would revoke every permission those modules define. What must never be admitted is an entry
-    /// belonging to some other definition under some other code, which is how a scope this solution
-    /// models no entity for could otherwise reach a module verdict.
-    /// </remarks>
     [Theory]
     [InlineData(ModuleDefinitionScopeCode, ModuleDefinitionId, true)]
     [InlineData(ModuleDefinitionScopeCode, OtherModuleDefinitionId, true)]
@@ -5402,17 +4491,9 @@ public sealed class PermissionEvaluatorTests
         held.Should().Be(expected);
     }
 
-    /// <summary>
-    /// A page catalogue entry is admitted under the page scope code and under nothing else.
-    /// </summary>
+    /// <summary>A page catalogue entry is admitted under the page scope code and under nothing else.</summary>
     /// <param name="permissionCode">The scope code on the catalogue entry.</param>
     /// <param name="expected">Whether the entry should be admitted.</param>
-    /// <remarks>
-    /// Unlike the module vocabulary this one is closed: the terminal page catalogue read filters on the
-    /// product-wide page code and on nothing else, so every page shares one vocabulary and no definition
-    /// widens it. Keeping the two scopes apart is what stops a grant recorded in one from being read as
-    /// the other, which matters because both scope identifiers seed at zero.
-    /// </remarks>
     [Theory]
     [InlineData(PageScopeCode, true)]
     [InlineData(ModuleDefinitionScopeCode, false)]
@@ -5439,11 +4520,7 @@ public sealed class PermissionEvaluatorTests
     /// A catalogue entry carrying the reader's own wildcard identifier is skipped rather than queried.
     /// </summary>
     /// <remarks>
-    /// The grant readers accept minus one in the permission position as "every permission". No catalogue
-    /// row can legitimately carry it, because <c>Permission.PermissionID</c> is <c>IDENTITY(1, 1)</c>, so
-    /// the guard can never reject a real entry - but the consequence of losing it is silent and severe:
-    /// passing the wildcard would return the grants of every permission and they would then all be
-    /// judged as though they carried the key being asked about.
+    /// The grant readers accept minus one in the permission position as "every permission".
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_SkipACatalogueEntryCarryingTheReadersWildcardIdentifier()
@@ -5473,26 +4550,10 @@ public sealed class PermissionEvaluatorTests
             "the wildcard must never be passed through as though it named a permission");
     }
 
-    /// <summary>
-    /// A catalogue identifier appearing twice is judged once.
-    /// </summary>
+    /// <summary>A catalogue identifier appearing twice is judged once.</summary>
     /// <remarks>
-    /// <para>
-    /// A catalogue read is per module rather than per grant, and the same identifier can appear in it
-    /// more than once - two rows may name one permission under different codes. Judging its grants twice
-    /// would double every row they contribute, and a duplicated refusal is harmless while a duplicated
-    /// allowance beside a single refusal is not, so collapsing the duplicate is load-bearing rather than
-    /// an optimisation.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the collapsing moved. An earlier revision spent one grant read per surviving catalogue
-    /// entry and de-duplicated with a visited set to avoid reading the same identifier twice; the grants
-    /// are now fetched for the whole module in ONE read and joined in memory, so the duplicate collapses
-    /// in the applicable-entry dictionary instead. The property asserted is unchanged - a repeated
-    /// identifier neither doubles the rows judged nor duplicates the key returned - so both the read
-    /// shape and the surviving key set are asserted below, the first to pin the single read and the
-    /// second to pin the outcome that read exists to produce.
-    /// </para>
+    /// A catalogue read is per module rather than per grant, and the same identifier can appear in it more
+    /// than once - two rows may name one permission under different codes.
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_JudgeADuplicatedCatalogueIdentifierOnlyOnce()
@@ -5530,16 +4591,7 @@ public sealed class PermissionEvaluatorTests
             "so the duplicated identifier cannot cost a second read either");
     }
 
-    /// <summary>
-    /// A grant row answering a wider question than the one asked is discarded.
-    /// </summary>
-    /// <remarks>
-    /// Both arguments of the module grant reader carry a documented wildcard, so a substituted or future
-    /// store may legitimately return rows belonging to another module or another permission. Judging
-    /// such a row as though it carried the requested key on the requested module is how a grant made
-    /// somewhere else silently becomes a grant here, which is why the identifiers are re-asserted on the
-    /// way out rather than assumed from the way in.
-    /// </remarks>
+    /// <summary>A grant row answering a wider question than the one asked is discarded.</summary>
     [Fact]
     public async Task ModuleKeys_DiscardAGrantRowNamingADifferentModuleOrPermission()
     {
@@ -5571,14 +4623,7 @@ public sealed class PermissionEvaluatorTests
             + "the key that was asked about");
     }
 
-    /// <summary>
-    /// A page grant row answering a wider question than the one asked is discarded too.
-    /// </summary>
-    /// <remarks>
-    /// The page reader treats only its permission argument as a wildcard, never its page argument, so the
-    /// page half of the check is defensive symmetry rather than a requirement. It is asserted anyway so
-    /// that the two collectors read identically and neither can be tightened without the other.
-    /// </remarks>
+    /// <summary>A page grant row answering a wider question than the one asked is discarded too.</summary>
     [Fact]
     public async Task TabKeys_DiscardAGrantRowNamingADifferentPageOrPermission()
     {
@@ -5604,14 +4649,11 @@ public sealed class PermissionEvaluatorTests
         keys.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A module or page that does not exist confers nothing, and says so without failing.
-    /// </summary>
+    /// <summary>A module or page that does not exist confers nothing, and says so without failing.</summary>
     /// <remarks>
-    /// The closed default rather than an error: this contract is asked what a caller holds, and the
-    /// answer for something that does not exist is "nothing". Reporting existence is the application
-    /// service's job, and it does it before asking - which is why an unknown scope must not become an
-    /// exception here.
+    /// The closed default rather than an error: this contract is asked what a caller holds, and the answer
+    /// for something that does not exist is "nothing". Reporting existence is the application service's
+    /// job, and it does it before asking - which is why an unknown scope must not become an exception here.
     /// </remarks>
     [Fact]
     public async Task Keys_ForAnUnknownModuleOrPageAreEmptyAndTheVerdictIsFalse()
@@ -5633,14 +4675,12 @@ public sealed class PermissionEvaluatorTests
             .Should().BeFalse();
     }
 
-    /// <summary>
-    /// Module zero, page zero and portal minus one are real identifiers, not absences.
-    /// </summary>
+    /// <summary>Module zero, page zero and portal minus one are real identifiers, not absences.</summary>
     /// <remarks>
     /// <c>Modules.ModuleID</c> and <c>Tabs.TabID</c> are both <c>IDENTITY(0, 1)</c> and
-    /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, while the legacy absent-integer sentinel is
-    /// also minus one. All three values therefore address real rows, and every one of them is the value
-    /// a plausible-looking guard would reject.
+    /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, while the legacy absent-integer sentinel is also
+    /// minus one. All three values therefore address real rows, and every one of them is the value a
+    /// plausible-looking guard would reject.
     /// </remarks>
     [Fact]
     public async Task Keys_TreatZeroAndMinusOneIdentifiersAsRealRows()
@@ -5666,9 +4706,7 @@ public sealed class PermissionEvaluatorTests
             .Should().Equal(new[] { "EDIT", "VIEW" }, "and portal minus one is a real portal");
     }
 
-    /// <summary>
-    /// The tenant-wide union excludes grants on soft-deleted modules and pages.
-    /// </summary>
+    /// <summary>The tenant-wide union excludes grants on soft-deleted modules and pages.</summary>
     /// <remarks>
     /// A grant on something the caller can no longer reach confers nothing, so the recycled content is
     /// filtered before its grants are considered rather than after - which also keeps the catalogue read
@@ -5692,15 +4730,10 @@ public sealed class PermissionEvaluatorTests
         keys.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A grant naming a catalogue entry that does not exist confers nothing.
-    /// </summary>
+    /// <summary>A grant naming a catalogue entry that does not exist confers nothing.</summary>
     /// <remarks>
     /// A broken row rather than a denial, and failing closed is the only safe reading of it: there is no
-    /// key to confer, so nothing is conferred. The key is resolved from the grant's own permission
-    /// identifier rather than from a navigation property, so whether the store loaded that reference
-    /// cannot change the answer - a decision that quietly returned "holds nothing" because a reference
-    /// happened to be unloaded would be an authorisation defect no test of this type could see.
+    /// key to confer, so nothing is conferred.
     /// </remarks>
     [Fact]
     public async Task PortalKeys_ConferNothingForAGrantWhoseCatalogueEntryIsMissing()
@@ -5723,13 +4756,11 @@ public sealed class PermissionEvaluatorTests
             + "identifiers the grants name is resolved in one read");
     }
 
-    /// <summary>
-    /// The tenant-wide union is distinct and ordered ordinally.
-    /// </summary>
+    /// <summary>The tenant-wide union is distinct and ordered ordinally.</summary>
     /// <remarks>
     /// The ordering is not cosmetic. An access token minted twice from the same grants must carry an
-    /// identical claim set both times, and the enumeration order of a set is not a contract - so the
-    /// answer is sorted before it leaves.
+    /// identical claim set both times, and the enumeration order of a set is not a contract - so the answer
+    /// is sorted before it leaves.
     /// </remarks>
     [Fact]
     public async Task PortalKeys_AreDistinctAndOrderedOrdinally()
@@ -5765,11 +4796,9 @@ public sealed class PermissionEvaluatorTests
     /// through the pseudo-roles and through an account.
     /// </summary>
     /// <remarks>
-    /// A host-level scope carries no portal, and that is deliberate and closed: with no portal there is
-    /// no set of role names that can be resolved without reaching installation-wide, and reaching
-    /// installation-wide is the cross-tenant escalation the contract forbids. Such a scope stays
-    /// reachable through the everyone, anonymous and account-scoped grants, none of which needs a role
-    /// identifier at all.
+    /// A host-level scope carries no portal, and that is deliberate and closed: with no portal there is no
+    /// set of role names that can be resolved without reaching installation-wide, and reaching
+    /// installation-wide is the cross-tenant escalation the contract forbids.
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_ForAnInstallationOwnedModuleResolveNoNamedRole()
@@ -5796,16 +4825,11 @@ public sealed class PermissionEvaluatorTests
             "there is no portal whose roles could be read without reaching across tenants");
     }
 
-    /// <summary>
-    /// A verdict is membership in the very set the listing returns, for both scopes.
-    /// </summary>
+    /// <summary>A verdict is membership in the very set the listing returns, for both scopes.</summary>
     /// <param name="permissionKey">The key asked about.</param>
     /// <remarks>
     /// Expressing the verdict a second time is how a verdict and a listing come to disagree, and a user
-    /// offered an action that is then refused is a defect they experience and a test rarely catches. The
-    /// implementation defines the verdict as a membership test over the same reduction, and this test
-    /// pins that identity across every member of the key vocabulary rather than asserting the two
-    /// separately and hoping they agree.
+    /// offered an action that is then refused is a defect they experience and a test rarely catches.
     /// </remarks>
     [Theory]
     [InlineData(PermissionKey.VIEW)]
@@ -5842,9 +4866,7 @@ public sealed class PermissionEvaluatorTests
         tabVerdict.Should().Be(tabKeys.Contains(permissionKey.ToString()));
     }
 
-    /// <summary>
-    /// The supplied cancellation token reaches every read a decision performs.
-    /// </summary>
+    /// <summary>The supplied cancellation token reaches every read a decision performs.</summary>
     /// <remarks>
     /// A token that is accepted and then dropped is worse than no token at all: the caller believes the
     /// work can be abandoned and it cannot. The token is matched by identity rather than by shape, so
@@ -5881,13 +4903,11 @@ public sealed class PermissionEvaluatorTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A token already cancelled stops every member before it reads anything.
-    /// </summary>
+    /// <summary>A token already cancelled stops every member before it reads anything.</summary>
     /// <remarks>
     /// Observing cancellation at entry rather than only between reads is what makes a cancelled request
-    /// cost nothing. It also keeps a cancellation distinguishable from a refusal: an abandoned request
-    /// must not come back as "you are not allowed".
+    /// cost nothing. It also keeps a cancellation distinguishable from a refusal: an abandoned request must
+    /// not come back as "you are not allowed".
     /// </remarks>
     [Fact]
     public async Task EveryMember_ObservesATokenThatIsAlreadyCancelled()
@@ -5928,14 +4948,12 @@ public sealed class PermissionEvaluatorTests
             "a cancelled request must cost nothing at all");
     }
 
-    /// <summary>
-    /// A store that cannot be reached produces a fault rather than a refusal.
-    /// </summary>
+    /// <summary>A store that cannot be reached produces a fault rather than a refusal.</summary>
     /// <remarks>
     /// The distinction is the whole point. "The database is unavailable" and "you are not allowed" are
-    /// different answers, and collapsing the first into the second would tell an operator their
-    /// permissions were wrong while the real problem was elsewhere - and would, on a write path, let a
-    /// transient outage read as a deliberate denial.
+    /// different answers, and collapsing the first into the second would tell an operator their permissions
+    /// were wrong while the real problem was elsewhere - and would, on a write path, let a transient outage
+    /// read as a deliberate denial.
     /// </remarks>
     [Fact]
     public async Task ModuleKeys_LetAStoreFaultSurfaceRatherThanBecomingARefusal()
@@ -5966,45 +4984,10 @@ public sealed class PermissionEvaluatorTests
             .Should().ThrowAsync<InvalidOperationException>();
     }
 
-
-
-    // =================================================================================================
-    // The grant entities.
-    //
     // MIGRATION: three static controllers collapse into one application contract, and the decision moves
-    //            out of all three. The legacy source spread this aggregate across a 71-line catalogue
-    //            controller with 9 public members, a 389-line module-grant controller with 18 and a
-    //            349-line page-grant controller with 15 - 42 measured members, of which 13 were already
-    //            marked obsolete by their own author and are not ported, and many of the rest were
-    //            near-duplicate overloads differing only in whether the caller had already materialised
-    //            the rows. The persistence subset becomes one repository contract, the orchestration
-    //            becomes one application service, precedence becomes one reducer, and enforcement becomes
-    //            an authorisation handler at the api boundary. The five obsolete access-check and
-    //            edit-permission members are not ported, and neither is the path-scoped catalogue lookup.
-    //
-    // MIGRATION: the legacy tables are singular and their text columns are narrow. The terminal schema
-    //            names them in the singular, and the four catalogue text columns are each fifty
-    //            characters, with the catalogue key obtained from an identity column. Rule T4 makes that
-    //            schema immutable, so the mapping binds to those names and widths rather than redefining
-    //            them - which is exactly why the key enumeration's member names had to match the stored
-    //            spellings rather than the other way round. The mapping itself is asserted by the
-    //            persistence suite in the integration project, which is the only place a mapping can be
-    //            proved against a real database; what is provable here is the entity shape those mappings
-    //            bind to, which is what the test below pins.
-    // =================================================================================================
+    // out of all three.
 
-    /// <summary>
-    /// The grant entities carry no serialisation attributes.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: every xml serialisation attribute is dropped from the domain. The legacy catalogue type
-    /// decorated three of its five properties with element names and marked the other two as ignored,
-    /// because the type doubled as the wire format for portal templates. In the target the domain entity is
-    /// a plain persisted type with no opinion about transport: serialisation happens once, at the api
-    /// boundary, over the request and response contracts. An attribute reappearing here would mean an entity
-    /// had started crossing the wire directly, which baseline B6 forbids - so this is a boundary test rather
-    /// than a tidiness test.
-    /// </remarks>
+    /// <summary>The grant entities carry no serialisation attributes.</summary>
     [Fact]
     public void GrantEntities_CarryNoSerialisationAttributes()
     {
@@ -6024,15 +5007,10 @@ public sealed class PermissionEvaluatorTests
         }
     }
 
-    /// <summary>
-    /// A grant references its catalogue entry rather than deriving from it.
-    /// </summary>
+    /// <summary>A grant references its catalogue entry rather than deriving from it.</summary>
     /// <remarks>
     /// The two grant entities are independent types carrying a foreign key, not specialisations of the
-    /// catalogue entry - a grant is a reference to a permission, not a kind of one. Worth pinning because
-    /// the legacy types were denormalised joins that repeated the catalogue's key and name inline, so a
-    /// reader coming from that source reasonably expects an inheritance relationship, and code written on
-    /// that expectation would compile against a base type that does not exist.
+    /// catalogue entry - a grant is a reference to a permission, not a kind of one.
     /// </remarks>
     [Fact]
     public void GrantEntities_ReferenceTheCatalogueRatherThanDerivingFromIt()
@@ -6048,16 +5026,12 @@ public sealed class PermissionEvaluatorTests
     // The permission key vocabulary.
     // =================================================================================================
 
-    /// <summary>
-    /// The key vocabulary is a closed set of four persisted spellings.
-    /// </summary>
+    /// <summary>The key vocabulary is a closed set of four persisted spellings.</summary>
     /// <remarks>
-    /// MIGRATION: the key column was free text against which the legacy source compared bare literals. The
-    /// target types it as a closed enumeration whose member names are the stored spellings exactly, so the
-    /// magic strings become named members without changing one stored value - which is what lets the schema
-    /// stay immutable while the code stops guessing. The order is the declaration order, and it is pinned
-    /// because these members are persisted data: renaming one, re-casing one, or inserting one is a schema
-    /// change disguised as a refactor.
+    /// The key column was free text against which the legacy source compared bare literals. The target
+    /// types it as a closed enumeration whose member names are the stored spellings exactly, so the magic
+    /// strings become named members without changing one stored value - which is what lets the schema stay
+    /// immutable while the code stops guessing.
     /// </remarks>
     [Fact]
     public void PermissionKeys_AreAClosedSetOfFourPersistedSpellings()
@@ -6067,9 +5041,7 @@ public sealed class PermissionEvaluatorTests
             "these four spellings are what the key column stores, so the enumeration must mirror them exactly");
     }
 
-    /// <summary>
-    /// A key is a discrete member, never a bit field.
-    /// </summary>
+    /// <summary>A key is a discrete member, never a bit field.</summary>
     /// <remarks>
     /// A grant row names exactly one key, and the tables record one row per key per principal. Marking the
     /// enumeration as a bit field would invite combining keys into a single value, which no column can
@@ -6082,21 +5054,12 @@ public sealed class PermissionEvaluatorTests
             "keys are discrete members recorded one row at a time, not flags to be combined");
     }
 
-    /// <summary>
-    /// Every declared key round-trips as its persisted spelling, and no other casing is a member.
-    /// </summary>
+    /// <summary>Every declared key round-trips as its persisted spelling, and no other casing is a member.</summary>
     /// <param name="permissionKey">The key under test.</param>
     /// <param name="persistedSpelling">The spelling stored in the key column.</param>
     /// <remarks>
     /// All four members are covered here. Only two of them have a literal call site in the legacy code that
-    /// is still live - and the census is worth recording precisely, because the raw counts mislead. Of the
-    /// six edit literals, three sit inside a region the legacy author explicitly marked as obsolete and
-    /// retained only for binary compatibility, and one of those three calls an overload that was itself
-    /// already marked obsolete. Only three edit sites and four view sites are live. Separately, one view
-    /// literal elsewhere in the legacy source is not a permission key at all: it is a control-panel display
-    /// mode compared against a site setting, and treating it as a key would invent a permission that never
-    /// existed. The read and write members carry no in-scope legacy literal, and they are still pinned here
-    /// because they are stored values that the schema and installed modules use.
+    /// is still live - and the census is worth recording precisely, because the raw counts mislead.
     /// </remarks>
     [Theory]
     [InlineData(PermissionKey.VIEW, "VIEW")]
@@ -6121,9 +5084,7 @@ public sealed class PermissionEvaluatorTests
                 $"a lower-cased spelling is not a member, so nothing silently accepts \"{persistedSpelling.ToLowerInvariant()}\" as {permissionKey}; the parsed-out value was {folded}");
     }
 
-    /// <summary>
-    /// Builds a catalogue row naming one permission key.
-    /// </summary>
+    /// <summary>Builds a catalogue row naming one permission key.</summary>
     /// <param name="permissionKey">The key the row names.</param>
     /// <returns>The catalogue row.</returns>
     private static Permission Entry(PermissionKey permissionKey) => new()
@@ -6135,14 +5096,10 @@ public sealed class PermissionEvaluatorTests
         PermissionName = permissionKey.ToString(),
     };
 
-    /// <summary>
-    /// Builds a placement of the module under test on a page.
-    /// </summary>
+    /// <summary>Builds a placement of the module under test on a page.</summary>
     /// <param name="tabId">The page the module sits on.</param>
     /// <param name="tabModuleId">
-    /// The placement's own key, when a test addresses the placement by it rather than by its page. Defaults to
-    /// a value derived from the page so that the many tests which never name a placement key keep working
-    /// unchanged, and so that no two placements built for one module ever collide.
+    /// The placement's own key, when a test addresses the placement by it rather than by its page.
     /// </param>
     /// <returns>The placement.</returns>
     private static TabModule Placement(int tabId, int? tabModuleId = null) => new()
@@ -6153,9 +5110,7 @@ public sealed class PermissionEvaluatorTests
         PaneName = "ContentPane",
     };
 
-    /// <summary>
-    /// The identifier the grant reads treat as "every permission" rather than as "no permission".
-    /// </summary>
+    /// <summary>The identifier the grant reads treat as "every permission" rather than as "no permission".</summary>
     /// <remarks>
     /// Measured legacy behaviour that the terminal procedures still carry: in this argument position the
     /// value is a wildcard, which is a third distinct meaning for the same number alongside the All Users
@@ -6164,16 +5119,11 @@ public sealed class PermissionEvaluatorTests
     /// </remarks>
     private const int WildcardPermissionId = -1;
 
-    /// <summary>
-    /// Builds a catalogue row.
-    /// </summary>
+    /// <summary>Builds a catalogue row.</summary>
     /// <param name="permissionId">The row's own identifier, which grants reference.</param>
     /// <param name="permissionKey">The key the row defines.</param>
     /// <param name="permissionCode">The scope code the row belongs to.</param>
-    /// <param name="moduleDefinitionId">
-    /// The definition the row declares. Defaults to the definition the module under evaluation was built
-    /// from, so a row is in scope unless a test deliberately places it elsewhere.
-    /// </param>
+    /// <param name="moduleDefinitionId">The definition the row declares.</param>
     /// <returns>The catalogue row.</returns>
     private static Permission CatalogueEntry(
         int permissionId,
@@ -6188,9 +5138,7 @@ public sealed class PermissionEvaluatorTests
             PermissionName = permissionKey.ToString(),
         };
 
-    /// <summary>
-    /// Builds one grant recorded against the module under test.
-    /// </summary>
+    /// <summary>Builds one grant recorded against the module under test.</summary>
     /// <param name="permissionId">The catalogue row the grant references.</param>
     /// <param name="allowAccess">Whether the row confers the key or refuses it.</param>
     /// <param name="roleId">The role the grant names, or <see langword="null"/> when it names none.</param>
@@ -6217,9 +5165,7 @@ public sealed class PermissionEvaluatorTests
         };
     }
 
-    /// <summary>
-    /// Builds one grant recorded against a page.
-    /// </summary>
+    /// <summary>Builds one grant recorded against a page.</summary>
     /// <param name="tabId">The page the grant is recorded against.</param>
     /// <param name="permissionId">The catalogue row the grant references.</param>
     /// <param name="allowAccess">Whether the row confers the key or refuses it.</param>
@@ -6245,33 +5191,14 @@ public sealed class PermissionEvaluatorTests
         };
     }
 
-
     /// <summary>
     /// The rows the concrete evaluator reads, together with the substituted repositories that serve them
     /// and the configuration it is constructed over.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Every repository is substituted <em>strictly</em>, and every read the evaluator can perform is
-    /// wired here from these lists. That combination buys two things at once: a test arranges rows rather
-    /// than call expectations, so it reads like the data it describes; and the evaluator cannot touch a
-    /// repository member that was not wired without failing outright, so this type also pins how narrow
-    /// the read surface of an access decision is.
-    /// </para>
-    /// <para>
-    /// The lists are mutable and public on purpose. A test adds the rows it needs after
-    /// <see cref="Create"/> and before <see cref="Build"/>, and the wiring closes over the lists rather
-    /// than over snapshots of them, so ordering the two the other way round would still work. Any wired
-    /// member may also be re-substituted by a test that needs a store to return something the lists
-    /// cannot express - a row answering a wider question than the one asked, or a fault.
-    /// </para>
-    /// <para>
-    /// Nothing here is production code and nothing here re-implements a rule. The filtering below
-    /// reproduces only what the repository CONTRACT documents - which rows a read returns, including the
-    /// minus-one wildcard the two grant readers accept in their permission position - so the reachability
-    /// test, the pseudo-role rules, the scope admissions and the allow-and-deny reduction all remain
-    /// entirely the evaluator's own.
-    /// </para>
+    /// The lists are mutable and public on purpose. A test adds the rows it needs after <see
+    /// cref="Create"/> and before <see cref="Build"/>, and the wiring closes over the lists rather than
+    /// over snapshots of them, so ordering the two the other way round would still work.
     /// </remarks>
     private sealed class EvaluatorWorld
     {
@@ -6302,10 +5229,6 @@ public sealed class PermissionEvaluatorTests
                 .ReturnsAsync((int portalId, CancellationToken _) => (IReadOnlyList<Role>)
                     Roles.Where(role => role.PortalId == portalId).ToList());
 
-            // The module and page catalogue reads are narrowed by the scope in the real store. They are
-            // returned UNFILTERED here so that the scope-code and definition admissions stay the
-            // evaluator's own: a substitute that also filtered would hide whether those checks are
-            // applied at all, and they are exactly what the admission tests assert.
             Permissions
                 .Setup(permissions => permissions.GetByModuleIdAsync(
                     It.IsAny<int>(),
@@ -6329,11 +5252,7 @@ public sealed class PermissionEvaluatorTests
 
             // The SET-WISE catalogue read, which is how the portal-wide walk resolves the entries its
             // reached grants name: the distinct identifiers are collected and resolved in one read rather
-            // than one read per identifier. Stubbed from the same fixture as the single-identifier read, and
-            // reproducing the one contract difference that matters to the caller - an identifier naming no
-            // entry is OMITTED from the result rather than yielding a null element, so the caller may index
-            // the result without a per-element null test. Returning a null-padded list here would let a
-            // regression in that handling pass unnoticed.
+            // than one read per identifier.
             Permissions
                 .Setup(permissions => permissions.GetByIdsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -6422,8 +5341,8 @@ public sealed class PermissionEvaluatorTests
         /// <summary>Adds a module owned by a portal.</summary>
         /// <param name="moduleId">The module key, which the schema seeds at zero.</param>
         /// <param name="portalId">
-        /// The owning portal, or <see langword="null"/> when the installation owns the module rather than
-        /// a tenant.
+        /// The owning portal, or <see langword="null"/> when the installation owns the module rather than a
+        /// tenant.
         /// </param>
         /// <param name="isDeleted">Whether the module sits in the recycle bin.</param>
         /// <param name="moduleDefinitionId">The definition the module was built from.</param>
@@ -6467,14 +5386,6 @@ public sealed class PermissionEvaluatorTests
 
         /// <summary>Constructs the registered evaluator implementation over this world.</summary>
         /// <returns>The evaluator, typed as the contract its callers depend on.</returns>
-        /// <remarks>
-        /// The production type is activated over substituted collaborators rather than resolved from the
-        /// container, because each test states its own catalogue, roles, modules and pages, and the
-        /// container binds the real repositories. Which type gets activated is not a guess: it is the type
-        /// the container registers for <see cref="IPermissionEvaluator"/>, read off the registration by
-        /// <see cref="RegisteredEvaluatorType"/>, so a repointed registration takes every test below with
-        /// it instead of leaving them asserting against an abandoned implementation.
-        /// </remarks>
         public IPermissionEvaluator Build() => Activate(
             RegisteredEvaluatorType(),
             Permissions.Object,
@@ -6483,9 +5394,7 @@ public sealed class PermissionEvaluatorTests
             TabStore.Object);
     }
 
-    /// <summary>
-    /// Builds a permission service over substituted collaborators.
-    /// </summary>
+    /// <summary>Builds a permission service over substituted collaborators.</summary>
     private sealed class Harness
     {
         private Harness()
@@ -6551,22 +5460,11 @@ public sealed class PermissionEvaluatorTests
             Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
             JoinedTransaction = new Mock<ITransactionScope>(MockBehavior.Loose);
 
-            // SEC-F13. BOTH SCOPE-OPENING MEMBERS ARE STUBBED, AND THEY RETURN DIFFERENT SCOPES BECAUSE THE
-            // PRODUCTION MEMBERS OBTAIN DIFFERENT SCOPES. The top-level grant removal opens a transaction of
-            // its own with the non-nesting member, because both of its removals are immediate set-based
-            // deletes rather than staged changes, so it needs the rollback boundary the change tracker cannot
-            // give it. The cascade-facing staging member asks the JOINING member instead, so that it adopts
-            // whatever scope already encloses it and leaves durability to that caller.
-            //
-            // ⚠ ALIASING THE TWO TO ONE MOCK MADE THE ASSERTIONS UNREADABLE, and that is why they are
-            // separated. The top-level member calls the staging member INSIDE its own scope, so with a single
-            // shared mock one removal recorded two commits and two disposals - the outer scope's real ones and
-            // the inner join's no-op ones - and a fact asserting "committed once" failed against code that
-            // commits once. Two mocks state the distinction the interface makes: Transaction is the scope the
-            // NON-NESTING member hands out, JoinedTransaction is the scope the JOINING member hands out, and a
-            // fact can then say which one it means. In the real unit of work the joined scope's commit and
-            // disposal are no-ops precisely because an enclosing scope owns the outcome, which is what lets
-            // one call site serve both the standalone caller and the cascade.
+            // BOTH SCOPE-OPENING MEMBERS ARE STUBBED, AND THEY RETURN DIFFERENT SCOPES BECAUSE THE
+            // PRODUCTION MEMBERS OBTAIN DIFFERENT SCOPES. The top-level grant removal opens a transaction
+            // of its own with the non-nesting member, because both of its removals are immediate set-based
+            // deletes rather than staged changes, so it needs the rollback boundary the change tracker
+            // cannot give it.
             UnitOfWork
                 .Setup(unitOfWork => unitOfWork.JoinOrBeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
@@ -6579,9 +5477,6 @@ public sealed class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Transaction.Object);
 
-            // A multiplier of zero would take every read down the caching-disabled branch, which is a real
-            // configuration but not the default one. The suite's baseline is the shipped default, so the
-            // cached path is what the read tests exercise unless a test says otherwise.
             CachingOptions = new CachingOptions();
 
             Service = new PermissionService(
@@ -6627,21 +5522,18 @@ public sealed class PermissionEvaluatorTests
         /// <summary>
         /// Per-page EDIT answers, for the arm of the module-edit decision that reads the page's own grant.
         /// </summary>
-        /// <remarks>
-        /// Held separately from the view answers because SEC-F2 made the edit key consult pages too, and a
-        /// single dictionary would make a test unable to say "viewable here but not editable here".
-        /// </remarks>
         public Dictionary<int, bool> PageEditGrants { get; }
 
         public List<string> CapturedRoleNames { get; }
 
         /// <summary>
-        /// The tenant's designated administrators role, or <see langword="null"/> when the designation names
-        /// no row.
+        /// The tenant's designated administrators role, or <see langword="null"/> when the designation
+        /// names no row.
         /// </summary>
         /// <remarks>
-        /// Absent by default, so the portal-administrator arm of the module-edit decision contributes nothing
-        /// unless a test asks it to. That keeps every fact written before SEC-F2 answering exactly as it did.
+        /// Absent by default, so the portal-administrator arm of the module-edit decision contributes
+        /// nothing unless a test asks it to. That keeps every fact written before answering exactly as it
+        /// did.
         /// </remarks>
         public Role? AdministratorsRole { get; set; }
 
@@ -6662,9 +5554,9 @@ public sealed class PermissionEvaluatorTests
         public Mock<IUserRepository> Users { get; }
 
         /// <summary>
-        /// The role store. Only the portal-authority question reads it, and it reads assignments rather than
-        /// role names, because authority over a tenant turns on whether the administrator assignment is
-        /// currently valid and only the assignment row carries the dates that decide that.
+        /// The role store. Only the portal-authority question reads it, and it reads assignments rather
+        /// than role names, because authority over a tenant turns on whether the administrator assignment
+        /// is currently valid and only the assignment row carries the dates that decide that.
         /// </summary>
         public Mock<IRoleRepository> RoleStore { get; }
 
@@ -6676,9 +5568,9 @@ public sealed class PermissionEvaluatorTests
 
         /// <summary>
         /// The scope the JOINING member hands out, kept separate from <see cref="Transaction"/> so a fact
-        /// can say which scope it means. Inside an enclosing scope the real implementation makes this
-        /// one's commit and disposal no-ops, which is what lets the staging member serve both a
-        /// standalone caller and a cascade from one call site.
+        /// can say which scope it means. Inside an enclosing scope the real implementation makes this one's
+        /// commit and disposal no-ops, which is what lets the staging member serve both a standalone caller
+        /// and a cascade from one call site.
         /// </summary>
         public Mock<ITransactionScope> JoinedTransaction { get; }
 
@@ -6697,9 +5589,7 @@ public sealed class PermissionEvaluatorTests
 
         public PermissionService Service { get; }
 
-        /// <summary>
-        /// Builds a harness whose collaborators can answer every question asked of them.
-        /// </summary>
+        /// <summary>Builds a harness whose collaborators can answer every question asked of them.</summary>
         /// <returns>The harness.</returns>
         public static Harness Ready()
         {
@@ -6712,8 +5602,8 @@ public sealed class PermissionEvaluatorTests
                 .ReturnsAsync(true);
 
             // Only the portal-authority question loads the tenant row; every other member of the service
-            // asks the cheaper existence question above. The row is returned by reference so that a test can
-            // clear the administrator designation on it and observe the answer change.
+            // asks the cheaper existence question above. The row is returned by reference so that a test
+            // can clear the administrator designation on it and observe the answer change.
             harness.Portals
                 .Setup(portals => portals.GetByIdAsync(
                     It.IsAny<int>(),
@@ -6730,8 +5620,8 @@ public sealed class PermissionEvaluatorTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RoleAssignments);
 
-            // SEC-F2: the module-edit decision resolves the tenant's designated administrators role by
-            // identifier so it can compare its NAME against the caller's roles, which is what the legacy test
+            // the module-edit decision resolves the tenant's designated administrators role by identifier
+            // so it can compare its NAME against the caller's roles, which is what the legacy test
             // compared. Absent by default, so the arm contributes nothing unless a fact supplies the row.
             harness.RoleStore
                 .Setup(roles => roles.GetByIdAsync(
@@ -6772,19 +5662,12 @@ public sealed class PermissionEvaluatorTests
                 .ReturnsAsync(() => harness.Tab);
 
             // The pages of the portal, which the account cleanup enumerates in order to evict the
-            // module-permission entry of each one. Stubbed to the harness's own page rather than to an empty
-            // sequence, so a test asserting the eviction has something to observe it against.
+            // module-permission entry of each one. Stubbed to the harness's own page rather than to an
+            // empty sequence, so a test asserting the eviction has something to observe it against.
             harness.Tabs
                 .Setup(tabs => tabs.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalTabs);
 
-            // A PASS-THROUGH CACHE, not a stub that answers from nothing. The read-through helper hands the
-            // cache a factory and expects the value back; a loose mock would return null without ever
-            // invoking the factory, which would make every cached read look like an empty answer and would
-            // test the mock rather than the service. Invoking the factory is what the real service does on a
-            // miss, so this models a cold cache - the state every one of these tests is written against.
-            // One setup per closed generic the service instantiates, because a generic method cannot be
-            // stubbed open.
             harness.Cache
                 .Setup(cache => cache.GetOrCreateAsync(
                     It.IsAny<string>(),
@@ -6819,10 +5702,9 @@ public sealed class PermissionEvaluatorTests
                     return factory(token);
                 });
 
-            // MIGRATION: the catalogue is no longer one wildcard-tolerant read. The repository
-            //            contract mirrors the legacy provider, which offered a definition-scoped read
-            //            and a code-and-key read, so the service composes the three question shapes
-            //            from those two. Both are stubbed from the same Catalogue fixture.
+            // MIGRATION: the catalogue is no longer one wildcard-tolerant read. The repository contract
+            // mirrors the legacy provider, which offered a definition-scoped read and a code-and-key read,
+            // so the service composes the three question shapes from those two.
             harness.Permissions
                 .Setup(permissions => permissions.GetByModuleDefinitionIdAsync(
                     It.IsAny<int>(),
@@ -6839,13 +5721,6 @@ public sealed class PermissionEvaluatorTests
                         && string.Equals(entry.PermissionCode, code, StringComparison.OrdinalIgnoreCase))
                     .ToList());
 
-            // The three IDENTIFYING catalogue reads. Each is stubbed from the same Catalogue fixture, and
-            // each reproduces the shape of the terminal procedure it realises, measured from the DDL:
-            //   - by identifier: at most one row, so an unknown key yields null.
-            //   - by module: the UNION of the module's own definition's entries with every entry carrying
-            //     the product-wide SYSTEM_MODULE_DEFINITION code (04.05.03).
-            //   - by page: filters on the SYSTEM_TAB code and never references its page argument at all
-            //     (04.05.03), so every page receives the identical catalogue.
             harness.Permissions
                 .Setup(permissions => permissions.GetByIdAsync(
                     It.IsAny<int>(),
@@ -6935,10 +5810,7 @@ public sealed class PermissionEvaluatorTests
 
             // The set-based page answer is the DISJUNCTION of the single-page answers over the same stubbed
             // world, which is precisely what the real evaluator specifies: a verdict composed per page and
-            // then disjoined, so a denying page contributes nothing rather than vetoing. Composing the double
-            // from AnswerPage rather than from a second table is deliberate - the two members cannot disagree
-            // here, so a fact that passes against one and fails against the other is measuring the service
-            // rather than the double.
+            // then disjoined, so a denying page contributes nothing rather than vetoing.
             harness.Evaluator
                 .Setup(evaluator => evaluator.HasAnyTabPermissionAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -6973,9 +5845,7 @@ public sealed class PermissionEvaluatorTests
             return harness;
         }
 
-        /// <summary>
-        /// Records the roles the caller was evaluated under.
-        /// </summary>
+        /// <summary>Records the roles the caller was evaluated under.</summary>
         /// <param name="roleNames">The roles supplied to the store.</param>
         public void Capture(IReadOnlyCollection<string> roleNames)
         {
@@ -6983,9 +5853,7 @@ public sealed class PermissionEvaluatorTests
             CapturedRoleNames.AddRange(roleNames);
         }
 
-        /// <summary>
-        /// Answers a page-level question from the configured page grants.
-        /// </summary>
+        /// <summary>Answers a page-level question from the configured page grants.</summary>
         /// <param name="tabId">The page asked about.</param>
         /// <param name="permissionKey">The permission asked about.</param>
         /// <returns>Whether the page allows it.</returns>
@@ -6996,7 +5864,7 @@ public sealed class PermissionEvaluatorTests
                 return viewGranted;
             }
 
-            // SEC-F2: the edit key now reaches pages as well, so a per-page edit answer is available for the
+            // The edit key reaches pages as well, so a per-page edit answer is available for the
             // facts that need one. Absent an entry the blanket answer applies, exactly as before.
             if (permissionKey == PermissionKey.EDIT && PageEditGrants.TryGetValue(tabId, out bool editGranted))
             {
@@ -7013,14 +5881,6 @@ public sealed class PermissionEvaluatorTests
     /// <typeparam name="TValue">The answer type.</typeparam>
     /// <param name="result">The outcome the evaluator produced.</param>
     /// <returns>The answer carried by a successful outcome.</returns>
-    /// <remarks>
-    /// The evaluator reports its answers as outcomes rather than as bare values, so that a caller can tell
-    /// "this caller holds nothing" apart from "the question could not be answered" - two conditions an empty
-    /// list conflates, and conflating them silently denies access for an infrastructure reason. Every fact
-    /// in this suite is about the ANSWER, so each one asserts that the question was answerable and then reads
-    /// the answer; a failure surfaces here as a failing test rather than as an empty list that looks like a
-    /// legitimate refusal.
-    /// </remarks>
     private static TValue Succeeded<TValue>(Result<TValue> result)
     {
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
@@ -7032,27 +5892,9 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <returns>The registered implementation type.</returns>
     /// <remarks>
-    /// <para>
-    /// Read out of the REGISTRATION rather than searched for by name or by scanning the assembly for
-    /// implementers, so the type every test in the concrete section activates is provably the one the
-    /// application evaluates permissions with. A second implementation added to the assembly, or the
-    /// registration repointed at a different one, changes what these tests exercise instead of leaving
-    /// them asserting against an abandoned class.
-    /// </para>
-    /// <para>
-    /// The implementation is internal sealed to the infrastructure assembly and this project is granted
-    /// no visibility into it. A <see cref="Type"/> needs none, which is what lets the real rules be
-    /// exercised without widening the production assembly's surface for a test's convenience.
-    /// </para>
-    /// <para>
     /// Registrations are collected rather than a provider built, so this costs nothing and opens no
     /// connection: <c>AddInfrastructure</c> reads the connection string to hand it to the context and to
     /// the database probe, and never dials it, so the throwaway value below is never connected to.
-    /// It must still be a STRUCTURALLY COMPLETE connection string, because <c>AddInfrastructure</c>
-    /// refuses a value that names no server, no catalogue or no way to authenticate rather than deferring
-    /// that discovery to the first request. Naming integrated security is what makes the throwaway value
-    /// complete without putting a credential in a test. The result is computed once per run.
-    /// </para>
     /// </remarks>
     private static Type RegisteredEvaluatorType() => RegisteredEvaluator.Value;
 
@@ -7092,13 +5934,6 @@ public sealed class PermissionEvaluatorTests
     /// <param name="implementation">The type to construct.</param>
     /// <param name="arguments">The constructor arguments.</param>
     /// <returns>The constructed evaluator.</returns>
-    /// <remarks>
-    /// Reflection wraps anything a constructor throws in a <see cref="TargetInvocationException"/>, which
-    /// would make an argument-guard assertion match on the wrapper and lose both the exception type and
-    /// the parameter name it names - and the parameter name is the whole point of the guard test, because
-    /// it is what says WHICH collaborator was missing. The inner exception is therefore rethrown with its
-    /// stack intact, so a guard reads exactly as it would against a direct construction.
-    /// </remarks>
     private static IPermissionEvaluator Activate(Type implementation, params object?[] arguments)
     {
         try

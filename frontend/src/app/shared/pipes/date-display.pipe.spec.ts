@@ -1,70 +1,6 @@
-// Specification for `DateDisplayPipe`.
-//
-// PROVENANCE. The legacy DotNetNuke tree carries no automated tests of any kind,
-// so this file has no predecessor to port: it is authored fresh from the legacy
-// behaviour the pipe must reproduce. That behaviour was not invented either. A
-// census of `Website/admin/{Portal,Users,Security,Modules,Tabs}` found exactly
-// four private date formatters, and they disagree with one another:
-//
-//   1. `DisplayDate`      Website/admin/Users/Users.ascx.vb             L396-L408
-//                         L400 `_Date = UserDate.ToString`  -> date AND time.
-//                         L397 seeds the result with `Null.NullString` and the
-//                         handler at L404-L406 swallows the failure, so a value
-//                         that cannot be rendered comes out EMPTY, never as a
-//                         platform error string.
-//                         Bound at users.ascx L64 (CreatedDate) and L70 (LastLoginDate).
-//   2. `FormatExpiryDate` Website/admin/Portal/Portals.ascx.vb          L250-L260
-//                         L254 `.ToShortDateString`  -> date alone.
-//                         L251 seeds `String.Empty`; handler at L256-L258.
-//                         Bound at portals.ascx L51 (ExpiryDate).
-//   3. `FormatDate`       Website/admin/Security/SecurityRoles.ascx.vb  L377-L383
-//                         L379 `.ToShortDateString`  -> date alone.
-//                         L381 returns the empty string; this one has no handler.
-//                         Bound at securityroles.ascx L79 and L84.
-//   4. `FormatExpiryDate` Website/admin/Users/MemberServices.ascx.vb    L172-L186
-//                         L177 `.ToShortDateString`  -> date alone.
-//
-// Three of the four emit a date alone and one emits date plus time, which is the
-// whole reason the pipe carries two modes: `'date'` is the majority default and
-// `'datetime'` reproduces the single outlier. Both shapes are asserted below.
-//
-// DELIBERATE EXCLUSION. Formatter 4 is impure. MemberServices.ascx.vb L176 compares
-// the value against `Date.Today` and L179 substitutes the localised word "Expired".
-// That reads the clock, so it belongs to a screen holding an injected clock and not
-// to a pure pipe. No assertion here expects it, and none may be added.
-//
-// SENTINEL RULE. `Null.NullDate` is `Date.MinValue`
-// (Library/Components/Shared/Null.vb L66-L70), and `Null.IsNull` tests for it on
-// the DATE PART ALONE: L222-L224 reads `IsNull = objDate.Date.Equals(NullDate.Date)`.
-// Its sibling `Null.GetNull` spells out why at L183-L187, in the note
-// "compare the Date part of the DateTime with the DatePart of the NullDate
-// ( this avoids subtle time differences )". Every instant falling on 0001-01-01
-// therefore counts as absent, not merely exact midnight, which is exactly what the
-// second critical case below pins down.
-//
-// PERPETUAL VALUE. 9999-12-31 is NOT a sentinel. It is the one-off billing expiry
-// assigned at Library/Components/Security/Roles/RoleController.vb L542,
-// `Case "O" : ExpiryDate = New System.DateTime(9999, 12, 31)`, inside the
-// `Select Case Frequency` block spanning L540-L547 that also holds L541,
-// `Case "N" : ExpiryDate = Null.NullDate`. It is a genuine value meaning
-// "perpetual" and must render like any other date.
-// DISCREPANCY REPORTED rather than silently corrected: a circulating citation
-// places this mapping at L543-L544. That is stale. L543 and L544 are the "D" and
-// "W" DateAdd cases; the mapping sits at L542, verified in the working tree.
-//
-// HARNESS. `DateDisplayPipe` injects `LOCALE_ID`, so the pipe is resolved through a
-// TestBed injector rather than constructed directly - that exercises the same
-// construction path the templates use. The locale is pinned to a literal value
-// because every expected string below is locale-sensitive, and a suite that
-// inherited the ambient locale would be flaky by construction. Registration goes
-// through `providers`, never through `declarations`: everything in this workspace
-// is standalone.
-//
-// DETERMINISM. Every input is a hard-coded ISO-8601 literal, and nothing here reads
-// the clock, so the suite cannot drift across a month boundary, a daylight-saving
-// transition or a year change - and no clock stub is needed or wanted. The expected
-// strings were measured against the installed framework formatter under the pinned
-// locale and the UTC display zone the pipe fixes.
+// PROVENANCE. The legacy DotNetNuke tree carries no automated tests of any kind, so this file has no
+// predecessor to port: it is authored fresh from the legacy behaviour the pipe must reproduce. That
+// behaviour was not invented either.
 
 import { Injector, LOCALE_ID } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -72,9 +8,6 @@ import { TestBed } from '@angular/core/testing';
 import { DateDisplayPipe, type DateDisplayMode } from './date-display.pipe';
 
 describe('DateDisplayPipe', () => {
-  // Every expected string below is locale-sensitive, so the locale is pinned
-  // rather than inherited: a suite reading the ambient locale would be flaky by
-  // construction.
   const TEST_LOCALE = 'en-US';
 
   // Deliberately fictitious rather than merely unregistered today, so registering
@@ -102,16 +35,7 @@ describe('DateDisplayPipe', () => {
 
   const UNPARSEABLE_INPUT = 'not-a-date';
 
-  /**
-   * Values the PLATFORM accepts and silently normalises into a different, real
-   * date. Every entry was measured against this workspace's runtime, and the
-   * comment records what `new Date(...)` produces for it, because that is the
-   * wrong output these expectations exist to forbid.
-   *
-   * The expected result is stated as the literal empty string in the assertions
-   * rather than read back from the pipe, so a regression in the collaborator's
-   * validation cannot move actual and expected together.
-   */
+  /** Values the PLATFORM accepts and silently normalises into a different, real date. */
   const CALENDAR_INVALID_INPUTS = [
     '2024-02-30T00:00:00Z', // platform yields 2024-03-01
     '2023-02-29', // platform yields 2023-03-01 - 2023 is not a leap year
@@ -121,9 +45,8 @@ describe('DateDisplayPipe', () => {
   ] as const;
 
   /**
-   * Values that are numeric, or otherwise not the wire shape, which the platform
-   * nonetheless parses into a confident date. `'0'` is the case named in review;
-   * the rest were measured alongside it and fail the same way.
+   * Values that are numeric, or otherwise not the wire shape, which the platform nonetheless parses into
+   * a confident date.
    */
   const NUMERIC_LIKE_INPUTS = [
     '0', // platform yields 2000-01-01
@@ -132,10 +55,7 @@ describe('DateDisplayPipe', () => {
     '20240910', // basic-format ISO, which the platform rejects outright
   ] as const;
 
-  /**
-   * Values shaped for a human reader or a different producer, all of which the
-   * platform accepts. None is a shape the API emits.
-   */
+  /** Values shaped for a human reader or a different producer, all of which the platform accepts. */
   const NON_WIRE_FORMAT_INPUTS = [
     '12/31/2024', // platform yields 2024-12-31
     'Sep 10 2024', // platform yields 2024-09-10
@@ -144,12 +64,8 @@ describe('DateDisplayPipe', () => {
   ] as const;
 
   /**
-   * Values whose DATE portion is a real calendar date and whose overall shape is
-   * the wire format, but whose TIME portion is out of range. These are the inputs
-   * that reach the pipe's unparseable guard, because the shape check and the
-   * calendar check both pass them through: the pipe deliberately does not encode
-   * time-of-day ranges, relying instead on the platform parser, which was measured
-   * to return an invalid instant for each of these.
+   * Values whose DATE portion is a real calendar date and whose overall shape is the wire format, but
+   * whose TIME portion is out of range.
    */
   const TIME_OUT_OF_RANGE_INPUTS = [
     '2024-09-10T25:00:00Z', // hour 25
@@ -158,8 +74,8 @@ describe('DateDisplayPipe', () => {
   ] as const;
 
   /**
-   * A real leap day, held alongside the invalid ones so the calendar check is
-   * shown to reject only what does not exist rather than everything unusual.
+   * A real leap day, held alongside the invalid ones so the calendar check is shown to reject only what
+   * does not exist rather than everything unusual.
    */
   const LEAP_DAY_INSTANT = '2024-02-29T00:00:00.000Z';
 
@@ -167,11 +83,10 @@ describe('DateDisplayPipe', () => {
   const LEAP_DAY_AS_DATE = '2/29/2024';
 
   /**
-   * A legitimate value whose numeric offset places it on a DIFFERENT UTC day from
-   * the one its own date field names: 01:00 at +02:00 is 23:00 UTC the previous
-   * day. It is held here because it is the value that distinguishes a correct
-   * calendar check from a naive one — validating by round-tripping the parsed
-   * instant back to a UTC date would reject this, and it must not be rejected.
+   * A legitimate value whose numeric offset places it on a DIFFERENT UTC day from the one its own date
+   * field names: 01:00 at +02:00 is 23:00 UTC the previous day. It is held here because it is the value
+   * that distinguishes a correct calendar check from a naive one — validating by round-tripping the
+   * parsed instant back to a UTC date would reject this, and it must not be rejected.
    */
   const OFFSET_CROSSING_MIDNIGHT = '2024-09-10T01:00:00+02:00';
 
@@ -179,14 +94,8 @@ describe('DateDisplayPipe', () => {
   const OFFSET_CROSSING_MIDNIGHT_AS_DATE = '9/9/2024';
 
   /**
-   * A date in a two-digit year that is NOT the sentinel year.
-   *
-   * This value exists to pin two things the rest of the suite leaves open. First,
-   * that the sentinel guard is PRECISE - it recognises year one specifically, and
-   * does not reject low years wholesale. Second, that the calendar check builds
-   * its probe in a way that treats a small year literally: `Date.UTC` maps years
-   * 0-99 onto 1900-1999, so a probe built that way would decide this date does not
-   * exist and blank it.
+   * A date in a two-digit year that is NOT the sentinel year. This value exists to pin two things the
+   * rest of the suite leaves open.
    */
   const LOW_YEAR_INSTANT = '0050-06-15T00:00:00.000Z';
 
@@ -211,9 +120,8 @@ describe('DateDisplayPipe', () => {
 
   const PERPETUAL_AS_DATE_TIME = '12/31/9999 12:00:00 AM';
 
-  // What an unguarded formatter would emit for the sentinel, held as a literal so
-  // the guard cases can assert against the exact wrong answer rather than against
-  // a vague "not this shape".
+  // What an unguarded formatter would emit for the sentinel, held as a literal so the guard cases can
+  // assert against the exact wrong answer rather than against a vague "not this shape".
   const SENTINEL_IF_UNGUARDED = '1/1/0001';
 
   let pipe: DateDisplayPipe;
@@ -235,10 +143,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('agrees with itself when constructed directly on its documented fallback locale', () => {
-    // Were the constructor default ever to drift from the locale the application
-    // supplies, the same wire value would render two ways depending on how the pipe
-    // was obtained. Comparing the two construction paths surfaces that here rather
-    // than on a screen.
     const directlyConstructed = new DateDisplayPipe();
 
     expect(directlyConstructed.transform(ORDINARY_INSTANT)).toBe(ORDINARY_AS_DATE);
@@ -267,9 +171,9 @@ describe('DateDisplayPipe', () => {
     expect(withUnavailableLocale.transform(null)).toBe(EMPTY);
   });
 
-  // The sentinel is not dropped in transit: a minimum-value date crosses the wire
-  // as a real ISO-8601 string rather than as an omitted property or a null, so the
-  // client is what has to recognise it - and in both modes.
+  // The sentinel is not dropped in transit: a minimum-value date crosses the wire as a real ISO-8601 string
+  // rather than as an omitted property or a null, so the client is what has to recognise it - and in both
+  // modes.
   it('renders the minimum-value sentinel as an empty cell in both modes', () => {
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT, DATE_MODE)).toBe(EMPTY);
@@ -277,9 +181,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('never leaks year one onto the screen in any shape', () => {
-    // The exact wrong answers this guard exists to prevent: an unguarded formatter,
-    // a zero-padded one, and an unchecked parse leaking the platform's own
-    // invalid-date wording.
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe(SENTINEL_IF_UNGUARDED);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe('01/01/0001');
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe('1/1/1');
@@ -388,20 +289,6 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(UNPARSEABLE_INPUT)).not.toContain('NaN');
   });
 
-  // ===========================================================================
-  // A WRONG DATE IS WORSE THAN NO DATE.
-  //
-  // `not-a-date` is the easy negative case: the platform rejects it, so the pipe
-  // needs no help to degrade correctly. The dangerous negatives are the ones the
-  // platform ACCEPTS. It rolls a non-existent day forward into the next month and
-  // it parses bare numbers and prose into confident instants, so without explicit
-  // validation the pipe would render a plausible, wrong, unfalsifiable date - the
-  // one failure mode a reader cannot detect by looking at the screen.
-  //
-  // Each expectation below states the literal empty string rather than reading the
-  // expected value back out of the pipe, so a regression in the pipe's validation
-  // cannot move actual and expected together and stay green.
-  // ===========================================================================
   it('renders a date that does not exist on the calendar as an empty cell', () => {
     for (const input of CALENDAR_INVALID_INPUTS) {
       expect(pipe.transform(input)).toBe('');
@@ -411,10 +298,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('never renders the month a non-existent day would roll forward into', () => {
-    // The specific normalisations the platform performs, named so that a
-    // regression reports which wrong date leaked rather than merely that
-    // something did. February 30 becomes March 1, February 29 of a common year
-    // becomes March 1, and September 31 becomes October 1.
     expect(pipe.transform('2024-02-30T00:00:00Z')).not.toBe('3/1/2024');
     expect(pipe.transform('2023-02-29')).not.toBe('3/1/2023');
     expect(pipe.transform('2024-09-31')).not.toBe('10/1/2024');
@@ -431,9 +314,6 @@ describe('DateDisplayPipe', () => {
       expect(pipe.transform(input, DATETIME_MODE)).toBe('');
     }
 
-    // The platform's own readings of those values, forbidden by name. A numeric
-    // identifier that reached a date field through a mismapped property would
-    // otherwise display as a January date and look entirely credible.
     expect(pipe.transform('0')).not.toBe('1/1/2000');
     expect(pipe.transform('1')).not.toBe('1/1/2001');
     expect(pipe.transform('2024')).not.toBe('1/1/2024');
@@ -445,9 +325,6 @@ describe('DateDisplayPipe', () => {
       expect(pipe.transform(input, DATETIME_MODE)).toBe('');
     }
 
-    // A locale-formatted string is the most likely of these to arrive in practice
-    // and the least likely to be noticed, because the platform reads it correctly
-    // and the pipe would echo it back looking right.
     expect(pipe.transform('12/31/2024')).not.toBe('12/31/2024');
 
     // A leading sign is silently discarded by the platform, so a negative number
@@ -455,11 +332,9 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform('-2024-09-10')).not.toBe('9/10/2024');
   });
 
-  // ===========================================================================
-  // The validation must be a scalpel, not a hammer. These two cases are the ones
-  // a careless implementation breaks, and they are asserted immediately after the
-  // rejections so that tightening the pipe can never quietly cost a valid value.
-  // ===========================================================================
+  // The validation must be a scalpel, not a hammer. These two cases are the ones a careless implementation
+  // breaks, and they are asserted immediately after the rejections so that tightening the pipe can never
+  // quietly cost a valid value.
   it('still renders a genuine leap day', () => {
     expect(pipe.transform(LEAP_DAY_INSTANT)).toBe(LEAP_DAY_AS_DATE);
     expect(pipe.transform(LEAP_DAY_INSTANT)).not.toBe('');
@@ -470,18 +345,13 @@ describe('DateDisplayPipe', () => {
   });
 
   it('still renders a low year that is not the sentinel year', () => {
-    // The sentinel guard must be a scalpel too. It recognises year ONE, and this
-    // expectation is what stops it - or the calendar check in front of it - from
-    // degenerating into a filter on small years generally. Without this
-    // expectation the pipe's choice to build its calendar probe with
-    // `setUTCFullYear` rather than `Date.UTC` would be untested, because for the
-    // sentinel year itself the two constructions yield the same empty cell.
+    // The sentinel guard must be a scalpel too. It recognises year ONE, and this expectation is what stops
+    // it - or the calendar check in front of it - from degenerating into a filter on small years generally.
     expect(pipe.transform(LOW_YEAR_INSTANT)).toBe(LOW_YEAR_AS_DATE);
     expect(pipe.transform(LOW_YEAR_INSTANT)).not.toBe('');
 
-    // Adjacent by year, opposite in outcome: the sentinel still blanks, and this
-    // value still renders, so the two are genuinely distinguished rather than
-    // being swept up together.
+    // Adjacent by year, opposite in outcome: the sentinel still blanks, and this value still renders, so
+    // the two are genuinely distinguished rather than being swept up together.
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
     expect(pipe.transform(LOW_YEAR_INSTANT)).not.toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
 
@@ -491,22 +361,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('renders an out-of-range time of day as an empty cell', () => {
-    // These values document the pipe's DIVISION OF LABOUR, and they are the only
-    // inputs that still reach its unparseable guard. Their shape is the wire
-    // format and their date portion is a real calendar date, so neither the format
-    // check nor the calendar check rejects them; the platform parser does, and the
-    // pipe defers to it rather than restating hour, minute and second ranges.
-    //
-    // WHAT THESE EXPECTATIONS DO NOT PROVE, established by measurement rather than
-    // assumed. Deleting the pipe's `Number.isNaN` guard does NOT fail this test.
-    // The formatter is not lenient about an invalid instant either - `formatDate`
-    // delegates to a converter that throws `Unable to convert "Invalid Date" into
-    // a date` - and the pipe already wraps the formatter in a handler that returns
-    // an empty cell. The two guards are therefore redundant BY DESIGN, and this
-    // test pins the OUTCOME, which both of them produce, rather than which one
-    // produced it. The explicit guard is retained because relying on a third-party
-    // formatter to throw is relying on an implementation detail, but that is a
-    // defence-in-depth argument and is not something these assertions establish.
     for (const input of TIME_OUT_OF_RANGE_INPUTS) {
       expect(pipe.transform(input)).toBe('');
       expect(pipe.transform(input, DATE_MODE)).toBe('');
@@ -524,22 +378,12 @@ describe('DateDisplayPipe', () => {
   });
 
   it('still renders a value whose offset places it on another UTC day', () => {
-    // 01:00 at +02:00 is 23:00 UTC on the preceding day, so the rendered date is
-    // legitimately not the date written in the string. A validation implemented by
-    // round-tripping the parsed instant back to a UTC date would reject this
-    // value; one that checks only the calendar triple accepts it, which is why
-    // this expectation is the guard on that design choice.
     expect(pipe.transform(OFFSET_CROSSING_MIDNIGHT)).toBe(
       OFFSET_CROSSING_MIDNIGHT_AS_DATE,
     );
     expect(pipe.transform(OFFSET_CROSSING_MIDNIGHT)).not.toBe('');
   });
 
-  // ===========================================================================
-  // A blank value. `Null.NullString` is the empty string (Null.vb L71-L75), so an
-  // absent string genuinely arrives at the display layer as '' rather than as null,
-  // and the blank case is reached in practice rather than theoretically.
-  // ===========================================================================
   it('renders a blank value as an empty cell', () => {
     expect(pipe.transform(BLANK_INPUT)).toBe(EMPTY);
     expect(pipe.transform(BLANK_INPUT, DATE_MODE)).toBe(EMPTY);
@@ -549,13 +393,6 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(WHITESPACE_INPUT, DATETIME_MODE)).toBe(EMPTY);
   });
 
-  // ===========================================================================
-  // Impossible calendar dates. The platform's parser does not reject an
-  // out-of-range day, it NORMALISES it by rolling forward into the next month, so
-  // every value below parses successfully and would be displayed as a confidently
-  // wrong date that the record does not hold. Each expectation asserts against the
-  // exact wrong answer it exists to prevent, so it cannot pass vacuously.
-  // ===========================================================================
   it('renders a day that does not exist in its month as an empty cell', () => {
     // February 30 never exists in any year.
     expect(pipe.transform('2024-02-30')).toBe(EMPTY);
@@ -577,9 +414,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('renders an out-of-range month or day-of-month as an empty cell', () => {
-    // These already failed to parse, so they are guarded twice over. They are
-    // asserted anyway so the new range checks cannot silently start admitting
-    // them if the parsing behaviour ever changes.
     expect(pipe.transform('2024-13-01')).toBe(EMPTY);
     expect(pipe.transform('2024-00-10')).toBe(EMPTY);
     expect(pipe.transform('2024-01-32')).toBe(EMPTY);
@@ -599,19 +433,15 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform('2024-01-31')).toBe('1/31/2024');
     expect(pipe.transform('2024-04-30')).toBe('4/30/2024');
 
-    // The perpetual expiry and the null-date sentinel both survive the new
-    // validation: the first renders normally, the second is still recognised as
-    // the sentinel rather than being mistaken for an impossible date.
+    // The perpetual expiry and the null-date sentinel both survive the new validation: the first renders
+    // normally, the second is still recognised as the sentinel rather than being mistaken for an impossible
+    // date.
     expect(pipe.transform(PERPETUAL_INSTANT)).toBe(PERPETUAL_AS_DATE);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).toBe(EMPTY);
     expect(pipe.transform(SENTINEL_AT_MIDNIGHT)).not.toBe(SENTINEL_IF_UNGUARDED);
   });
 
   it('does not reject an offset-bearing value whose UTC date differs from its own text', () => {
-    // This is why validation is arithmetic on the string's components and never a
-    // round-trip against the parsed instant. The text says July 4 while the
-    // instant is genuinely July 3 in UTC, and a round-trip comparison would
-    // therefore reject a perfectly valid value as impossible.
     expect(pipe.transform('2024-07-04T02:00:00+05:00', DATETIME_MODE)).toBe(
       '7/3/2024 9:00:00 PM',
     );
@@ -623,12 +453,6 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform('2024-06-30T22:00:00-05:00')).toBe('7/1/2024');
   });
 
-  // ===========================================================================
-  // Purity. The pipe is declared without `pure: false`, so it is pure and re-runs
-  // only when its arguments change. It reads no clock and holds no state, so the
-  // same arguments must always produce the same output - which is what lets a
-  // template call it inside an OnPush component without surprises.
-  // ===========================================================================
   it('returns the same output for the same input across repeated calls', () => {
     const first = pipe.transform(ORDINARY_INSTANT_WITH_TIME_OF_DAY, DATETIME_MODE);
     const second = pipe.transform(ORDINARY_INSTANT_WITH_TIME_OF_DAY, DATETIME_MODE);
@@ -655,21 +479,14 @@ describe('DateDisplayPipe', () => {
   });
 
   it('resolves as a singleton within one injector', () => {
-    // Stated first, because it is the fact that makes the following test necessary
-    // and it was previously mistaken for the opposite. `DateDisplayPipe` is
-    // registered once as a provider, so an injector caches the instance it creates
-    // and every later resolution returns that same object. A second
-    // `TestBed.inject` therefore cannot demonstrate anything about a fresh
-    // instance - it hands back the pipe already under test.
     expect(TestBed.inject(DateDisplayPipe)).toBe(pipe);
     expect(TestBed.inject(DateDisplayPipe)).toBe(TestBed.inject(DateDisplayPipe));
   });
 
   it('renders the same output from a genuinely independent instance', () => {
-    // A SEPARATE injector, so the pipe it produces is a different object rather
-    // than the cached one. The locale is pinned identically, which is what makes
-    // the output comparison meaningful: the only difference between the two pipes
-    // is their identity.
+    // A SEPARATE injector, so the pipe it produces is a different object rather than the cached one. The
+    // locale is pinned identically, which is what makes the output comparison meaningful: the only
+    // difference between the two pipes is their identity.
     const separateInjector = Injector.create({
       providers: [
         { provide: LOCALE_ID, useValue: TEST_LOCALE },
@@ -678,15 +495,11 @@ describe('DateDisplayPipe', () => {
     });
     const independent = separateInjector.get(DateDisplayPipe);
 
-    // Instance inequality asserted BEFORE the outputs are compared. Without this,
-    // the comparisons below could be satisfied by one object agreeing with itself,
-    // which proves nothing about state accumulation.
+    // Instance inequality asserted BEFORE the outputs are compared. Without this, the comparisons below
+    // could be satisfied by one object agreeing with itself, which proves nothing about state accumulation.
     expect(independent).not.toBe(pipe);
     expect(independent).toBeInstanceOf(DateDisplayPipe);
 
-    // No state accumulates on an instance, so two independent pipes agree for
-    // every representative input. Grids create one pipe instance per binding, so
-    // independence across instances is the contract they rely on.
     expect(independent.transform(ORDINARY_INSTANT)).toBe(pipe.transform(ORDINARY_INSTANT));
     expect(independent.transform(ORDINARY_INSTANT, DATETIME_MODE)).toBe(
       pipe.transform(ORDINARY_INSTANT, DATETIME_MODE),
@@ -704,9 +517,9 @@ describe('DateDisplayPipe', () => {
   });
 
   it('carries no state from one call into the next across instances', () => {
-    // Order-independence, driven through two distinct objects. The first pipe is
-    // exercised with the values most likely to leave residue - a sentinel, an
-    // absent value and a rejected value - and the second must be unaffected.
+    // Order-independence, driven through two distinct objects. The first pipe is exercised with the values
+    // most likely to leave residue - a sentinel, an absent value and a rejected value - and the second must
+    // be unaffected.
     const independent = new DateDisplayPipe(TEST_LOCALE);
 
     expect(independent).not.toBe(pipe);
@@ -722,29 +535,8 @@ describe('DateDisplayPipe', () => {
     );
   });
 
-  // ===========================================================================
-  // A value that is not a string at all.
-  //
-  // The declared parameter type says a template cannot pass one, and strict
-  // template checking enforces that at compile time. But the value normally
-  // arrives off the wire, typed only by a DTO interface that is erased at
-  // runtime, so a malformed or evolved response can still deliver a number, an
-  // object or an array. Reaching `.trim()` with one of those throws a TypeError -
-  // and because a pipe runs inside a template expression, that would abort the
-  // whole view rather than blank one cell.
-  //
-  // These expectations therefore model the erased call deliberately, rather than
-  // pretending the compile-time type is a runtime guarantee.
-  // ===========================================================================
-
   /**
-   * Calls `transform` the way the runtime can, with the compile-time parameter
-   * type erased.
-   *
-   * The erasure is expressed as a single narrow assertion on the bound method
-   * rather than with a suppression comment or an `any`, so it stays visible,
-   * localised and type-checked at every call site below: `wireValue` is `unknown`,
-   * so nothing here can accidentally become untyped.
+   * Calls `transform` the way the runtime can, with the compile-time parameter type erased.
    *
    * @param wireValue The value as it would arrive from a malformed response.
    * @param mode Optional rendering mode, forwarded unchanged.
@@ -760,13 +552,8 @@ describe('DateDisplayPipe', () => {
   }
 
   /**
-   * Every non-string shape a malformed payload realistically delivers where the
-   * contract promised an ISO-8601 string.
-   *
-   * A number is the likeliest of them - an epoch millisecond value is what a
-   * serialiser emits when a date is not formatted as a string - and a `Date`
-   * instance is the likeliest mistake on the client side, since the pipe's own
-   * documentation has to state that it does not accept one.
+   * Every non-string shape a malformed payload realistically delivers where the contract promised an
+   * ISO-8601 string.
    */
   const NON_STRING_WIRE_VALUES: readonly unknown[] = [
     0,
@@ -794,33 +581,21 @@ describe('DateDisplayPipe', () => {
   });
 
   it('renders a non-string payload indistinguishably from an absent one', () => {
-    // The rendering must not invent a new visible state for a malformed payload.
-    // An empty cell is what null, undefined, a blank string and the sentinel all
-    // produce, so an unusable value of any other shape must produce it too.
+    // The rendering must not invent a new visible state for a malformed payload. An empty cell is what
+    // null, undefined, a blank string and the sentinel all produce, so an unusable value of any other shape
+    // must produce it too.
     expect(transformWireValue(1094774400000)).toBe(pipe.transform(null));
     expect(transformWireValue({})).toBe(pipe.transform(undefined));
     expect(transformWireValue([ORDINARY_INSTANT])).toBe(pipe.transform(SENTINEL_AT_MIDNIGHT));
   });
 
   it('renders a Date instance as an empty cell, as its documented contract states', () => {
-    // The pipe accepts a string only: every date crosses the wire as one and no
-    // consumer holds a parsed instance. Passing an instance is a contract error,
-    // and a contract error must degrade rather than throw.
     const instance = new Date(ORDINARY_INSTANT);
 
     expect(transformWireValue(instance)).toBe(EMPTY);
     expect(transformWireValue(instance)).not.toBe(ORDINARY_AS_DATE);
   });
 
-  // ===========================================================================
-  // Candidate length.
-  //
-  // The wire contract is one absolute ISO-8601 instant, and no string longer than
-  // the pipe's bound can parse as one, so the bound cannot change what renders -
-  // an over-long value already produced an empty cell by failing to parse. What
-  // it changes is that no normalisation or parse is attempted over a payload whose
-  // length is set by a remote response.
-  // ===========================================================================
   it('renders an over-long candidate as an empty cell, exactly as an unparseable one', () => {
     const overLong = `${ORDINARY_INSTANT}${'0'.repeat(512)}`;
 
@@ -842,10 +617,9 @@ describe('DateDisplayPipe', () => {
   });
 
   it('still renders a heavily padded but legitimate value normally', () => {
-    // THE REASON THE BOUND IS APPLIED AFTER TRIMMING. This value is far longer
-    // than the bound as it arrives, and well within it once trimmed. Bounding the
-    // raw value would blank a legitimate date, which would be a behavioural
-    // change rather than a defence - so this expectation is what pins the order.
+    // THE REASON THE BOUND IS APPLIED AFTER TRIMMING. This value is far longer than the bound as it
+    // arrives, and well within it once trimmed. Bounding the raw value would blank a legitimate date, which
+    // would be a behavioural change rather than a defence - so this expectation is what pins the order.
     const padded = `${' '.repeat(96)}${ORDINARY_INSTANT}${' '.repeat(96)}`;
 
     expect(padded.length).toBeGreaterThan(64);
@@ -864,17 +638,8 @@ describe('DateDisplayPipe', () => {
     expect(pipe.transform(SENTINEL_WITHOUT_ZONE)).toBe(EMPTY);
   });
 
-  // ===========================================================================
-  // GHSA-48r7-hpm6-gfxm - `@angular/common` denial of service through an
-  // out-of-memory condition in `formatDate`. The vulnerable input is the FORMAT
-  // argument, and the advisory exempts an application whose format is hardcoded.
-  //
-  // The pipe's own `render` takes a two-member union of literal types, so the
-  // compiler rejects any other pattern - a widened signature or a derived pattern
-  // will not build. These expectations pin the observable half of that invariant:
-  // whatever the input, the output can only ever be one of the two documented
-  // shapes, so no third format can have reached the formatter.
-  // ===========================================================================
+  // The pipe's own `render` takes a two-member union of literal types, so the compiler rejects any other
+  // pattern - a widened signature or a derived pattern will not build.
   it('emits only the two documented output shapes, whatever the input', () => {
     const shortDate = /^\d{1,2}\/\d{1,2}\/\d{4}$/;
     const dateAndTime = /^\d{1,2}\/\d{1,2}\/\d{4} \d{1,2}:\d{2}:\d{2} (?:AM|PM)$/;
@@ -901,10 +666,6 @@ describe('DateDisplayPipe', () => {
   });
 
   it('accepts no caller influence over the format, only over the mode', () => {
-    // The public surface offers a closed two-member mode union and nothing else,
-    // so a consumer can select between two fixed patterns but can never supply,
-    // extend or assemble one. An unrecognised mode falls back to the date shape
-    // rather than being interpreted.
     const erasedMode = pipe.transform.bind(pipe) as (
       value: string | null | undefined,
       mode?: unknown,

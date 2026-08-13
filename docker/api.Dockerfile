@@ -29,46 +29,17 @@
 # EXPOSE 8080, the wget --spider HEALTHCHECK against /health, and
 # ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"].
 #
-# THREE FORMER ADDITIONS STAY WITHDRAWN, AND ONE HAS RETURNED FOR A REASON THE
-# WITHDRAWAL DID NOT ANSWER.
-#   * Still withdrawn - `--locked-mode` on the restore. It restated a policy that has
-#     one home: backend/Directory.Build.props sets RestorePackagesWithLockFile and
-#     RestoreLockedMode for all six projects and `COPY backend/ ./` brings every
-#     packages.lock.json into the build, so the restore below is hash-verified and
-#     rejects graph drift without the flag.
-#   * Still withdrawn - six per-project packages.lock.json COPY instructions and the
-#     manifest-first layer split. They affected build-cache efficiency only, never
-#     behaviour, and the single tree copy brings the same files.
-#   * Still withdrawn - `RUN chown -R appuser:appuser /app`. A publish copied as root
-#     arrives world-readable and the process only READS its assemblies; the
-#     data-protection key ring lives under the account's home directory rather than
-#     /app. Its own comment conceded the process "would still START without the
-#     chown".
-#   * Still withdrawn - a COPY of its own for the package-source policy. That file is
-#     no longer at the repository root: it lives at backend/NuGet.Config, which the
-#     plan's four-file root list requires, and the single tree copy below already
-#     brings it to /src/NuGet.Config.
-#   * RETURNED - `--configfile` on the restore, and only that flag. Its withdrawal
-#     rested on "the feed is unaffected: every identity resolves from nuget.org, the
-#     image's own default source", which is true and beside the point. The default
-#     source is a property of the BASE IMAGE, not of this repository, so the
-#     production build was the one restore in the project that the repository's
-#     cleared source list and package-source mapping did not govern - while that file
-#     and README.md both said it did. The instruction and its full reasoning are at
-#     the restore below.
-#
-# PIN POLICY. Both FROM lines name a DIGEST as well as a tag. That is the fourth
-# addition to this file, it is documented at each instruction, and it is what makes a
-# rebuild of one commit produce one image rather than whatever the moving tag points
-# at that week.
-#
-# ONE ADDITION REMAINS, AND IT IS A MEASURED PREREQUISITE FOR THE IMAGE TO
-# FUNCTION AT ALL: the ICU package pair. Its evidence is recorded above the
-# instruction itself, including the exact failure each alternative produces. It is
-# retained because an image that cannot open a database connection satisfies no
-# requirement of this migration, and AAP 0.9.8 makes a working container one of the
-# seven deliverables. It is documented, itemised and re-verified rather than
-# assumed.
+# THREE ADDITIONS GO BEYOND IT, EACH DOCUMENTED AT ITS OWN INSTRUCTION:
+#   * DIGEST PINS on both FROM lines, so a rebuild of one commit produces one image
+#     rather than whatever the moving tag points at that week.
+#   * THE ICU PACKAGE PAIR, a measured prerequisite for the image to function at
+#     all: without it the API cannot open a database connection, and AAP 0.9.8 makes
+#     a working container one of the seven deliverables. The exact failure each
+#     alternative produces is recorded above the instruction.
+#   * `--configfile` ON THE RESTORE. The default package source is a property of the
+#     BASE IMAGE, not of this repository, so without the flag this production build
+#     would be the one restore in the project that the repository's cleared source
+#     list and package-source mapping did not govern.
 #
 # NOTHING ELSE DIFFERS. In particular the deployment CONFIGURATION the example
 # does not cover - the database connection string, the token signing key, the
@@ -119,12 +90,11 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 #
 # NO COPY OF ITS OWN, BECAUSE THE FILE IS NOT AT THE REPOSITORY ROOT. It sits inside
 # `backend/`, which the single tree copy below brings to /src/NuGet.Config - the
-# repository root carries only the four files the plan enumerates. What WAS the defect
-# is that the policy did not govern this restore: NuGet composes its settings by
-# walking up from each project directory, and an earlier revision restored with no
-# configuration option at all, so the image used whatever the base image's own
-# settings declared while this file and README.md both stated otherwise. The strong
-# form below closes that, and needs no extra instruction to do it.
+# repository root carries only the four files the plan enumerates. NuGet composes its
+# settings by walking up from each project directory, so a restore given no
+# configuration option would use whatever the base image's own settings declare; the
+# `--configfile` form below is what makes this restore obey the repository's policy,
+# and it needs no extra instruction to do it.
 
 # The whole backend tree, in one instruction. That brings global.json,
 # Directory.Build.props, NuGet.Config, the solution, all six project files, all
@@ -194,15 +164,10 @@ RUN adduser -D -u 1000 appuser
 # is here because the delivered container is otherwise inoperable.
 #
 # mcr.microsoft.com/dotnet/aspnet:8.0-alpine sets
-# DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true, because Alpine's musl userland
-# ships no ICU. Microsoft.Data.SqlClient 5.x refuses to open a connection in
-# that mode - SqlConnection.TryOpen throws
-# `System.NotSupportedException: Globalization Invariant Mode is not supported`
-# before a socket is opened - so the readiness view answers 503 for the
-# container's entire life and every store-backed request fails. Turning invariant
-# mode off without installing ICU is worse still: the runtime fails fast at
-# startup with "Couldn't find a valid ICU package" and the container never serves
-# at all.
+# DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=true, because Alpine's musl userland ships
+# no ICU, and Microsoft.Data.SqlClient 5.x refuses to open a connection in that mode:
+# SqlConnection.TryOpen throws `System.NotSupportedException: Globalization Invariant
+# Mode is not supported` before a socket is opened. The three reachable states:
 #
 #   invariant mode left true          -> /health/ready answers 503 for the container's
 #                                        entire life and every /api/v1 request that
@@ -218,37 +183,29 @@ RUN adduser -D -u 1000 appuser
 #                                        store-backed request works, and docker
 #                                        reports the container healthy
 #
-# Only the third state is a deliverable, so it is the one shipped. This is the
-# same two-line remedy already analysed in MIGRATION_NOTES.md under
-# "The API Alpine image installs ICU and can open SQL Server connections"; it
-# is applied here so the composed topology works as delivered instead of
-# requiring an undocumented manual step at deploy time. It must precede the
-# account switch below, because the package manager needs root. The two
-# instructions are a pair: with invariant mode off and no ICU present the
-# runtime fails at startup, so never keep one without the other.
+# Only the third state is a deliverable, so it is the one shipped;
+# MIGRATION_NOTES.md carries the full analysis. It must precede the account switch
+# below, because the package manager needs root. The two instructions are a PAIR:
+# with invariant mode off and no ICU present the runtime fails at startup, so never
+# keep one without the other.
 #
 # THE PACKAGE VERSIONS ARE CONTROLLED BY THE PINNED BASE DIGEST, NOT BY AN apk
-# CONSTRAINT, AND THAT IS A DELIBERATE CHOICE RATHER THAN AN OVERSIGHT. An Alpine
-# branch repository publishes only the CURRENT version of each package, so
-# `apk add icu-libs=78.1-r0` builds today and fails outright the moment the v3.24
-# mirror advances to -r1 - it would convert a security update in the distribution
-# into a broken build, which is the opposite of a controlled dependency. The
-# controlled unit is therefore the base image digest: sha256:b288317... is Alpine
-# 3.24.1, whose repository serves icu-libs and icu-data-full 78.1-r0 (verified by
-# `apk policy` inside that exact digest). Rebuilding this Dockerfile unchanged
-# resolves the same Alpine branch every time, and the packages move only when the
-# digest is deliberately bumped - which is the same reviewed step, with the same
-# gate re-run, that a runtime patch already requires. Record the apk inventory at
-# that point if a bill of materials is kept.
+# CONSTRAINT. An Alpine branch repository publishes only the CURRENT version of each
+# package, so `apk add icu-libs=78.1-r0` builds today and fails outright the moment
+# the v3.24 mirror advances to -r1, converting a distribution security update into a
+# broken build. The controlled unit is therefore the base image digest:
+# sha256:b288317... is Alpine 3.24.1, whose repository serves icu-libs and
+# icu-data-full 78.1-r0 (verified by `apk policy` inside that exact digest). The
+# packages move only when the digest is deliberately bumped - the same reviewed step,
+# with the same gates re-run, that a runtime patch already requires.
 RUN apk add --no-cache icu-libs icu-data-full
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 # The published output. It arrives world-readable, which is all the unprivileged
 # account below needs: the process READS its assemblies and writes nothing beside
 # them - the data-protection key ring lives under the account's own home directory,
-# not here. An earlier revision followed this with `chown -R appuser:appuser /app`;
-# it was withdrawn because the preserved example does not have it and it bought
-# nothing, and its own comment conceded the process would start without it.
+# not here. No `chown` follows, because the preserved example has none and the
+# process needs none.
 COPY --from=build /app/publish ./
 
 # The hardening requirement itself. Creating an account changes nothing on its
@@ -288,13 +245,11 @@ ENV ASPNETCORE_URLS=http://+:8080 \
 EXPOSE 8080
 
 # The probe is wget, and must stay wget. The runtime image ships exactly one HTTP
-# client - BusyBox wget at /usr/bin/wget - and no curl binary at all. A probe
-# written with curl exits 127 on every attempt, so the container is reported
-# unhealthy for its whole life and docker-compose.yml's
-# `condition: service_healthy` holds the frontend service back for ever, even
-# though both images built perfectly. Host-side verification commands DO use
-# curl, and correctly so - they run outside the container, where it exists. Do
-# not harmonise the two.
+# client - BusyBox wget at /usr/bin/wget - and no curl binary at all. A probe written
+# with curl exits 127 on every attempt, so the container is reported unhealthy for its
+# whole life and docker-compose.yml's `condition: service_healthy` holds the frontend
+# service back for ever. Host-side verification commands DO use curl, and correctly so
+# - they run outside the container, where it exists. Do not harmonise the two.
 #
 # --spider discards the body and only the status code decides; --tries=1 stops
 # wget's own retry from hiding a failure; the trailing exit normalises any
@@ -311,28 +266,22 @@ EXPOSE 8080
 # HealthCheckTests hard-codes it as a literal precisely so that moving it fails a
 # suite rather than silently following the move.
 #
-# /health is anonymous by contract and is the LIVENESS view: it runs every probe
-# not tagged `ready`, which today means the process-local audit-delivery probe and
-# no dependency probe at all. That is also the RIGHT view for a container probe in
-# THIS topology, so the contract and the engineering agree rather than merely
-# coexisting. The compose file declares no database service - the store is external
-# by design - so it may legitimately be unreachable while the process starts. A
-# probe that depended on it would report this container unhealthy for a reason
-# unrelated to whether it can answer, and `condition: service_healthy` would then
-# hold the frontend service back for as long as the outage lasted, with both images
-# built perfectly.
+# /health is anonymous by contract and is the LIVENESS view: it runs every probe not
+# tagged `ready`, which today means the process-local audit-delivery probe and no
+# dependency probe at all. That is the RIGHT view for a container probe in THIS
+# topology, because the compose file declares no database service - the store is
+# external by design - so it may legitimately be unreachable while the process starts,
+# and a probe that depended on it would hold the frontend service back for as long as
+# the outage lasted.
 #
-# THE TRADE-OFF IS REPORTED, NOT HIDDEN, AND IT IS REPORTED ELSEWHERE. Because this
-# probe excludes the database check, a container whose store is unreachable stays
-# healthy. That is deliberate, and the condition is not unmonitored: /health/ready
-# runs the ready-tagged probes - which is where the database check lives - answers
-# 503 for exactly that case, and stays registered and anonymous for an orchestrator
-# that gates TRAFFIC rather than START-UP on the store; and every store-backed
-# endpoint answers 503 with `Retry-After` rather than 200 while the outage lasts, so
-# no caller is told a request succeeded. An orchestrator that owns the database as
-# well should point its readiness probe at /health/ready and leave this one alone.
-# /health/live is the third view, running no probe at all, for a restart policy that
-# must not recycle a process merely because a dependency is down.
+# THE TRADE-OFF IS REPORTED RATHER THAN HIDDEN: a container whose store is unreachable
+# stays healthy here, while /health/ready runs the ready-tagged probes - which is
+# where the database check lives - and answers 503 for exactly that case, and every
+# store-backed endpoint answers 503 with `Retry-After` rather than 200 while the
+# outage lasts. An orchestrator that owns the database should point its readiness
+# probe at /health/ready and leave this one alone. /health/live is the third view,
+# running no probe at all, for a restart policy that must not recycle a process merely
+# because a dependency is down.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 

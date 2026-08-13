@@ -1,69 +1,3 @@
-/**
- * Specification for {@link RoleAssignmentComponent} — Manage Users in Role.
- *
- * ## THERE IS NO PREDECESSOR HARNESS, AND THAT IS STATED RATHER THAN GLOSSED
- *
- * The legacy tree contains no automated tests of any kind, so nothing here was ported: every
- * assertion below is derived from MEASURED legacy source, and each one names the file and line it
- * came from. The five behavioural authorities are `Website/admin/Security/securityroles.ascx` (93
- * lines — the fields, the three validators and the grid), `Website/admin/Security/SecurityRoles.ascx.vb`
- * (668 lines — the workflow), the paired `App_LocalResources/SecurityRoles.ascx.resx` (every visible
- * string), `Website/App_GlobalResources/SharedResources.resx` (the Delete and confirmation wording)
- * and `Library/Components/Security/Roles/RoleController.vb` (the assignment rules), with
- * `Library/Components/Shared/Null.vb` supplying the sentinel table. All are read-only references and
- * none is altered by this work.
- *
- * ## WHY THIS SCREEN NEEDS ITS OWN SPECIFICATION
- *
- * Membership of a role IS authorisation on this platform: the permission evaluator resolves what a
- * caller may do from the roles they hold. A membership added to the wrong role, removed when it
- * should have been protected, or written with the wrong effective window changes who can administer a
- * tenant. Nothing else in the workspace asserts any of it.
- *
- * ## AND WHY IT IS THE ONLY THING THAT TYPE-CHECKS ITS SIBLINGS
- *
- * `tsconfig.app.json` declares `files: ["src/main.ts"]` and type-checks by IMPORT GRAPH, so a clean
- * production build does not prove this component or its template compiles. `tsconfig.spec.json`
- * instead INCLUDES every specification in the source tree and declares no `files` array, which makes
- * this file the route by which the class, the template and every binding in it finally reach the
- * compiler. That is a first-class responsibility of this specification and not a side effect of it.
- *
- * ## HOW IT IS DRIVEN
- *
- *   - The component is mounted as the standalone unit it is, with the REAL {@link RoleService} and
- *     {@link UserService} resolved from the injector and every request answered through
- *     `HttpTestingController`, so each assertion about an address, a body or a status is an assertion
- *     about the wire. This screen talks to those services directly rather than through the role
- *     store, because the store's page coordinate is private with only a page-index setter.
- *   - Its four identifiers are delivered through `componentRef.setInput` as the STRINGS route
- *     parameters are, so each input's own parsing runs rather than being bypassed.
- *   - `NotificationService.notify` is spied and called through, so announcements are observable.
- *   - `LOCALE_ID` IS PINNED. The shared date pipe injects it (`shared/pipes/date-display.pipe.ts`
- *     takes `@Inject(LOCALE_ID)`), so without the pin every rendered date would be
- *     machine-dependent and the sentinel cases below would prove nothing portable.
- *
- * ## THE FACTS THAT SHAPE EVERY CASE, WITH THE THREE PLACES PLANNING AND CODE DISAGREE
- *
- * ⚠ THE ADD ENDPOINT DECLARES `204`, NOT `201`. `RoleService.assignUser` is typed
- * `Observable<void>` and its own note records that the migration plan described `201` for an add and
- * `204` for an update while "the controller as built declares `204` for BOTH". The screen therefore
- * inspects no status at all, which is what makes the legacy UPSERT faithful — see the pair of cases
- * under "adding a membership", where both answers land on the success path.
- *
- * ⚠ `role_assignment.protected` ARRIVES AS `403`, NOT `409`. It is the one member of the shared
- * conflict vocabulary that does, which the vocabulary itself records inline, and `problemSeverity`
- * maps `403` to a WARNING. The refusal therefore surfaces at warning severity carrying the legacy
- * `RoleRemoveError` sentence verbatim. The legacy screen showed that sentence as a red error
- * (`SecurityRoles.ascx.vb:L583`) while presenting an access refusal as a yellow warning
- * (`AccessDenied.ascx.vb:L43` and `:L45`); this API routes the refusal through the access status, so
- * the shared summariser's severity is the one that applies and the wording is what the code carries.
- * Asserting `'error'` here would assert a value this implementation cannot produce.
- *
- * ⚠ EVERY WRITE IS FOLLOWED BY A RE-READ OF THE MEMBERSHIPS, INCLUDING A FAILED REMOVAL, and the
- * message is raised AFTER that read. The screen re-reads so that what a person sees is what the
- * server holds rather than what the browser guessed, which matters because a `204` from the removal
- * does not promise the row is gone.
- */
 import { LOCALE_ID, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -89,57 +23,22 @@ import type { Role, UserRole } from '../../../core/models/role.model';
 import type { MembershipSettings, UserChoice } from '../../../core/models/user.model';
 
 /**
- * The tenant the doubled identity reports.
- *
- * `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a schema ever creates carries -1 —
- * which is also the legacy absent-integer marker. Using it here is what proves the request is issued
- * for a real tenant rather than skipped by a truthiness test.
+ * The tenant the doubled identity reports. `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a
+ * schema ever creates carries -1 — which is also the legacy absent-integer marker.
  */
 const TENANT_ID = -1;
 
-// ==================================================================================================
 // ADDRESSES — RELATIVE, ALWAYS
-//
-// `environment.ts` sets `apiBaseUrl` to the root-relative '/api/v1' because the containerised
-// application is served through a reverse proxy that forwards `/api/` to the API on the very origin
-// that served it. The `test` architect target declares NO `fileReplacements` — and this workspace's
-// replacements are INVERTED, with `production` holding an empty list while `development` swaps the
-// file — so a specification compiles against that production module. No absolute host, no scheme and
-// no import of the environment module appears anywhere below.
-// ==================================================================================================
 
 const ROLES_URL = '/api/v1/roles';
 const USERS_URL = '/api/v1/users';
 
-/**
- * The account PICKER's address, which every account read on this screen uses.
- *
- * ⚠ THREE READS SHARE IT, AND THAT IS THE POINT. The count probe, the complete-list walk that fills
- * the drop-down, and the name box's lookup all ask this one address for a key and two captions —
- * `userId`, `username` and `displayName` — because those three values are all this screen renders.
- * They used to ask the account LISTING instead, whose row carries a postal address, a telephone
- * number, an electronic-mail address, a creation instant, a last-login instant and four status flags
- * besides; on a tenant the drop-down may enumerate, that was up to a thousand accounts' worth of
- * personal detail moved into browser memory to caption a `<select>`. A performance and privacy
- * review measured it, and this address is the remedy.
- *
- * ⚠ A `GET` IS CORRECT HERE, and it is worth saying why, because the account listing's own search is
- * deliberately a `POST`. That one filters on an electronic-mail address and on arbitrary
- * tenant-defined profile values, which identify a person and must not reach a request target — the
- * browser's history, every proxy's access log, the server's access log and any URL-sampling
- * telemetry all record one, and each sits at an END of the encrypted channel rather than in the
- * middle of it (CWE-598). This address takes ONE filter: a prefix of the login name, which is a
- * value it returns in the response body anyway. There is nothing here that a request target would
- * record and the body did not already carry.
- */
 const USERS_CHOICES_URL = '/api/v1/users/choices';
 
 /**
- * The role-group collection, addressed by the cases that stand a SIBLING screen's write alongside
- * this screen's own.
- *
- * Written out for the same reason as its two neighbours rather than derived from the endpoint table:
- * the point of stating an address literally is that a change to it fails here.
+ * The role-group collection, addressed by the cases that stand a SIBLING screen's write alongside this
+ * screen's own. Written out for the same reason as its two neighbours rather than derived from the
+ * endpoint table: the point of stating an address literally is that a change to it fails here.
  */
 const ROLE_GROUPS_URL = '/api/v1/role-groups';
 
@@ -156,87 +55,58 @@ function memberUrl(roleId: number, userId: number): string {
 }
 
 /**
- * The address shape of the keyed membership probe: one role's key, then one account's key.
- *
- * Held as a pattern rather than as a literal because the probe is issued for whichever pairing a case
- * chose, and a helper that had to be told the identifiers would be told them twice — once by the case
- * and once by the component — with nothing making the two agree. Both keys admit `0` and `-1`, because
- * the role identity is seeded at zero and no identifier on this path is ever tested for magnitude.
+ * The address shape of the keyed membership probe: one role's key, then one account's key. Held as a
+ * pattern rather than as a literal because the probe is issued for whichever pairing a case chose, and a
+ * helper that had to be told the identifiers would be told them twice — once by the case and once by the
+ * component — with nothing making the two agree.
  */
 const MEMBERSHIP_PROBE_PATH = /^\/api\/v1\/roles\/-?\d+\/users\/-?\d+$/;
-
-
 
 /** Where the tenant's account policy is read from, which is what selects the account control. */
 const MEMBERSHIP_SETTINGS_URL = `${USERS_URL}/settings`;
 
 /**
- * The page size the account lookup asks for.
- *
- * ⚠ THE SERVER'S MAXIMUM, NOT THE SHARED DEFAULT OF TEN. The lookup walks pages until it finds the
- * exact name, so it asks for the widest page the listing's own paging rules permit — the fewer
- * requests one walk makes, the sooner the answer arrives. Restated as the literal the request
- * carries rather than derived, so a change to it is detected here.
+ * The page size the account lookup asks for. ⚠ THE SERVER'S MAXIMUM, NOT THE SHARED DEFAULT OF TEN. The
+ * lookup walks pages until it finds the exact name, so it asks for the widest page the listing's own
+ * paging rules permit — the fewer requests one walk makes, the sooner the answer arrives.
  */
 const LOOKUP_PAGE_SIZE = '100';
 
 /**
- * How many pages one account lookup will request before it stops and says so.
- *
- * Restated rather than imported for the same reason as the page size. It is also why the ceiling
- * case below drives every one of those pages by hand: proving the walk stops requires reaching the
- * stop, and a mocked constant would prove only that the mock was honoured.
+ * How many pages one account lookup will request before it stops and says so. Restated rather than
+ * imported for the same reason as the page size.
  */
 const LOOKUP_PAGE_CEILING = 20;
 
 /**
- * How many pages the complete-account-list walk will request before it refuses.
- *
- * Restated rather than imported for the same reason as its two neighbours, and it earns the
- * restatement more than either: the component DERIVES it from the legacy enumeration threshold, so a
- * literal here is what proves the derivation still lands where it should. It was one thousand pages —
- * a hundred thousand accounts — before a performance review measured what that permitted.
+ * How many pages the complete-account-list walk will request before it refuses. Restated rather than
+ * imported for the same reason as its two neighbours, and it earns the restatement more than either: the
+ * component DERIVES it from the legacy enumeration threshold, so a literal here is what proves the
+ * derivation still lands where it should.
  */
 const ACCOUNT_CHOICE_PAGE_CEILING = 10;
 
 /**
- * The order the lookup asks the account listing for, which is what makes the ordinary case one
- * request.
- *
- * The filter is a literal PREFIX match, so every account returned begins with the typed term;
- * ascending by login name therefore puts the shortest match first, and the shortest possible match
- * is the term itself. Asserted on the request rather than assumed, because the guarantee is the
- * server's ordering and a silently dropped sort parameter would remove it without failing anything
- * else.
+ * The order the lookup asks the account listing for, which is what makes the ordinary case one request.
+ * The filter is a literal PREFIX match, so every account returned begins with the typed term; ascending
+ * by login name therefore puts the shortest match first, and the shortest possible match is the term
+ * itself.
  */
 const LOOKUP_SORT_FIELD = 'Username';
 const LOOKUP_SORT_DIRECTION = 'Ascending';
 
 /**
  * The two values of the tenant's account-control policy, as the legacy `UsersControl` enumeration
- * numbered them (`UserModuleBase.vb:L42-L45`).
- *
- * Restated rather than imported for the reason the wording block below gives: a change to either
- * number is a change to the contract and must be noticed here.
+ * numbered them. Restated rather than imported for the reason the wording block below gives: a change to
+ * either number is a change to the contract and must be noticed here.
  */
 const USERS_CONTROL_COMBO = 0;
 
-/**
- * An account count comfortably inside the legacy enumeration threshold.
- *
- * Used by every case that asks for the drop-down without being about the threshold, so the mount
- * answers the count probe with a size that leaves the stored preference standing. Cases that ARE about
- * the threshold pass their own count.
- */
+/** An account count comfortably inside the legacy enumeration threshold. */
 const SMALL_TENANT_ACCOUNT_COUNT = 3;
 const USERS_CONTROL_TEXT_BOX = 1;
 
-// ==================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
-//
-// Restated rather than imported, so a change to any of it is detected HERE rather than silently
-// agreed to. Each is the legacy resource VALUE, its capitalisation included.
-// ==================================================================================================
 
 const TITLE_FALLBACK = 'Manage Users in Role';
 const CAPTION = 'User Roles';
@@ -263,11 +133,6 @@ const ACCOUNT_CHOICES_UNAVAILABLE =
 const ACCOUNT_POLICY_UNAVAILABLE =
   "This site's preferred account selector could not be read, so the name box is offered.";
 
-/**
- * The measured legacy threshold, mirrored rather than imported because the component keeps it
- * module-private. `UserModuleBase.vb:L178-L183` defaulted an ABSENT `Security_UsersControl` to the
- * name box above one thousand accounts and to the drop-down at or below it.
- */
 const LEGACY_ACCOUNT_LISTING_CEILING = 1000;
 
 const ACCOUNT_POLICY_DEFAULTED_BY_SIZE =
@@ -280,14 +145,8 @@ const ACCOUNT_COUNT_PROBE_PAGE_SIZE = '1';
 
 /**
  * The three validator messages, as the resource file holds them AFTER the shared field wrapper has
- * normalised them.
- *
- * ⚠ THE ASYMMETRY IS REAL AND IS THE POINT. `valEffectiveDate.Text` is a break tag followed by a
- * SPACE — `'<br> Invalid effective date'` — while `valExpiryDate.Text` has no such space. A stripper
- * that removed only the tag would indent one message and not the other, so the wrapper's
- * `stripLegacyBreakTags` consumes the tag AND the whitespace after it before trimming. Every
- * assertion below compares the rendered text EXACTLY, with no trimming of its own, so a reappearing
- * leading space fails rather than hides.
+ * normalised them. ⚠ THE ASYMMETRY IS REAL AND IS THE POINT. `valEffectiveDate.Text` is a break tag
+ * followed by a SPACE — `'<br> Invalid effective date'` — while `valExpiryDate.Text` has no such space.
  */
 const INVALID_EFFECTIVE_DATE_MESSAGE = 'Invalid effective date';
 const INVALID_EXPIRY_DATE_MESSAGE = 'Invalid expiry date';
@@ -301,30 +160,20 @@ const REMOVAL_REFUSED_MESSAGE =
 const FORBIDDEN_MESSAGE = 'You do not have permission to perform this action.';
 
 /**
- * `SecurityRole.Header`, which this screen must NEVER render.
- *
- * `SecurityRoles.ascx.vb:L245` executes `grdUserRoles.Columns(2).Visible = False` in precisely the
- * role-centric mode this component implements, so the column the markup declares at
- * `securityroles.ascx:L76` was never shown. It is asserted ABSENT so a future editor cannot re-add
- * a column the legacy screen did not have.
+ * `SecurityRole.Header`, which this screen must NEVER render. `SecurityRoles.ascx.vb:L245` executes
+ * `grdUserRoles.Columns(2).Visible = False` in precisely the role-centric mode this component implements,
+ * so the column the markup declares at `securityroles.ascx:L76` was never shown.
  */
 const SECURITY_ROLE_HEADER = 'Security Role';
 
-/** `ModuleHelp.Text`, an untrusted HTML fragment that has no home in the closed component set. */
+/** `ModuleHelp.Text`, an untrusted HTML fragment no shared component renders. */
 const MODULE_HELP_FRAGMENT = 'About Manage Security Roles';
 
 const EFFECTIVE_DATE_CONTROL_ID = 'role-assignment-effective-date';
 const EXPIRY_DATE_CONTROL_ID = 'role-assignment-expiry-date';
 const NOTIFY_CONTROL_ID = 'role-assignment-notify';
 
-// ==================================================================================================
 // FIXED DATES
-//
-// ⚠ NOT ONE READ OF THE CLOCK APPEARS IN THIS FILE. No zero-argument date construction, no epoch
-// helper, no high-resolution timer and no source of randomness: date logic asserted against a floating
-// clock is flaky by construction, and the whole point of these cases is that they mean the same thing
-// on every run.
-// ==================================================================================================
 
 /** An ordinary effective bound. */
 const EFFECTIVE_DATE = '2024-03-01';
@@ -341,24 +190,20 @@ const EARLIER_EXPIRY_DATE = '2024-01-10';
 /** A well-formed value naming a day that does not exist, which the data-type check must reject. */
 const IMPOSSIBLE_DATE = '2024-02-31';
 
-/** The legacy date sentinel — `Null.NullDate` is `Date.MinValue` (`Null.vb:L66-L70`). */
+/** The legacy date sentinel — `Null.NullDate` is `Date.MinValue`. */
 const SENTINEL_DATE = '0001-01-01T00:00:00';
 
 /**
- * The sentinel carrying a NON-ZERO TIME.
- *
- * `Null.vb:L222-L224` compares `objDate.Date.Equals(NullDate.Date)` — the DATE PART ALONE — and
- * `GetNull` notes at `:L183-L187` that this "avoids subtle time differences". A sentinel with a time
- * on it is therefore still unset, and the shared pipe reproduces that by testing the UTC date triple.
+ * The sentinel carrying a NON-ZERO TIME. `Null.vb:L222-L224` compares
+ * `objDate.Date.Equals(NullDate.Date)` — the DATE PART ALONE — and `GetNull` notes at `:L183-L187` that
+ * this "avoids subtle time differences". A sentinel with a time on it is therefore still unset, and the
+ * shared pipe reproduces that by testing the UTC date triple.
  */
 const SENTINEL_DATE_WITH_TIME = '0001-01-01T13:45:00';
 
 /**
- * The real "perpetual" expiry, and NOT a sentinel.
- *
- * `RoleController.vb:L542` maps the `'O'` billing code to `New System.DateTime(9999, 12, 31)`, as
- * against `:L541` where `'N'` maps to `Null.NullDate`. It is a stored value and must render like any
- * other.
+ * The real "perpetual" expiry, and NOT a sentinel. `RoleController.vb:L542` maps the `'O'` billing code
+ * to `New System.DateTime(9999, 12, 31)`, as against `:L541` where `'N'` maps to `Null.NullDate`.
  */
 const PERPETUAL_DATE = '9999-12-31';
 
@@ -374,14 +219,6 @@ const SENTINEL_DATE_MISRENDERED = '01/01/0001';
 /** What an unparseable instant must never render as either. */
 const INVALID_DATE_TEXT = 'Invalid Date';
 
-/**
- * The bound a refused-but-expired assignment comes back with.
- *
- * `RoleController.vb:L496` back-dates the expiry by one day rather than deleting the row, so a
- * removal can legitimately answer `204` and leave the membership in place with a bound already
- * behind it. A fixed leap day is used so the case reads the same on every run and so the shared
- * pipe's calendar validation is exercised on a day that genuinely exists.
- */
 const BACKDATED_EXPIRY_DATE = '2024-02-29';
 
 /** {@link BACKDATED_EXPIRY_DATE} as the pinned locale renders it. */
@@ -404,11 +241,10 @@ const STATUS_TITLE: Readonly<Record<number, string>> = {
 };
 
 /**
- * The title for one wire status.
- *
- * Written as an explicit narrowing rather than with an absent-value shorthand, which is the house style
- * of the code under test and keeps this file free of the coalescing forms the sentinel discipline rules
- * out — a missing entry is a fact to handle, not a blank to fill in silently.
+ * The title for one wire status. Written as an explicit narrowing rather than with an absent-value
+ * shorthand, which is the house style of the code under test and keeps this file free of the coalescing
+ * forms the sentinel discipline rules out — a missing entry is a fact to handle, not a blank to fill in
+ * silently.
  */
 function statusTitle(status: number): string {
   const held: string | undefined = STATUS_TITLE[status];
@@ -445,12 +281,7 @@ function problem(
   return errors === undefined ? document : { ...document, errors };
 }
 
-/**
- * A problem document carrying a TRACE identifier and no correlation identifier.
- *
- * `problemSupportReference` prefers the correlation identifier and falls back to the trace one, so
- * this is the only shape that proves the trace identifier survives to the banner.
- */
+/** A problem document carrying a TRACE identifier and no correlation identifier. */
 function tracedProblem(code: string, status: number, detail: string): ProblemDetails {
   return {
     type: `${FAILURE_TYPE_PREFIX}${code}`,
@@ -462,42 +293,19 @@ function tracedProblem(code: string, status: number, detail: string): ProblemDet
 }
 
 /**
- * A problem document carrying a code and a status and NOTHING ELSE.
- *
- * Every member of the contract but `status` is optional, and the shared message resolver prefers
- * `detail`, then `title`, then the wording the STATUS itself implies. Omitting both sentences is
- * therefore the only way to reach that last fallback, which is what proves the status-derived wording.
+ * A problem document carrying a code and a status and NOTHING ELSE. Every member of the contract but
+ * `status` is optional, and the shared message resolver prefers `detail`, then `title`, then the wording
+ * the STATUS itself implies. Omitting both sentences is therefore the only way to reach that last
+ * fallback, which is what proves the status-derived wording.
  */
 function bareProblem(code: string, status: number): ProblemDetails {
   return { type: `${FAILURE_TYPE_PREFIX}${code}`, status };
 }
 
-// ==================================================================================================
-// FIXTURES
-//
-// ⚠ EVERY FIXTURE IS TYPED AS THE REAL MODEL INTERFACE, and that is a correctness device rather than
-// tidiness. The API serialises with camel casing and `JsonIgnoreCondition.Never`, and the DTO members
-// carry a single lower-case `d` — `RoleId`, `UserId`, `UserRoleId` — so the wire keys are `roleId`,
-// `userId` and `userRoleId`. A leading uppercase RUN would lower-case whole, making `RoleID` into
-// `roleID`; mis-spelling one that way yields `undefined` with no runtime error at all. Typing each
-// fixture turns that silent hole into a compilation failure.
-//
-// ⚠ EVERY MEMBER IS PRESENT ON EVERY FIXTURE. Absence is never used to mean "unset", because the
-// server never omits a member: `null`, `0`, `''` and `false` all survive on the wire, and each is
-// DATA rather than a gap.
-// ==================================================================================================
-
 /**
- * One role.
- *
- * ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Roles.RoleID` is `IDENTITY(0, 1)`
+ * One role. ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Roles.RoleID` is `IDENTITY(0, 1)`
  * (`01.00.00.SqlDataProvider:L115`), so role zero is a real role — the Administrators role of an
- * installation, the single most consequential one there is. Every case below therefore exercises the
- * zero identifier by default rather than treating it as an edge.
- *
- * ⚠ THE FEES DEFAULT TO ZERO, NOT TO NULL. `RoleController.vb:L494` discriminates on
- * `ServiceFee > 0.0` and the numeric sentinel is `Single.MinValue` (`Null.vb:L51-L55`), so nought is
- * a real, free price and nothing may coerce it away.
+ * installation, the single most consequential one there is.
  */
 function role(roleId = 0, overrides: Partial<Role> = {}): Role {
   return {
@@ -523,11 +331,9 @@ function role(roleId = 0, overrides: Partial<Role> = {}): Role {
 }
 
 /**
- * One membership row.
- *
- * The assignment's own key is seeded `IDENTITY(1, 1)` (`01.00.00.SqlDataProvider:L239`), unlike the
- * role key beside it — which is exactly why no identifier anywhere in this file is tested for
- * truthiness or for sign.
+ * One membership row. The assignment's own key is seeded `IDENTITY(1, 1)`
+ * (`01.00.00.SqlDataProvider:L239`), unlike the role key beside it — which is exactly why no identifier
+ * anywhere in this file is tested for truthiness or for sign.
  */
 function membership(overrides: Partial<UserRole> = {}): UserRole {
   return {
@@ -543,16 +349,6 @@ function membership(overrides: Partial<UserRole> = {}): UserRole {
   };
 }
 
-/**
- * One account the picker can offer.
- *
- * ⚠ THREE MEMBERS, AND THE SHORTNESS OF THIS BUILDER IS ITSELF THE ASSERTION. It used to construct a
- * full account-listing row — sixteen members including a postal address, a telephone number, an
- * electronic-mail address and two audit instants — because that is what the screen's reads returned.
- * They now return `UserChoice`, so a fixture cannot supply a field the screen has no business
- * receiving, and a server that started sending one would be refused by the contract decoder rather
- * than quietly retained.
- */
 function account(overrides: Partial<UserChoice> = {}): UserChoice {
   return {
     userId: 42,
@@ -563,11 +359,10 @@ function account(overrides: Partial<UserChoice> = {}): UserChoice {
 }
 
 /**
- * The tenant's account policy, of which exactly one member matters to this screen.
- *
- * Every member is present because the contract's decoder requires them all; `securityUsersControl`
- * is the one that decides which account control is rendered, and it defaults to the name box so that
- * a case saying nothing about the policy exercises the affordance the legacy help text described.
+ * The tenant's account policy, of which exactly one member matters to this screen. Every member is
+ * present because the contract's decoder requires them all; `securityUsersControl` is the one that
+ * decides which account control is rendered, and it defaults to the name box so that a case saying
+ * nothing about the policy exercises the affordance the legacy help text described.
  *
  * @param overrides Members to replace.
  * @returns The policy.
@@ -610,13 +405,7 @@ function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
 }
 
-/**
- * A page.
- *
- * ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data`. A fixture spelling it otherwise
- * flushes successfully and unwraps to no records at all, so every later assertion would be made
- * against an empty list rather than against the screen.
- */
+/** A page. ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data`. */
 function pageOf<T>(
   items: readonly T[],
   totalCount: number = items.length,
@@ -638,30 +427,13 @@ describe('RoleAssignmentComponent', () => {
   let loadCurrentPortalContext: jasmine.Spy;
 
   beforeEach(async () => {
-    /*
-     * THE TENANT'S PROTECTED PAIRING, HELD IN SIGNALS THE CASES CAN MOVE.
-     *
-     * ⚠ THESE USED TO BE THREE COMPONENT INPUTS, AND THE CHANGE IS THE POINT. They were declared as
-     * optional inputs on the reasoning that "the tenant's settings are not part of this screen's
-     * contract", and NOTHING in the application ever supplied one — no route, no parent template —
-     * so the removal guard shipped permanently disarmed and the server's refusal was the only thing
-     * protecting the membership that makes an account part of the tenant. The facts are now read
-     * from the portal store, which is CORE state every feature may inject.
-     *
-     * Each opens ABSENT, so the ordinary cases below describe a screen whose tenant record has not
-     * arrived — which is the fail-safe direction: the command is offered and the API's refusal
-     * governs, exactly the behaviour that shipped. The guard itself is proved by supplying the facts.
-     */
     designatedAdministrator = signal<number | null>(null);
     administratorRole = signal<number | null>(null);
     registeredRole = signal<number | null>(null);
 
-    /*
-     * The request for those facts, spied rather than served. The real portal store would issue a
-     * tenant read on arrival that every case in this file would have to answer, and the spy is the
-     * sharper assertion in any event: it records which tenant was asked for, and whether it was
-     * asked at all.
-     */
+    // The request for those facts, spied rather than served. The real portal store would issue a tenant
+    // read on arrival that every case in this file would have to answer, and the spy is the sharper
+    // assertion in any event: it records which tenant was asked for, and whether it was asked at all.
     loadCurrentPortalContext = jasmine.createSpy('loadCurrentPortalContext');
 
     await TestBed.configureTestingModule({
@@ -669,28 +441,26 @@ describe('RoleAssignmentComponent', () => {
       // `declarations` array anywhere in this file and there is no module to build one in.
       imports: [RoleAssignmentComponent],
       providers: [
-        // ⚠⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that
-        // displaces its handler. Reversed, the testing backend is never installed and every
-        // `expectOne` below fails for a reason that looks entirely unrelated to the ordering.
+        // ⚠⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces its
+        // handler. Reversed, the testing backend is never installed and every `expectOne` below fails for a
+        // reason that looks entirely unrelated to the ordering.
         provideHttpClient(),
         provideHttpClientTesting(),
         // The real router, never the deprecated testing module. An empty table is enough: the
         // screen emits links and never navigates itself.
         provideRouter([]),
-        // ⚠ MANDATORY, NOT DEFENSIVE. `DateDisplayPipe` takes `@Inject(LOCALE_ID)` and formats
-        // through the framework's own formatter, so without this pin every rendered date would
-        // depend on the machine's locale and the sentinel cases would prove nothing portable.
+        // ⚠ MANDATORY, NOT DEFENSIVE. `DateDisplayPipe` takes `@Inject(LOCALE_ID)` and formats through the
+        // framework's own formatter, so without this pin every rendered date would depend on the machine's
+        // locale and the sentinel cases would prove nothing portable.
         { provide: LOCALE_ID, useValue: 'en-US' },
-        /*
-         * The identity, doubled for ONE fact: which tenant the caller belongs to. The tenant is read
-         * from the caller rather than from a route, because this screen addresses a ROLE and names no
-         * portal — and must never be able to protect one tenant's membership with another's keys.
-         */
+        // The identity, doubled for ONE fact: which tenant the caller belongs to. The tenant is read from
+        // the caller rather than from a route, because this screen addresses a ROLE and names no portal —
+        // and must never be able to protect one tenant's membership with another's keys.
         {
           provide: AuthStore,
           useValue: { currentUser: signal({ portalId: TENANT_ID }) },
         },
-        /* The tenant's record, doubled to the three facts this screen reads plus the request for them. */
+        // The tenant's record, doubled to the three facts this screen reads plus the request for them.
         {
           provide: PortalStore,
           useValue: {
@@ -708,23 +478,10 @@ describe('RoleAssignmentComponent', () => {
   });
 
   afterEach(() => {
-    // ⚠⚠ UNCONDITIONAL, AND THE MECHANISM BY WHICH A MISSING RE-READ FAILS LOUDLY. Verification is
-    // what turns "the screen did not ask again" into a failure instead of a silent pass, so it is
-    // never omitted and never wrapped in a condition.
     httpMock.verify();
   });
 
-  // -------------------------------------------------------------------------------------------------
   // HARNESS
-  //
-  // Signal note: the version of the framework installed here exposes `TestBed.flushEffects()` and no
-  // `TestBed.tick()`, which was verified against the installed typings rather than assumed. It is not
-  // reached for below, and deliberately so: every one of this component's `effect()`s is created in
-  // its constructor and is therefore a COMPONENT effect, which the framework runs as part of change
-  // detection. `fixture.detectChanges()` is what settles both those and the pull-based `computed()`
-  // views, the polyfills are zone-based, so it behaves conventionally, and reaching for the explicit
-  // flush would settle the effects at a different point in the cycle than production does.
-  // -------------------------------------------------------------------------------------------------
 
   /** The component under test, for the few assertions that are about its state rather than its view. */
   function component(): RoleAssignmentComponent {
@@ -732,15 +489,8 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Mounts the screen.
-   *
-   * The role identifier is delivered as the STRING a route parameter is, so the input's own strict
-   * parsing runs. It is set LAST because setting it is what starts both opening reads.
-   *
-   * ⚠ THE TENANT CONTEXT IS PUT IN THE STORE, NOT PASSED IN. It used to arrive as three optional
-   * inputs that nothing in the application ever supplied; it is now read from the portal store, so a
-   * case that wants the guard armed writes the facts into the doubled signals BEFORE the component
-   * reads them — which is before the first change detection, since every consumer is a `computed`.
+   * Mounts the screen. The role identifier is delivered as the STRING a route parameter is, so the
+   * input's own strict parsing runs.
    */
   function create(
     roleId: string | null,
@@ -750,27 +500,11 @@ describe('RoleAssignmentComponent', () => {
       readonly registeredRoleId?: number;
 
       /**
-       * The account policy to answer the opening read with, or `null` to refuse it.
-       *
-       * Omitted means the name-box policy, which is what every case predating the policy wiring
-       * asserted against.
+       * The account policy to answer the opening read with, or `null` to refuse it. Omitted means the
+       * name-box policy, which is what every case predating the policy wiring asserted against.
        */
       readonly usersControl?: number | null;
 
-      /**
-       * The tenant account count to answer the probe with when the policy asks for the drop-down.
-       *
-       * ⚠ A STORED DROP-DOWN PREFERENCE NOW PROBES THE COUNT, and this option is how a case says
-       * what the count is. The enumeration threshold is not a default the setting replaces: it is the
-       * size at which enumerating a tenant to fill a `<select>` stops being sensible, and the legacy
-       * framework enforced it by writing the name box back as the tenant's setting the first time the
-       * count exceeded it (`UserModuleBase.vb:L178-L186`). A tenant whose stored preference predates
-       * its growth therefore keeps asking for a drop-down it should no longer be offered, and the
-       * walk that fills it was the one unbounded read on this screen.
-       *
-       * Omitted means a small tenant, so a case that says nothing about size gets the drop-down it
-       * asked for. `null` refuses the probe.
-       */
       readonly accountCount?: number | null;
     } = {},
   ): void {
@@ -790,23 +524,18 @@ describe('RoleAssignmentComponent', () => {
     fixture.componentRef.setInput('roleId', roleId);
     fixture.detectChanges();
 
-    // ⚠ ANSWERED FOR EVERY MOUNT, BECAUSE THE POLICY READ IS UNCONDITIONAL. The screen asks which
-    // account control the tenant wants before it offers either one, so a case that left this
-    // outstanding would fail the unconditional verification in `afterEach` rather than on its own
-    // assertion. It is settled here, in the mount, so no case has to know the read exists.
+    // ⚠ ANSWERED FOR EVERY MOUNT, BECAUSE THE POLICY READ IS UNCONDITIONAL. The screen asks which account
+    // control the tenant wants before it offers either one, so a case that left this outstanding would fail
+    // the unconditional verification in `afterEach` rather than on its own assertion.
     const policy: number | null =
       context.usersControl === undefined ? USERS_CONTROL_TEXT_BOX : context.usersControl;
 
     answerAccountPolicy(policy);
 
     // ⚠ SETTLED HERE FOR THE SAME REASON THE POLICY READ IS. A stored preference for the drop-down is
-    // measured against the enumeration threshold, so the screen probes the count before it offers
-    // either control — and a case that left that probe outstanding would fail the unconditional
-    // verification in `afterEach` rather than on its own assertion. A stored preference for the NAME
-    // BOX probes nothing, because the threshold can only move a tenant towards the name box and so
-    // cannot change an answer that is already there. A REFUSED policy probes too, but the cases that
-    // exercise that branch answer it themselves, because what the count says is the whole subject of
-    // each of them.
+    // measured against the enumeration threshold, so the screen probes the count before it offers either
+    // control — and a case that left that probe outstanding would fail the unconditional verification in
+    // `afterEach` rather than on its own assertion.
     if (policy === USERS_CONTROL_COMBO) {
       answerAccountCount(context.accountCount === undefined ? SMALL_TENANT_ACCOUNT_COUNT : context.accountCount);
     }
@@ -835,10 +564,9 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Answers the complete-account-list walk the drop-down policy triggers.
-   *
-   * One call per page, so a case can prove the walk followed every page the server reported rather
-   * than stopping at the first — the defect this screen's lookup was corrected for.
+   * Answers the complete-account-list walk the drop-down policy triggers. One call per page, so a case
+   * can prove the walk followed every page the server reported rather than stopping at the first — the
+   * defect this screen's lookup was corrected for.
    *
    * @param accounts The accounts this page carries.
    * @param totalCount The server's own count of the whole list.
@@ -849,9 +577,9 @@ describe('RoleAssignmentComponent', () => {
     totalCount: number = accounts.length,
     pageIndex = 0,
   ): TestRequest {
-    // ⚠ THE PAGE SIZE IS PART OF THE MATCH, not decoration. The count probe is also a GET of this
-    // address with no filter and page index zero, so a matcher that ignored the size would consume
-    // whichever request happened to be pending and the two would be indistinguishable.
+    // ⚠ THE PAGE SIZE IS PART OF THE MATCH, not decoration. The count probe is also a GET of this address
+    // with no filter and page index zero, so a matcher that ignored the size would consume whichever
+    // request happened to be pending and the two would be indistinguishable.
     const call = httpMock.expectOne(
       (candidate) =>
         candidate.method === 'GET' &&
@@ -869,9 +597,8 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Answers the account-count probe the fallback rule issues, or refuses it.
-   *
-   * Matched on its page size, which is what distinguishes it from the drop-down walk's first page.
+   * Answers the account-count probe the fallback rule issues, or refuses it. Matched on its page size,
+   * which is what distinguishes it from the drop-down walk's first page.
    *
    * @param totalCount The count to report, or `null` to refuse the probe.
    */
@@ -909,21 +636,6 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * The terms a lookup transmitted, read from its query parameters.
-   *
-   * ⚠ THIS USED TO READ A REQUEST BODY, and the change of location is the change of endpoint. The
-   * lookup once posted to the account listing's search, because that address's filters — an
-   * electronic-mail address, an arbitrary tenant-defined profile value — identify a person and must
-   * not reach a request target (CWE-598). It now asks the account PICKER, whose single filter is a
-   * prefix of the login name: a value the response returns in full, so a target that records it
-   * discloses nothing the body did not already carry. What the move bought is that the response no
-   * longer carries a postal address, a telephone number, an electronic-mail address, two audit
-   * instants and four status flags for every candidate.
-   *
-   * A parameter that was never sent reads as `null`, which is what the absence assertions below
-   * expect; nothing is coerced to the empty string, because an absent filter and a blank one are
-   * different requests.
-   *
    * @param request The lookup whose parameters to read.
    * @returns The transmitted parameters, absent ones reading as `null`.
    */
@@ -950,14 +662,9 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Answers the membership PAGE read.
-   *
-   * ⚠ NARROWED BY THE ABSENCE OF `query` AS WELL AS BY THE ADDRESS, and the redundancy is deliberate.
-   * The keyed membership probe now addresses the PAIRING — `…/users/{userId}` — so the two reads no
-   * longer share a URL and the address alone tells them apart. The parameter test is retained as a
-   * second, independent guard: it is what would fail loudly if the probe were ever moved back onto
-   * the listing and narrowed by a login name, which is the CWE-598 shape this suite exists to keep
-   * out. The page read itself carries no free-text filter.
+   * Answers the membership PAGE read. ⚠ NARROWED BY THE ABSENCE OF `query` AS WELL AS BY THE ADDRESS, and
+   * the redundancy is deliberate. The keyed membership probe now addresses the PAIRING —
+   * `…/users/{userId}` — so the two reads no longer share a URL and the address alone tells them apart.
    */
   function answerMemberships(
     roleId: number,
@@ -973,9 +680,7 @@ describe('RoleAssignmentComponent', () => {
     );
 
     // ⚠ THE ANSWER ECHOES THE COORDINATE THAT WAS ASKED FOR, as the API does: the applied size and the
-    // index are facts about the response, and the screen binds the SERVER's figures to its pager. A
-    // fixture that answered with a size nobody requested would make the pager compute a page count the
-    // server never published, and the pager cases would then prove nothing about production.
+    // index are facts about the response, and the screen binds the SERVER's figures to its pager.
     const askedIndex: number = Number(call.request.params.get('pageIndex') ?? '0');
     const askedSize: number = Number(call.request.params.get('pageSize') ?? String(DEFAULT_PAGE_SIZE));
 
@@ -985,21 +690,6 @@ describe('RoleAssignmentComponent', () => {
     return call;
   }
 
-  /**
-   * Proves a settled write re-asks the pairing endpoint NOTHING.
-   *
-   * ⚠ THIS HELPER USED TO ANSWER A REQUEST; IT NOW ASSERTS THAT NO REQUEST IS MADE. A write is exactly
-   * what can change whether the chosen account holds the role, and the fact used to be re-asked with a
-   * keyed probe once the write settled. That probe answered `404` for every account that held nothing —
-   * a refusal used as a question, which reached the browser console as an error on an ordinary,
-   * successful path. The listing is re-read on the same settle (the legacy rebind at
-   * `SecurityRoles.ascx.vb:L546`), and those rows carry the very membership the probe was asking
-   * about, so the second request bought nothing and cost a logged failure.
-   *
-   * Every case that uses this therefore proves two things at once: that the pairing endpoint is left
-   * alone, and — through the assertions beside it — that the label and the boxes still settle to the
-   * right values from the re-read rows.
-   */
   function expectNoReprobe(): void {
     expect(httpMock.match(isMembershipProbe))
       .withContext('a settled write asks the pairing endpoint nothing at all')
@@ -1007,16 +697,6 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Whether an open request is the keyed membership probe.
-   *
-   * ⚠ MATCHED ON THE PAIRING ADDRESS, WHICH IS THE WHOLE POINT OF THE PROBE'S SHAPE. It used to be
-   * matched on the listing address plus a `query` parameter, because the probe WAS the listing
-   * narrowed by the account's login name — and the server matches that filter against the login name
-   * and the display name, so the name had to be in the request target for the question to be
-   * answerable. A request target is kept in browser history and written in full to every proxy and
-   * server access log, none of which is on the wire: CWE-598. Two opaque identifiers in a path
-   * disclose nothing.
-   *
    * @param candidate An open request.
    * @returns True when it addresses one account's membership of one role.
    */
@@ -1025,12 +705,10 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Settles one keyed probe with the membership it finds, or with the refusal that means none.
-   *
-   * ⚠ NO MEMBERSHIP IS A `404`, NOT AN EMPTY SUCCESS. The endpoint answers `200` with the row or
-   * `404` when the account holds nothing, and the store reads that refusal as the negative answer
-   * without recording a failure. Answering an empty success here instead would specify a response
-   * the server cannot send.
+   * Settles one keyed probe with the membership it finds, or with the refusal that means none. ⚠ NO
+   * MEMBERSHIP IS A `404`, NOT AN EMPTY SUCCESS. The endpoint answers `200` with the row or `404` when
+   * the account holds nothing, and the store reads that refusal as the negative answer without recording
+   * a failure.
    *
    * @param probe The open probe.
    * @param held One membership when the pairing holds one, or empty when it holds nothing.
@@ -1057,14 +735,11 @@ describe('RoleAssignmentComponent', () => {
     probe.flush(envelope(held[0]));
   }
 
-
   /**
-   * Mounts the screen and settles both of its opening reads.
-   *
-   * ⚠ BOTH READS ARE ISSUED TOGETHER BY THE ROLE INPUT, so they are outstanding at the same time
-   * and are answered in whichever order this helper chooses — itself worth stating, because a screen
-   * that depended on one arriving before the other would be order-sensitive in a way no browser
-   * guarantees.
+   * Mounts the screen and settles both of its opening reads. ⚠ BOTH READS ARE ISSUED TOGETHER BY THE ROLE
+   * INPUT, so they are outstanding at the same time and are answered in whichever order this helper
+   * chooses — itself worth stating, because a screen that depended on one arriving before the other would
+   * be order-sensitive in a way no browser guarantees.
    */
   function arrive(
     roleId = 0,
@@ -1093,14 +768,7 @@ describe('RoleAssignmentComponent', () => {
     return Array.from(host().querySelectorAll<E>(selector));
   }
 
-  /**
-   * The text of one node, narrowed EXPLICITLY rather than coalesced.
-   *
-   * `Node.textContent` is typed `string | null` because a document or a doctype node has none while an
-   * element always does. The narrowing is written as a test rather than with an absent-value shorthand,
-   * matching the house style of the code under test; the other way of silencing the type — a non-null
-   * assertion — is ruled out outright.
-   */
+  /** The text of one node, narrowed EXPLICITLY rather than coalesced. */
   function textIn(node: Element | null | undefined): string {
     if (node === null || node === undefined) {
       return '';
@@ -1144,12 +812,10 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Presses a button of the OPEN CONFIRMATION.
-   *
-   * ⚠ SCOPED TO THE DIALOGUE ON PURPOSE. The row command and the dialogue's confirming button share
-   * the wording 'Delete', and the abandon link and the dialogue's dismissing button share 'Cancel',
-   * so an unscoped lookup by wording would press the wrong one and the case would prove something
-   * other than what it claims.
+   * Presses a button of the OPEN CONFIRMATION. ⚠ SCOPED TO THE DIALOGUE ON PURPOSE. The row command and
+   * the dialogue's confirming button share the wording 'Delete', and the abandon link and the dialogue's
+   * dismissing button share 'Cancel', so an unscoped lookup by wording would press the wrong one and the
+   * case would prove something other than what it claims.
    */
   function pressDialogue(label: string): void {
     const control: HTMLButtonElement | undefined = queryAll<HTMLButtonElement>(
@@ -1164,13 +830,7 @@ describe('RoleAssignmentComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Searches for an account through the shared lookup.
-   *
-   * The lookup debounces its own typing, so the immediate path is used here: its own submit gesture
-   * emits at once. That keeps every case free of a fake clock while still going through the real
-   * control rather than calling the handler behind it.
-   */
+  /** Searches for an account through the shared lookup. */
   function lookUp(term: string): void {
     const field = query<HTMLInputElement>('input[type="search"]');
 
@@ -1185,13 +845,10 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Claims the one outstanding account LOOKUP, distinguished from the picker's other two reads.
-   *
-   * ⚠ THE FILTER IS WHAT IDENTIFIES IT. All three account reads on this screen are a `GET` of the
-   * same address: the count probe (one row, no filter), the complete-list walk (a full page, no
-   * filter) and this lookup (a full page WITH a filter). Matching on the presence of the filter is
-   * therefore the precise test, and a matcher that named only the method and the address would
-   * consume whichever of the three happened to be pending.
+   * Claims the one outstanding account LOOKUP, distinguished from the picker's other two reads. ⚠ THE
+   * FILTER IS WHAT IDENTIFIES IT. All three account reads on this screen are a `GET` of the same address:
+   * the count probe (one row, no filter), the complete-list walk (a full page, no filter) and this lookup
+   * (a full page WITH a filter).
    *
    * @param description Named in the failure message when nothing matches.
    * @returns The outstanding lookup.
@@ -1206,13 +863,7 @@ describe('RoleAssignmentComponent', () => {
     );
   }
 
-  /**
-   * Answers the account lookup with a single, complete page.
-   *
-   * The reported total equals what is supplied, which is what tells the walk it has seen the whole
-   * match set and may stop. A case that wants to prove the walk FOLLOWS pages uses
-   * {@link answerLookupPage} instead and reports a larger total.
-   */
+  /** Answers the account lookup with a single, complete page. */
   function answerLookup(matches: readonly UserChoice[]): TestRequest {
     const call = expectLookupRequest('the account lookup');
 
@@ -1225,10 +876,6 @@ describe('RoleAssignmentComponent', () => {
   /**
    * Answers ONE page of the account-lookup walk, identified by the page coordinate it asked for.
    *
-   * Matched on `pageIndex` rather than by consuming whatever is outstanding, so a case proves the
-   * walk asked for the page it claims to have asked for. The `userName` test is what keeps this from
-   * matching the complete-account-list walk, which carries no name.
-   *
    * @param matches The accounts this page carries.
    * @param totalCount The server's own count of the whole match set.
    * @param pageIndex The page being answered.
@@ -1238,12 +885,6 @@ describe('RoleAssignmentComponent', () => {
     totalCount: number,
     pageIndex: number,
   ): TestRequest {
-    // ⚠ THE FILTER IS WHAT KEEPS THIS FROM MATCHING THE COMPLETE-LIST WALK, which asks the same
-    // address for the same page size and carries none. Both the filter and the page coordinate are
-    // read out of the query parameters: this address takes one filter, a prefix of the login name,
-    // which is a value it returns in the response body anyway — unlike the account listing's search,
-    // whose electronic-mail and profile-value filters identify a person and therefore travel in a
-    // body (CWE-598).
     const call = httpMock.expectOne(
       (candidate) =>
         candidate.method === 'GET' &&
@@ -1278,12 +919,11 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Chooses an offered account by its rendered wording, and releases it when pressed again.
-   *
-   * ⚠ THE SELECTOR NAMES THE BUTTON, NOT ITS CONTAINER. Each offer is a real toggle button inside a
-   * list item, and a document-ordered query that also admitted the item would return the ITEM first —
-   * whose text contains the same wording — so the case would click a non-interactive element, nothing
-   * would happen, and every assertion afterwards would fail against an unmade choice.
+   * Chooses an offered account by its rendered wording, and releases it when pressed again. ⚠ THE
+   * SELECTOR NAMES THE BUTTON, NOT ITS CONTAINER. Each offer is a real toggle button inside a list item,
+   * and a document-ordered query that also admitted the item would return the ITEM first — whose text
+   * contains the same wording — so the case would click a non-interactive element, nothing would happen,
+   * and every assertion afterwards would fail against an unmade choice.
    *
    * @param label The rendered wording of the offer.
    * @param held The membership rows the keyed probe finds for that account's login name.
@@ -1298,20 +938,9 @@ describe('RoleAssignmentComponent', () => {
   (control as HTMLButtonElement).click();
   fixture.detectChanges();
 
-  // ⚠ CHOOSING AN ACCOUNT ASKS AT MOST ONE QUESTION, AND USUALLY NONE. "Does this person already hold
-  // the role?" is answered from the rendered rows when they carry the pairing, and from the listing's
-  // own published total when every row it counts is on screen. Only when neither settles it - a
-  // membership that could sit on a page nobody has read - is one keyed probe issued, addressed at the
-  // PAIRING so that no login name reaches a request target. Releasing an account asks nothing.
   const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
   if (probes.length === 0) {
-    // ⚠ NO REQUEST AT ALL IS NOW THE ORDINARY PATH. The rendered rows answer "does this person already
-    // hold the role?" whenever they carry the pairing, and a listing whose own published total is
-    // fully rendered proves the negative — so the probe is reserved for the one case neither can
-    // settle, a membership that could be on a page nobody has read. Releasing an account likewise asks
-    // nothing. What the caller declared is asserted against what the screen RESOLVED, so a case cannot
-    // pass a membership that never reached the component.
     const resolved: UserRole | null = component().selectedMembership();
 
     if (held.length === 0) {
@@ -1373,11 +1002,9 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Leaves a date field, which is what marks it VISITED.
-   *
-   * The class gates each message the way `display="Dynamic"` gated it — nothing is said until the
-   * field has been visited and is failing — so a case asserting a rendered message has to leave the
-   * field, exactly as a person does. Typing alone marks nothing.
+   * Leaves a date field, which is what marks it VISITED. The class gates each message the way
+   * `display="Dynamic"` gated it — nothing is said until the field has been visited and is failing — so a
+   * case asserting a rendered message has to leave the field, exactly as a person does.
    */
   function leaveDate(controlId: string): void {
     const control = query<HTMLInputElement>(`#${controlId}`);
@@ -1389,16 +1016,10 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * Puts a value the NATIVE DATE CONTROL WILL NOT HOLD into the form model.
-   *
-   * ⚠ WHY THIS DOES NOT GO THROUGH THE INPUT. A native date control applies the platform's own
-   * value-sanitising algorithm on assignment, so a value that is not a valid calendar date — including
-   * a well-formed but impossible one such as the thirty-first of February — is discarded and the
-   * control is left empty. The data-type check the legacy screen declared at `securityroles.ascx:L45`
-   * and `:L46` therefore cannot be reached through the rendered control at all, which is itself an
-   * improvement worth having. It remains a genuine second line of defence for a value arriving from
-   * anywhere else, so it is exercised through the form model, which is the same object the control
-   * writes to.
+   * Puts a value the NATIVE DATE CONTROL WILL NOT HOLD into the form model. ⚠ WHY THIS DOES NOT GO
+   * THROUGH THE INPUT. A native date control applies the platform's own value-sanitising algorithm on
+   * assignment, so a value that is not a valid calendar date — including a well-formed but impossible one
+   * such as the thirty-first of February — is discarded and the control is left empty.
    *
    * @param field Which bound to write.
    * @param value The value to write.
@@ -1431,12 +1052,10 @@ describe('RoleAssignmentComponent', () => {
   }
 
   /**
-   * The messages currently rendered by the shared field wrapper, across every field.
-   *
-   * ⚠ RETURNED UNTRIMMED, ON PURPOSE. The wrapper emits each message as a one-line paragraph, so the
-   * raw text is exactly what the wrapper produced — which is the only form in which the leading-space
-   * hazard described on {@link INVALID_EFFECTIVE_DATE_MESSAGE} can fail rather than hide. Trimming
-   * here would silently accept `' Invalid effective date'`.
+   * The messages currently rendered by the shared field wrapper, across every field. ⚠ RETURNED
+   * UNTRIMMED, ON PURPOSE. The wrapper emits each message as a one-line paragraph, so the raw text is
+   * exactly what the wrapper produced — which is the only form in which the leading-space hazard
+   * described on {@link INVALID_EFFECTIVE_DATE_MESSAGE} can fail rather than hide.
    */
   function fieldErrors(): readonly string[] {
     return queryAll<Element>('.form-field__error').map((node) => textIn(node));
@@ -1463,13 +1082,9 @@ describe('RoleAssignmentComponent', () => {
 
   describe('arriving on the screen', () => {
     /**
-     * ⚠ THE SPECIFICATION THAT CATCHES EVERY TRUTHINESS BUG ON THIS SCREEN.
-     *
-     * `dbo.Roles.RoleID` is `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L115`) and a Registered Users
-     * role is seeded during installation, so ZERO IS A REAL ROLE and the screen must load normally for
-     * it. A truthiness test on the identifier, a negation of it, a comparison of it against nought in
-     * either direction, and a coalescing default onto the legacy integer sentinel ALL pass a case
-     * written against role seven and all fail this one. That is what makes it worth writing.
+     * ⚠ THE SPECIFICATION THAT CATCHES EVERY TRUTHINESS BUG ON THIS SCREEN. `dbo.Roles.RoleID` is
+     * `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L115`) and a Registered Users role is seeded during
+     * installation, so ZERO IS A REAL ROLE and the screen must load normally for it.
      */
     it('reads role ZERO as a real role, from relative addresses', () => {
       create('0');
@@ -1489,9 +1104,6 @@ describe('RoleAssignmentComponent', () => {
       expect(component().resolvedRoleId()).toBe(0);
       // The paging coordinate is zero-based on the wire and is transmitted rather than adjusted.
       expect(listRead.request.params.get('pageIndex')).toBe('0');
-      // ONE PAGE, at the size every other listing in the workspace opens at. The widest legal page
-      // would be a window too, one order of magnitude further out, and asking for it here is what an
-      // earlier revision did before following every further page the metadata reported.
       expect(listRead.request.params.get('pageSize')).toBe(String(DEFAULT_PAGE_SIZE));
       // The page read carries no free-text filter; only the keyed probe does.
       expect(listRead.request.params.has('query')).toBeFalse();
@@ -1505,9 +1117,9 @@ describe('RoleAssignmentComponent', () => {
 
     /**
      * ⚠ A COMPANION TO THE ABOVE, ON THE ROW'S OWN IDENTIFIERS. `UserRoleID` is seeded
-     * `IDENTITY(1, 1)` and `UserID` likewise, but neither is guaranteed positive by anything this
-     * screen can see, so a row carrying nought for either must be retained and rendered rather than
-     * treated as absent.
+     * `IDENTITY(1, 1)` and `UserID` likewise, but neither is guaranteed positive by anything this screen
+     * can see, so a row carrying nought for either must be retained and rendered rather than treated as
+     * absent.
      */
     it('retains a membership whose row and account identifiers are both ZERO', () => {
       arrive(0, [membership({ userRoleId: 0, userId: 0 })]);
@@ -1543,8 +1155,6 @@ describe('RoleAssignmentComponent', () => {
       answerRole(role(0, { roleName: 'Subscribers' }));
       answerMemberships(0, []);
 
-      // `SecurityRoles.ascx.vb:L193` formatted the template with the role's name and identifier; the
-      // template itself uses only the name, so only the name is substituted.
       expect(textIn(query('h1')).trim()).toBe('Manage Users in Role: Subscribers');
     });
 
@@ -1558,10 +1168,6 @@ describe('RoleAssignmentComponent', () => {
     it('reads nothing at all when the address names no role, and says so', () => {
       create(null);
 
-      // Absence is `null`, never minus one. `SecurityRoles.ascx.vb:L51-L53` initialised its three
-      // identifiers to minus one and `:L413-L419` overwrote them from the query string, so minus one
-      // was that screen's "not supplied" marker — while the tenant table is seeded `IDENTITY(-1, 1)`,
-      // which makes minus one a legitimate tenant. The two meanings are kept apart here.
       expect(component().resolvedRoleId()).toBeNull();
       expect(component().roleUnresolved()).toBeTrue();
       expect(textIn(query('.role-assignment__unresolved')).trim()).toBe(
@@ -1570,19 +1176,8 @@ describe('RoleAssignmentComponent', () => {
       httpMock.expectNone(() => true);
     });
 
-    // ⚠ THERE IS DELIBERATELY NO PAGED-READ CASE HERE, AND ITS ABSENCE IS THE POINT.
-    //
     // A case once stood here asserting that ONE page is read and a shared pager reaches the rest. This
-    // screen does not do that. `securityroles.ascx:L56` declares no `AllowPaging`, no pager style and
-    // no footer style, so the legacy grid was UNPAGED, and the membership is read WHOLE through the
-    // role store: the widest page first, then every further page the server reports. Nothing here
-    // declares a page index, a page size, a total or a page-change handler, so there is no pager to
-    // mount and no second page for the operator to reach for.
-    //
-    // The whole read itself is proved in the store-delegation suite at the foot of this file - "reads
-    // the whole membership, following every page the server reports" - which is the right place for
-    // it, because the store is what follows the pages. The parity guard below proves the visible half:
-    // no pager is rendered.
+    // screen does not do that.
 
     it('discards everything and re-reads when the address names another role', () => {
       arrive(0, [membership()]);
@@ -1601,22 +1196,15 @@ describe('RoleAssignmentComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------------------------------
   // PROOF 2 — THE THREE DATE VALIDATORS, EXACTLY AS DECLARED
-  //
-  // `securityroles.ascx` declares three comparison validators and no others: `valEffectiveDate` at
-  // `:L45`, `valExpiryDate` at `:L46` and `valDates` at `:L47`. ALL THREE CARRY `type="Date"`, so the
-  // typed-comparison defect that afflicts the sibling role editor's validators does not exist on this
-  // screen and is deliberately not asserted here.
-  // -------------------------------------------------------------------------------------------------
 
   describe('the effective-bound data-type check', () => {
     it('rejects a value that is not a calendar date, with the resource wording', () => {
       arriveAndChoose();
 
-      // FIRST LINE OF DEFENCE: the native control will not even hold it. The platform's
-      // value-sanitising algorithm discards anything that is not a valid calendar date, and the
-      // thirty-first of February is well-formed but impossible.
+      // FIRST LINE OF DEFENCE: the native control will not even hold it. The platform's value-sanitising
+      // algorithm discards anything that is not a valid calendar date, and the thirty-first of February is
+      // well-formed but impossible.
       typeDate(EFFECTIVE_DATE_CONTROL_ID, IMPOSSIBLE_DATE);
 
       expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value)
@@ -1660,12 +1248,9 @@ describe('RoleAssignmentComponent', () => {
 
   describe('the ordering rule between the two bounds', () => {
     /**
-     * ⚠ THE RULE ITSELF, ASSERTED ON THE MODEL, WHERE NO GESTURE ORDER CAN REACH IT.
-     *
-     * The three renderings below depend on the class's mirrored form snapshot, which has an ordering
-     * sensitivity worth keeping out of the load-bearing assertion — see the note on the next case. This
-     * one drives the controls directly, so the operator `GreaterThan` is proved for all three
-     * relationships regardless of how the values got there.
+     * ⚠ THE RULE ITSELF, ASSERTED ON THE MODEL, WHERE NO GESTURE ORDER CAN REACH IT. The three renderings
+     * below depend on the class's mirrored form snapshot, which has an ordering sensitivity worth keeping
+     * out of the load-bearing assertion — see the note on the next case.
      */
     it('holds the rule on the model however the two bounds arrive', () => {
       arriveAndChoose();
@@ -1700,19 +1285,11 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ THE ORDER OF THE GESTURES BELOW IS DELIBERATE, AND THE REASON IS RECORDED RATHER THAN HIDDEN.
-     *
-     * The class mirrors the form into a snapshot fed by the GROUP'S event stream, and a group emits a
-     * touched change only on its FIRST transition: `markAsTouched` computes
-     * `const changed = this.touched === false` BEFORE propagating to the parent, so the SECOND field to
-     * be visited produces no group-level event at all and the snapshot does not catch up. A case that
-     * visited both bounds last would therefore assert against a stale snapshot and fail for a reason
-     * that has nothing to do with the rule under test.
-     *
-     * Both bounds are visited FIRST and filled in afterwards — an ordinary way to fill a two-field
-     * form, and one that leaves the snapshot current because the trailing value change refreshes it.
-     * This is reported as a fragility of the class, not worked around silently; the rule itself is
-     * asserted above, where no gesture order can affect it.
+     * ⚠ THE ORDER OF THE GESTURES BELOW IS DELIBERATE, AND THE REASON IS RECORDED RATHER THAN HIDDEN. The
+     * class mirrors the form into a snapshot fed by the GROUP'S event stream, and a group emits a touched
+     * change only on its FIRST transition: `markAsTouched` computes `const changed = this.touched ===
+     * false` BEFORE propagating to the parent, so the SECOND field to be visited produces no group-level
+     * event at all and the snapshot does not catch up.
      */
     it('refuses an expiry EARLIER than the effective bound, with the resource wording', () => {
       arriveAndChoose();
@@ -1733,11 +1310,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠⚠ THE SINGLE HIGHEST-VALUE ASSERTION IN THIS FILE.
-     *
-     * `securityroles.ascx:L47` declares `operator="GreaterThan"` and NOT `GreaterThanEqual`, so an
-     * expiry equal to the effective bound is INVALID — a window of zero length is not a window. A
-     * naive `>=` implementation passes every other case in this file and fails only this one.
+     * ⚠⚠ THE SINGLE HIGHEST-VALUE ASSERTION IN THIS FILE. `securityroles.ascx:L47` declares
+     * `operator="GreaterThan"` and NOT `GreaterThanEqual`, so an expiry equal to the effective bound is
+     * INVALID — a window of zero length is not a window.
      */
     it('refuses an expiry EQUAL to the effective bound, because the operator is GreaterThan', () => {
       arriveAndChoose();
@@ -1785,10 +1360,6 @@ describe('RoleAssignmentComponent', () => {
 
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
-      // ⚠ THE RE-READ ANSWERS WITH WHAT WAS STORED, which for a completed write is what was typed. It
-      // is answered that way deliberately: the boxes are re-baselined from these rows, so a fixture that
-      // replied with a membership holding no bounds at all would be asserting against an answer the
-      // server could not have given for the write that just succeeded.
       answerMemberships(0, [
         membership({
           effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
@@ -1835,14 +1406,7 @@ describe('RoleAssignmentComponent', () => {
   // -------------------------------------------------------------------------------------------------
 
   describe('the optional fields', () => {
-    /**
-     * Both help strings say so in as many words. `plEffectiveDate.Help` reads "…( Optional ). Entering
-     * No Value Will Indicate that the role will start immediately." and `plExpiryDate.Help` reads
-     * "…( Optional ). Entering No Value Will Indicate No Expiry Date."
-     *
-     * This case exists to stop a future editor adding a required validator with no legacy counterpart,
-     * which would change which messages the screen shows and break functional parity.
-     */
+    /** Both help strings say so in as many words. */
     it('accepts BOTH bounds empty, and writes with neither', () => {
       arriveAndChoose();
 
@@ -1862,11 +1426,8 @@ describe('RoleAssignmentComponent', () => {
 
       const call = expectRequest('POST', membersUrl(0), 'the assignment');
 
-      // ⚠ AN OMITTED BOUND TRAVELS AS `null`, NEVER AS `''`. The empty string is the legacy
-      // absent-STRING marker (`Null.vb:L71-L75`), and a blank where a date is expected is a value the
-      // server would have to guess at. The legacy handler substituted the DATE sentinel here
-      // (`SecurityRoles.ascx.vb:L528-L539`), which the column cannot hold at all — its range begins in
-      // 1753 — so `null` is the contract and `null` is what is sent.
+      // ⚠ AN OMITTED BOUND TRAVELS AS `null`, NEVER AS `''`. The empty string is the legacy absent-STRING
+      // marker, and a blank where a date is expected is a value the server would have to guess at.
       expect(call.request.body).toEqual({
         userId: 42,
         effectiveDate: null,
@@ -1880,15 +1441,6 @@ describe('RoleAssignmentComponent', () => {
       expectNoReprobe();
     });
 
-    /**
-     * ⚠ THE ACCOUNT FIELD CARRIES NO REQUIRED VALIDATOR EITHER, AND THE WRITE IS STILL WITHHELD.
-     *
-     * `SecurityRoles.ascx.vb:L520` gated the write on `Page.IsValid`, which covered ONLY the three
-     * date validators above. The account was checked separately at `:L521` by
-     * `(Not Role Is Nothing) AndAlso (Not User Is Nothing)` — A GUARD CLAUSE, NOT A VALIDATOR. The
-     * equivalent here is the derived view behind the action's disabled state, so the screen shows the
-     * same messages the legacy screen showed while refusing the same writes it refused.
-     */
     it('withholds the write with nobody chosen, without claiming the field is required', () => {
       arrive(0, []);
 
@@ -1923,38 +1475,25 @@ describe('RoleAssignmentComponent', () => {
 
   describe('looking an account up', () => {
     it('queries the account listing by name, one page at a time', () => {
-      // MIGRATION: `securityroles.ascx:L26` declared a dropdown bound at
-      // `SecurityRoles.ascx.vb:L204` to EVERY account in the tenant, which does not scale. The
-      // screen's own help text — 'Enter The User Name and click Validate to confirm' — says the text
-      // box was the intended affordance, so the lookup replaces the dropdown with it.
       arrive(0, []);
 
       lookUp('ada');
 
       const call = expectLookupRequest('the account lookup');
 
-      // The term is sent RAW: the picker matches on a prefix, so appending a wildcard would search
-      // for the wildcard itself — and the server escapes what it is given, so a per-cent sign an
-      // operator typed matches a per-cent sign.
       const sent = lookupTerms(call);
 
       expect(sent['query']).toBe('ada');
       expect(sent['pageIndex']).toBe('0');
       expect(sent['pageSize']).toBe(LOOKUP_PAGE_SIZE);
 
-      // ⚠ AND IT ASKS THE PICKER, NOT THE ACCOUNT LISTING, which is what keeps a postal address, a
-      // telephone number, an electronic-mail address, two audit instants and four status flags out of
-      // every answer this screen receives. Stated as an address assertion because the address IS the
-      // projection: nothing else about the request distinguishes a three-member answer from a
-      // sixteen-member one.
       expect(call.request.url)
         .withContext('the picker answers a key and two captions; the listing answers a grid row')
         .toBe(USERS_CHOICES_URL);
 
-      // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by
-      // LOGIN NAME over a prefix-matched set puts the shortest match first, and the shortest match
-      // is the typed name itself. The picker's own default orders by DISPLAY name — the caption, not
-      // the value searched for — which is precisely how an exact match ended up unreachable.
+      // ⚠ AND THE ORDER, which is what makes an exact match reachable in one request. Ascending by LOGIN
+      // NAME over a prefix-matched set puts the shortest match first, and the shortest match is the typed
+      // name itself.
       expect(sent['sortBy']).toBe(LOOKUP_SORT_FIELD);
       expect(sent['sortDir']).toBe(LOOKUP_SORT_DIRECTION);
 
@@ -1965,8 +1504,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('says so when nothing matches, rather than blanking the field in silence', () => {
-      // MIGRATION: `SecurityRoles.ascx.vb:L476-L488` looked the account up by name and, on no match,
-      // blanked the box at `:L484` with no message at all. A visible state replaces that.
       arrive(0, []);
 
       lookUp('nobody');
@@ -1979,11 +1516,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('re-runs an identical search on an explicit submit, rather than answering from memory', () => {
-      // MIGRATION: the legacy Validate button re-queried on every press, because a postback had no
-      // memory of the previous one. A change gate on the shared control's submit path made a second
-      // press silently do nothing, which is at its worst exactly here: an operator who has just
-      // created the account they are looking for presses Search again and is told, from a cached
-      // answer, that no such login name exists.
       arrive(0, []);
 
       lookUp('ada');
@@ -2011,9 +1543,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('explains that the search matches the beginning of the LOGIN name when nothing is found', () => {
-      // The wording is the remedy for a working lookup that looked broken: the filter is a prefix on
-      // the login name, so 'Admin' finds nothing on a site whose administrator logs in as
-      // 'runtime_admin' - an account named in every button this control offers.
       arrive(0, []);
 
       lookUp('Admin');
@@ -2049,12 +1578,9 @@ describe('RoleAssignmentComponent', () => {
 
       expect(actions).toHaveSize(1);
 
-      // ⚠ THE ABSENCES ARE THE POINT, and each one is a conformance claim rather than a
-      // preference. `role="option"` would replace the button role on these controls, and
-      // `option` does not support `aria-pressed` — so the pair would be invalid, not merely
-      // unconventional. A listbox is additionally a composite widget with a mandatory
-      // keyboard contract this screen does not implement, and the matches are inline content
-      // rather than a popup, so neither `listbox` nor `combobox` describes them.
+      // ⚠ THE ABSENCES ARE THE POINT, and each one is a conformance claim rather than a preference.
+      // `role="option"` would replace the button role on these controls, and `option` does not support
+      // `aria-pressed` — so the pair would be invalid, not merely unconventional.
       expect(list?.getAttribute('role')).toBeNull();
       for (const action of actions) {
         expect(action.tagName.toLowerCase()).toBe('button');
@@ -2090,10 +1616,9 @@ describe('RoleAssignmentComponent', () => {
       const field = query<HTMLInputElement>('input.search-input__field');
       const labels = Array.from(field?.labels ?? []);
 
-      // The shared lookup withholds its own generic 'Search:' caption here, because this
-      // field already carries `plUsers.Text`. Two labels would give the control a composite
-      // accessible name in which the caption nearest the box is no longer the whole name —
-      // the SC 2.5.3 Label in Name mismatch.
+      // The shared lookup withholds its own generic 'Search:' caption here, because this field already
+      // carries `plUsers.Text`. Two labels would give the control a composite accessible name in which the
+      // caption nearest the box is no longer the whole name — the SC 2.5.3 Label in Name mismatch.
       expect(field).not.toBeNull();
       expect(labels).toHaveSize(1);
       expect(labels[0]?.textContent?.trim()).toBe(USER_LABEL);
@@ -2101,10 +1626,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('prefills the window from an existing membership when one is chosen', () => {
-      // MIGRATION: this is the first branch of `GetDates` at `SecurityRoles.ascx.vb:L273-L303`, which
-      // showed an existing membership's two bounds and skipped either one the null test reported as
-      // unset (`:L281-L286`). The membership is taken from the ROWS ON SCREEN when they carry it, and
-      // asked of the server only when they cannot - the rows are the same fact, already fetched.
       const held = membership({
         userId: 42,
         effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
@@ -2125,16 +1646,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('ASKS NOTHING when the rendered listing can answer, so no refusal is used as a signal', () => {
-      // ⚠ THE `404`-AS-A-QUESTION, WHICH IS WHAT THIS CASE EXISTS TO KEEP CLOSED. Choosing an account
-      // used to issue `GET /roles/{roleId}/users/{userId}` on every selection, and the endpoint answers
-      // `404` for an account that holds nothing - so the ordinary, entirely successful path of enrolling
-      // somebody new emitted a failed request and a red console error before the write was even sent.
-      // Runtime testing measured the whole sequence: accounts read `200`, pairing probe `404`,
-      // assignment `204`. A refusal is an answer to a request that should not have been made.
-      //
-      // The rows already hold the fact. When the listing's published total is fully rendered - which is
-      // the ordinary case for a role with one page of members - absence from those rows PROVES the
-      // account holds nothing, and the question is settled without asking anybody.
       arrive(0, [membership({ userId: 43, username: 'grace', displayName: 'Grace Hopper' })]);
       lookUp('ada');
       answerLookup([account()]);
@@ -2153,10 +1664,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('still ASKS when the listing on screen cannot settle it, because a page is unread', () => {
-      // The complement of the case above, and the reason the probe is kept rather than deleted. A
-      // listing that publishes more members than it rendered leaves a page nobody has read, so absence
-      // from the rows proves nothing - and answering from the visible page would relabel the command
-      // according to which page happened to be showing.
       arrive(
         0,
         [membership({ userId: 43, username: 'grace', displayName: 'Grace Hopper' })],
@@ -2186,9 +1693,6 @@ describe('RoleAssignmentComponent', () => {
 
       expect(query<HTMLInputElement>(`#${EFFECTIVE_DATE_CONTROL_ID}`)?.value).toBe('');
       expect(query<HTMLInputElement>(`#${EXPIRY_DATE_CONTROL_ID}`)?.value).toBe('');
-      // "Nothing to prefill" is a SETTLED answer rather than an unanswered question: this listing
-      // published a total of nothing and rendered all of it, so there is no page the account's row
-      // could be hiding on.
       expect(component().selectedMembership()).toBeNull();
     });
 
@@ -2213,10 +1717,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('says it is searching, so a walk in progress is not mistaken for no match', () => {
-      // ⚠ THE TWO STATES RENDER IDENTICALLY WITHOUT THIS: an empty match list and no message. A walk
-      // takes visibly longer than the single read it replaced, so the distinction stopped being
-      // theoretical. The wording is the LOOKUP'S own and not the account list's — telling somebody
-      // who typed a name that the site is being enumerated would describe a different operation.
       arrive(0, []);
 
       lookUp('sm');
@@ -2235,9 +1735,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('offers no pager, because walking the match set is what the operator no longer has to do', () => {
-      // MIGRATION: `securityroles.ascx` declares no pager on this control at all. A pager would also
-      // reintroduce exactly the ambiguity the walk removes — a window with page controls is what a
-      // truncated answer looks like — so the totals are stated in words instead.
       arrive(0, []);
 
       lookUp('sm');
@@ -2246,9 +1743,6 @@ describe('RoleAssignmentComponent', () => {
 
       expect(queryAll('app-pagination')).withContext('the shared pager').toHaveSize(0);
 
-      // And nothing hand-rolled stands in for one. Every control inside the account field is either
-      // one of the offered accounts or part of the shared search box itself — the search box's own
-      // submit button is why this is filtered by ancestry rather than counted outright.
       const strays = queryAll<HTMLButtonElement>('app-form-field button').filter(
         (control) =>
           control.classList.contains('role-assignment__match-action') === false &&
@@ -2260,11 +1754,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('follows page after page until it finds the exact account, which one page would have missed', () => {
-      // ⚠ THE DEFECT THIS SCREEN WAS CORRECTED FOR, stated as a case. The lookup read page zero
-      // alone, so an account was selectable only when it happened to fall in the first page of
-      // everything sharing its prefix. Here 'sm' matches 250 accounts and 'smithson' is the 201st,
-      // so the old behaviour could not reach it at ANY page size the paging rules allow - and an
-      // account that cannot be selected cannot be enrolled, which is the whole purpose of the screen.
+      // ⚠ THE DEFECT THIS SCREEN WAS CORRECTED FOR, stated as a case. The lookup read page zero alone, so
+      // an account was selectable only when it happened to fall in the first page of everything sharing its
+      // prefix.
       arrive(0, []);
 
       lookUp('smithson');
@@ -2285,9 +1777,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('stops the moment the exact account is in hand, however many pages remain', () => {
-      // Once the named account is found nothing a later page could carry would improve the answer, so
-      // every remaining request would be work nobody needed. The server reports 250 matches and only
-      // one page is asked for.
       arrive(0, []);
 
       lookUp('ada');
@@ -2300,10 +1789,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('does NOT treat a page shorter than requested as the end of the match set', () => {
-      // ⚠ THE TERMINATION RULE, AND THE ONE THAT IS EASY TO GET WRONG. A short page is what a
-      // filtered listing produces mid-set, so ending on it is precisely how a truncated answer
-      // passes for a complete one. The server's own total is what ends the walk: three matches are
-      // reported, the first page carries one, and the walk asks again.
+      // ⚠ THE TERMINATION RULE, AND THE ONE THAT IS EASY TO GET WRONG. A short page is what a filtered
+      // listing produces mid-set, so ending on it is precisely how a truncated answer passes for a complete
+      // one.
       arrive(0, []);
 
       lookUp('sm');
@@ -2327,9 +1815,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('ends the walk on an empty page rather than asking for the same total for ever', () => {
-      // A server that reports more matches than it will supply cannot be waited out: an empty page
-      // can only be followed by another empty one. What was gathered is every account it was willing
-      // to supply for this name, so it is published rather than refused.
       arrive(0, []);
 
       lookUp('sm');
@@ -2344,10 +1829,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('matches the exact account without regard to case, the way the legacy lookup did', () => {
-      // MIGRATION: `GetUserByName` at `SecurityRoles.ascx.vb:L480` resolved through a SQL Server
-      // lookup under the database's own collation, which for a default installation does not
-      // distinguish case - so an operator who typed 'Ada' found 'ada'. A case-sensitive test here
-      // would refuse a name the legacy screen accepted, and would keep walking past the answer.
       arrive(0, []);
 
       lookUp('ADA');
@@ -2361,8 +1842,8 @@ describe('RoleAssignmentComponent', () => {
 
     it('reports the server\u2019s own total when more accounts match than it can offer', () => {
       // The walk examines the whole match set; only so many of it can reasonably become buttons. The
-      // difference is STATED rather than hidden, because the shorter list would otherwise read as the
-      // whole answer - which is the same misreading the first-page-only read invited.
+      // difference is STATED rather than hidden, because the shorter list would otherwise read as the whole
+      // answer - which is the same misreading the first-page-only read invited.
       arrive(0, []);
 
       lookUp('sm');
@@ -2379,10 +1860,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('offers the exact account even when it falls beyond what can be shown', () => {
-      // ⚠ THE UNREACHABLE-ACCOUNT DEFECT, ONE LAYER UP. The walk stops on the page holding the exact
-      // name, so a name found on the third page would be examined and then dropped from the very
-      // list it ended the search. It is hoisted to the FRONT instead, and the note says how many
-      // were examined.
       arrive(0, []);
 
       lookUp('smithson');
@@ -2402,18 +1879,18 @@ describe('RoleAssignmentComponent', () => {
 
       expect(offered).toHaveSize(100);
       expect(offered[0].username).withContext('hoisted to the front').toBe('smithson');
-      // The SERVER'S total is reported — 400 match, 100 are offered — not the 300 the walk happened
-      // to examine before the exact name ended it. And the wording drops the "type more of the name"
-      // advice, which would be advice against a search that already succeeded exactly.
+      // The SERVER'S total is reported — 400 match, 100 are offered — not the 300 the walk happened to
+      // examine before the exact name ended it. And the wording drops the "type more of the name" advice,
+      // which would be advice against a search that already succeeded exactly.
       expect(textIn(query('.role-assignment__lookup-note')).trim()).toBe(
         'The exact match is offered first. Showing 100 of 400 matching accounts.',
       );
     });
 
     it('abandons a walk in flight when a newer term supersedes it, rather than paging on', () => {
-      // A walk nobody is waiting for is a sequence of requests the tenant pays for, and its answer
-      // would repopulate a list the operator has already replaced. With a walk rather than a single
-      // read this matters more than it did: the abandoned one would keep asking for pages.
+      // A walk nobody is waiting for is a sequence of requests the tenant pays for, and its answer would
+      // repopulate a list the operator has already replaced. With a walk rather than a single read this
+      // matters more than it did: the abandoned one would keep asking for pages.
       arrive(0, []);
 
       lookUp('sm');
@@ -2422,9 +1899,9 @@ describe('RoleAssignmentComponent', () => {
       // Page one is outstanding for 'sm' when the narrower term arrives.
       lookUp('smithson');
 
-      // ⚠ A CANCELLED REQUEST IS STILL A MATCHABLE ONE, so the proof is the cancellation flag rather
-      // than a count: the testing backend marks an abandoned request cancelled and leaves it in its
-      // open set. Both are claimed here, in the order they were issued.
+      // ⚠ A CANCELLED REQUEST IS STILL A MATCHABLE ONE, so the proof is the cancellation flag rather than a
+      // count: the testing backend marks an abandoned request cancelled and leaves it in its open set. Both
+      // are claimed here, in the order they were issued.
       const [abandoned, restarted] = httpMock.match(
         (candidate) =>
           candidate.method === 'GET' &&
@@ -2432,7 +1909,6 @@ describe('RoleAssignmentComponent', () => {
           candidate.params.get('query') !== null,
       );
 
-      // The superseded walk's page ONE is the request that was in flight, and it is dead.
       expect(lookupTerms(abandoned)['query'])
         .withContext('the superseded term')
         .toBe('sm');
@@ -2460,11 +1936,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('says the search was cut short rather than passing a partial sweep off as complete', () => {
-      // The ceiling is a REPORTED stop rather than a refusal, and the asymmetry with the store's
-      // walks is deliberate: those answer "every module" and "every membership", where a partial
-      // answer masquerading as complete is the defect. This one answers "does this name exist",
-      // where what was examined is genuinely useful and the operator's next move - typing more of
-      // the name - is both obvious and offered.
       arrive(0, []);
 
       lookUp('s');
@@ -2486,17 +1957,6 @@ describe('RoleAssignmentComponent', () => {
   });
 
   describe("the tenant's account-selection policy", () => {
-    /**
-     * MIGRATION: `Security_UsersControl`, read at `SecurityRoles.ascx.vb:L133-L136` and acted on at
-     * `:L202-L221`. `UsersControl.Combo` bound `cboUsers` to the tenant's whole account listing and
-     * hid the name box; the other value did the reverse. `:L106-L109` then read the chosen account
-     * from whichever control was live.
-     *
-     * The setting was previously read, written and validated end to end and then consumed by
-     * nothing — a screen that offered the name box whatever the tenant chose. Every case here is
-     * about the consumption.
-     */
-
     /** The account dropdown, or `null` when the name box is what is rendered. */
     function choices(): HTMLSelectElement | null {
       return query<HTMLSelectElement>('select.role-assignment__choices');
@@ -2524,10 +1984,6 @@ describe('RoleAssignmentComponent', () => {
       (control as HTMLSelectElement).dispatchEvent(new Event('change'));
       fixture.detectChanges();
 
-      // ⚠ CHOOSING FROM THE DROPDOWN RESOLVES EXACTLY AS THE NAME-BOX PATH DOES: from the rendered
-      // rows, or from a listing whose published total is fully rendered, and only otherwise with one
-      // keyed probe addressed at the PAIRING rather than by narrowing the listing with a login name.
-      // Releasing a choice asks nothing either way.
       const probes: readonly TestRequest[] = httpMock.match(isMembershipProbe);
 
       if (probes.length === 0) {
@@ -2566,16 +2022,7 @@ describe('RoleAssignmentComponent', () => {
       ]);
 
       expect(choices()).withContext('the dropdown').not.toBeNull();
-      // ⚠ AND THE NAME BOX IS GONE. The legacy screen hid one control when it showed the other
-      // (`:L206` and `:L214`), so offering both would be a screen the legacy never rendered.
       expect(nameBox()).withContext('the name box').toBeNull();
-      // ⚠ AN ACCOUNT THAT ALREADY HOLDS THE ROLE IS ANNOTATED RATHER THAN WITHHELD, and both halves of
-      // that are deliberate. `SecurityRoles.ascx.vb:L204` filled this list from
-      // `UserController.GetUsers(PortalId, False)` with NO membership exclusion, and choosing an
-      // existing member is a supported workflow rather than a mistake - it is how the legacy screen
-      // amended a membership's bounds (`:L273-L303` prefills them from the existing row). Withholding
-      // those accounts would delete that workflow. What was genuinely wrong was that the list said
-      // nothing: `ada` holds this role and was offered indistinguishably from `grace`, who does not.
       expect(choiceLabels()).toEqual([
         USER_CHOICE_PROMPT,
         'Ada Lovelace (ada) — already in this role',
@@ -2584,9 +2031,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('describes the dropdown with its own help, not the name box\u2019s instruction', () => {
-      // MIGRATION: `plUsers.HelpText` says 'Enter The User Name and click Validate to confirm',
-      // which is untrue of a dropdown. The legacy screen carried one help string for both controls
-      // only because both shared one label cell (`securityroles.ascx:L14`).
       create('0', { usersControl: USERS_CONTROL_COMBO });
       answerRole(role(0));
       answerMemberships(0, [membership()]);
@@ -2617,18 +2061,14 @@ describe('RoleAssignmentComponent', () => {
       expect(component().accountChoices()).toHaveSize(150);
       expect(choiceLabels()).toHaveSize(151);
 
-      // ⚠ AND NO SORT IS ASKED FOR, unlike the lookup's request. The listing's default orders by
-      // DISPLAY name, which is what these entries are captioned with, so they read in the order they
-      // are shown; asking for the lookup's login-name order would sort the list by a value the
-      // operator cannot see.
+      // ⚠ AND NO SORT IS ASKED FOR, unlike the lookup's request. The listing's default orders by DISPLAY
+      // name, which is what these entries are captioned with, so they read in the order they are shown;
+      // asking for the lookup's login-name order would sort the list by a value the operator cannot see.
       expect(first.request.params.get('sortBy')).toBeNull();
       expect(first.request.params.get('userName')).toBeNull();
     });
 
     it('chooses an account from the dropdown and prefills its window', () => {
-      // MIGRATION: `cboUsers` carried `autopostback="True"` (`securityroles.ascx:L26`), so choosing an
-      // entry round-tripped the whole page to reach the prefill at `:L273-L303`. It happens without
-      // one, from the memberships already in hand.
       const held = membership({
         userId: 42,
         effectiveDate: `${EFFECTIVE_DATE}T00:00:00Z`,
@@ -2641,10 +2081,7 @@ describe('RoleAssignmentComponent', () => {
       answerAccountChoicesPage([account({ userId: 42 })]);
 
       // ⚠ THE PREFILL COMES FROM THE KEYED PROBE, NOT FROM A WHOLE-SET READ, and that is the point of
-      // passing the membership here. Reading a role's entire membership was WITHDRAWN — it retained
-      // the whole set and re-read it on every write — so the rows in hand are one page and the
-      // account chosen from a dropdown of every account may well not be on it. The probe asks the one
-      // narrow question the prefill needs, and it is bounded to a single request.
+      // passing the membership here.
       chooseFromDropdown('42', [held]);
 
       expect(component().formState().userId).toBe(42);
@@ -2691,9 +2128,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('offers neither control until the policy has answered', () => {
-      // The legacy screen decided during page load and rendered exactly one control, so it never had
-      // this state. Reproducing that means HOLDING the field rather than guessing and correcting -
-      // a control swapped underneath an operator mid-interaction is worse than a moment's wait.
       fixture = TestBed.createComponent(RoleAssignmentComponent);
       fixture.componentRef.setInput('roleId', '0');
       fixture.detectChanges();
@@ -2711,16 +2145,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('withholds the dropdown from a tenant above the threshold even when it asks for one', () => {
-      // ⚠ THE FINDING THIS CASE EXISTS FOR. A stored `Security_UsersControl` of `Combo` used to be
-      // taken as the last word, so the screen walked every account the tenant held to fill a
-      // `<select>` — and the only bound on that walk was a page ceiling two orders of magnitude past
-      // the size at which the legacy framework itself stopped offering the control. A performance
-      // review measured it as the one unbounded read on this screen.
-      //
-      // The threshold is not a default a setting replaces. `UserModuleBase.vb:L178-L186` enforced it
-      // by WRITING the name box back as the tenant's setting the first time the count exceeded it, so
-      // a tenant whose stored preference predates its growth is exactly the case the legacy handled
-      // and this screen did not.
       create('0', { usersControl: USERS_CONTROL_COMBO, accountCount: LEGACY_ACCOUNT_LISTING_CEILING + 1 });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2729,8 +2153,8 @@ describe('RoleAssignmentComponent', () => {
       expect(nameBox()).withContext('the name box').not.toBeNull();
       expect(choices()).withContext('the dropdown').toBeNull();
 
-      // ⚠ AND NOTHING IS WALKED. Bounding the walk would have limited the damage; not walking at all
-      // is the fix, and this is the assertion that tells the two apart.
+      // ⚠ AND NOTHING IS WALKED. Bounding a walk would limit the damage; not walking at all is the
+      // property, and this is the assertion that tells the two apart.
       httpMock.expectNone(
         (candidate) =>
           candidate.method === 'GET' &&
@@ -2742,8 +2166,8 @@ describe('RoleAssignmentComponent', () => {
 
     it('honours a stored dropdown preference at the threshold itself, matching the legacy comparison', () => {
       // ⚠ THE BOUNDARY, AND IT IS THE LEGACY'S OWN. The legacy test was `> 1000`, so a tenant holding
-      // exactly one thousand accounts kept the drop-down. An off-by-one here would take the control
-      // away from a real site that the legacy served.
+      // exactly one thousand accounts kept the drop-down. An off-by-one here would take the control away
+      // from a real site that the legacy served.
       create('0', { usersControl: USERS_CONTROL_COMBO, accountCount: LEGACY_ACCOUNT_LISTING_CEILING });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2756,11 +2180,8 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('offers neither control while the count a stored dropdown preference depends on is outstanding', () => {
-      // The control must not be rendered and then exchanged underneath an operator who has already
-      // started using it. A stored preference for the drop-down now depends on the count, so the field
-      // is held through that read exactly as it is held through the policy read — and the walk waits
-      // too, because a walk started on the optimistic reading would enumerate a tenant the count is
-      // about to disqualify.
+      // The control must not be rendered and then exchanged underneath an operator who has already started
+      // using it.
       fixture = TestBed.createComponent(RoleAssignmentComponent);
       fixture.componentRef.setInput('roleId', '0');
       fixture.detectChanges();
@@ -2791,24 +2212,12 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('bounds the eagerly materialised choice list by the legacy enumeration threshold', () => {
-      // ⚠ THE CEILING IS DERIVED, NOT CHOSEN, and this case pins the derivation. It was one thousand
-      // PAGES — a hundred thousand accounts at the server's maximum page size — which permitted a
-      // thousand sequential requests and a hundred thousand retained rows to fill a control the legacy
-      // stopped offering at one thousand accounts. It is now exactly that threshold expressed in
-      // pages, so the walk can never materialise more than the legacy screen was itself willing to.
       expect(ACCOUNT_CHOICE_PAGE_CEILING * Number(LOOKUP_PAGE_SIZE)).toBe(
         LEGACY_ACCOUNT_LISTING_CEILING,
       );
     });
 
     it('applies the legacy account-count default when the policy cannot be read, offering the DROPDOWN', () => {
-      // ⚠ THIS CASE PREVIOUSLY ASSERTED THE NAME BOX, AND THE ASSERTION WAS THE DEFECT. It reasoned
-      // that the name box is the affordance that survives an unreadable policy, which is true of the
-      // read but not of the DECISION: `UserModuleBase.vb:L178-L183` resolved an absent
-      // `Security_UsersControl` from the tenant's account count and defaulted to the drop-down at or
-      // below one thousand accounts. `GET /api/v1/users/settings` answers 404 permanently on a tenant
-      // with no User Accounts module instance, so the screen offered the wrong control on every visit
-      // to such a site — not once, and not transiently.
       create('0', { usersControl: null });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2867,9 +2276,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('falls back to the name box when the count itself cannot be read, and says why', () => {
-      // The decision cannot be made at all, which is the one case where the operator is looking at a
-      // control the site's own settings may say should not be there. That is what the sentence
-      // explains, and it is a different sentence from the size one because nothing is broken there.
       create('0', { usersControl: null });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2882,9 +2288,9 @@ describe('RoleAssignmentComponent', () => {
         ACCOUNT_POLICY_UNAVAILABLE,
       );
 
-      // A refusal must not be retried on every notification: the probe fires once. Any lookup the
-      // blank search dispatched is drained first, so what remains outstanding is only what the effect
-      // itself issued.
+      // A refusal must not be retried on every notification: the probe fires once. Any lookup the blank
+      // search dispatched is drained first, so what remains outstanding is only what the effect itself
+      // issued.
       component().onUserSearch('');
       fixture.detectChanges();
       httpMock.match(
@@ -2904,9 +2310,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('offers NEITHER control while the fallback count is outstanding', () => {
-      // The policy has answered - with nothing - so the count is what decides, and until it settles
-      // the answer is genuinely unknown. Holding the field is what stops a control being offered and
-      // then exchanged for the other underneath an operator already typing into it.
+      // The policy has answered - with nothing - so the count is what decides, and until it settles the
+      // answer is genuinely unknown. Holding the field is what stops a control being offered and then
+      // exchanged for the other underneath an operator already typing into it.
       create('0', { usersControl: null });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2939,10 +2345,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('falls back to the name box when the account list cannot be completed, and says why', () => {
-      // ⚠ A REFUSAL RATHER THAN A TRUNCATION, and the remedy is what makes the refusal affordable.
-      // A dropdown claiming to hold every account while holding some of them hides the ones it
-      // dropped; the name box reaches any account by name, so nothing the operator could do with a
-      // complete dropdown is lost.
       create('0', { usersControl: USERS_CONTROL_COMBO });
       answerRole(role(0));
       answerMemberships(0, []);
@@ -2976,9 +2378,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('walks the account list ONCE, not again for every notification the screen raises', () => {
-      // The walk is triggered from a derived view, so it has to fire on the policy arriving and not
-      // on every unrelated settling. Proven by moving the screen to another role - tenant-scoped
-      // state is deliberately kept across that - and asserting no second walk.
+      // The walk is triggered from a derived view, so it has to fire on the policy arriving and not on
+      // every unrelated settling. Proven by moving the screen to another role - tenant-scoped state is
+      // deliberately kept across that - and asserting no second walk.
       create('0', { usersControl: USERS_CONTROL_COMBO });
       answerRole(role(0));
       answerMemberships(0, [membership()]);
@@ -2996,19 +2398,11 @@ describe('RoleAssignmentComponent', () => {
     });
   });
 
-
   describe("the action's wording", () => {
     /**
-     * MIGRATION: only ONE of the two legacy relabel branches is live in this mode.
-     * `SecurityRoles.ascx.vb:L650` tested the ROLE identifier against the null sentinel, which is
-     * false here, so `:L651-L653` was dead code on this screen. `:L656` tested the ACCOUNT identifier,
-     * which is true here, and `:L657-L658` is the branch that ran — it relabelled the action to
-     * `UpdateRole.Text` when a row's account matched the chosen one.
-     *
-     * MIGRATION: the fact is read from the SERVER'S answer about the chosen account rather than by
-     * scanning the rendered rows. The legacy grid held every membership, so "a rendered row matches"
-     * and "the account holds this role" were the same statement; with one page rendered they are not,
-     * and scanning the page would relabel the action according to which page happens to be on screen.
+     * Only ONE of the two legacy relabel branches is live in this mode. `SecurityRoles.ascx.vb:L650`
+     * tested the ROLE identifier against the null sentinel, which is false here, so `:L651-L653` was dead
+     * code on this screen.
      */
     it("becomes 'Update User Role' once the chosen account already holds the role", () => {
       const held = membership({ userId: 42 });
@@ -3044,9 +2438,6 @@ describe('RoleAssignmentComponent', () => {
 
       const text: string = textIn(host());
 
-      // 'Add Role' is the design-time `cmdAdd.Text` default in the markup and 'Add Role to User'
-      // belongs to the account-centric half of the legacy control, which is out of scope — there is no
-      // roles-held-by-one-account endpoint declared anywhere in this application.
       expect(text).not.toContain('Add Role');
       expect(text).not.toContain('Add Role to User');
       expect(text).not.toContain('Manage Roles for User');
@@ -3058,11 +2449,6 @@ describe('RoleAssignmentComponent', () => {
   // -------------------------------------------------------------------------------------------------
 
   describe('adding a membership', () => {
-    /**
-     * ⚠ THE CONTRACT'S OWN ANSWER IS `204` WITH NO BODY. `RoleService.assignUser` is typed
-     * `Observable<void>` and the controller declares no content, because an assignment is an EDGE
-     * between two existing resources rather than a new resource of its own.
-     */
     it('posts the four declared members and accepts 204 with no body at all', () => {
       arriveAndChoose();
 
@@ -3084,36 +2470,20 @@ describe('RoleAssignmentComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // MIGRATION: the listing is RE-READ, reproducing the unconditional rebind at
-      // `SecurityRoles.ascx.vb:L546`. ONE page read, issued by the store, and NOTHING ELSE: those rows
-      // carry the membership the pairing probe used to be asked for, so they are what moves the action's
-      // wording from an addition to a replacement.
       answerMemberships(0, [membership()]);
       expectNoReprobe();
 
       expect(component().actionLabel()).toBe(UPDATE_USER_ROLE_LABEL);
       expect(rows()).toHaveSize(1);
-      // ⚠ THE ADDITION IS ANNOUNCED, AND IT NAMES BOTH PARTIES. This case previously asserted that
-      // NOTHING was said - which was faithful to a legacy screen that answered every write with a full
-      // page reload, and indefensible in a document that does not reload: the row appeared in a grid
-      // that may be scrolled out of view, and a role's own create, update and delete all announced
-      // themselves. The wording is chosen from the state captured AT DISPATCH, so an addition reads as
-      // an addition even though the same write leaves the screen in the amend state afterwards.
       expect(notifications()).toEqual([
         { severity: 'success', message: 'Ada Lovelace was added to the Administrators role.' },
       ]);
     });
 
     it('RE-BASELINES the two bounds from the stored membership once the write has settled', () => {
-      // ⚠ THE STATE THE AMEND COMMAND WOULD HAVE WRITTEN. A successful addition leaves this screen in
-      // the amend state - the command reads "Update User Role", because the chosen account now holds the
-      // role - while the boxes still held whatever was typed before the write. With the expiry left
-      // empty that is not merely stale, it is DESTRUCTIVE: the server derives a bound of its own
-      // (`RoleController.vb:L493-L501` back-dates a used trial, and the paid-term rules set one
-      // otherwise), so pressing the amend command from an empty box would have written the derived bound
-      // away without the operator ever seeing it existed.
-      //
-      // The re-read that follows every write carries the stored row, so the bounds are taken from it.
+      // ⚠ THE STATE THE AMEND COMMAND WOULD HAVE WRITTEN. A successful addition leaves this screen in the
+      // amend state - the command reads "Update User Role", because the chosen account now holds the role -
+      // while the boxes still held whatever was typed before the write.
       arriveAndChoose(0, []);
 
       // Nothing typed: the operator is enrolling somebody and letting the server decide the window.
@@ -3169,18 +2539,10 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ AND A `201` WITH A BODY LANDS ON THE SAME SUCCESS PATH.
-     *
-     * The legacy write was an UPSERT: `RoleController.vb:L503` seeds the assignment identifier with the
-     * null-integer sentinel and `:L550-L555` branches `If UserRoleId <> -1 Then` to UPDATE the
-     * existing row, otherwise calling `AddUserRole`. The screen therefore inspects no status at all,
-     * which is exactly what makes it tolerant of either answer — asserting on the status would be this
-     * client re-deriving a fact the server chose not to publish.
-     *
-     * ⚠ A NUANCE WORTH KNOWING RATHER THAN CODING AROUND: `RoleController.vb:L647-L663` logged the
-     * event and sent the notification ONLY when the membership was new (`:L655` tests
-     * `If objUserRole Is Nothing Then`), so an update was silent on the server side. That asymmetry
-     * lives on the server; this screen treats both outcomes alike.
+     * ⚠ AND A `201` WITH A BODY LANDS ON THE SAME SUCCESS PATH. The legacy write was an UPSERT:
+     * `RoleController.vb:L503` seeds the assignment identifier with the null-integer sentinel and
+     * `:L550-L555` branches `If UserRoleId <> -1 Then` to UPDATE the existing row, otherwise calling
+     * `AddUserRole`.
      */
     it('accepts a 201 carrying a body just as readily, because the write is an upsert', () => {
       arriveAndChoose();
@@ -3209,11 +2571,6 @@ describe('RoleAssignmentComponent', () => {
       const notify = query<HTMLInputElement>(`#${NOTIFY_CONTROL_ID}`);
 
       expect(notify).withContext('the notification choice is still shown').not.toBeNull();
-      // ⚠ UNTICKED AND DISABLED, DEPARTING FROM THE MEASURED INITIAL STATE DELIBERATELY.
-      // `securityroles.ascx:L49` declares `chkNotify` with `Checked="True"` and its true value reached
-      // a routine that mailed the account holder (`SecurityRoles.ascx.vb:L542`). This migration
-      // excludes the mail subsystem wholesale, so leaving it ticked would let an operator ask for a
-      // notification, receive a success, and reasonably believe one had gone out.
       expect((notify as HTMLInputElement).checked).withContext('unticked').toBeFalse();
       expect((notify as HTMLInputElement).disabled).withContext('and not offered').toBeTrue();
 
@@ -3254,8 +2611,8 @@ describe('RoleAssignmentComponent', () => {
     /**
      * ⚠ THE KEYS ARE .NET MODEL-STATE KEYS AND ARE **NOT** CAMEL-CASED, so the fixture spells one in
      * Pascal case exactly as the server does. They are read with an INDEX EXPRESSION because the error
-     * map is an index signature and `noPropertyAccessFromIndexSignature` is enabled — a dotted read
-     * would not compile.
+     * map is an index signature and `noPropertyAccessFromIndexSignature` is enabled — a dotted read would
+     * not compile.
      */
     it('shows a per-field server message beside the field the server named', () => {
       arriveAndChoose();
@@ -3323,11 +2680,8 @@ describe('RoleAssignmentComponent', () => {
 
       const call = expectRequest('DELETE', memberUrl(0, 42), 'the removal');
 
-      // The membership is addressed by BOTH identities, because that pair IS the membership: the role
-      // alone names everybody in it and the account alone names every role they hold. The legacy grid
-      // declared `datakeyfield="UserRoleID"` at `securityroles.ascx:L56` and then OVERRODE it to
-      // `"UserId"` at runtime (`SecurityRoles.ascx.vb:L244`), which is why the address is keyed by the
-      // account while the row's own identity remains the assignment key.
+      // The membership is addressed by BOTH identities, because that pair IS the membership: the role alone
+      // names everybody in it and the account alone names every role they hold.
       expect(call.request.url).toBe('/api/v1/roles/0/users/42');
       expect(query('.confirm-dialog')).withContext('no modal sits over a request').toBeNull();
 
@@ -3337,29 +2691,14 @@ describe('RoleAssignmentComponent', () => {
       answerMemberships(0, []);
 
       expect(rows()).withContext('the membership is gone').toHaveSize(0);
-      // ⚠ THE REMOVAL IS ANNOUNCED. The row vanishing is the only other evidence, and a row vanishing
-      // from a grid is exactly what a mis-click looks like; the sentence names WHO left WHICH role, and
-      // it is composed from the row that was removed rather than from the rows that remain, because by
-      // this point the removed row is gone from both the screen and the store.
       expect(notifications()).toEqual([
         { severity: 'success', message: 'Ada Lovelace was removed from the Administrators role.' },
       ]);
     });
 
     /**
-     * ⚠⚠ THE SPECIFICATION AN OPTIMISTIC IMPLEMENTATION CANNOT PASS.
-     *
-     * `RoleController.vb:L493-L501` is the whole of it. `:L494` tests
-     * `userRole IsNot Nothing AndAlso userRole.ServiceFee > 0.0 AndAlso userRole.IsTrialUsed`; when
-     * that holds, `:L496` back-dates the expiry bound by one day and `:L497` calls
-     * `provider.UpdateUserRole(userRole)` — AN UPDATE, NOT A REMOVAL, precisely so the trial-used fact
-     * survives — and only otherwise does `:L500` call `DeleteUserRole`. The wire status is `204` either
-     * way and carries no body to tell them apart.
-     *
-     * So the screen must ASK AGAIN rather than splice the row out locally: a membership that still
-     * exists would vanish from the screen, which is a correctness defect and not a cosmetic one. The
-     * second `GET` below is that proof, and `httpMock.verify()` in `afterEach` is what makes its
-     * ABSENCE fail rather than pass.
+     * ⚠⚠ THE SPECIFICATION AN OPTIMISTIC IMPLEMENTATION CANNOT PASS. `RoleController.vb:L493-L501` is the
+     * whole of it.
      */
     it('re-reads after a 204 and still renders a membership the server merely EXPIRED', () => {
       const paid = membership({ userRoleId: 11, userId: 42, expiryDate: null });
@@ -3387,11 +2726,8 @@ describe('RoleAssignmentComponent', () => {
       expect(rows()).withContext('the row STILL EXISTS').toHaveSize(1);
       expect(component().assignments()[0]?.userRoleId).toBe(11);
 
-      // ⚠ THE ASSERTION WAS `toBe(BACKDATED_EXPIRY_RENDERED)` AND IS NOW `toContain`, BECAUSE R-M24
-      // ADDED A QUALIFIER TO EXACTLY THIS CASE — and that makes the case stronger rather than weaker.
-      // A back-dated bound is the clearest example of the state R-M24 exists to reveal: the row is
-      // still present and the account no longer holds the role, which is a distinction the legacy grid
-      // could not draw at all. The DATE is still asserted exactly, so the formatter is still pinned.
+      // ⚠ THE ASSERTION WAS `toBe(BACKDATED_EXPIRY_RENDERED)` AND IS NOW `toContain`, BECAUSE R-M24 ADDED A
+      // QUALIFIER TO EXACTLY THIS CASE — and that makes the case stronger rather than weaker.
       expect(cellsOf(rows()[0])[3]).toContain(BACKDATED_EXPIRY_RENDERED);
       expect(cellsOf(rows()[0])[3])
         .withContext('a bound the server put behind us reads as lapsed, not as ordinary')
@@ -3411,20 +2747,8 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ THE ORDER IS LOAD-BEARING. `SecurityRoles.ascx.vb:L579-L580` sets `EditItemIndex = -1` and
-     * calls `BindGrid()` UNCONDITIONALLY, and only then does `:L582-L584` raise the message. A refusal
-     * was therefore read against a REFRESHED grid, so the message is deferred here until the re-read
-     * has settled — asserted below by the announcement queue being empty before the read is answered
-     * and populated afterwards.
-     *
-     * ⚠ AND THE SEVERITY IS A WARNING, NOT AN ERROR. `role_assignment.protected` is the one member of
-     * the shared conflict vocabulary that arrives as `403` rather than `409` — the vocabulary records
-     * that inline — and `problemSeverity` maps `403` to a warning. The legacy screen raised this
-     * sentence as a red error at `:L583` while presenting an access refusal as a yellow warning
-     * (`AccessDenied.ascx.vb:L43` and `:L45`); this API routes the refusal through the access status,
-     * so the shared summariser's severity applies and the WORDING is what carries the legacy meaning.
-     * Taking the severity from one place rather than hard-coding it here is what stops one decision
-     * having two homes that can disagree.
+     * ⚠ THE ORDER IS LOAD-BEARING. `SecurityRoles.ascx.vb:L579-L580` sets `EditItemIndex = -1` and calls
+     * `BindGrid()` UNCONDITIONALLY, and only then does `:L582-L584` raise the message.
      */
     it('re-reads BEFORE announcing a protected membership, with the legacy wording', () => {
       arrive(0, [membership({ userId: 42 })]);
@@ -3475,10 +2799,7 @@ describe('RoleAssignmentComponent', () => {
     it('QUOTES the support reference the refusal document carried', () => {
       // ⚠ THIS SCREEN DEFERS ITS ANNOUNCEMENTS, AND THE DEFERRAL IS WHERE THE IDENTIFIER WAS LOST. A
       // message here is not raised when the failure is observed - it is described into a notice, held until
-      // the re-read settles, and raised afterwards, so the notice is the only thing that travels. It carried
-      // a severity and a sentence and nothing else, so the identifier the server recorded the refusal under
-      // was discarded at the moment of description, before any call was made. The notice now carries it as a
-      // required member, which is what makes a new producer state its answer rather than inherit silence.
+      // the re-read settles, and raised afterwards, so the notice is the only thing that travels.
       arrive(7, [membership({ userId: 42, roleId: 7 })]);
 
       press(DELETE_LABEL);
@@ -3502,10 +2823,6 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('quotes NO reference when the refusal document carried none', () => {
-      // The other half of the rule. A reference is quoted because the answer HAD one, never as decoration -
-      // so a document without a correlation identifier must announce its outcome and quote nothing.
-      // Without this case the one above could be satisfied by inventing an identifier, which would hand
-      // support a reference it cannot find.
       arrive(7, [membership({ userId: 42, roleId: 7 })]);
 
       press(DELETE_LABEL);
@@ -3573,27 +2890,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * MIGRATION: this is `DeleteButtonVisible` from `SecurityRoles.ascx.vb:L360-L363`, bound per row at
-     * `securityroles.ascx:L68` with the source's own note at `:L62` — "[DNN-4285] Hide the button if
-     * the user cannot be removed from the role". It delegated to
-     * `RoleController.CanRemoveUserFromRole`, whose whole body is one expression at
-     * `RoleController.vb:L745`: a membership may not be removed when it is the designated
-     * administrator's hold on the administrator role, nor when the role is the registered-users role.
-     * The legacy source carried that rule TWICE, in two bodies with a comment at `:L743` admitting the
-     * duplication.
-     *
-     * ⚠ THE AFFORDANCE IS ADVISORY AND THE SERVER IS AUTHORITATIVE, which is precisely why the refusal
-     * cases above also exist: the tenant facts this rule needs are inputs, and when they are absent
-     * the command is offered and the write is refused with a machine-readable code.
-     *
-     * ⚠ ASSERTED ON THE VISIBLE WORD — the global `cmdDelete.Text` — AND ON THE ELEMENT, never on a
-     * CSS class. A class is a styling decision that may be renamed without changing behaviour.
-     *
-     * This comment used to call the assertion below an accessible-name check. It is not, and the
-     * distinction became load-bearing once the command gained an `aria-label`: `textContent` is the
-     * PAINTED word, and an `aria-label` replaces the accessible name without touching it. Both are
-     * contracts and both are now asserted — the painted word here, the accessible name in the test that
-     * follows.
+     * This is `DeleteButtonVisible` from `SecurityRoles.ascx.vb:L360-L363`, bound per row at
+     * `securityroles.ascx:L68` with the source's own note at `:L62` — "[DNN-4285] Hide the button if the
+     * user cannot be removed from the role".
      */
     it('hides the command on the protected row of a two-row listing, and keeps the other', () => {
       arrive(
@@ -3623,22 +2922,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     it('names each removal command after the account it removes, so two are never confusable', () => {
-      /*
-       * ⚠ THE DEFECT THIS PINS WAS MEASURED FROM THE ACCESSIBILITY TREE, not inferred. Both removal
-       * commands on the fixture computed the byte-identical name "Delete", with `aria-label`, `title` and
-       * `aria-describedby` all null, so a screen-reader user heard "Delete, button ... Delete, button" and
-       * could not tell which membership each one ended — on an action that cannot be undone.
-       *
-       * This application already names row commands after their subject everywhere else it renders one: the
-       * roles listing computes "Delete Administrators", the portals listing "Delete FIX010 Verify Portal".
-       * This screen was the exception, which made it an inconsistency rather than a considered choice, and
-       * the review named the class explicitly — two control pairs sharing one label in a way an automated
-       * checker cannot detect.
-       *
-       * THE PAINTED WORD MUST NOT CHANGE. The legacy button read the global `cmdDelete.Text` and still
-       * does; only the accessible name is qualified. Both halves are asserted, because a fix that silently
-       * rewrote the visible label would be a different and unwanted change.
-       */
+      // ⚠ THE DEFECT THIS PINS WAS MEASURED FROM THE ACCESSIBILITY TREE, not inferred. Both removal
+      // commands on the fixture computed the byte-identical name "Delete", with `aria-label`, `title` and
+      // `aria-describedby` all null, so a screen-reader user heard "Delete, button ...
       arrive(
         0,
         [
@@ -3683,17 +2969,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ R-M24: THE WHOLE COLUMN GOES, NOT JUST THE COMMANDS INSIDE IT.
-     *
-     * `RoleController.vb:L745` forbids removal from the registered-users role for EVERY account, so
-     * leaving the column in place produced a heading over a hundred and twenty empty cells — measured
-     * at runtime. The heading is CLIPPED rather than painted, so a sighted reader saw an unexplained
-     * empty track while a screen-reader user was told the listing has a `Delete` column that never
-     * holds a command.
-     *
-     * Withholding a column outright is THIS SCREEN'S OWN LEGACY BEHAVIOUR:
-     * `SecurityRoles.ascx.vb:L245` is `Columns(2).Visible = False`, dropping the security-role column
-     * in exactly this mode because every row belonged to the one role already named in the heading.
+     * ⚠ R-M24: THE WHOLE COLUMN GOES, NOT JUST THE COMMANDS INSIDE IT. `RoleController.vb:L745` forbids
+     * removal from the registered-users role for EVERY account, so leaving the column in place produced a
+     * heading over a hundred and twenty empty cells — measured at runtime.
      */
     it('emits no removal column at all on a role whose memberships cannot be removed', () => {
       arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
@@ -3710,11 +2988,8 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ AND THE ABSENCE IS EXPLAINED. An operator who has removed accounts from every other role
-     * would otherwise find the affordance simply gone, with nothing stating whether that is a rule or
-     * a fault. The sibling role editor states the reason for its own protected-role state on exactly
-     * this footing, because the legacy disabled its controls silently and left a sighted user with
-     * greyed fields and no reason for them.
+     * ⚠ AND THE ABSENCE IS EXPLAINED. An operator who has removed accounts from every other role would
+     * otherwise find the affordance simply gone, with nothing stating whether that is a rule or a fault.
      */
     it('states why no account can be removed from that role', () => {
       arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
@@ -3726,17 +3001,11 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ AND THE EXPLANATION IS THE ONLY THING FROM THAT BLOCK THAT REACHES THE PAGE.
-     *
-     * The authoring note that justifies the withheld command sat OUTSIDE any comment delimiter in this
-     * template — the note above it closed its own delimiter before the paragraph began — so seven lines
-     * of commentary rendered as end-user copy on every visit: the ⚠ glyph, a back-ticked legacy source
-     * path with a line number, and the name of a private member of this component. Runtime testing read
-     * it off the screen, and it is exactly the class of internal detail this project's own rules forbid
-     * putting in front of a user.
-     *
-     * The case is written against the SIGNATURES rather than against the paragraph, so it fails for any
-     * future note that escapes its delimiter in the same way rather than only for this one.
+     * ⚠ AND THE EXPLANATION IS THE ONLY THING FROM THAT BLOCK THAT REACHES THE PAGE. The authoring note
+     * that justifies the withheld command sat OUTSIDE any comment delimiter in this template — the note
+     * above it closed its own delimiter before the paragraph began — so seven lines of commentary
+     * rendered as end-user copy on every visit: the ⚠ glyph, a back-ticked legacy source path with a line
+     * number, and the name of a private member of this component.
      */
     it('renders no authoring commentary from that block as page copy', () => {
       arrive(1, [membership({ userId: 42, roleId: 1 })], { registeredRoleId: 1 });
@@ -4374,7 +3643,6 @@ describe('RoleAssignmentComponent', () => {
     });
   });
 
-
   describe('parity guards', () => {
     /**
      * ⚠ FOUR VISIBLE COLUMNS, NOT FIVE. `securityroles.ascx:L76` declares
@@ -4420,11 +3688,11 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ THE REGRESSION THIS PINS DOWN. An earlier revision read page zero at the widest legal size and
-     * then fetched every further page the metadata reported, together, joining them into one set — a
-     * burst of concurrent requests, the whole membership of a role retained in memory, and a DOM
-     * proportional to it. ONE page is read instead, and the pager is what keeps the rest reachable, so
-     * this case asserts both halves: exactly one request per read, and a pager that moves.
+     * ⚠ THE REGRESSION THIS PINS DOWN. Reading page zero at the widest legal size and then fetching
+     * every further page the metadata reports, joining them into one set, costs a burst of concurrent
+     * requests, the whole membership of a role retained in memory, and a DOM proportional to it. ONE
+     * page is read instead, and the pager is what keeps the rest reachable, so this case asserts both
+     * halves: exactly one request per read, and a pager that moves.
      */
     it('renders a pager when the role has more members than one page, and moves pages through it', () => {
       // Eleven members at ten to a page. The response's own metadata is what the pager is bound to.
@@ -4537,11 +3805,11 @@ describe('RoleAssignmentComponent', () => {
       expect(queryAll('th[aria-sort]')[0].getAttribute('aria-sort')).toBe('none');
 
       // Nothing is sorted yet, so no direction glyph is PAINTED - and the box that would hold one is
-      // still there. ⚠ THE ELEMENT'S PRESENCE IS THE FIX, NOT A LEAK. The indicator used to be added
-      // and removed with the ordering, which changed the heading's measure at the moment it was pressed
-      // - Start Date jumped 70.859 -> 86.750 px - so a control could move out from under the finger that
-      // pressed it. It is now always present at a fixed measure and EMPTY until there is a direction to
-      // show, carrying `aria-hidden` so an empty box contributes nothing to the accessible name.
+      // still there. ⚠ THE ELEMENT'S PRESENCE IS DELIBERATE, NOT A LEAK. Adding and removing the
+      // indicator with the ordering changes the heading's measure at the moment it is pressed - Start
+      // Date jumps 70.859 -> 86.750 px - so a control can move out from under the finger that pressed
+      // it. It is always present at a fixed measure and EMPTY until there is a direction to show,
+      // carrying `aria-hidden` so an empty box contributes nothing to the accessible name.
       const indicators = queryAll('.data-table__sort-indicator');
 
       expect(indicators).toHaveSize(1);
@@ -4584,9 +3852,8 @@ describe('RoleAssignmentComponent', () => {
     /**
      * `SecurityRoles.ascx.vb:L329-L335` pointed two hyperlinks at a scripted pop-up calendar and gave
      * each a raster image with localised alternative text. The helper is a Web Forms client-script
-     * facility with no counterpart here, the shared component set is closed and holds no date picker,
-     * and no eleventh member may be added to it — so both bounds are native date controls and the two
-     * raster assets are dropped with the pop-ups.
+     * facility with no counterpart here, and no shared component covers a date picker — so both bounds
+     * are native date controls and the two raster assets are dropped with the pop-ups.
      */
     it('renders native date controls and no calendar pop-up affordance', () => {
       arrive(0, [membership()]);
@@ -4598,9 +3865,9 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * `ModuleHelp.Text` is `'<h1>About Manage Security Roles</h1><p>…</p>'` — untrusted markup with no
-     * home in the closed shared component set. It was read for context and is deliberately not
-     * rendered, so the fragment must not appear in the document.
+     * `ModuleHelp.Text` is `'<h1>About Manage Security Roles</h1><p>…</p>'` — untrusted markup no shared
+     * component renders. It is read for context and deliberately not rendered, so the fragment must not
+     * appear in the document.
      */
     it('renders no module help fragment', () => {
       arrive(0, [membership()]);
@@ -4676,12 +3943,12 @@ describe('RoleAssignmentComponent', () => {
   describe('leaving the screen', () => {
     it('registers an unsaved-entry probe, so a part-completed enrolment is not discarded in silence', () => {
       /*
-       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
-       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
-       * `@angular/forms` reachable from the eager import graph of an application whose every form
-       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
-       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
-       * guard reads it as clean.
+       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION IS ANSWERED BY A
+       * PROBE THIS SCREEN REGISTERS. The guard performs no reflective sweep over a component's
+       * fields, because such a sweep makes `@angular/forms` reachable from the eager import graph of
+       * an application whose every form screen is lazily loaded. A screen declaring the gate without
+       * a probe is not merely unprotected: it LOOKS protected in the route table, and the guard reads
+       * it as clean.
        *
        * ⚠ WHAT IS AT STAKE ON THIS SCREEN IS MORE THAN A TYPED DATE. Above the enumeration ceiling
        * the account is reached by typing a login name and waiting on a lookup, so an operator who has
@@ -4815,8 +4082,6 @@ describe('RoleAssignmentComponent', () => {
   });
 });
 
-
-
 /**
  * Specification for the role-membership screen, centred on WHO OWNS ITS READS AND WRITES and on the
  * ORDER in which a refusal reaches the operator.
@@ -4891,8 +4156,8 @@ describe('RoleAssignmentComponent (store delegation)', () => {
    *
    * The answer echoes the coordinate that was asked for and reports a total that may exceed the rows
    * it carries, which is how a listing says "there is another page". Returning the sizes requested is
-   * what lets a case assert that exactly one request was made and at which size — the property an
-   * earlier revision's page walk violated.
+   * what lets a case assert that exactly one request was made and at which size — the property a page
+   * walk would violate.
    *
    * @param rows The rows the page carries.
    * @param totalCount The total across every page, defaulting to the rows supplied.
@@ -5004,10 +4269,10 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     // One request, at the shared default size.
     expect(answerMembership([membership(1, 'First')], 2)).toEqual([String(DEFAULT_PAGE_SIZE)]);
 
-    // ⚠ THE REGRESSION THIS PINS DOWN. The answer reported a total of two against a page holding one,
-    // which is a listing saying "there is more". An earlier revision took that as an instruction to
-    // fetch every remaining page and join them; nothing further may be requested here, because the
-    // pager is what reaches the rest and it does so one page at a time, when the operator asks.
+    // ⚠ THE REGRESSION THIS PINS DOWN. The answer reports a total of two against a page holding one,
+    // which is a listing saying "there is more" - and that is not an instruction to fetch every
+    // remaining page and join them. Nothing further may be requested here, because the pager is what
+    // reaches the rest and it does so one page at a time, when the operator asks.
     httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === MEMBERS_URL);
 
     expect(component.assignments().map((row) => row.displayName)).toEqual(['First']);
@@ -5213,5 +4478,4 @@ describe('RoleAssignmentComponent (store delegation)', () => {
       'no mail endpoint',
     );
   });
-
 });

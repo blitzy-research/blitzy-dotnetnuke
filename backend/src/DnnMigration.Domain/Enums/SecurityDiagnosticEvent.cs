@@ -9,15 +9,12 @@ namespace DnnMigration.Domain.Enums;
 /// WHY A CLOSED ENUMERATION RATHER THAN A MESSAGE. Every member of this set is a condition that must not
 /// disappear silently and must not be described in prose supplied at the call site. A free-form message is
 /// how payloads, connection strings, file paths and exception text end up in a log; an enumeration member
-/// cannot carry any of those, because the caller chooses a member rather than composing a string. What the
-/// caller may add alongside it is bounded by the recorder's own signature and is sanitised there.
+/// cannot carry any of those, because the caller chooses a member rather than composing a string.
 /// </para>
 /// <para>
 /// Membership of this set is a deliberate judgement, not a catch-all. A condition belongs here when it is
 /// (a) security-relevant, (b) NOT worth failing the caller's request over, and (c) invisible to every other
-/// control - so that leaving it unrecorded would mean nobody could ever discover it. A condition that fails
-/// the request needs no member: the failure is already visible. A condition the request log already captures
-/// needs no member either.
+/// control - so that leaving it unrecorded would mean nobody could ever discover it.
 /// </para>
 /// </remarks>
 public enum SecurityDiagnosticEvent
@@ -26,12 +23,6 @@ public enum SecurityDiagnosticEvent
     /// A stored credential representation was due to be regenerated at the current cost after a successful
     /// verification, and the replacement could not be stored.
     /// </summary>
-    /// <remarks>
-    /// Not a failure of the sign-in: the credential was correct and the account keeps a still-valid
-    /// representation at the superseded cost, so the only correct response is to proceed and try again next
-    /// time. It is recorded because a persistent occurrence means an installation's stored credentials are
-    /// silently stuck below the cost the deployment believes it enforces, and nothing else would ever say so.
-    /// </remarks>
     CredentialWorkFactorUpgradeFailed = 0,
 
     /// <summary>
@@ -39,11 +30,9 @@ public enum SecurityDiagnosticEvent
     /// token minted from it carry no permission keys.
     /// </summary>
     /// <remarks>
-    /// The keys tell a client which affordances to offer and never stand in for the server-side policy, which
-    /// re-evaluates on every request - so an empty set is safe rather than dangerous, and refusing a sign-in
-    /// whose credential was already accepted would be the worse outcome. What is NOT safe is that an empty
-    /// set is indistinguishable from a caller who genuinely holds nothing, which is precisely why the
-    /// distinction has to be recorded somewhere.
+    /// The keys tell a client which affordances to offer and never stand in for the server-side policy,
+    /// which re-evaluates on every request - so an empty set is safe rather than dangerous, and refusing a
+    /// sign-in whose credential was already accepted would be the worse outcome.
     /// </remarks>
     EffectivePermissionResolutionFailed = 1,
 
@@ -74,21 +63,10 @@ public enum SecurityDiagnosticEvent
     /// replacement could not be stored.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The accepted sign-in proceeds because the submitted credential was correct and a transient
     /// persistence fault must not create a new authentication failure. The occurrence is nevertheless
     /// distinct from a work-factor upgrade failure: after the absolute migration deadline, the account
     /// requires administrative reset unless a later successful sign-in completes the replacement.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THIS MEMBER AND <see cref="AuditRecordNotWritten"/> WERE BOTH INTRODUCED AS ORDINAL 3
-    /// AND BOTH ARE KEPT. They describe unrelated losses - an audit write that never reached the pipeline
-    /// and a credential replacement that never reached the store - and the second is the one an operator
-    /// acts on before the migration deadline, so folding either into the other would remove the only
-    /// signal that distinguishes them. This member takes the next free ordinal; the ordinal is an
-    /// internal diagnostic discriminator that never crosses the API boundary, so renumbering it changes
-    /// no contract.
-    /// </para>
     /// </remarks>
     LegacyCredentialMigrationFailed = 4,
 
@@ -97,24 +75,10 @@ public enum SecurityDiagnosticEvent
     /// created, and the account creation was abandoned.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The credential store is EXTERNAL to the transaction that creates the account row - the membership
     /// objects are installed by the ASP.NET registration tool and are mapped alongside rather than owned -
     /// so a failure here abandons the whole creation rather than leaving an account that nobody can sign in
     /// to. The caller is told that plainly and asked to retry.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THIS MEMBER EXISTS SO THAT THE CAUGHT TYPE HAS SOMEWHERE PRIVATE TO GO. The account
-    /// service used to append <c>exception.GetType().Name</c> to the message on its failed outcome, and a
-    /// failed outcome's message is published verbatim as the RFC 7807 <c>detail</c> - so the internal type of
-    /// the credential store reached an HTTP caller. The type name is a genuinely useful diagnostic for an
-    /// operator and genuinely none of a caller's business, which is precisely the division this contract
-    /// draws: it travels as the reason code on this occurrence, which no response ever carries.
-    /// </para>
-    /// <para>
-    /// Recorded for every caught failure of that write EXCEPT a cancellation, which is the caller
-    /// withdrawing rather than the store failing.
-    /// </para>
     /// </remarks>
     CredentialStoreWriteFailed = 5,
 
@@ -123,21 +87,10 @@ public enum SecurityDiagnosticEvent
     /// sign-in was refused rather than completed against a credential that had been retired.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// WHY THIS IS A SECURITY OCCURRENCE AND NOT A CURIOSITY. The window between reading a credential and
     /// issuing a session is not short - it contains one deliberately expensive comparison - and the change
     /// that lands inside it is very often the remedy for a compromise: an administrator resetting the
-    /// credential of an account they believe is in the wrong hands. A sign-in that completed anyway would mint
-    /// a session from the credential the reset existed to retire, and the administrator would have no way to
-    /// tell that their reset had not taken effect. Refusing is the correct outcome; recording it is what makes
-    /// a pattern of them visible, because a burst against one account is what an attacker racing a reset looks
-    /// like.
-    /// </para>
-    /// <para>
-    /// The refusal a caller receives is the same uniform denial an incorrect credential receives, so this
-    /// occurrence is the ONLY place the distinction is written down. That asymmetry is deliberate: an
-    /// operator needs to tell the two apart and an unauthenticated caller must not be able to.
-    /// </para>
+    /// credential of an account they believe is in the wrong hands.
     /// </remarks>
     CredentialChangedDuringSignIn = 6,
 }

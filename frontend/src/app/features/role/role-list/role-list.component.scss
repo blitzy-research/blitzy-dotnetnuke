@@ -1,123 +1,5 @@
-// =============================================================================
-//  Security roles listing — component-scoped styles (route /roles)
-// =============================================================================
-//
-//  NO USER-SPECIFIED RULES EXIST for this project: `review_rules` was called with
-//  three disjoint ranges and every call returned the same single line, proving a
-//  one-line document. Their absence is not licence to lower the bar, so this file
-//  is held instead to the plan's own normative sections — the token vocabulary and
-//  its zero-hardcoded-values rule, the precedence order (design-system compliance,
-//  then visual continuity with the legacy portal, then accessibility, then
-//  responsive behaviour, then code quality) — and to the Minimal Change Clause,
-//  whose item 1 requires a discovered legacy defect to be annotated rather than
-//  silently repaired and whose item 6 requires every divergence to be annotated in
-//  place.
-//
-//  MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with
-//  this component's content attribute, so a class name that drifts does not error —
-//  it silently matches nothing and the region renders unstyled. The template emits
-//  exactly this vocabulary:
-//
-//      .role-list__page-action          (a,        projected into app-page-header)
-//      .role-list__row-action           (a,        projected into app-data-table)
-//      .role-list__failure              (div)
-//      .role-list__failure-retry        (button)
-//      .role-list__filter               (div)
-//      .role-list__filter-controls      (div)
-//      .role-list__filter-select        (select)
-//      .role-list__filter-action        (button)
-//      .role-list__filter-action--danger
-//      .role-list__group-editor         (form)
-//      .role-list__group-editor-fields  (fieldset)
-//      .role-list__group-editor-commands(div)
-//      .role-list__group-editor-input   (input)
-//      .role-list__command              (button)
-//      .role-list__icon                 (svg)
-//      .role-list__action-label         (span)
-//      .role-list__row-action--danger   (button,   projected into app-data-table)
-//
-//  Two classes the template also emits carry NO rule here, deliberately, because
-//  the global element vocabulary already resolves them completely and restating a
-//  value is how two sources of truth start to disagree:
-//    .role-list__group-editor-legend  — `legend` is fully specified in _forms.scss
-//                                       (inline padding, size, weight, brand ink).
-//    .role-list__group-editor-textarea — `textarea` already fills its container
-//                                       there; only the `input` beside it does not.
-//
-//  There is no `.role-list` block class: the host IS the page container, so every
-//  region is a direct child of the host and the host owns the vertical rhythm.
-//
-//  WHAT THIS FILE DOES NOT OWN, so that nothing below re-litigates it:
-//    • Focus indication. _reset.scss applies the shared focus-ring mixin to
-//      `a, button, input, select, textarea` and to anything with a non-negative
-//      tabindex, and that reaches projected content because a global stylesheet is
-//      not encapsulated. Every focusable element on this screen is therefore
-//      already ringed, and no rule here removes an outline.
-//    • The table. _tables.scss resolves the cell-padding step, the header type
-//      step, the selected-row tint, the sortable-header affordance and the
-//      empty-state cell; the shared grid owns its own internals.
-//    • The caption. The shared grid renders the `caption` element itself and
-//      _tables.scss clips it through a `caption[data-visually-hidden]` hook using
-//      the visually-hidden mixin — which keeps it in the accessibility tree where
-//      `display: none` would not. This template projects only a `span` into that
-//      caption, so there is no caption rule to write here and clipping it a second
-//      time would be duplication.
-//    • Control and button chrome. _forms.scss owns `input`, `select`, `textarea`,
-//      `button`, `fieldset` and `legend`, including their hover, disabled and
-//      invalid states.
-//
-//  THE IMPORT PATH IS FOUR LEVELS UP, and it is computed rather than copied:
-//  `core/`, `shared/`, `layout/` and `features/` are siblings inside `src/app/`,
-//  but `styles/` is a sibling of `app/` one level higher, inside `src/`. So the
-//  Sass target is always exactly one level further out than the TypeScript target
-//  — this folder's TypeScript imports reach the core with three segments while
-//  Sass needs four. Three would resolve to a non-existent `src/app/styles/` and
-//  fail the build. angular.json declares no `stylePreprocessorOptions.includePaths`
-//  on either the build or the test target, so no shortened form exists.
-//
-//  Only the mixin partial is imported. _tokens.scss emits the workspace's sole
-//  document-root block, and because every component stylesheet is its own
-//  compilation unit, importing it would copy that entire block into this component's
-//  bundle — spending the 4 kB anyComponentStyle budget to emit a rule that emulated
-//  encapsulation then rewrites into one that can never match the document root.
-//  Tokens are consumed as plain `var()` instead: custom properties inherit through
-//  the DOM and need no import, and angular.json loads the global stylesheet on both
-//  the build and the test target, so they resolve in the production bundle and in
-//  the Karma page alike.
-
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  1. HOST — the page container and its vertical rhythm
-// -----------------------------------------------------------------------------
-//  A custom element defaults to `display: inline` and would not stack its
-//  block-level regions, so a box-generating display is required here whatever the
-//  layout. Body type is NOT restated: _reset.scss sets the family, size and line
-//  height on `body` and all three inherit down to this subtree.
-//
-//  MIGRATION: this single `gap` is the whole of `roles.ascx` L17-L19, which spaced
-//  the filter from the grid with a `<tr height="20">` holding an empty cell. Spacing
-//  expressed as markup leaves an element in the accessibility tree that means
-//  nothing; expressed as a gap it means the same thing to a sighted reader and
-//  nothing at all to a screen reader, which is the correct outcome.
-//
-//  THE SINGLE COLUMN IS DECLARED EXPLICITLY, AND THAT IS LOAD-BEARING RATHER THAN
-//  DECORATIVE. Left implicit, the one column would be sized `auto`, and the automatic
-//  minimum size of a grid item is its min-content width — so any child that cannot
-//  shrink floors the track at its own intrinsic width and the track grows wider than
-//  this host. The shared record grid is exactly such a child: it is a direct child of
-//  this host and sets a minimum inline size on its table so narrow columns stay
-//  readable, absorbing the excess by scrolling inside its own container. With an
-//  implicit track that minimum escapes instead — it widens the track, the container is
-//  never constrained, its `overflow-x` therefore has nothing to clip, and the whole
-//  DOCUMENT scrolls sideways on any viewport narrower than the grid's minimum. The
-//  fluid track token resolves to a `minmax()` whose zero floor lets the track yield
-//  completely, which keeps the overflow where it belongs, inside the grid's own
-//  scroll container. This is measured behaviour, not a precaution: at a narrow phone
-//  viewport the document scrolled sideways by the full difference between the grid's
-//  minimum and the viewport until this track was declared, and the token's own
-//  definition names this failure mode and states that the guarantee "cannot be lost by
-//  one call site omitting the minimum". This is that call site.
 :host {
   display: grid;
   grid-template-columns: var(--grid-track-fluid);
@@ -181,69 +63,18 @@
   @include mx.hover {
     color: var(--color-primary-hover);
   }
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
-  // suppression without replacement is what leaves a control with no visible response at
-  // all. `background-color: transparent` above weighs (0,1,0) while the global
-  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
-  // outranks one type selector, so the shared press tint was already losing before a
-  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
-  // states, and where the control is a link rather than a button there was no global rule
-  // to lose in the first place. The value is the shared selection tint, so the press reads
-  // the same here as on every other control in the console; nothing new is invented.
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
   &:active {
     background-color: var(--color-selected);
   }
-
 }
 
-// -----------------------------------------------------------------------------
-//  3. INLINE FAILURE SURFACE
-// -----------------------------------------------------------------------------
-//  The banner derives its own severity, renders the field-error summary and carries
-//  the live region, so this region only stacks it above the retry command. The
-//  command is held at its content width by `start` justification rather than being
-//  stretched the width of the page, which would read as a primary action.
 .role-list__failure {
   display: grid;
   gap: var(--space-2);
-
-  // ⚠ ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH, AND THE CONSTRAINT IS DECLARED ON IT.
-  // This region used to declare `justify-items: start`, which sized every item to its
-  // content - including the shared error banner, which then shrank to the width of its
-  // longest line, measured at 228px against the 1072px the identical component occupies on a
-  // screen that renders it outside a grid. One component rendering at two widths for no
-  // reason a reader could see, and a framed surface that stops short of the content it
-  // belongs to, reads as a stray box rather than as the screen's error state. Alignment
-  // therefore belongs to the ONE item that needs it and is declared on that item, so an item
-  // added here cannot silently inherit a width constraint that was never meant for it.
-  //
-  // The banner itself no longer sits in this region at all: it is mounted unconditionally
-  // above it, because the live region has to survive between failures rather than be created
-  // with its first message. This region now holds the VISIBLE recovery affordance alone,
-  // which is what the gap above separates when a second command joins it, and the rule above
-  // is retained because it is the reason the command still declares its own alignment.
 }
 
-// -----------------------------------------------------------------------------
-//  4. ROLE-GROUP FILTER
-// -----------------------------------------------------------------------------
-//  MIGRATION: replaces `roles.ascx` L5-L16, the server-side row named `trGroups`,
-//  which was a four-cell layout table — a `width="*"` spacer holding `&nbsp;`, a
-//  `width="150"` label cell, a `width="200"` control cell, and a second `&nbsp;`
-//  spacer. Neither spacer is structure, so neither survives: the gaps below do that
-//  work, and no non-breaking space appears anywhere in the template.
-//
-//  The label-to-control relationship those two width attributes expressed is NOT
-//  re-authored here. app-form-field owns it and switches to a two-column grid at
-//  the shared `md` step, using track tokens built from that same measured
-//  `width="150"` label column, carried as a proportional `minmax()` track rather
-//  than as a fixed length. This rule therefore only places the field within the page.
-//
-//  The row wraps rather than scrolls, so the selector and both commands stay
-//  reachable at every width without a media query of its own — a layout that
-//  reflows is preferred to a breakpoint invented for the purpose, and the design
-//  declares no breakpoint here. `end` alignment keeps the commands' baselines on
-//  the selector's own when the labelled field is the taller of the two.
 .role-list__filter {
   display: flex;
   flex-wrap: wrap;
@@ -251,52 +82,24 @@
   align-items: end;
 }
 
-//  The control slot: a select followed by the edit and delete affordances. In the
-//  legacy row these three were separated by literal non-breaking spaces; here the
-//  gap does it, which is also what lets them wrap as a group.
 .role-list__filter-controls {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
   align-items: end;
 
-  // ⚠ THE SELECT'S OWN CLAMP IS NOT ENOUGH, BECAUSE THIS WRAPPER HAS ONE TOO. The select below
-  // already takes a fluid share from a zero basis and is capped, which stops one long group name
-  // setting the width of the row - but this wrapper is itself a flex item of `.role-list__filter`
-  // and kept the default `min-width: auto`, whose automatic minimum is its own min-content
-  // contribution. So the select shrank and the box around it did not.
-  //
-  // Measured at exactly 768px, the width at which the shell docks its sidebar and pushes this
-  // row's origin from x=16 to x=392.9: this wrapper computed 375px wide and reached x=767.9
-  // against a 753px content box - 15px of document overflow, the last md-boundary regression of
-  // the four list screens. Clamping the select alone changed nothing; clamping this took it to
-  // nought. The 375px came from a fifty-character seeded group name, so the intrinsic width is
-  // real data rather than a test artefact.
+  // Measured at exactly 768px, the width at which the shell docks its sidebar and pushes this row's origin
+  // from x=16 to x=392.9: this wrapper computed 375px wide and reached x=767.9 against a 753px content box
+  // - 15px of document overflow, the last md-boundary regression of the four list screens.
   min-inline-size: 0;
 }
 
-//  A select sized by its widest option would let one long group name set the width
-//  of the whole row, so it takes a fluid share from a zero basis and is capped at
-//  the narrowest shared step. The cap is read from the breakpoint scale rather than
-//  written as a length, which is the use the mixin partial documents for that
-//  function; `min-inline-size: 0` is what actually permits a flex item to shrink
-//  below its intrinsic content width.
 .role-list__filter-select {
   flex: var(--flex-fill-from-zero);
   min-inline-size: 0;
   max-inline-size: mx.breakpoint('sm');
 }
 
-// -----------------------------------------------------------------------------
-//  5. COMMANDS — one treatment for every press-in-place affordance
-// -----------------------------------------------------------------------------
-//  The group commands beside the selector, the group editor's own submit and cancel,
-//  the row-level commands inside the grid, and the retry beside a failure all read
-//  alike because they ARE alike: each is pressed in place and none navigates. A
-//  difference in appearance would imply a difference in kind that does not exist.
-//  `inline-flex` holds each at its content width inside a cell that may be wider and
-//  lines the glyph up with the label beside it; the buttons take their chrome from
-//  _forms.scss and the anchors their ink from section 2.
 .role-list__filter-action,
 .role-list__command,
 .role-list__row-action,
@@ -309,112 +112,54 @@
   align-items: center;
 }
 
-//  ⚠ THE ROW COMMANDS ALSO WRAP, AND THIS IS THE SECOND HALF OF HOLDING THEM INSIDE
-//  THEIR OWN COLUMN. Letting the label stack its words was necessary but not
-//  sufficient: the glyph beside it never shrinks, so the command's irreducible width
-//  stayed glyph + gap + the longest single word, measured at 11 + 4 + 36.14 = 51.14
-//  against a 45.33 content box, and the remaining 5.81 still painted 1.81 into the
-//  Name column. Allowing THIS line to break lets the glyph and the label stack, which
-//  drops the floor to the label's own 36.14 and clears the column with room to spare.
-//  Centring keeps the two stacked parts under one another rather than ragged.
-//
-//  Only the row commands. The filter commands, the editor's submit and cancel and the
-//  retry all sit in regions that reflow, so none of them is squeezed by a fixed
-//  column and none needs this - and wrapping them would let a glyph part company with
-//  its label for no reason.
+// ⚠ THE ROW COMMANDS ALSO WRAP, AND THIS IS THE SECOND HALF OF HOLDING THEM INSIDE THEIR OWN COLUMN.
+// Letting the label stack its words was necessary but not sufficient: the glyph beside it never shrinks, so
+// the command's irreducible width stayed glyph + gap + the longest single word, measured at 11 + 4 + 36.14
+// = 51.14 against a 45.33 content box, and the remaining 5.81 still painted 1.81 into the Name column.
 .role-list__row-action {
   flex-wrap: wrap;
   justify-content: center;
 }
 
-//  A colour change only, and specifically the accessible danger ink rather than the
-//  raw legacy red. A destructive command that also moved or resized would be a
-//  different affordance in a different place, which is how a reader mis-presses the
-//  one command that cannot be undone. Setting ink alone also leaves the boundary and
-//  fill shifts from the global button hover intact, so the control still answers a
-//  pointer without the error colour being animated away.
+// A colour change only, and specifically the accessible danger ink rather than the raw legacy red. A
+// destructive command that also moved or resized would be a different affordance in a different place,
+// which is how a reader mis-presses the one command that cannot be undone.
 .role-list__filter-action--danger {
   color: var(--color-danger);
 }
 
-//  MIGRATION: the legacy affordances were raster images — `~/images/edit.gif` and
-//  `~/images/delete.gif` at `roles.ascx` L11 and L13. No image asset exists in this
-//  workspace to stand in for them, so the template draws inline vector art instead
-//  and no rule here references an external URL. The glyph is decorative and marked
-//  `aria-hidden`, it inherits its stroke from `currentColor` so it tracks the ink of
-//  whatever command hosts it, it is sized from the type scale so it tracks the text
-//  beside it, and it never shrinks.
+// The legacy affordances were raster images — `~/images/edit.gif` and `~/images/delete.gif` at `roles.ascx`
+// L11 and L13.
 .role-list__icon {
   flex: none;
   inline-size: var(--font-size-md);
   block-size: var(--font-size-md);
 }
 
-//  The label beside that glyph stays VISIBLE. Clipping it would leave a 16-unit icon
-//  carrying the entire meaning of a command, one of which destroys a record — and the
-//  legacy delete affordance reached assistive technology with no accessible name at all,
-//  which is the one gap on this screen worth closing rather than reproducing.
-//
-//  ⚠ IT MAY NOW WRAP, AND THAT IS A CORRECTION WITH A MEASUREMENT BEHIND IT. Held on one
-//  line, "Manage Users" measured 65.03px inside a command column of 53.33px, and the shared
-//  grid leaves a cell's overflow visible — so the surplus painted straight over the Name
-//  column in every row: 30.70px of overlap at a 320-wide viewport and still 16.22px at 1024,
-//  with the first row reading "Manage Ad|ministrators" to the eye. The command was legible
-//  and the record's own name was not.
-//
-//  ⚠ AND A COLUMN WIDTH CANNOT FIX IT, WHICH IS WHY THE LABEL IS WHAT CHANGES. The shared
-//  grid is `table-layout: fixed` over a fixed table measure, and under fixed layout an
-//  intrinsic keyword on a column is not a definite track size: declaring `min-content` on
-//  the two command columns left the browser splitting the measure equally all the same —
-//  verified in a real browser, all twelve columns still resolving to 53.33px with the
-//  keyword present in the markup. A percentage would be honoured but would pin a
-//  text-sized control to a proportion of the table, which drifts with the column count.
-//  Letting the two words stack is what actually holds the command inside its own column,
-//  at every width, with no width authored anywhere: measured afterwards as the cell's
-//  scroll width and client width agreeing.
-//
-//  The words stack; neither word breaks mid-word, because the shared cell rule already
-//  breaks only at permitted opportunities.
+// The label beside that glyph stays VISIBLE. Clipping it would leave a 16-unit icon carrying the entire
+// meaning of a command, one of which destroys a record — and the legacy delete affordance reached assistive
+// technology with no accessible name at all, which is the one gap on this screen worth closing rather than
+// reproducing.
 .role-list__action-label {
   @include mx.visually-hidden;
 }
 
-//  The words behind a decorative mark, and the expansion of a stored frequency character. Both are
-//  clipped rather than removed, so they stay in the accessibility tree while contributing nothing to the
-//  painted cell — which is the entire point of both: the cell must look exactly as it did.
+// The words behind a decorative mark, and the expansion of a stored frequency character. Both are clipped
+// rather than removed, so they stay in the accessibility tree while contributing nothing to the painted
+// cell — which is the entire point of both: the cell must look exactly as it did.
 .role-list__absent-value {
   @include mx.visually-hidden;
 }
 
-//  With the wording clipped, each command is a bare 16-unit glyph — and a 16-unit target is
-//  far below the floor. The box is floored on BOTH axes, for the reason the form vocabulary
-//  gives: a single-glyph command has almost no intrinsic width, and the inline floor matters as
-//  much as the block one. `_forms.scss` floors `button` but does not reach `a`, so stating it
-//  here is what makes the two anchors match the button beside them. Each of the three sits in
-//  its own command column carrying exactly one command, so nothing competes for the width, and
-//  44 fits inside the 53-unit track the fixed layout gives at the narrowest measured step.
-//
-//  The box grows; the glyph inside it does not, and the centring keeps it optically where it
-//  was. No fill, no boundary and no padding is introduced, so the commands still read as the
-//  bare image columns the legacy grid rendered — they are merely reachable by a finger.
+// With the wording clipped, each command is a bare 16-unit glyph — and a 16-unit target is far below the
+// floor. The box is floored on BOTH axes, for the reason the form vocabulary gives: a single-glyph command
+// has almost no intrinsic width, and the inline floor matters as much as the block one.
 .role-list__row-action {
   min-inline-size: var(--target-size-min);
   min-block-size: var(--target-size-min);
   justify-content: center;
 }
 
-//  MIGRATION: THE DESTRUCTIVE COMMAND CARRIES NO SURFACE EITHER, which is what makes the three
-//  read alike. It has to be a `button` — removing a role changes state and addresses nothing —
-//  and left with the global button chrome it alone would acquire a fill, a hairline boundary, a
-//  corner radius and generous padding, measuring far wider than its two anchor siblings inside a
-//  fixed-layout track and reading as a different KIND of affordance in the same row. This is the
-//  same substitution the account listing makes, for the same measured reason.
-//
-//  It is then distinguished by INK ALONE, and specifically the accessible danger ink rather than
-//  the raw legacy error hue, which does not clear the contrast threshold as text. Colour is a
-//  REDUNDANT cue and never the message: the command's accessible name and its `title` both read
-//  "Delete", and it opens a confirmation that states what will happen. A reader who cannot
-//  distinguish the hue loses nothing.
 .role-list__row-action--danger {
   padding: 0;
   color: var(--color-danger);
@@ -427,30 +172,11 @@
   }
 }
 
-// -----------------------------------------------------------------------------
-//  6. INLINE GROUP EDITOR
-// -----------------------------------------------------------------------------
-//  The form is a layout region only. It carries no frame of its own because the
-//  `fieldset` inside it already has one from _forms.scss: framing both would draw a
-//  box inside a box, and suppressing the inner frame to justify an outer one would
-//  be overriding a shared component's internals to reproduce them one level up.
-//
-//  MIGRATION: no background band is painted. The nearest legacy candidate, `.HeadBg`,
-//  sits under a comment marking it as already-legacy within the legacy application,
-//  is referenced zero times by any page under Website/, and its portal.css override is
-//  empty — so there is no band to preserve. The legacy group editor was a separate
-//  page reached by a query string rather than a region on this screen, so an in-place
-//  surface here has no provenance to match either.
 .role-list__group-editor {
   display: grid;
   gap: var(--space-3);
 }
 
-//  The fieldset keeps the shared frame, padding and radius. Its trailing margin is
-//  released so that the form's `gap` is the single source of the spacing between the
-//  fields and the commands below them — two spacings stacked would compound.
-//  The measure is capped so a text field does not run the full width of a wide
-//  screen, since a long line is harder to scan back along than a short one.
 .role-list__group-editor-fields {
   display: grid;
   gap: var(--space-3);
@@ -458,11 +184,6 @@
   margin-block-end: 0;
 }
 
-//  The global text-control rule caps an input at its container's width but does not
-//  make it fill one, so an input left alone sits narrower than the textarea beneath
-//  it — and a field that is narrower than its neighbour for no reason reads as a
-//  different kind of field. The textarea already fills from that same rule and is
-//  therefore not restated here.
 .role-list__group-editor-input {
   inline-size: var(--size-full);
 }
@@ -521,16 +242,8 @@
 //  No fallback argument is written into any `var()` above, because a fallback is a
 //  hardcoded value wearing a token's clothes.
 
-// The 24px floor for the page actions, stated as its OWN rule rather than added to the
-// shared `.role-list__page-action, .role-list__row-action` block above. Two reasons, both load-bearing:
-//   • `.role-list__row-action` is reached by the global `td a` floor already and measured
-//     compliant, so it needs nothing; changing its `display` would alter its layout inside
-//     a table cell for no benefit.
-//   • `.role-list__row-action` is ALREADY a flex container carrying `flex-wrap: wrap` — the fix that stops its icon and label overpainting the Name column at 1024px. Forcing `display: inline-flex` onto the shared group would rewrite that container and regress it, so the row action is deliberately left alone here.
-// `min-block-size` HAS NO EFFECT on a non-replaced INLINE element, so `display` is changed
-// alongside it — declaring the floor alone would have been inert. Measured before this rule:
-// "Add New Role" reported 70.33 x 16.50, short of the minimum. These are standalone action affordances
-// in an action bar, not links inside a sentence, so SC 2.5.8's inline exception does not apply.
+// The 24px floor for the page actions, stated as its OWN rule rather than added to the shared
+// `.role-list__page-action.role-list__row-action` block above.
 .role-list__page-action {
   display: inline-flex;
   align-items: center;

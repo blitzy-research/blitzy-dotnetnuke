@@ -1,54 +1,7 @@
 /**
- * Specification for `core/utils/decode.util.ts` — the runtime contract checker that every
- * transport in this application now reads its responses through.
- *
- * ---------------------------------------------------------------------------
- * WHY THIS FILE EXISTS
- * ---------------------------------------------------------------------------
- * A TypeScript interface is erased at compile time. `http.get<PortalDetail>(…)` compiles to
- * `http.get(…)`: nothing inspects the body, and the value a caller receives is trusted purely
- * because a developer wrote a type where a value was expected. A renamed member then arrives
- * as `undefined` behind a 200 and surfaces as a blank field, a `NaN` or a silently empty grid
- * several layers away from the response that caused it — with no way back to the seam.
- *
- * This module is the seam. Because every service depends on it, a defect here is a defect in
- * every boundary at once, which is what makes its own coverage worth more than the sum of the
- * per-service cases: those prove that each service USES a decoder, and these prove the
- * decoders decide correctly.
- *
- * ---------------------------------------------------------------------------
- * THE THREE PROPERTIES WORTH ASSERTING, AND WHY EACH ONE IS HERE
- * ---------------------------------------------------------------------------
- * 1. IT REFUSES WHAT IT SHOULD. The obvious half, and the cheap half.
- *
- * 2. IT ADMITS WHAT IT SHOULD — which is the half that goes wrong. A validator that is
- *    slightly too strict is worse than none: it refuses conforming responses, and it does so
- *    in production against real data rather than in a test. Every legitimate shape in this
- *    schema is therefore asserted positively, and the sentinel values get their own cases,
- *    because `0`, `-1` and `""` are all REAL VALUES here rather than absences and the
- *    intuitive implementation of each decoder would reject or coalesce them.
- *
- * 3. IT DISCLOSES NOTHING. A violation report names the member and the expected type. It
- *    never names the value — because the values crossing these boundaries include passwords,
- *    bearer tokens, profile answers and module content, and a report is destined for a log.
- *
- * ---------------------------------------------------------------------------
- * SENTINELS, WHICH ARE THE REASON HALF THESE CASES LOOK ODD
- * ---------------------------------------------------------------------------
- * The legacy schema makes three values simultaneously meaningful and "absent":
- *
- * - `-1` is `Null.NullInteger` (`Library/Components/Shared/Null.vb:L41-L45`, whose body is
- *   literally `Return -1`) AND the identity seed of `Portals.PortalID`, so the first portal
- *   ever created carries `-1` and the second carries `0`.
- * - `0` is the identity seed of `Roles.RoleID`, `Tabs.TabID` and `Modules.ModuleID`, so it is
- *   an ordinary identifier in three tables.
- * - `""` is `Null.NullString` (`:L71-L75`, body literally `Return ""`), so an empty string is
- *   the legacy spelling of an absent string rather than a null reference.
- *
- * A decoder that guarded an identifier on being truthy, positive or unequal to `-1` would
- * therefore drop real rows, and one that coalesced `""` to `null` would make a value the
- * operator CLEARED indistinguishable from one never filled in. Several cases below exist for
- * no other purpose than to hold that line.
+ * Specification for `core/utils/decode.util.ts` — the runtime contract checker that every transport in
+ * this application now reads its responses through. WHY THIS FILE EXISTS A TypeScript interface is erased
+ * at compile time.
  */
 
 import {
@@ -103,8 +56,8 @@ const ROW: Row = { id: 0, name: 'Announcements', retired: false, parentId: null 
  * @param value The value to decode.
  * @param path The path to decode it at.
  * @returns The violation.
- * @throws Error When the decoder did not raise a contract violation, since a case that
- *   expected a refusal and got a value must fail rather than silently assert nothing.
+ * @throws Error When the decoder did not raise a contract violation, since a case that expected a refusal
+ * and got a value must fail rather than silently assert nothing.
  */
 function violationFrom(decoder: Decoder<unknown>, value: unknown, path = 'v'): ContractViolationError {
   try {
@@ -133,9 +86,9 @@ describe('decode.util', () => {
     });
 
     it('never names the offending value, in the message or on any member', () => {
-      // ⚠ A PRIVACY BOUNDARY, NOT A STYLE CHOICE. The values crossing these boundaries include
-      // passwords, bearer tokens, profile answers and module content, and a violation report is
-      // destined for a log. Naming the value would copy the secret into the diagnostic.
+      // ⚠ A PRIVACY BOUNDARY, NOT A STYLE CHOICE. The values crossing these boundaries include passwords,
+      // bearer tokens, profile answers and module content, and a violation report is destined for a log.
+      // Naming the value would copy the secret into the diagnostic.
       const secret = 'not-a-real-password-but-treat-it-as-one';
       const violation = new ContractViolationError('response.data.token', 'an integer', secret);
 
@@ -146,9 +99,6 @@ describe('decode.util', () => {
     });
 
     it('describes each received type without inspecting it', () => {
-      // The descriptions read as English because they are substituted into a sentence, and
-      // `undefined` is described as "nothing" so that an ABSENT member reports as absent rather
-      // than as a value that happened to be undefined.
       const cases: readonly (readonly [unknown, string])[] = [
         [null, 'null'],
         [undefined, 'nothing'],
@@ -177,9 +127,6 @@ describe('decode.util', () => {
 
   describe('decodeString', () => {
     it('admits the empty string, which is the legacy spelling of an absent string', () => {
-      // ⚠ `Null.vb:L71-L75` returns `""` for a missing string, so an operator who cleared a
-      // field has an empty value rather than a missing one. Refusing it would refuse a
-      // conforming response.
       expect(decodeString('', 'v')).toBe('');
       expect(decodeString('   ', 'v')).toBe('   ');
     });
@@ -219,9 +166,6 @@ describe('decode.util', () => {
     });
 
     it('refuses NaN and the infinities', () => {
-      // They cannot appear in conforming JSON at all — `JSON.stringify` writes them as `null` —
-      // so their presence means the body came from something other than a JSON serialiser, and
-      // admitting one would poison every arithmetic downstream of it.
       for (const value of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
         expect(violationFrom(decodeNumber, value).expected).toBe('a finite number');
       }
@@ -234,11 +178,9 @@ describe('decode.util', () => {
 
   describe('decodeInteger', () => {
     it('admits the sentinel-colliding identifiers, which are real rows', () => {
-      // ⚠ THE SINGLE MOST IMPORTANT CASE IN THIS FILE. `Portals.PortalID` is `IDENTITY(-1,1)`
-      // so `-1` is the FIRST portal as well as the legacy absent-marker, and `Roles.RoleID`,
-      // `Tabs.TabID` and `Modules.ModuleID` all seed at `0`. A truthiness test would drop the
-      // second portal and every first role, page and module; a `!== -1` test would drop the
-      // first portal.
+      // ⚠ THE SINGLE MOST IMPORTANT CASE IN THIS FILE. `Portals.PortalID` is `IDENTITY(-1,1)` so `-1` is
+      // the FIRST portal as well as the legacy absent-marker, and `Roles.RoleID`, `Tabs.TabID` and
+      // `Modules.ModuleID` all seed at `0`.
       expect(decodeInteger(-1, 'v')).toBe(-1);
       expect(decodeInteger(0, 'v')).toBe(0);
     });
@@ -291,9 +233,6 @@ describe('decode.util', () => {
     });
 
     it('refuses a string the platform cannot parse', () => {
-      // ⚠ AN UNPARSEABLE DATE IS WORSE THAN A MISSING ONE. It becomes an `Invalid Date`, whose
-      // every comparison is FALSE — so an expired role membership would be classified as active
-      // and the person would keep an entitlement they had lost.
       expect(violationFrom(decodeDateString, 'whenever').expected).toBe(
         'an ISO-8601 date-time string',
       );
@@ -339,9 +278,6 @@ describe('decode.util', () => {
 
   describe('recordOf', () => {
     it('admits an empty map and preserves an empty VALUE', () => {
-      // ⚠ THE CLEARED-SETTING CASE. A settings value the operator cleared is the empty string,
-      // and filtering it out — the obvious and wrong implementation — would silently delete
-      // every setting anyone had cleared, behind a successful 204.
       expect(recordOf(decodeString)({}, 'v')).toEqual({});
       expect(recordOf(decodeString)({ announcementLength: '' }, 'v')).toEqual({
         announcementLength: '',
@@ -367,10 +303,6 @@ describe('decode.util', () => {
     });
 
     it('refuses a code outside the set, including one differing only in case', () => {
-      // ⚠ THE BILLING-FREQUENCY CASE. These codes are SINGLE CHARACTERS stored in
-      // `Roles.BillingFrequency char(1)`. A lower-case `m` satisfies every type assertion and
-      // matches no arm of the fee-schedule switch, so a paid role would be charged on the wrong
-      // cycle with nothing downstream to reveal it.
       const decode = oneOf(['D', 'W', 'M', 'Y'] as const);
 
       expect(violationFrom(decode, 'm').expected).toContain("'M'");
@@ -394,10 +326,6 @@ describe('decode.util', () => {
     });
 
     it('refuses an unrecognised code rather than coercing it to the zero member', () => {
-      // ⚠ ZERO IS THE PERMISSIVE MEMBER of two of the three enumerations this serves —
-      // `NoRegistration` and `None` — so coercing would present a portal as accepting no
-      // registrations, or a module as unrestricted, on the strength of a code this client simply
-      // did not know.
       const decode = oneOfNumber([0, 1, 2]);
 
       expect(violationFrom(decode, 7).expected).toBe('one of 0, 1, 2');
@@ -479,10 +407,6 @@ describe('decode.util', () => {
     });
 
     it('refuses a page with NO metadata rather than treating it as an empty one', () => {
-      // ⚠ THE DEFECT THIS EXISTS TO PREVENT, AND THE WORST FAILURE MODE IN THE WORKSPACE. A
-      // page whose metadata was absent used to normalise to a total of zero and no rows: a
-      // SUCCESSFUL response stating that the installation has no portals, no accounts and no
-      // roles. An operator would conclude the records were gone.
       expect(violationFrom((v, p) => decodePageStructure(v, p), { items: [] }).path).toBe('v.meta');
     });
 
@@ -519,12 +443,6 @@ describe('decode.util', () => {
     });
 
     it('tolerates an ABSENT envelope metadata member', () => {
-      // Asymmetric with a page on purpose. This member is pure framing that the caller never
-      // sees — it is read only as a drift signal — so refusing an otherwise perfect payload over
-      // a discarded member would make this client a blocker on a legitimate serialiser change,
-      // for no detection gained: an unwrapped body is caught by `data`, above, which reports the
-      // more precise diagnosis anyway. A PAGE's metadata stays required, because there the total
-      // and the coordinates ARE the page.
       expect(envelopeOf(decodeRow)({ data: ROW }, 'r')).toEqual(ROW);
     });
 

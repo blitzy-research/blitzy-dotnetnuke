@@ -19,48 +19,14 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Why this suite exists, and why its oracle had to change.</strong> Every other suite here asks
-/// whether the model and the repositories behave correctly against the fixture. This one asks whether the
-/// FIXTURE is right. It used to answer that by comparing the composed model with
-/// <c>INFORMATION_SCHEMA</c> - but the database is provisioned from <c>Schema/DnnSchema.sql</c>, and that
-/// script described itself as having been emitted from the model with <c>dotnet ef dbcontext script</c>.
-/// So the comparison was model against model with two extra steps: a model that is internally consistent
-/// and uniformly WRONG satisfied every assertion in this file, and the fixture could not be evidence about
-/// the schema it exists to reproduce.
-/// </para>
-/// <para>
 /// The oracle is now <c>Schema/TerminalSchema.manifest</c>, derived by replaying the 83 versioned legacy
 /// upgrade scripts in <c>Website/Providers/DataProviders/SqlDataProvider</c> and corroborated against the
 /// Red Gate fresh-install snapshot that ships beside them. Nothing this solution emits contributed to it.
-/// See <see cref="TerminalSchema"/> and the manifest's own header for the derivation, the citation for
-/// every record, and the one point on which the two legacy authorities disagree.
 /// </para>
 /// <para>
-/// <strong>Replacing the oracle immediately found two defects the circular comparison had always
-/// passed</strong>, which is the entire argument for doing it:
-/// </para>
-/// <list type="number">
-///   <item><description>
-///     <c>Roles.PortalID</c> was provisioned NULL where the terminal schema declares it NOT NULL, so the
-///     fixture accepted a role belonging to no portal - a row no installation can hold - and two
-///     persistence tests asserted the listing behaviour of exactly such a row.
-///   </description></item>
-///   <item><description>
-///     Seven primary keys were provisioned CLUSTERED where the terminal schema and the entity
-///     configurations both declare them NONCLUSTERED.
-///   </description></item>
-/// </list>
-/// <para>
-/// <strong>Three directions, because no one of them is sufficient.</strong> The manifest is compared with
-/// the MODEL (which catches a mapping that binds the wrong width or nullability), with the provisioned
-/// CATALOGUE (which catches a fixture that accepts or refuses values production does not), and then the
-/// values the terminal schema permits and an earlier state forbade are actually WRITTEN, because no
-/// metadata comparison can prove that a write lands.
-/// </para>
-/// <para>
-/// MIGRATION: no schema is created, altered or dropped from this file. <c>EnsureCreated</c>,
-/// <c>EnsureDeleted</c> and <c>Database.Migrate</c> are absent and must stay absent, because the terminal
-/// DotNetNuke schema depends on membership objects the upgrade scripts only ever ALTER.
+/// No schema is created, altered or dropped from this file. <c>EnsureCreated</c>, <c>EnsureDeleted</c> and
+/// <c>Database.Migrate</c> are absent and must stay absent, because the terminal DotNetNuke schema depends
+/// on membership objects the upgrade scripts only ever ALTER.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -77,11 +43,6 @@ public sealed class LegacySchemaFidelityTests
     private const int CannotInsertNullErrorNumber = 515;
 
     /// <summary>A connection string used only to compose the model; nothing is opened with it.</summary>
-    /// <remarks>
-    /// The model is composed from configuration alone. Registering the infrastructure requires a connection
-    /// string to be present, but building the model never opens a connection, so this value is deliberately
-    /// unreachable rather than pointing at a real server.
-    /// </remarks>
     private const string ModelOnlyConnectionString =
         "Server=(localdb)\\model-only;Database=DnnMigrationModelOnly;Integrated Security=true";
 
@@ -89,31 +50,15 @@ public sealed class LegacySchemaFidelityTests
     /// Columns the model deliberately maps NULLABLE although the terminal schema declares them NOT NULL.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// There is exactly one, it is named rather than skipped, and the assertion runs in BOTH directions:
     /// the model must still map it nullable and the manifest must still declare it NOT NULL. A blanket
     /// exemption would let a second such divergence appear unnoticed; this one cannot change on either side
     /// without failing.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>Roles.PortalID</c>. The terminal column is <c>int NOT NULL</c>
-    /// (<c>01.00.05.SqlDataProvider:2749</c>, corroborated by the fresh-install snapshot), so no
-    /// installation can hold a role with no owning portal. The PROPERTY stays <c>int?</c> because the
-    /// terminal listing procedure filters on <c>( R.PortalId = @PortalId OR R.PortalId is null )</c>
-    /// (<c>04.08.00.SqlDataProvider:40</c>) and <c>RoleRepository.GetByPortalIdAsync</c> reproduces that
-    /// predicate, which cannot be expressed over a non-nullable property. The mapping is therefore strictly
-    /// more permissive than the column: reads cannot fail, and a write of null is refused by the database
-    /// rather than by the model - which <see cref="Roles_RefusesARoleThatBelongsToNoPortal"/> proves. The
-    /// null branch of that predicate is consequently unsatisfiable against a faithful installation, and no
-    /// test may fabricate a row to exercise it.
-    /// </para>
     /// </remarks>
     private static readonly IReadOnlySet<string> DeliberateNullabilityRelaxations =
         new HashSet<string>(StringComparer.Ordinal) { "Roles.PortalID" };
 
-    /// <summary>
-    /// Columns whose provisioned declaration has drifted from the terminal schema at least once.
-    /// </summary>
+    /// <summary>Columns whose provisioned declaration has drifted from the terminal schema at least once.</summary>
     /// <remarks>
     /// The sweeping comparisons below would already fail if any of these regressed, but they report a list
     /// rather than a cause. These state the terminal fact individually so that a regression names the
@@ -136,20 +81,10 @@ public sealed class LegacySchemaFidelityTests
 
     /// <summary>The composed relational model, built once for the whole suite.</summary>
     /// <remarks>
-    /// <para>
-    /// Composed through the same entirely public route the sibling context suite uses: the infrastructure
-    /// registration exposes <see cref="DbContextOptions"/>, whose <see cref="DbContextOptions.ContextType"/>
-    /// resolves the context as a <see cref="DbContext"/>. The internal context type is never named, so
-    /// <c>InternalsVisibleTo</c> is not required and Rule T3 is honoured.
-    /// </para>
-    /// <para>
-    /// This is the DESIGN-TIME model rather than <c>DbContext.Model</c>, and the difference is not cosmetic:
-    /// the run-time model is read-optimised and DISCARDS the annotations that only DDL needs, so asking a
-    /// key whether it is clustered throws "the requested configuration is not stored in the read-optimized
-    /// model". Established by running it. The design-time model is also the honest choice on merit, because
-    /// it is exactly the model a migration would be diffed against, which is the artefact whose agreement
-    /// with the legacy schema this suite exists to check.
-    /// </para>
+    /// This is the DESIGN-TIME model rather than <c>DbContext.Model</c>, and the difference is not
+    /// cosmetic: the run-time model is read-optimised and DISCARDS the annotations that only DDL needs, so
+    /// asking a key whether it is clustered throws "the requested configuration is not stored in the
+    /// read-optimized model". Established by running it.
     /// </remarks>
     private static readonly IModel Model = ComposeModel();
 
@@ -161,18 +96,9 @@ public sealed class LegacySchemaFidelityTests
 
     /// <summary>The oracle loads completely, and its own totals agree with what was parsed.</summary>
     /// <remarks>
-    /// <para>
-    /// A comparison against a half-read manifest still passes, which is the failure mode that would make
-    /// every other test in this file meaningless. <see cref="TerminalSchema"/> already refuses to load a
-    /// resource whose <c>TOTALS</c> record disagrees with the parsed counts; this states the expected size
-    /// explicitly as well, so that DELETING records from the manifest and adjusting its totals to match -
-    /// the one edit that would defeat the load-time guard - fails here.
-    /// </para>
-    /// <para>
     /// The structural assertions that follow are the ones a hand-edit is most likely to break: a table with
     /// no columns, a foreign key pointing at a table the manifest does not describe, or an index over a
     /// column that does not exist.
-    /// </para>
     /// </remarks>
     [Fact]
     public void TheOracle_IsCompleteAndInternallyConsistent()
@@ -243,12 +169,6 @@ public sealed class LegacySchemaFidelityTests
     }
 
     /// <summary>The model binds exactly the columns the terminal schema declares on those tables.</summary>
-    /// <remarks>
-    /// Both directions matter and they fail differently. A mapped column the terminal schema does not have
-    /// makes every query against a real installation fail with an invalid-column-name error. A terminal
-    /// column nothing maps is invisible instead: reads succeed, writes succeed, and the value is silently
-    /// never carried.
-    /// </remarks>
     [Fact]
     public void Model_MapsExactlyTheColumnsTheTerminalSchemaDeclares()
     {
@@ -267,10 +187,7 @@ public sealed class LegacySchemaFidelityTests
     /// <summary>Every mapped column is bound at the terminal store type and declared width.</summary>
     /// <remarks>
     /// A model narrower than the column refuses legacy-valid data; a model wider than the column defers the
-    /// refusal to the database, where it arrives as a store failure rather than as validation. The store
-    /// type is asserted as well as the width because it is what stops a value converter being introduced
-    /// between a decimal property and a monetary column, which would make the stored value depend on the
-    /// writing server's culture.
+    /// refusal to the database, where it arrives as a store failure rather than as validation.
     /// </remarks>
     [Fact]
     public void Model_BindsEveryColumnAtItsTerminalTypeAndWidth()
@@ -308,9 +225,7 @@ public sealed class LegacySchemaFidelityTests
     /// <remarks>
     /// A model that maps a column nullable while the schema declares it NOT NULL defers a refusal to the
     /// database; a model that maps a column required while the schema permits nulls fails only when an
-    /// existing null is read, and then it fails by throwing rather than by returning. Both are invisible to
-    /// a build, to a migration diff and to every test that happens to supply a value, which is precisely
-    /// how the alias defect survived for as long as it did.
+    /// existing null is read, and then it fails by throwing rather than by returning.
     /// </remarks>
     [Fact]
     public void Model_MapsNullabilityExactlyWhereTheTerminalSchemaDoes()
@@ -423,10 +338,7 @@ public sealed class LegacySchemaFidelityTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// This is the direction the old oracle could not report on honestly, and the one that found the two
-    /// drifted declarations. A fixture narrower than the terminal schema rejects legacy-valid data with a
-    /// truncation error that reads like a test-data mistake; a fixture wider than it lets a test store a
-    /// value a real installation refuses; and a fixture that relaxes a NOT NULL lets a test assert
-    /// behaviour over a row that cannot exist.
+    /// drifted declarations.
     /// </remarks>
     [Fact]
     public async Task ProvisionedDatabase_ReproducesEveryTerminalColumnDeclaration()
@@ -457,10 +369,7 @@ public sealed class LegacySchemaFidelityTests
 
             // A legacy large-object type carries NO declared width - the DDL spells it "ntext" with no
             // specifier - but the catalogue reports the type's own capacity for one anyway (1073741823 for
-            // ntext, 2147483647 for text and image). Comparing that against "no width" would report every
-            // such column as a mismatch, so the width comparison is skipped for exactly those types and the
-            // type name, which IS compared above, is what pins them. Established by running it: Modules.
-            // Footer was the first to report it.
+            // ntext, 2147483647 for text and image).
             if (!IsLegacyLargeObjectType(terminal.DataType) && provisioned.CharacterLength != terminal.MaxLength)
             {
                 mismatches.Add(FormattableString.Invariant(
@@ -476,17 +385,9 @@ public sealed class LegacySchemaFidelityTests
     /// <summary>The provisioned database seeds every identity column exactly as the terminal schema does.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// Three of these seeds are load-bearing rather than incidental, and they are why the whole inventory is
-    /// asserted instead of a sample. A tenant key of -1 collides with the legacy "absent integer" marker,
-    /// and a role, page or module key of 0 collides with the CLR default for an unassigned integer. Both
-    /// collisions have already produced real defects in this migration.
-    /// </para>
-    /// <para>
-    /// The seed is asserted against the DATABASE rather than against the model because that is where it has
-    /// meaning: Entity Framework never uses a seed at run time, it only emits one when generating DDL, and
-    /// this migration generates none.
-    /// </para>
+    /// Three of these seeds are load-bearing rather than incidental, and they are why the whole inventory
+    /// is asserted instead of a sample. A tenant key of -1 collides with the legacy "absent integer"
+    /// marker, and a role, page or module key of 0 collides with the CLR default for an unassigned integer.
     /// </remarks>
     [Fact]
     public async Task ProvisionedDatabase_ReproducesEveryTerminalIdentitySeed()
@@ -567,12 +468,6 @@ public sealed class LegacySchemaFidelityTests
     /// <param name="maxLength">The terminal declared width, or <see langword="null"/>.</param>
     /// <param name="isNullable">Whether the terminal column admits nulls.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The expected values are restated here as literals rather than read from the manifest, deliberately.
-    /// Every other comparison in this file is manifest-driven, so a manifest edited to make a failure go
-    /// away would silence all of them at once; these four cases are the ones that have actually drifted,
-    /// and they fail independently of the oracle.
-    /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
     [MemberData(nameof(PreviouslyDriftedColumns))]
@@ -604,18 +499,10 @@ public sealed class LegacySchemaFidelityTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the behavioural half of the <c>Roles.PortalID</c> correction. The fixture used to declare the
-    /// column NULL, so such a row could be written, and two persistence tests were built on top of one.
-    /// Asserting the refusal is what stops that fabrication returning: it is the only form in which the
-    /// constraint can be exercised, since the mapping is deliberately more permissive than the column.
-    /// </para>
-    /// <para>
     /// The refusal must arrive from the DATABASE - error 515, "cannot insert the value NULL" - rather than
     /// from a validator or from the model, because the point is that the provisioned schema now carries the
     /// constraint a real installation carries. <c>SaveChangesAsync</c> translates only duplicate-key
     /// violations, so a null violation surfaces as a plain <see cref="DbUpdateException"/>.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task Roles_RefusesARoleThatBelongsToNoPortal()
@@ -657,18 +544,9 @@ public sealed class LegacySchemaFidelityTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The terminal column permits it, so the fixture must. The row is written through the repository rather
-    /// than by statement, because the point is that the ordinary write path reaches a column the fixture
-    /// previously refused, and it is read back both through the model and as a raw catalogue-level null so
-    /// that a null and the empty string cannot be conflated - <c>Null.NullString</c> was the empty string in
-    /// the legacy stack, which is exactly why the two must stay distinguishable here.
-    /// </para>
-    /// <para>
     /// <c>IX_PortalAlias</c> is UNIQUE over this one column and carries no filter, and SQL Server admits a
-    /// single null into such an index. One null alias is therefore all this suite may hold at a time, which is
-    /// why the row is removed on every exit path.
-    /// </para>
+    /// single null into such an index. One null alias is therefore all this suite may hold at a time, which
+    /// is why the row is removed on every exit path.
     /// </remarks>
     [Fact]
     public async Task PortalAlias_AcceptsTheNullHostNameTheTerminalSchemaPermits()
@@ -727,15 +605,14 @@ public sealed class LegacySchemaFidelityTests
         }
     }
 
-    /// <summary>
-    /// A control key longer than the twenty-character baseline is written and read back unchanged.
-    /// </summary>
+    /// <summary>A control key longer than the twenty-character baseline is written and read back unchanged.</summary>
     /// <param name="length">A key length the terminal column admits and the baseline did not.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Twenty-one characters is the first length the baseline declaration refused, and fifty is the terminal
-    /// maximum, so the pair brackets the whole of the widening. The value is asserted character for character
-    /// after the round trip, because a silent right-truncation would otherwise read as a pass.
+    /// Twenty-one characters is the first length the baseline declaration refused, and fifty is the
+    /// terminal maximum, so the pair brackets the whole of the widening. The value is asserted character
+    /// for character after the round trip, because a silent right-truncation would otherwise read as a
+    /// pass.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -805,18 +682,10 @@ public sealed class LegacySchemaFidelityTests
     /// <param name="length">A key length the terminal column admits and the baseline did not.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The row is planted by direct statement rather than through the repository, and that is a property of
-    /// the contract rather than a shortcut: <see cref="Permission.PermissionKey"/> is the closed
-    /// <see cref="PermissionKey"/> enumeration whose widest member spells five characters, so no code path in
-    /// the target can produce a longer value. What is under test here is the COLUMN, which a legacy
-    /// installation may well have widened for a third-party module's permission vocabulary - the widening
-    /// script exists precisely because one did.
-    /// </para>
-    /// <para>
-    /// The row is addressed to a module-definition identifier nothing else reads, and removed on every exit
-    /// path, so a key outside the enumeration can never reach a materialising query.
-    /// </para>
+    /// the contract rather than a shortcut: <see cref="Permission.PermissionKey"/> is the closed <see
+    /// cref="PermissionKey"/> enumeration whose widest member spells five characters, so no code path in
+    /// the target can produce a longer value.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -891,10 +760,8 @@ public sealed class LegacySchemaFidelityTests
     /// <summary>Projects every mapped column of the model into a comparable shape.</summary>
     /// <returns>One entry per column the model binds, keyed <c>Table.Column</c>.</returns>
     /// <remarks>
-    /// A property the model deliberately does not map has no column name for its table and is skipped, which
-    /// keeps an ignored property from being reported as an absent column. The store type is taken from the
-    /// configured column type where there is one and from the resolved relational type mapping otherwise,
-    /// so a column that inherits the provider's default type is compared rather than silently exempted.
+    /// A property the model deliberately does not map has no column name for its table and is skipped,
+    /// which keeps an ignored property from being reported as an absent column.
     /// </remarks>
     private static IReadOnlyList<MappedColumn> EnumerateMappedColumns()
     {
@@ -975,8 +842,8 @@ public sealed class LegacySchemaFidelityTests
     /// <returns><see langword="true"/> for <c>ntext</c>, <c>text</c> and <c>image</c>.</returns>
     /// <remarks>
     /// These three are the pre-2005 large-object types the legacy schema still uses, and they are declared
-    /// without a length. The catalogue nonetheless reports the type's capacity as a character maximum, which
-    /// is a property of the type rather than of the declaration.
+    /// without a length. The catalogue nonetheless reports the type's capacity as a character maximum,
+    /// which is a property of the type rather than of the declaration.
     /// </remarks>
     private static bool IsLegacyLargeObjectType(string dataType) =>
         dataType.Equals("ntext", StringComparison.OrdinalIgnoreCase)
@@ -1021,11 +888,8 @@ public sealed class LegacySchemaFidelityTests
             string dataType = reader.GetString(2);
             bool isNullable = string.Equals(reader.GetString(3), "YES", StringComparison.Ordinal);
 
-            // CHARACTER_MAXIMUM_LENGTH is a CHARACTER count for every string type, national ones included -
-            // it is CHARACTER_OCTET_LENGTH that reports the byte count and doubles for nvarchar. The value
-            // is therefore directly comparable with the terminal declared width and must not be halved; -1
-            // is how the catalogue spells an unbounded (max) column and is passed through as such so it can
-            // never be mistaken for a real width.
+            // CHARACTER_MAXIMUM_LENGTH is a CHARACTER count for every string type, national ones included
+            // it is CHARACTER_OCTET_LENGTH that reports the byte count and doubles for nvarchar.
             int? characterLength = reader.IsDBNull(4)
                 ? null
                 : reader.GetInt32(4);
@@ -1039,10 +903,6 @@ public sealed class LegacySchemaFidelityTests
 
     /// <summary>Reads every identity column of the provisioned <c>dbo</c> schema with its seed.</summary>
     /// <returns>The seed and increment of each identity column, keyed <c>Table.Column</c>.</returns>
-    /// <remarks>
-    /// Only the mapped tables are reported, because the provisioning scripts also create the external
-    /// membership objects and this comparison is about the mapped set.
-    /// </remarks>
     private async Task<IReadOnlyDictionary<string, (int Seed, int Increment)>> ReadIdentityColumnsAsync()
     {
         const string query =

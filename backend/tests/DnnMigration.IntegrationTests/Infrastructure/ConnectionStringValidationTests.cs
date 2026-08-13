@@ -7,22 +7,12 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Infrastructure;
 
 /// <summary>
-/// Verifies that the infrastructure registration refuses a database connection string that cannot work,
-/// at the moment the host is built rather than on the first request.
+/// Verifies that the infrastructure registration refuses a database connection string that cannot work, at
+/// the moment the host is built rather than on the first request.
 /// </summary>
 /// <remarks>
-/// <para>
-/// MIGRATION: the registration used to accept any non-blank value. That let the documented deployment
-/// template through - <c>docker/.env.example</c> shipped an active <c>DB_CONNECTION_STRING</c> whose user
-/// id and password were both <c>CHANGE_ME</c> - so the process started, the <c>/health</c> liveness probe
-/// answered 200 because it deliberately excludes the database, and compose released the frontend behind an
-/// API on which every database-backed request and every sign-in failed. The signing key already had an
-/// equivalent guard; the connection string did not, and the asymmetry was the defect.
-/// </para>
-/// <para>
 /// Every fact below also asserts that the refusal reveals NOTHING about the value, because a connection
 /// string carries a credential and a start-up exception is written to the log.
-/// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
 public class ConnectionStringValidationTests
@@ -31,10 +21,6 @@ public class ConnectionStringValidationTests
         "Server=db.example.invalid,1433;Database=DotNetNuke;User Id=dnn_app;Password=Sfx7!qLp2vRz;Encrypt=True";
 
     /// <summary>A complete, placeholder-free connection string is accepted.</summary>
-    /// <remarks>
-    /// The positive control. Without it every fact below could pass because the registration refuses
-    /// everything, which would be a different defect wearing the same green tick.
-    /// </remarks>
     [Fact]
     public void AUsableConnectionStringIsAccepted()
     {
@@ -75,11 +61,6 @@ public class ConnectionStringValidationTests
     /// sits in.
     /// </summary>
     /// <param name="connectionString">The configured value.</param>
-    /// <remarks>
-    /// The first case is the exact shape the deployment template used to ship. Matching is by containment
-    /// and case-insensitive, so the padded variants are refused too - padding a placeholder into something
-    /// that looks like a real value is the most likely way one reaches production.
-    /// </remarks>
     [Theory]
     [InlineData("Server=host.docker.internal,1433;Database=DotNetNuke;User Id=CHANGE_ME;Password=CHANGE_ME;Encrypt=True")]
     [InlineData("Server=host.docker.internal,1433;Database=DotNetNuke;User Id=dnn_app;Password=change-me-before-deploying;Encrypt=True")]
@@ -95,9 +76,9 @@ public class ConnectionStringValidationTests
     /// <param name="connectionString">The configured value.</param>
     /// <param name="expectedFragment">The wording the refusal must carry.</param>
     /// <remarks>
-    /// Each case would otherwise start a host that fails every database-backed request: a connection
-    /// string missing the server or the database can never reach the existing DotNetNuke schema, and a
-    /// user id with no password is the shape a half-edited template leaves behind.
+    /// Each case would otherwise start a host that fails every database-backed request: a connection string
+    /// missing the server or the database can never reach the existing DotNetNuke schema, and a user id
+    /// with no password is the shape a half-edited template leaves behind.
     /// </remarks>
     [Theory]
     [InlineData("Database=DotNetNuke;User Id=dnn_app;Password=Sfx7!qLp2vRz", "names no server")]
@@ -131,10 +112,6 @@ public class ConnectionStringValidationTests
 
     /// <summary>No refusal reproduces the server, the database, the login or the password.</summary>
     /// <param name="connectionString">A refused value.</param>
-    /// <remarks>
-    /// Asserted across every refusal class rather than once, because a message added later to one branch
-    /// would otherwise be the only place the rule is not checked.
-    /// </remarks>
     [Theory]
     [InlineData("Server=secret-host.internal,1433;Database=SecretCatalog;User Id=SecretLogin;Password=CHANGE_ME")]
     [InlineData("Database=SecretCatalog;User Id=SecretLogin;Password=Sfx7!qLp2vRz")]

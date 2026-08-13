@@ -8,28 +8,13 @@ namespace DnnMigration.IntegrationTests.Infrastructure;
 /// Guards the supply-chain pin on the SQL Server image this suite provisions when the container route is
 /// opted into.
 /// </summary>
-/// <remarks>
-/// <para>
-/// DEP-04. The reference used to name a cumulative-update tag and record its digest only in a remark, so
-/// nothing enforced the match. A cumulative-update tag is immutable BY CONVENTION, not by construction: a
-/// registry may move it, and a re-pushed or compromised tag would then be pulled and trusted without a
-/// single line of this repository changing. These facts make the pin structural.
-/// </para>
-/// <para>
-/// They are unit-shaped on purpose - no Docker daemon, no network, no container - because what they protect
-/// is the REFERENCE, and a fact that needed a daemon would be skipped in exactly the environments where a
-/// silent regression matters most.
-/// </para>
-/// </remarks>
 [Trait("Category", "Integration")]
 public sealed class ContainerImagePinTests
 {
     /// <summary>The digest separator every pinned reference must carry.</summary>
     private const string DigestPrefix = "@sha256:";
 
-    /// <summary>
-    /// The reference is pinned by manifest digest, and the digest is a full-length SHA-256.
-    /// </summary>
+    /// <summary>The reference is pinned by manifest digest, and the digest is a full-length SHA-256.</summary>
     [Fact]
     public void ContainerImageIsDigestPinned()
     {
@@ -68,12 +53,6 @@ public sealed class ContainerImagePinTests
     /// <summary>
     /// The pinned Testcontainers line can actually PARSE the reference, and round-trips it unchanged.
     /// </summary>
-    /// <remarks>
-    /// This is the fact that makes the pin real rather than merely well-intentioned. <c>WithImage(string)</c>
-    /// hands the reference to this parser, so a reference this type mangles or rejects is a reference the
-    /// container route cannot use - and the failure would appear only when somebody opted into the container
-    /// route, which is not where anybody is looking.
-    /// </remarks>
     [Fact]
     public void PinnedTestcontainersParsesTheReferenceUnchanged()
     {
@@ -88,19 +67,6 @@ public sealed class ContainerImagePinTests
     /// The conventional combined <c>name:tag@sha256:...</c> form is REFUSED by the pinned Testcontainers
     /// line, which is the whole reason the reference above is digest-only.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// ⚠ THIS FACT EXISTS TO STOP A WELL-MEANING CORRECTION. The combined form is what a reviewer, a
-    /// linter or a hardening guide will suggest, and it reads better - but <c>DockerImage</c> on this line
-    /// has no digest concept at all and raises on it, so adopting it would break the container route while
-    /// looking like an improvement. Upgrading the library to gain support is not open either: AAP 0.6.4
-    /// rejects <c>Testcontainers.MsSql 4.13.0</c>.
-    /// </para>
-    /// <para>
-    /// If this fact ever FAILS, the library has gained digest support - and then the combined form becomes
-    /// the better reference and both this fact and the pin should change together.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void CombinedTagAndDigestFormIsRefusedByThePinnedTestcontainersLine()
     {

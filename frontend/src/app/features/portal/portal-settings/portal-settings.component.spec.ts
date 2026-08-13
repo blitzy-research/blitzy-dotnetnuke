@@ -1,124 +1,4 @@
-//
-// Specification for the portal settings screen — the Angular 19 replacement for the
-// DotNetNuke 4.9.0 "Site Settings" administration page.
-//
-// ---------------------------------------------------------------------------
 // WHY THIS FILE CARRIES MORE WEIGHT THAN ITS THREE SIBLINGS
-// ---------------------------------------------------------------------------
-// `tsconfig.app.json` compiles by IMPORT GRAPH from `src/main.ts` and includes only
-// declaration files besides, so it never reads a spec. `tsconfig.spec.json` is the one
-// project that includes `src/**/*.spec.ts`, and the workspace test target compiles with it.
-// This file is therefore the only thing that type-checks `portal-settings.component.ts`
-// AND its template, and the only thing that executes either. A thin spec here leaves the
-// other three files in the folder unverified, so the coverage below is deliberately
-// exhaustive rather than representative.
-//
-// ---------------------------------------------------------------------------
-// WHAT IS REAL AND WHAT IS STOOD IN FOR
-// ---------------------------------------------------------------------------
-// The screen is exercised through its REAL collaborators — the portal signal store, the
-// portal transport, the page transport and the notification queue — with a real HTTP client
-// whose backend is the testing controller. Nothing between the component and the wire is
-// replaced, so every case below proves the whole path: a route input reaches the store, the
-// store reaches the transport, the transport composes a URL and a body, and the answer (or
-// the refusal) comes back through the same chain the browser uses.
-//
-// Exactly ONE collaborator is stood in for: the identity store. This screen reads two facts
-// from it — whether the caller holds the host account, and which portal the session is
-// browsing — and both are derived from a persisted credential. Driving them through the real
-// store would couple this specification to how a session is stored rather than to what this
-// screen does with the answer, so a value carrying those two signals and NOTHING ELSE takes
-// its place. `useValue` is not checked against the token it stands in for, so a member added
-// "just in case" would never be reported as unused; the double is kept to the two members
-// the screen actually reads.
-//
-// The router is real and its navigation is spied on, because two of the cases below are
-// about navigation that must NOT happen.
-//
-// ---------------------------------------------------------------------------
-// THE URL CONTRACT: RELATIVE, ALWAYS
-// ---------------------------------------------------------------------------
-// The workspace build swaps the environment file for the DEVELOPMENT configuration, not for
-// the production one — the production file is the default. The test target declares no such
-// swap at all, so a spec compiles against the production environment, whose API base is the
-// RELATIVE `/api/v1`.
-//
-// That is not an accident of configuration, it is the deployment contract: the reverse proxy
-// in front of the two containers serves the application and forwards the API prefix to the
-// API container, so the browser must address the API through the SAME ORIGIN that served the
-// page. An absolute host would resolve only inside the container network and would fail from
-// a browser while both containers reported healthy.
-//
-// Every expectation below therefore matches a relative path beginning `/api/v1`. No absolute
-// host appears anywhere in this file, and the environment module is deliberately not
-// imported — the literal prefix is asserted instead, so a change to the base URL is a failing
-// test rather than a silently agreeing one.
-//
-// ---------------------------------------------------------------------------
-// THE BODY CONTRACT
-// ---------------------------------------------------------------------------
-// Three shapes travel, and the fixtures below reproduce all three:
-//
-//   * a SINGLE PAYLOAD arrives inside `{ data, meta }` — the settings projection, the portal
-//     detail and the UNPAGED page listing all use it, and the transports unwrap it;
-//   * a PAGE arrives as `{ items, meta }` at the top level — the portal listing, which the
-//     store re-reads after every successful write;
-//   * a FAILURE arrives as an HTTP status plus a problem document. A result envelope never
-//     crosses the wire, so no case below simulates a failure with a `200`.
-//
-// The API's serializer writes EVERY declared member and spells absence as the value `null`
-// rather than by omitting the member, and the client decoders enforce that: a missing member
-// is drift and is refused. Every fixture is therefore COMPLETE. That is not pedantry — an
-// abbreviated fixture would hide exactly the defect this screen is most exposed to, because
-// `-1`, `0`, `""` and `false` are all DATA here and a coalescing fallback over an absent
-// member would look correct against a short fixture and be wrong against a real response.
-//
-// ---------------------------------------------------------------------------
-// THE SENTINEL MATRIX THE CASES BELOW ARE BUILT AROUND
-// ---------------------------------------------------------------------------
-// `Library/Components/Shared/Null.vb` spells absence as `-1` for an integer, `255` for a
-// byte, the minimum value for each floating type, `Date.MinValue` for a date, the EMPTY
-// STRING for a string, `False` for a boolean and the empty identifier for a globally unique
-// one. Two of those collide with real data in this very screen:
-//
-//   * `dbo.Portals.PortalID` is declared `IDENTITY (-1, 1)`, so the FIRST portal an
-//     installation ever creates carries `-1` and the second carries `0` — and `-1` is
-//     simultaneously the absent-integer marker;
-//   * `dbo.Tabs.TabID` is declared `IDENTITY (0, 1)`, so page `0` is an ordinary page, while
-//     the synthetic "none specified" option the legacy page list prepended carries `-1`.
-//
-// Every case that touches an identifier, a quota or a date is written to fail if a truthiness
-// test or a coalescing default has crept in.
-//
-// ---------------------------------------------------------------------------
-// PROVENANCE OF EVERY ASSERTED STRING AND RULE
-// ---------------------------------------------------------------------------
-//   Website/admin/Portal/sitesettings.ascx                568 lines. 13 section heads, of
-//                                                         which exactly 3 are top level;
-//                                                         9 measured character limits;
-//                                                         EXACTLY 2 validators, both
-//                                                         data-type comparisons
-//   Website/admin/Portal/SiteSettings.ascx.vb             896 lines. Hydration, the four
-//                                                         identical page reads, the banner
-//                                                         lock, the host-field refusal, the
-//                                                         host-account gate, the delete
-//   Website/admin/Portal/App_LocalResources/
-//     SiteSettings.ascx.resx                              141 entries. The authoritative
-//                                                         wording, which BEATS the markup
-//   Website/App_GlobalResources/SharedResources.resx      the shared wording
-//   Website/controls/sectionheadcontrol.ascx              the toggle whose negative tab index
-//                                                         the target reverses
-//   Library/Components/Shared/Globals.vb  L812-L852       GetPortalTabs, the canonical body
-//   Library/Components/Shared/Null.vb                     the sentinel contract
-//   Library/Components/Portal/PortalInfo.vb               the CLR type of every column
-//   Library/Components/Portal/PortalController.vb         the replaced write contract
-//   Library/Components/Portal/PortalSettings.vb           the proof that no portal-settings
-//                                                         table exists
-//   Website/release.config              L125              the strictness-off compilation
-//
-// Every one of those measurements was re-taken against the checkout before being asserted
-// here; none is carried over on trust.
-//
 
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -153,18 +33,16 @@ import type { TabListItem } from '../../../core/models/tab.model';
 // ---------------------------------------------------------------------------
 
 /**
- * The versioned prefix, spelled out rather than imported.
- *
- * Asserting the literal is the point: importing the environment module would make every
- * expectation below agree with whatever the base URL happened to be, which is the one thing
- * a specification of a deployment contract must not do.
+ * The versioned prefix, spelled out rather than imported. Asserting the literal is the point: importing
+ * the environment module would make every expectation below agree with whatever the base URL happened to
+ * be, which is the one thing a specification of a deployment contract must not do.
  */
 const API = '/api/v1';
 
 /** The portal collection. The store re-reads it after every successful write. */
 const PORTALS_URL = `${API}/portals`;
 
-/** One portal, addressed by identifier. Also the delete target. */
+/** One portal, addressed by identifier. */
 function portalUrl(portalId: number): string {
   return `${PORTALS_URL}/${portalId}`;
 }
@@ -175,46 +53,24 @@ function settingsUrl(portalId: number): string {
 }
 
 /**
- * The accounts one portal may designate as its administrator.
- *
- * MIGRATION: this read lives on the PORTAL resource because the portal has to come from the
- * path. Every role read resolves its tenant from the caller's own context, so none of them can
- * enumerate the administrators of the portal a settings screen is addressing — which is what left
- * the administrator displayable and not reassignable.
+ * The accounts one portal may designate as its administrator. this read lives on the PORTAL resource
+ * because the portal has to come from the path.
  */
 function administratorsUrl(portalId: number): string {
   return `${PORTALS_URL}/${portalId}/administrators`;
 }
 
-/**
- * One portal's pages.
- *
- * Nested under the portal because the LISTING belongs to a portal, while operations on an
- * individual page are addressed at the root. The two shapes are not one prefixed family and
- * are not modelled as one here.
- */
+/** One portal's pages. */
 function tabsUrl(portalId: number): string {
   return `${PORTALS_URL}/${portalId}/tabs`;
 }
 
-/**
- * The namespace the API puts in front of every failure code it publishes.
- *
- * Lower case, and part of the WIRE CONTRACT rather than a project identifier: the server
- * builds this exact string, the shared failure reader recognises a code only behind it, and
- * thirty-two sibling specifications in this workspace spell it the same way. A document whose
- * `type` lacks it carries no code at all, which is why the refusal cases below include it.
- */
+/** The namespace the API puts in front of every failure code it publishes. */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
 /**
- * The published code for the last-remaining-portal refusal, as ONE dotted string.
- *
- * The legacy antecedent is the shared resource key `LastPortal`, whose wording is asserted
- * verbatim further down. The code itself is `portal.last_remaining` — the spelling the server
- * emits and the shared conflict table recognises — and it is never split, re-cased or
- * rebuilt from parts, because the reader lower-cases and folds separators and would silently
- * fail to match a hand-assembled variant.
+ * The published code for the last-remaining-portal refusal, as ONE dotted string. The legacy antecedent
+ * is the shared resource key `LastPortal`, whose wording is asserted verbatim further down.
  */
 const LAST_PORTAL_CODE = 'portal.last_remaining';
 
@@ -231,12 +87,8 @@ function envelope<T>(data: T): { readonly data: T; readonly meta: null } {
 }
 
 /**
- * An empty portal listing page.
- *
- * Needed because the store re-reads the listing after a successful save and after a
- * successful delete, so every such case has a third request to answer. `totalCount: 0` and
- * `pageIndex: 0` are ordinary values for an empty first page and are not treated as absence
- * by anything that reads them.
+ * An empty portal listing page. Needed because the store re-reads the listing after a successful save and
+ * after a successful delete, so every such case has a third request to answer.
  */
 function emptyPortalPage(): {
   readonly items: readonly never[];
@@ -254,12 +106,8 @@ function emptyPortalPage(): {
 }
 
 /**
- * A settings projection whose awkward values are the interesting ones.
- *
- * The fee and the three quotas are `0` — real stored values that must render as the literal
- * `0`. The expiry is the LEGACY DATE SENTINEL, so the box must come out empty. The splash
- * page is absent and the home page is `0`, which is a real page. Every one of the twenty-seven
- * members is present, because the serializer writes every one.
+ * A settings projection whose awkward values are the interesting ones. The fee and the three quotas are
+ * `0` — real stored values that must render as the literal `0`.
  */
 function settingsBody(overrides: Partial<PortalSettings> = {}): PortalSettings {
   return {
@@ -290,20 +138,11 @@ function settingsBody(overrides: Partial<PortalSettings> = {}): PortalSettings {
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     guid: 'a2f9c1d4-5b6e-4a70-8c91-0d3e2f4b6a80',
-    // The opaque revision marker every portal read publishes. The screen round-trips it on the
-    // replacement so a save composed against a superseded revision is refused rather than applied.
     concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
 
-/**
- * A portal detail.
- *
- * Read alongside the projection because it is the only source of the portal's ADMINISTRATION
- * PAGE, without which the administration band cannot be excluded from the four page
- * selectors. The legacy screen had the whole portal in hand for the same reason.
- */
 function detailBody(overrides: Partial<PortalDetail> = {}): PortalDetail {
   return {
     portalId: 0,
@@ -371,23 +210,7 @@ function pageRow(overrides: Partial<TabListItem> = {}): TabListItem {
   };
 }
 
-/**
- * The page listing every selector case shares.
- *
- * Deliberately built to exercise the whole of the measured filter at once, so a single fetch
- * proves seven rules:
- *
- *   * page `0` is a root page and a REAL page, not the absent marker;
- *   * page `4` is a level-one CHILD OF PAGE 0, which proves `0` is a real parent — root
- *     detection must not be "has a falsy parent";
- *   * page `5` is a level-two grandchild, so the indent must repeat;
- *   * page `6` is INVISIBLE and must still appear, because the legacy call asked for hidden
- *     pages;
- *   * page `7` is RECYCLED and must not appear;
- *   * page `8` carries a URL and must not appear, the legacy type test admitting only pages
- *     whose URL is empty;
- *   * page `90` is the administration page and page `91` is its child, and neither may appear.
- */
+/** The page listing every selector case shares. */
 function pageListing(): readonly TabListItem[] {
   return [
     pageRow({ tabId: 0, tabName: 'Home', level: 0, parentId: null, tabOrder: 1 }),
@@ -407,14 +230,7 @@ function pageListing(): readonly TabListItem[] {
   ];
 }
 
-/**
- * The accounts the administrator selector offers by default.
- *
- * Account `2` is the one {@link settingsBody} designates, so the ordinary case has a stored value
- * that the list can select. Account `3` is a second eligible administrator, which is what makes a
- * REASSIGNMENT expressible — a single-entry list could not distinguish "the selector works" from
- * "the selector happens to hold the value it started with".
- */
+/** The accounts the administrator selector offers by default. */
 function administratorListing(): readonly PortalAdministrator[] {
   return [
     { userId: 2, username: 'ada', displayName: 'Ada Lovelace' },
@@ -422,13 +238,7 @@ function administratorListing(): readonly PortalAdministrator[] {
   ];
 }
 
-/**
- * A problem document, as the API writes one.
- *
- * All five members the error contract names are present — the type carrying the published
- * code, the title, the status, the detail and the per-field dictionary — plus the trace
- * identifier the document model also carries.
- */
+/** A problem document, as the API writes one. */
 function problemBody(
   status: number,
   overrides: {
@@ -461,41 +271,27 @@ describe('PortalSettingsComponent', () => {
   let http: HttpTestingController;
   let notifications: NotificationService;
   let router: Router;
-  /*
-   * Typed with the OPTIONAL second argument the router actually accepts, because this screen now uses
-   * it: the post-delete departure replaces the address rather than pushing it, since the portal the
-   * screen described no longer exists. The cancel departure still passes one argument, and the case
-   * that pins it asserts exactly that.
-   */
+  // Typed with the OPTIONAL second argument the router actually accepts, because this screen now uses it:
+  // the post-delete departure replaces the address rather than pushing it, since the portal the screen
+  // described no longer exists.
   let navigate: jasmine.Spy<(url: string, extras?: { replaceUrl?: boolean }) => Promise<boolean>>;
 
   /** Whether the caller holds the host account, under test control. */
   let holdsHostAccount: WritableSignal<boolean>;
 
-  /** The portal the session is browsing, under test control. `null` is "nobody signed in". */
+  /** The portal the session is browsing, under test control. */
   let browsingPortalId: WritableSignal<number | null>;
 
   // -------------------------------------------------------------------------
   // Reaching the component
   // -------------------------------------------------------------------------
 
-  /**
-   * Reads a member the component keeps for its template.
-   *
-   * Those members are not part of the class's outward surface — the screen is reached by lazy
-   * route load and nothing outside it calls them — so they are read here through a narrow
-   * indexed view rather than by widening the instance to the forbidden catch-all type.
-   */
+  /** Reads a member the component keeps for its template. */
   function member<T>(name: string): T {
     return (component as unknown as Record<string, T>)[name];
   }
 
-  /**
-   * Invokes one of those members as a method, with the component as its receiver.
-   *
-   * The argument list is a mutable array because the reflective apply requires one; it is
-   * built here and never escapes, so nothing outside can mutate it.
-   */
+  /** Invokes one of those members as a method, with the component as its receiver. */
   function invoke<T>(name: string, ...args: unknown[]): T {
     const method = member<(...called: unknown[]) => T>(name);
 
@@ -507,12 +303,7 @@ describe('PortalSettingsComponent', () => {
     return (component as unknown as { form: PortalSettingsComponent['form'] }).form;
   }
 
-  /**
-   * The rendered host element, typed.
-   *
-   * The framework leaves `nativeElement` untyped, and an untyped receiver cannot take the
-   * type argument the query helpers need, so the narrowing happens once here.
-   */
+  /** The rendered host element, typed. */
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
   }
@@ -530,7 +321,7 @@ describe('PortalSettingsComponent', () => {
     return (element?.textContent ?? '').replace(/\s+/gu, ' ').trim();
   }
 
-  /** The whole screen's rendered text, collapsed. Used for the absence cases. */
+  /** The whole screen's rendered text, collapsed. */
   function screenText(): string {
     return text(host());
   }
@@ -575,12 +366,7 @@ describe('PortalSettingsComponent', () => {
     );
   }
 
-  /**
-   * The grouped field set a disclosure caption belongs to.
-   *
-   * Located from the caption rather than from a position, so inserting a group elsewhere
-   * cannot make one of these cases silently assert about a different section.
-   */
+  /** The grouped field set a disclosure caption belongs to. */
   function sectionFieldset(caption: string): HTMLFieldSetElement | null {
     return (
       queryAll<HTMLFieldSetElement>('fieldset.portal-settings__section').find(
@@ -613,14 +399,6 @@ describe('PortalSettingsComponent', () => {
     return found === null ? [] : Array.from(found.options).map((option) => option.textContent ?? '');
   }
 
-  /**
-   * The value one option carries, with the framework's index prefix removed.
-   *
-   * A selector bound with a NUMERIC option value keeps that number in the model and writes the
-   * document value as `"<index>: <value>"`, so that two options can never collide after being
-   * turned into text. The number is what the legacy option carried and what these cases assert;
-   * the prefix is framework bookkeeping and is stripped here once rather than at each call site.
-   */
   function optionValue(option: HTMLOptionElement): string {
     const separator = option.value.indexOf(': ');
 
@@ -647,12 +425,7 @@ describe('PortalSettingsComponent', () => {
     return chosen === null ? '' : optionValue(chosen);
   }
 
-  /**
-   * Narrows a query result, failing the case with a legible reason when nothing rendered.
-   *
-   * Preferred over a non-null assertion throughout: an assertion silently produces a
-   * `TypeError` several lines later, whereas this names the element that was expected.
-   */
+  /** Narrows a query result, failing the case with a legible reason when nothing rendered. */
   function required<T>(value: T | null | undefined, what: string): T {
     if (value === null || value === undefined) {
       throw new Error(`Expected ${what} to be rendered, but it was not.`);
@@ -682,14 +455,7 @@ describe('PortalSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Opens a disclosure, whatever state it is already in.
-   *
-   * Written as "ensure open" rather than "toggle" because the disclosure state belongs to the
-   * component and survives a change of route input: a setup step that toggled blindly would
-   * CLOSE a section a previous step had already opened. The raw toggle is exercised on its own
-   * further down, where the toggling itself is the subject.
-   */
+  /** Opens a disclosure, whatever state it is already in. */
   function ensureSectionOpen(section: string): void {
     if (!invoke<boolean>('isSectionOpen', section)) {
       invoke<void>('toggleSection', section);
@@ -703,17 +469,9 @@ describe('PortalSettingsComponent', () => {
   // -------------------------------------------------------------------------
 
   /**
-   * Answers the four reads a portal identifier starts, and renders the result.
-   *
-   * The identifier setter issues exactly four: the configuration projection it edits, the portal
-   * detail that supplies the administration page, the portal's pages, and the accounts eligible to
-   * administer it. They are matched by URL rather than by arrival order, because the order is the
-   * setter's business and not a contract worth freezing here.
-   *
-   * `administrators` defaults to the two candidates {@link administratorListing} defines, one of
-   * which is the administrator {@link settingsBody} designates — so a case that says nothing about
-   * the selector still gets a list that can select the stored value, which is the ordinary state.
-   * Pass `null` to refuse the read instead.
+   * Answers the four reads a portal identifier starts, and renders the result. The identifier setter
+   * issues exactly four: the configuration projection it edits, the portal detail that supplies the
+   * administration page, the portal's pages, and the accounts eligible to administer it.
    */
   function arrive(
     portalId: number,
@@ -747,12 +505,8 @@ describe('PortalSettingsComponent', () => {
   }
 
   /**
-   * Answers the administrator-candidate read for one portal.
-   *
-   * ⚠ EVERY MOUNT ISSUES IT, because the selector cannot be offered without it. A case that
-   * drives the identifier setter by hand rather than through {@link arrive} therefore has to
-   * settle it too, or the unconditional verification in `afterEach` reports it as an unexpected
-   * outstanding request rather than failing on the case's own subject.
+   * Answers the administrator-candidate read for one portal. ⚠ EVERY MOUNT ISSUES IT, because the
+   * selector cannot be offered without it.
    *
    * @param portalId The portal whose candidates to answer.
    * @param candidates The accounts to answer with.
@@ -764,15 +518,7 @@ describe('PortalSettingsComponent', () => {
     http.expectOne(administratorsUrl(portalId)).flush(envelope(candidates));
   }
 
-  /**
-   * Answers the portal-listing re-read that the portal WRITE commands perform.
-   *
-   * Still needed, and the distinction from {@link expectNoListingRefresh} is the point: creating,
-   * replacing or REMOVING a portal refreshes the listing unconditionally, because those are
-   * host-account operations and a host may read it. Saving a portal's SETTINGS does not, because
-   * this screen is also reachable by a portal administrator who may not. The two helpers keep that
-   * distinction visible in every case that saves or deletes.
-   */
+  /** Answers the portal-listing re-read that the portal WRITE commands perform. */
   function answerListingRefresh(): void {
     http
       .expectOne((candidate) => candidate.url === PORTALS_URL)
@@ -780,29 +526,20 @@ describe('PortalSettingsComponent', () => {
   }
 
   /**
-   * Asserts that a successful write issued NO portal-listing read.
-   *
-   * ⚠ THIS HELPER USED TO ANSWER SUCH A READ, AND THE READ WAS A DEFECT. The store re-read the
-   * listing after every settings write, which is right when a listing is on screen and wrong
-   * here: THIS screen never reads the listing, and a portal administrator - who is exactly who
-   * reaches it - is not permitted to. Measured against the running API, every save therefore
-   * produced `GET /api/v1/portals` → 403, a console error, and a globally-raised warning
-   * notification complaining about a listing the operator never asked for, on whatever screen
-   * they had navigated to by the time the response landed, immediately after a save that had
-   * SUCCEEDED. The store now refreshes only a listing it has actually read, so the correct
-   * assertion here is the absence of the request rather than an answer to it.
+   * Asserts that a successful write issued NO portal-listing read. ⚠ THIS HELPER USED TO ANSWER SUCH A
+   * READ, AND THE READ WAS A DEFECT. The store re-read the listing after every settings write, which is
+   * right when a listing is on screen and wrong here: THIS screen never reads the listing, and a portal
+   * administrator - who is exactly who reaches it - is not permitted to.
    */
   function expectNoListingRefresh(): void {
     http.expectNone((candidate) => candidate.url === PORTALS_URL);
   }
 
   /**
-   * Takes the pending settings write off the queue.
-   *
-   * ⚠ CALL THIS ONCE PER CASE. The testing controller REMOVES a request as soon as it is
-   * matched, so asking for the same write twice reports "found none" the second time. Every case
-   * below therefore captures the write, inspects it, and completes it — which is also the only
-   * ordering in which the captured request is still answerable.
+   * Takes the pending settings write off the queue. ⚠ CALL THIS ONCE PER CASE. The testing controller
+   * REMOVES a request as soon as it is matched, so asking for the same write twice reports "found none"
+   * the second time. Every case below therefore captures the write, inspects it, and completes it — which
+   * is also the only ordering in which the captured request is still answerable.
    */
   function takeSave(portalId: number): TestRequest {
     return http.expectOne(
@@ -820,26 +557,14 @@ describe('PortalSettingsComponent', () => {
     return Object.keys(bodyOf(write));
   }
 
-  /**
-   * One member of a captured write, read by name.
-   *
-   * Needed for the members the contract does NOT declare: the absence cases below have to ask
-   * for a name that is not in the type, which a typed read cannot express. The value comes back
-   * as `unknown`, so each case still has to say what it expected.
-   */
+  /** One member of a captured write, read by name. */
   function memberOf(write: TestRequest, name: string): unknown {
     const body = write.request.body as Readonly<Record<string, unknown>>;
 
     return body[name];
   }
 
-  /**
-   * Completes a captured write.
-   *
-   * No listing read is answered afterwards, because none is issued: see
-   * {@link expectNoListingRefresh}. The absence is asserted rather than merely tolerated, so a
-   * re-introduced unconditional refresh fails every case that saves.
-   */
+  /** Completes a captured write. */
   function completeSave(write: TestRequest, stored: PortalSettings = settingsBody()): void {
     write.flush(envelope(stored));
     expectNoListingRefresh();
@@ -863,14 +588,8 @@ describe('PortalSettingsComponent', () => {
   }
 
   /**
-   * The most recently queued notification, or null when the queue is empty.
-   *
-   * ⚠ THE SUPPORT REFERENCE IS PROJECTED ALONGSIDE THE MESSAGE, and it was not. A refusal presented as a
-   * notification now carries the identifier from its problem document, on its own member, exactly as one
-   * presented through the shared banner always has - the queue appends it to the message only AFTER
-   * applying its own length bound, precisely so a long server sentence cannot truncate it away. A
-   * projection that dropped it left cases unable to assert the rule at all, and forced the one case that
-   * cared into an equality on the composed string that broke the moment the reference appeared in it.
+   * The most recently queued notification, or null when the queue is empty. ⚠ THE SUPPORT REFERENCE IS
+   * PROJECTED ALONGSIDE THE MESSAGE, and it was not.
    */
   function latestNotification(): {
     readonly severity: string;
@@ -892,9 +611,9 @@ describe('PortalSettingsComponent', () => {
     TestBed.configureTestingModule({
       imports: [PortalSettingsComponent],
       providers: [
-        // ORDER IS LOAD-BEARING. The testing provider replaces the BACKEND of an
-        // already-configured client, so the client must be configured first; reversed, the
-        // client keeps its real backend and every request below would escape unintercepted.
+        // ORDER IS LOAD-BEARING. The testing provider replaces the BACKEND of an already-configured client,
+        // so the client must be configured first; reversed, the client keeps its real backend and every
+        // request below would escape unintercepted.
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
@@ -919,25 +638,13 @@ describe('PortalSettingsComponent', () => {
   });
 
   afterEach(() => {
-    // The proof that nothing stray or duplicated was issued. It is what turns "the pages are
-    // read once" from a claim into a check: a second identical read would be an unmatched
-    // request and would fail here even if no case asserted a count.
+    // The proof that nothing stray or duplicated was issued. It is what turns "the pages are read once"
+    // from a claim into a check: a second identical read would be an unmatched request and would fail here
+    // even if no case asserted a count.
     http.verify();
   });
 
-
-  // =========================================================================
-  // A. THE IDENTITY TRAP — `0` AND `-1` ARE BOTH REAL PORTALS
-  // =========================================================================
-  //
-  // `dbo.Portals.PortalID` is declared `IDENTITY (-1, 1)`, so the first portal an
-  // installation creates carries `-1` and the second carries `0`. `-1` is at the same time
-  // the legacy absent-integer marker, whose definition is literally `Return -1`. The number
-  // therefore means both "the first portal" and "no portal", distinguishable only by context
-  // that neither a transport nor a route binding has.
-  //
-  // A truthiness test drops the SECOND portal. A comparison against the marker drops the
-  // FIRST. Both cases below exist to make either mistake fail loudly.
+  // A. THE IDENTITY TRAP — `0` AND `-1` ARE BOTH REAL PORTALS.
 
   describe('A. the portal identifier', () => {
     it('reads, and renders, the portal identified as 0', () => {
@@ -999,9 +706,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('converts the string route segments "0" and "-1" to the right numbers', () => {
-      // A path segment is text. `Number('0')` is `0`, which is falsy, while the string `'0'`
-      // is truthy, so any conversion leaning on truthiness disagrees with itself depending on
-      // which side of the conversion it sits.
       fixture.componentRef.setInput('portalId', '0');
 
       expect(component.portalId).toBe(0);
@@ -1049,23 +753,7 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // B. THE EXPIRY-DATE SENTINEL
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L341-L343`: the assignment is guarded by the legacy
-  // absence test, so a portal with no expiry showed an EMPTY box and never a placeholder date.
-  // The absent date is `Date.MinValue`, which serialises as `0001-01-01T00:00:00`.
-  //
-  // ⚠ DIVERGENCE FROM THE FOLDER BRIEF, ASSERTED AS THE CODE ACTUALLY BEHAVES. The brief asks
-  // that a blank box SEND the sentinel. The screen sends ABSENCE, and its own inline note gives
-  // two measured reasons: the column is `datetime`, whose earliest representable instant is
-  // 1753-01-01, so the sentinel is not storable and every save from a blank box would be
-  // refused; and the legacy write path converted a date equal to the sentinel to a database
-  // null BEFORE it reached the stored procedure, so the sentinel only ever existed in memory.
-  // The sentinel is therefore preserved exactly where it was observable — in the blank box —
-  // and absence is preserved where it was stored. The cases below assert that split, and the
-  // divergence is reported rather than absorbed.
+  // B. THE EXPIRY-DATE SENTINEL.
 
   describe('B. the expiry date', () => {
     beforeEach(() => {
@@ -1096,21 +784,10 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('CANNOT be handed the legacy date sentinel by this contract, and never sends it', () => {
-      // ⚠ REPORTED RATHER THAN ASSUMED. The folder brief expects a response carrying
-      // `0001-01-01T00:00:00` and a write carrying it back. Neither is reachable through this
-      // contract, and the reason is measured on both sides:
-      //
-      //   * the projection member is a NULLABLE date on the server and a nullable string here, so
-      //     an absent expiry is written as the value `null`, not as a minimum-value date; and
-      //   * the column is `datetime`, whose earliest representable instant is 1753-01-01, so the
-      //     sentinel cannot be stored and therefore cannot be read back either. The legacy write
-      //     path converted a date equal to the sentinel to a database null BEFORE it reached the
-      //     stored procedure, so the sentinel only ever existed in memory.
-      //
-      // The sentinel is preserved exactly where it WAS observable — the blank box, asserted above
-      // — and absence is preserved where it was stored. What matters for a save is that the
-      // sentinel never travels, because a save carrying it would be refused outright, and that
-      // is what this case pins.
+      // * the projection member is a NULLABLE date on the server and a nullable string here, so an absent
+      // expiry is written as the value `null`, not as a minimum-value date; and * the column is `datetime`,
+      // whose earliest representable instant is 1753-01-01, so the sentinel cannot be stored and therefore
+      // cannot be read back either.
       arrive(0, { settings: settingsBody({ expiryDate: null }) });
       showAdvanced();
       ensureSectionOpen('host');
@@ -1167,32 +844,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // C. THE FOUR PAGE SELECTORS — ONE FETCH, ONE OPTION SET
-  // =========================================================================
-  //
-  // All four legacy selectors were filled by the SAME call, written out four times with
-  // identical arguments at `SiteSettings.ascx.vb:L299`, `L304`, `L309` and `L314`:
-  // `GetPortalTabs(intPortalId, True, True, False, False, False)`. The canonical body at
-  // `Library/Components/Shared/Globals.vb:L812-L852` resolves those five flags to:
-  //
-  //   * none-specified TRUE  → prepend a synthetic option whose identifier is `-1`, named
-  //                            `"<" + None_Specified + ">"`, and SELECTABLE rather than a
-  //                            disabled prompt — choosing it is how an operator says the
-  //                            portal has no such page;
-  //   * hidden TRUE          → invisible pages ARE included;
-  //   * deleted FALSE        → recycled pages are excluded;
-  //   * URL FALSE            → only pages of the Normal type, which the legacy type reader
-  //                            returns exactly when the page's URL is empty;
-  //   * authorised FALSE     → no role filtering whatsoever;
-  //   * unconditionally      → administration pages are excluded.
-  //
-  // The indent is the only hierarchy cue the screen has: `"..."` repeated once per level and
-  // prefixed to the name.
-  //
-  // The failure being guarded is four identical requests for one answer. It is asserted twice
-  // over: by counting the matches, and by the afterEach verification, which fails on a second.
-
   describe('C. the four page selectors', () => {
     beforeEach(() => {
       arrive(0);
@@ -1200,15 +851,8 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('issues EXACTLY ONE page-listing read, counted before it is answered', () => {
-      // The count has to be taken while the request is still outstanding, which means a portal
-      // this case has not already arrived at — the identifier setter compares values and does
-      // nothing when handed the one it already holds.
       fixture.componentRef.setInput('portalId', 7);
 
-      // ⚠ THE MEASUREMENT. Four identical reads — one per selector — is the failure mode the
-      // legacy screen exhibited: `GetPortalTabs` was called four times over, at
-      // SiteSettings.ascx.vb L299, L304, L309 and L314, with byte-identical arguments. One
-      // answer serves all four selectors, so exactly one request may exist.
       const listings: readonly TestRequest[] = http.match(tabsUrl(7));
 
       expect(listings.length).toBe(1);
@@ -1251,9 +895,6 @@ describe('PortalSettingsComponent', () => {
       const options = required(selector('splashTabId'), 'the splash-page selector').options;
       const first = required(options.item(0), 'the first splash-page option');
 
-      // The angle brackets are part of the legacy DISPLAY STRING, built as
-      // `"<" + None_Specified + ">"` where the shared wording is `None Specified`. They are
-      // not markup and are never interpreted as such.
       expect(first.textContent).toBe('<None Specified>');
       expect(optionValue(first)).toBe('-1');
       expect(first.disabled).toBeFalse();
@@ -1263,9 +904,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('selects that option for every one of the four absent page references', () => {
-      // A DIFFERENT portal, so the route input genuinely changes and the screen re-reads. The
-      // input binding is skipped for an identical value, which is correct behaviour and is why
-      // no case here re-binds the same identifier expecting a fresh read.
       arrive(1, {
         settings: settingsBody({
           portalId: 1,
@@ -1322,9 +960,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('applies NO authorisation filtering — a page the caller could not view is still listed', () => {
-      // The legacy call passed the check-authorised flag as False, so the role test at
-      // `Globals.vb:L840` was never reached. The identity double holds no host account and no
-      // permission of any kind, and every admissible page is still offered.
       expect(holdsHostAccount()).toBeFalse();
       expect(optionsOf('splashTabId')).toContain('Hidden');
       expect(optionsOf('splashTabId')).toContain('...About');
@@ -1372,14 +1007,8 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends absence for every selector left on the absent option, and never the option value', () => {
-      // ⚠ DIVERGENCE FROM THE FOLDER BRIEF, ASSERTED AS THE CODE BEHAVES. The brief asks that
-      // an unchosen selector SUBMIT `-1`. The sentinel stays inside the FORM — the option
-      // genuinely carries it, as the case above proves — and becomes absence on the wire, for
-      // two measured reasons recorded on the screen itself: the legacy write path rewrote `-1`
-      // to a database null before it reached the stored procedure, so `-1` never reached the
-      // column; and the general portal write verifies every page reference against the
-      // portal's own pages, none of which bears the identifier `-1`. Sending it would be
-      // refused rather than merely redundant.
+      // ⚠ DIVERGENCE FROM THE FOLDER BRIEF, ASSERTED AS THE CODE BEHAVES. The brief asks that an unchosen
+      // selector SUBMIT `-1`.
       arrive(1, {
         settings: settingsBody({
           portalId: 1,
@@ -1437,22 +1066,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // D. THE QUOTAS — THE LITERAL ZERO
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L344-L347`: the fee and the three quotas were hydrated
-  // with a plain `.ToString`, with no special case for zero, so a stored `0` appeared in the
-  // box AS `0`. Substituting the word "unlimited" for it, or blanking the box, would both hide
-  // a real value — the zero-means-unlimited rule is stated in the disk-space help text and
-  // belongs there alone. That help value is measured verbatim as
-  // `The amount of Disk Space in MB allowed for this site (enter 0 for unlimited space).`
-  //
-  // The reverse direction is measured too, at `L705-L722`: each of the four was a local
-  // initialised to `0`, parsed over only when the box was non-empty. A blank box therefore
-  // SAVED ZERO, and sending absence instead would be a different write.
-
   describe('D. the quotas and the hosting fee', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -1489,10 +1102,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('renders a stored -1 as -1 and does not coalesce it to 0', () => {
-      // `-1` is the "not set" reading of these columns, arrived at because the legacy row
-      // hydration converted a database null to the absent-integer marker while the create path
-      // initialised the same columns to `0`. Both numbers are therefore real stored values and
-      // neither may be rewritten as the other.
       arrive(1, {
         settings: settingsBody({
           portalId: 1,
@@ -1544,10 +1153,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends the fee and the disk space with the types the ENTITY declares, not the widened ones', () => {
-      // S11, third manifestation. `UpdatePortalInfo` declared `HostFee As Double` and
-      // `HostSpace As Double`, while `PortalInfo.HostFee` is `Single` and
-      // `PortalInfo.HostSpace` is `Integer`. The wire contract follows the entity: the fee is a
-      // decimal amount and the disk space is a whole number of megabytes.
       form().controls.hostFee.setValue('12.75');
       form().controls.hostSpace.setValue('2048');
       fixture.detectChanges();
@@ -1564,9 +1169,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends the user quota as a whole number, making the strictness-off widening explicit', () => {
-      // S11, second manifestation. `Dim intUserQuota As Double = 0` was assigned from
-      // `Integer.Parse` and then passed as the `Integer` argument, and neither narrowing was
-      // written down. Here the value is an integer from the box to the request.
       form().controls.userQuota.setValue('250');
       fixture.detectChanges();
       submit();
@@ -1580,19 +1182,7 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // E. THE BANNER HOST LOCK
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L291-L297`: the chosen index is the stored value; for a
-  // host account the notice is hidden outright; for everybody else the list is enabled exactly
-  // when the stored value is NOT the host option, and the notice is shown exactly when it IS.
-  // The stored value is what decides, not the value currently in the form, so choosing the host
-  // option mid-edit must not lock the control the operator is using.
-  //
-  // The notice is `lblBanners.Text`, whose stored value opens with break markup:
-  // `<br>Banner option was set by the hostingprovider, and cannot be changed`. The one-word
-  // "hostingprovider" is in the legacy string and is reproduced as measured.
+  // E. THE BANNER HOST LOCK.
 
   describe('E. the banner advertising lock', () => {
     it('disables the choice when the stored value is Host', () => {
@@ -1668,10 +1258,6 @@ describe('PortalSettingsComponent', () => {
     it('offers exactly three choices, valued 0, 1 and 2', () => {
       arrive(0);
 
-      // The reactive radio accessor CAPTURES the bound value for the model and leaves the
-      // document attribute at its default, so the ordinals are read from the choice list the
-      // screen publishes and then PROVEN through the model by choosing each one in turn. Reading
-      // the document attribute instead would assert the framework's default, not the ordinal.
       const choices = member<readonly { readonly value: number; readonly label: string }[]>(
         'bannerChoices',
       );
@@ -1697,13 +1283,6 @@ describe('PortalSettingsComponent', () => {
       expect(form().controls.bannerAdvertising.value).toBe(0);
     });
   });
-
-  // =========================================================================
-  // F. USER REGISTRATION — THE FOUR ORDINALS
-  // =========================================================================
-  //
-  // Measured in the markup: the four list items declare `Value="0"` None, `"1"` Private,
-  // `"2"` Public and `"3"` Verified, and the enumeration carries the same four numbers.
 
   describe('F. user registration', () => {
     it('offers exactly four choices, valued 0 through 3', () => {
@@ -1776,29 +1355,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // G. THE TWO VALIDATORS — AND BOTH ARE DATA-TYPE CHECKS
-  // =========================================================================
-  //
-  // A full case-insensitive sweep of the 568-line markup finds EXACTLY TWO validators on the
-  // whole screen, and both are comparison validators performing a data-type check. There is no
-  // required-field validator, no regular-expression validator, no range validator, no custom
-  // validator and no validation summary anywhere on it.
-  //
-  //   * `valExpiryDate` at L433-L435 declares `Operator="DataTypeCheck" Type="Date"` and
-  //     `Display="Dynamic"`, and carries NO resource key — so its inline message is the only
-  //     wording that exists for it, which makes it the single measured exception to the
-  //     resource-beats-markup rule. Its stored message opens with break markup.
-  //   * `valHostFee` at L444-L446 declares `Operator="DataTypeCheck" Type="Currency"` and
-  //     `ResourceKey="valHostFee.Error"`, and its message carries no leading break markup —
-  //     none is invented here.
-  //
-  // Two consequences pull in opposite directions and both are asserted. A data-type comparison
-  // PASSES on empty input, so a presence rule must not be added; and a presence rule is not a
-  // substitute for the type check either, because reproducing these two as "required" would
-  // accept "not a date" and reject a blank, inverting both.
-
   describe('G. validation', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -1812,13 +1368,7 @@ describe('PortalSettingsComponent', () => {
       return required(fieldLabelled(label), `the ${label} field`).error;
     }
 
-    /**
-     * The controls that hold text.
-     *
-     * Named as a closed union rather than derived with `keyof`, because six of the sixteen
-     * controls hold a number or an enumeration member and writing text into one of those is a
-     * type error that this union prevents at compile time.
-     */
+    /** The controls that hold text. */
     type TextControlName =
       | 'portalName'
       | 'description'
@@ -1893,24 +1443,6 @@ describe('PortalSettingsComponent', () => {
       expect(messagesFor('Page Quota:')).toContain('Enter a whole number.');
     });
 
-    // ⚠ THIS SPECIFICATION HAS BEEN REWRITTEN TWICE, AND IT IS BACK WHERE IT STARTED.
-    //
-    // It first asserted that NO control declares a presence rule, on the authority of
-    // `Website/admin/Portal/sitesettings.ascx`, which declares no `RequiredFieldValidator` anywhere
-    // on its 568 lines. It was then rewritten to require the site title, on the authority of a
-    // `NotEmpty()` the modern update contract carried — and that server rule has now been withdrawn
-    // as a parity break, so the original assertion is restored.
-    //
-    // The rule was defended on the grounds that although an empty string satisfies a NOT NULL
-    // constraint, the legacy null contract rewrote it to a database null which the column then
-    // rejected. The legacy source disproves it:
-    // `Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632` passes `PortalName`
-    // RAW while wrapping fourteen of its twenty-seven sibling arguments in `GetNull`;
-    // `PortalController.vb:L1568-L1570` forwards the parameter untouched; and
-    // `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed. A blank title reached
-    // `[PortalName] [nvarchar] (128) NOT NULL` as the empty string, which that constraint accepts,
-    // and the legacy screen stored it. Minimal Change Clause item 3 is what settles it: identical
-    // inputs must produce identical outcomes.
     it('declares no presence rule on ANY control, exactly as the legacy screen declared none', () => {
       const controls = form().controls;
 
@@ -1926,8 +1458,6 @@ describe('PortalSettingsComponent', () => {
       controls.userQuota.setValue('');
       fixture.detectChanges();
 
-      // Ten emptied controls, ten valid, and a submittable form — which is what "no presence rule
-      // anywhere" means in practice and what the legacy screen did.
       expect(controls.portalName.valid).toBeTrue();
       expect(controls.portalName.errors).toBeNull();
       expect(controls.description.valid).toBeTrue();
@@ -1943,9 +1473,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('reports nothing at all for an emptied title, because neither tier refuses one', () => {
-      // The site title lives on the BASIC tab and this block's setup shows the advanced one, so the
-      // tab is switched back before the field is read. A field on an inactive panel is not rendered
-      // at all, which is a real property of this screen rather than a testing artefact.
+      // The site title lives on the BASIC tab and this block's setup shows the advanced one, so the tab is
+      // switched back before the field is read. A field on an inactive panel is not rendered at all, which
+      // is a real property of this screen rather than a testing artefact.
       invoke<void>('selectTab', 'basic');
       fixture.detectChanges();
 
@@ -1959,9 +1489,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('still normalises a whitespace-only title, so what is stored is the empty string', () => {
-      // The normalisation survives the withdrawn presence rule, and its purpose is now solely
-      // consistency with the sibling portal record screen, which trims its own title: without it one
-      // screen would store three spaces where the other stored nothing for the same entry.
+      // The normalisation survives the withdrawn presence rule, and its purpose is now solely consistency
+      // with the sibling portal record screen, which trims its own title: without it one screen would store
+      // three spaces where the other stored nothing for the same entry.
       const control = form().controls.portalName;
 
       control.setValue('   ');
@@ -1982,12 +1512,6 @@ describe('PortalSettingsComponent', () => {
       // endpoint, which is exactly the parity that was lost.
       const write = takeSave(0);
 
-      // ABSENCE ON THE WIRE, and the stored outcome is still the empty string. This screen composes every
-      // optional text member through one rule - a blank box sends `null` - and the server coalesces it:
-      // `PortalMappings` writes `request.PortalName ?? string.Empty` into
-      // `[PortalName] [nvarchar] (128) NOT NULL`, which is the legacy stored value for a blank title. So
-      // the three spaces become nothing stored, exactly as `SiteSettings.ascx.vb:L772` passing
-      // `txtPortalName.Text` into an unwrapped argument did.
       expect(bodyOf(write).portalName)
         .withContext('absence, which the server stores as the empty string')
         .toBeNull();
@@ -2021,20 +1545,6 @@ describe('PortalSettingsComponent', () => {
       expect(messagesFor('Expiry Date:')).toContain('Invalid expiry date!');
     });
   });
-
-  // =========================================================================
-  // H. THE MEASURED CHARACTER LIMITS
-  // =========================================================================
-  //
-  // Nine limits, read one attribute at a time because the casing in the source is inconsistent
-  // — the fee box spells `maxlength` and `width` in lower case while its neighbours do not, so
-  // a single pattern match would have missed it.
-  //
-  //   txtPortalName 128 · txtDescription 475 · txtKeyWords 475 · txtFooterText 100 ·
-  //   txtExpiryDate 15 · txtHostFee 10 · txtHostSpace 6 · txtPageQuota 6 · txtUserQuota 6
-  //
-  // The description and the keywords also declare `Rows="3" TextMode="MultiLine"`, so both are
-  // multi-line inputs rather than single-line ones.
 
   describe('H. the character limits', () => {
     beforeEach(() => {
@@ -2092,27 +1602,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // I. THE TWO TABS AND THE SIX SURVIVING DISCLOSURES
-  // =========================================================================
-  //
-  // The thirteen legacy section heads are a TWO-LEVEL hierarchy, established by pairing each
-  // head's `Section="tblX"` with the `<table id="tblX">` it names. Exactly three carry
-  // `IncludeRule="True"` and are therefore top level: Basic Settings (L14), Advanced Settings
-  // (L204) and the Stylesheet Editor (L539). The third goes with the excluded skinning
-  // subsystem, so TWO tabs remain and the ten nested heads become disclosures inside them.
-  //
-  // Their measured initial states, read one head at a time: `dshSite`, `dshSecurity` and
-  // `dshPages` declare no `IsExpanded` at all and so default OPEN; `dshMarketing` declares
-  // `IsExpanded="True"`; `dshOther` (L386) and `dshHost` (L421) declare `IsExpanded="False"`.
-  // Four of the ten nested heads render nothing at all, their whole subject matter being out of
-  // scope: appearance, payment, usability and secure transport.
-  //
-  // Two of the surviving six survive only PARTIALLY, which is why they are here at all rather
-  // than dropped whole: Site Marketing keeps exactly one of its five rows, and Other Settings
-  // keeps exactly two of its four.
-
   describe('I. the tab strip and the disclosures', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -2155,9 +1644,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('captions the marketing group "Site Marketing" — the resource VALUE, not the markup text', () => {
-      // The markup attribute reads `Text="Marketing"`; `Marketing.Text` in the resource file
-      // reads `Site Marketing`. The resource wins, and this is the first of two proofs of that
-      // precedence on this screen.
+      // The markup attribute reads `Text="Marketing"`; `Marketing.Text` in the resource file reads `Site
+      // Marketing`. The resource wins, and this is the first of two proofs of that precedence on this
+      // screen.
       expect(sectionCaptions()).toContain('Site Marketing');
       expect(sectionCaptions()).not.toContain('Marketing');
     });
@@ -2194,22 +1683,15 @@ describe('PortalSettingsComponent', () => {
 
       ensureSectionOpen('other');
 
-      // FOUR: the administrator, the time zone, the currency and the default language. The last two
-      // were on the wire and on no tab - published by the API, re-submitted on every save, and
-      // editable nowhere - which is the workflow this group now restores.
+      // FOUR: the administrator, the time zone, the currency and the default language. The last two were on
+      // the wire and on no tab - published by the API, re-submitted on every save, and editable nowhere -
+      // which is the workflow this group now restores.
       expect(
         required(sectionFieldset('Other Settings'), 'the other-settings group')
           .querySelectorAll('app-form-field').length,
       ).toBe(4);
     });
 
-    // The expectation above is the CAUSE of the next two. A closed group has no body in the
-    // document, and the global layer paints every `fieldset` with a border and padding, so the
-    // grouping boundary was being drawn around nothing at all — a bordered box holding a legend
-    // and a block of empty space. Two of them sat side by side on the advanced tab, both closed
-    // by default, so the tab opened on two empty frames. The legacy screen drew no box here: its
-    // section head was a sibling of the table it toggled, so a closed group showed its head and
-    // its rule and nothing more.
     it('drops the grouping boundary from a closed group, and keeps it on an open one', () => {
       showAdvanced();
 
@@ -2222,9 +1704,9 @@ describe('PortalSettingsComponent', () => {
       expect(opened.classList).not.toContain('portal-settings__section--collapsed');
     });
 
-    // Stated as an INVARIANT over every group rather than as a list of the six that exist today.
-    // A list would pass unchanged if a seventh group were added without the binding, and the
-    // defect would be back on that group alone; this cannot.
+    // Stated as an INVARIANT over every group rather than as a list of the six that exist today. A list
+    // would pass unchanged if a seventh group were added without the binding, and the defect would be back
+    // on that group alone; this cannot.
     it('marks a group collapsed exactly when it has no body, for every group on both tabs', () => {
       const check = (where: string): void => {
         const groups = queryAll<HTMLElement>('.portal-settings__section');
@@ -2256,14 +1738,6 @@ describe('PortalSettingsComponent', () => {
       const group = required(sectionFieldset('Site Marketing'), 'the marketing group');
 
       expect(group.querySelectorAll('app-form-field').length).toBe(1);
-      // The shared wrapper NORMALISES the caption's trailing colon away on display, which is what
-      // keeps the inconsistent legacy colon handling from reaching the screen. The supplied
-      // caption still carries it, and section J asserts that side.
-      //
-      // Selected by CLASS and not by tag: this field is a radio GROUP, so the shared wrapper
-      // captions it with a `span` rather than a `label` — a label with no control to name raises a
-      // form-label diagnostic. The class is on both of the wrapper's caption branches, so it finds
-      // the caption whichever one applies. The tag itself is asserted where that decision belongs.
       expect(text(group.querySelector('.form-field__label'))).toBe('Banners');
       expect(required(fieldLabelled('Banners:'), 'the banners field').label).toBe('Banners:');
     });
@@ -2279,10 +1753,9 @@ describe('PortalSettingsComponent', () => {
         text(field.querySelector('.form-field__label')),
       );
 
-      // ⚠ THE ORDER IS THE MARKUP'S AND IS ASSERTED, so a field cannot drift between groups
-      // unnoticed. The currency's LEGACY home was `dshPayment`, a section this screen drops
-      // entirely; rather than resurrect a whole section for one field it sits here, beside the other
-      // site-wide non-host values. The default language IS in its legacy section - `dshOther`.
+      // ⚠ THE ORDER IS THE MARKUP'S AND IS ASSERTED, so a field cannot drift between groups unnoticed. The
+      // currency's LEGACY home was `dshPayment`, a section this screen drops entirely; rather than
+      // resurrect a whole section for one field it sits here, beside the other site-wide non-host values.
       expect(group.querySelectorAll('app-form-field').length).toBe(4);
       expect(captions).toEqual([
         'Administrator',
@@ -2352,21 +1825,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // J. WORDING, TAKEN FROM THE RESOURCE VALUE
-  // =========================================================================
-  //
-  // The resource file is the authority and the markup attribute is not, and this screen carries
-  // two proofs of it: the marketing caption asserted above, and the keywords caption below,
-  // whose markup reads `Key Words:` while `plKeyWords.Text` reads `Keywords:`.
-  //
-  // The title is mode-dependent: `ControlTitle_.Text` is `Site Settings` and
-  // `ControlTitle_edit.Text` is `Edit Portals`. This screen is the settings mode, so the first
-  // is correct and the second must not appear.
-  //
-  // `plPortalName.Text` is `Title:` — a semantic inversion worth flagging, because the control
-  // it names is the portal's NAME and not its host-name alias.
-
   describe('J. wording', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -2404,10 +1862,6 @@ describe('PortalSettingsComponent', () => {
       ensureSectionOpen('other');
       ensureSectionOpen('host');
 
-      // The two new captions sit between the time zone and the host group, which is where the
-      // markup puts them. Both are the legacy resource wording verbatim - `plCurrency.Text` and
-      // `plDefaultLanguage.Text` from `SiteSettings.ascx.resx` - so an operator who knew the legacy
-      // screen reads the same words.
       expect(fieldLabels()).toEqual([
         'User Registration:',
         'Splash Page:',
@@ -2452,13 +1906,7 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // K. THE GLOBALLY UNIQUE IDENTIFIER
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L273`: `lblGUID.Text = objPortal.GUID.ToString.ToUpper`.
-  // It went into a LABEL, never into an input, and the screen offered no setter for it.
+  // K. THE GLOBALLY UNIQUE IDENTIFIER.
 
   describe('K. the portal identifier field', () => {
     beforeEach(() => {
@@ -2496,38 +1944,10 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // L. THE HOST-ACCOUNT GATE
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L498-L516`: the host group's visibility is the
-  // super-user test and nothing else.
-  //
-  // ⚠ THE GATE CANNOT BE A PERMISSION, and that is a fact about the data rather than a design
-  // preference. The persisted permission vocabulary is closed at four keys — view, edit, read
-  // and write — and none of them expresses a host account; the server's authorisation POLICY
-  // names are a separate closed set and likewise contain no host member. A permission-shaped
-  // gate would therefore match nothing and hide the group from everybody, including the
-  // accounts it exists for. The gate reads the identity store instead, and the case below
-  // asserts that the permission directive is nowhere on the screen.
-  //
-  // The gate is ADVISORY in any case: the server applies the same rule and answers a refusal,
-  // which section M asserts is presented rather than pre-empted.
-
-  // =========================================================================
-  // K2. THE LINK TO THIS PORTAL'S HOST NAMES
-  // =========================================================================
-  //
-  // ⚠ THE ONLY ONE IN THE APPLICATION. Every anchor the console renders was enumerated and none
-  // addressed `:portalId/aliases`, while the listing's single row command targets THIS screen -
-  // so a portal's host names could be managed only by typing an address, even though every
-  // action of the alias resource grants a tenant administrator that right.
-  //
-  // MIGRATION: `SiteSettings.ascx.vb:L484-L489` inspects the referring address specifically to
-  // recognise arrival FROM the Portal Aliases module, which is direct evidence that the legacy
-  // console had operators moving between these two destinations. It reached them through an
-  // administration menu; this console's rail carries collection entries only, so the movement
-  // lives in the screens themselves.
+  // ⚠ THE ONLY ONE IN THE APPLICATION. Every anchor the console renders was enumerated and none addressed
+  // `:portalId/aliases`, while the listing's single row command targets THIS screen so a portal's host
+  // names could be managed only by typing an address, even though every action of the alias resource grants
+  // a tenant administrator that right.
 
   describe('K2. reaching the host names', () => {
     /** Every anchor projected into the shared header. */
@@ -2547,9 +1967,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('composes that address for the two sentinel identifiers', () => {
-      // 0 is the first real tenant and -1 is both a real tenant and the legacy absent-marker, so
-      // a falsy or magnitude test in the composition would drop one and the link would resolve to
-      // the wildcard route instead of failing visibly.
+      // 0 is the first real tenant and -1 is both a real tenant and the legacy absent-marker, so a falsy or
+      // magnitude test in the composition would drop one and the link would resolve to the wildcard route
+      // instead of failing visibly.
       holdsHostAccount.set(true);
       arrive(-1, {
         settings: settingsBody({ portalId: -1 }),
@@ -2618,9 +2038,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('still HYDRATES the hidden host controls, so they are returned unchanged', () => {
-      // The update resource replaces every column it names, so a member this screen does not
-      // SHOW must still be sent back as it was. The legacy postback did the same by keeping a
-      // hidden control's value in the serialised control tree.
+      // The update resource replaces every column it names, so a member this screen does not SHOW must
+      // still be sent back as it was. The legacy postback did the same by keeping a hidden control's value
+      // in the serialised control tree.
       holdsHostAccount.set(false);
       arrive(0, {
         settings: settingsBody({
@@ -2657,30 +2077,10 @@ describe('PortalSettingsComponent', () => {
       ensureSectionOpen('other');
       ensureSectionOpen('host');
 
-      // The directive is not among the component's imports, so it could not bind even if an
-      // attribute were written; the attribute is absent as well, which is what a reader
-      // checking the template would look for.
       expect(queryAll('[hasPermission]').length).toBe(0);
       expect(host().outerHTML).not.toContain('hasPermission');
     });
   });
-
-  // =========================================================================
-  // M. A REFUSAL OF THE HOST-OWNED FIELDS — NOT A SESSION PROBLEM
-  // =========================================================================
-  //
-  // Measured verbatim at `SiteSettings.ascx.vb:L760-L769`: for a caller without the host
-  // account the handler compared six host-owned members against the stored portal — the hosting
-  // fee, the disk space, the page quota, the user quota, the site-log retention and the expiry
-  // date — and on the first difference executed a bare `Throw New System.Exception`. An
-  // unhandled fault, presented as a broken page.
-  //
-  // The server now answers a refusal for the same reason, and this screen says so. It is never
-  // phrased as an expired session and it never redirects to a sign-in screen: the caller IS
-  // authenticated and the request WAS understood — six named fields are simply not theirs.
-  //
-  // The severity is the store's classification, which resolves a refusal to a WARNING. A system
-  // behaving exactly as configured is not a fault.
 
   describe('M. the host-only-field refusal', () => {
     beforeEach(() => {
@@ -2761,19 +2161,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // N. SAVING, AND THE THREE WAYS A SAVE CAN BE REFUSED
-  // =========================================================================
-  //
-  // A result envelope never crosses the wire, so no case here simulates a failure with a
-  // successful status. Each refusal is an HTTP status plus a problem document, exactly as the
-  // API answers.
-  //
-  // The per-field dictionary is read with INDEX ACCESS. Its keys are the server's model-state
-  // keys and are NOT converted to the casing the rest of the payload uses, and the workspace
-  // forbids property access on an index signature, so a dotted read would not even compile.
-
   describe('N. saving', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
@@ -2812,9 +2199,8 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('reports a blank text box as ABSENCE, matching the legacy empty-string null', () => {
-      // The legacy null contract spelled an absent string as the EMPTY STRING and converted it
-      // back to a database null on the way out, so a blank box and a null column were the same
-      // state.
+      // The legacy null contract spelled an absent string as the EMPTY STRING and converted it back to a
+      // database null on the way out, so a blank box and a null column were the same state.
       form().controls.description.setValue('   ');
       fixture.detectChanges();
       submit();
@@ -2837,10 +2223,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('does NOT re-hydrate the form over a save it has just made', () => {
-      // Measured behaviour, asserted rather than assumed. The screen records the stored resource as
-      // the one the form already reflects, so the hydration effect recognises it and leaves the
-      // boxes alone. Re-writing them from the response would make every save flicker, and would
-      // discard an edit made between the request and its answer.
       form().controls.portalName.setValue('Typed By The Operator');
       fixture.detectChanges();
       submit();
@@ -2865,40 +2247,16 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('issues NO portal-listing read after a successful write, because this screen never read one', () => {
-      // ⚠ THE INVERSION OF AN EARLIER EXPECTATION, AND THE REASON IS A MEASURED DEFECT. This case
-      // used to assert that the save re-read the listing, on the reasoning that four of the
-      // projection's members are also listing columns. That reasoning is sound where a listing is
-      // ON SCREEN and unsound here: this screen never reads the listing, and the account that
-      // reaches it - a portal administrator - is not permitted to read it. Against the running API
-      // every save therefore produced `GET /api/v1/portals` → 403, a console error, and a warning
-      // notification about a listing nobody asked for, raised globally so it followed the operator
-      // to whatever screen they had moved on to, immediately after a save that had SUCCEEDED.
-      //
-      // Coherence is still maintained for a listing that HAS been read - the store's own
-      // specification covers that case both ways - so nothing is lost by refusing to ask for one
-      // that has not.
       submit();
       takeSave(0).flush(envelope(settingsBody()));
       fixture.detectChanges();
 
-      // Counted rather than merely asserted through the testing backend: `expectNone` raises on a
-      // match but registers no expectation, which leaves the case passing vacuously if its subject
-      // ever stops being reachable. `match` returns what it found, so the size IS the assertion.
       expect(http.match((candidate) => candidate.url === PORTALS_URL))
         .withContext('a screen that never read the listing does not re-read it')
         .toHaveSize(0);
     });
 
     it('refreshes the heading beside the title from the stored name, without re-entering the route', () => {
-      // ⚠ THE MEASURED DEFECT. The name shown beside the page title is read from the DETAIL slice,
-      // and a settings save updated only the settings slice — so renaming a portal produced
-      // "The site settings were saved." beside a heading still announcing the OLD name, and it
-      // stayed wrong until the route was entered again. The write succeeded and the screen said so
-      // twice, once correctly and once not.
-      //
-      // Asserted on the RENDERED heading rather than on the store, because the store's own
-      // specification already covers the reconciliation and its guards. What is proved here is that
-      // the screen reads the slice that gets reconciled.
       expect(text(query('app-page-header'))).toContain('Baseline Portal');
 
       form().controls.portalName.setValue('Renamed By The Operator');
@@ -2915,12 +2273,7 @@ describe('PortalSettingsComponent', () => {
     /**
      * ⚠ THIS ALSO CARRIES WHAT A REMOVED CASE USED TO PROVE. A case beside this one submitted a BLANK
      * title in order to watch the server refuse it, and it pinned the absence of a client-side presence
-     * rule on the way past. That rule is now declared, deliberately, mirroring the `NotEmpty()` the
-     * server has always applied - see 'declares a presence rule on the site title ALONE' - so a blank
-     * title no longer reaches the wire at all and the case could not do what it was written to do. The
-     * half that mattered is here and is stronger for it: a field-keyed refusal reaches the operator
-     * against the control it names, proven for two fields at once and with the key lower-cased exactly
-     * as the reader presents it.
+     * rule on the way past.
      */
     it('surfaces the per-field messages of a 400, read by index access', () => {
       submit();
@@ -2941,19 +2294,15 @@ describe('PortalSettingsComponent', () => {
       );
       fixture.detectChanges();
 
-      // INDEX ACCESS, not property access. The dictionary the server sends is keyed by its own
-      // model-state names, which are NOT camelCased, and the workspace forbids property access
-      // on an index signature — a dotted read of either key would fail to compile.
+      // INDEX ACCESS, not property access. The dictionary the server sends is keyed by its own model-state
+      // names, which are NOT camelCased, and the workspace forbids property access on an index signature —
+      // a dotted read of either key would fail to compile.
       expect(errors['HostFee']).toEqual(['The hosting fee must be a currency amount.']);
       expect(errors['PortalName']).toEqual(['A title is required.']);
 
       const banner = required(query('app-error-banner'), 'the failure banner');
       const rendered = text(banner);
 
-      // The shared reader lower-cases the leading character of each key on the way in, so a
-      // server key of `HostFee` is presented as `hostFee`. Asserted as it actually renders
-      // rather than as the wire spells it, and the two spellings are both named here so the
-      // conversion is visible instead of implied.
       expect(rendered).toContain('hostFee');
       expect(rendered).toContain('The hosting fee must be a currency amount.');
       expect(rendered).toContain('portalName');
@@ -3030,21 +2379,6 @@ describe('PortalSettingsComponent', () => {
       expect(form().controls.expiryDate.touched).toBeTrue();
     });
   });
-
-  // =========================================================================
-  // O. DELETING THE PORTAL
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L503`: `cmdDelete.Visible = (intPortalId <> PortalId)` —
-  // the action is withheld when the target IS the portal currently being browsed, because a
-  // portal may not be deleted out from under the session viewing it. Measured at `L556`: the
-  // action was guarded by a confirmation built from THIS screen's own resource entry.
-  //
-  // ⚠ The confirmation wording is `Are You Sure You Wish To Delete This Portal ?` — with a SPACE
-  // BEFORE THE QUESTION MARK, which is in the stored value. It is deliberately NOT the shared
-  // `DeleteItem.Text`, `Are You Sure You Wish To Delete This Item?`, which has no such space and
-  // which the portal LISTING screen asks. The two screens ask different questions and the
-  // difference is asserted rather than smoothed over.
 
   describe('O. deleting', () => {
     /** The page-level delete affordance, or null when it is withheld. */
@@ -3127,23 +2461,16 @@ describe('PortalSettingsComponent', () => {
 
       const message = text(query('.confirm-dialog__message'));
 
-      // The measured wording, verbatim, INCLUDING the space before its question mark - which is
-      // the tell that distinguishes this screen's own local resource value from the global
-      // item-deletion sentence the listing uses.
+      // The measured wording, verbatim, INCLUDING the space before its question mark - which is the tell
+      // that distinguishes this screen's own local resource value from the global item-deletion sentence
+      // the listing uses.
       expect(message).toContain('Are You Sure You Wish To Delete This Portal ?');
       expect(message).not.toContain('Are You Sure You Wish To Delete This Item?');
 
-      // ⚠ AND THEN THE NAME, WHICH THE PROMPT USED TO OMIT. The question names a TYPE; the dialog
-      // is modal and covers the heading that was the only thing on the page saying which tenant is
-      // open. So at the one irreversible action in this feature, the prompt hid the very fact it
-      // was asking about.
       expect(message).toBe('Are You Sure You Wish To Delete This Portal ? Baseline Portal');
     });
 
     it('omits the name rather than showing a dangling separator when it is not known', () => {
-      // The shared header suppresses a blank name, and the prompt follows it. Rendering
-      // "…Delete This Portal ? " or the word "undefined" inside a destructive confirmation is worse
-      // than rendering the question alone.
       holdsHostAccount.set(true);
       browsingPortalId.set(7);
       arrive(0, {
@@ -3180,12 +2507,10 @@ describe('PortalSettingsComponent', () => {
       // settings form for a record that has been destroyed.
       expect(navigate).toHaveBeenCalledWith('/portals', { replaceUrl: true });
 
-      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires
-      // notifications on a completed navigation, so a confirmation announced in the same task as the
-      // departure was swept before it could be painted - the portal was deleted and the operator was
-      // returned to the listing with nothing said, which is indistinguishable from a delete that
-      // silently failed. The deleted portal's own settings screen cannot carry the message, because the
-      // record it described is gone. Running the real sweep is what proves the retention.
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications
+      // on a completed navigation, so a confirmation announced in the same task as the departure was swept
+      // before it could be painted - the portal was deleted and the operator was returned to the listing
+      // with nothing said, which is indistinguishable from a delete that silently failed.
       notifications.clearOnNavigation();
 
       expect(notifications.notifications().map((entry) => entry.message))
@@ -3203,8 +2528,7 @@ describe('PortalSettingsComponent', () => {
       // ⚠ A DELETE IS NOT A SAVE, WHICH IS WHY THE GUARD NEEDED TELLING. The unsaved-entry probe reads
       // `dirty && saving() === false`, and deleting does not put the form into its saving state - so an
       // operator who typed something and then deleted the portal was offered the chance to 'discard' work
-      // belonging to a record that no longer exists. Something dirty is essential here: a pristine form
-      // would make the final assertion pass while proving nothing.
+      // belonging to a record that no longer exists.
       holdsHostAccount.set(true);
       browsingPortalId.set(7);
       arrive(0);
@@ -3253,12 +2577,9 @@ describe('PortalSettingsComponent', () => {
 
       // ⚠ ASSERTED ON THE WORDING AND ON THE REFERENCE SEPARATELY, AND EQUALITY ON THE COMPOSED STRING WAS
       // WHY THIS CASE HAD TO CHANGE. A refusal presented as a notification now carries the support
-      // reference from its problem document, exactly as one presented through the shared banner always
-      // has - the identifier is the only join key between what an operator saw and what the server logged,
-      // and a browser audit measured the asymmetry of quoting it in one surface and not the other. The
-      // queue appends it to `message` AFTER applying its own length bound, so a composed message is
-      // legitimately longer than the wording alone; the wording is still exactly the legacy sentence, and
-      // the `reference` member is what states the rule about the identifier.
+      // reference from its problem document, exactly as one presented through the shared banner always has
+      // - the identifier is the only join key between what an operator saw and what the server logged, and
+      // a browser audit measured the asymmetry of quoting it in one surface and not the other.
       const refusal = required(latestNotification(), 'a notification');
 
       expect(refusal.message)
@@ -3317,45 +2638,6 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-
-  // =========================================================================
-  // P. THE FIELDS THAT ARE GONE — FROM THE DOCUMENT AND FROM THE PAYLOAD
-  // =========================================================================
-  //
-  // ⚠ THERE IS NO PORTAL-SETTINGS TABLE, which is what makes seven of the dropped fields
-  // structurally impossible rather than merely out of scope.
-  // `Library/Components/Portal/PortalSettings.vb:L923` resolves the site-settings READ to the
-  // module settings of the "Site Settings" module instance, and L970 resolves the WRITE the same
-  // way through `UpdateModuleSetting`; a case-insensitive sweep for such a table across all
-  // eighty-eight upgrade scripts, in all four object-naming forms, returns nothing; and
-  // `PortalController.vb:L1209-L1210` shows the legacy composite of that name being read out of
-  // per-request ambient storage rather than out of a table. The inline-editor flag, the three
-  // control-panel modes and the four secure-transport members were module-setting ROWS.
-  //
-  // Consequently this screen reads and writes the whole projected resource and nothing else: no
-  // key-and-value editor is offered and no key-and-value request is composed.
-  //
-  // ⚠ THE ADVERTISING ROW IS THE SHARPEST PROHIBITION, and it is sharper here than elsewhere
-  // because its PARENT SECTION now renders. `Advertising.Text` in this screen's own resource file
-  // holds a live third-party advertising SCRIPT block with a remote source, stored XML-escaped so
-  // a naive search clears it wrongly. Nothing on this screen may render it, and nothing on this
-  // screen binds any string as markup.
-
-  // =========================================================================
-  // O2. THE ADMINISTRATOR SELECTOR
-  // =========================================================================
-  //
-  // Measured at `SiteSettings.ascx.vb:L329-L339`: the legacy screen asked the role controller for
-  // the members of the portal's own administrator role, added one entry per member as
-  // `New ListItem(objUser.FullName, objUser.UserID.ToString)`, and pre-selected the entry matching
-  // the stored `AdministratorId`. The chosen value became argument nine of the portal update at
-  // `:L775`.
-  //
-  // ⚠ THIS SCREEN PREVIOUSLY RENDERED THE STORED IDENTIFIER AS A READ-ONLY `output`, and the
-  // affordance was absent altogether: no read existed that could enumerate the administrators of
-  // the portal the ROUTE names, because every role read resolves its tenant from the caller's own
-  // context. The read now exists on the portal resource, so the whole legacy affordance is back.
-
   describe('O2. the administrator selector', () => {
     /** Chooses an option the way a browser does, then settles the view. */
     function chooseAdministrator(value: number): void {
@@ -3364,9 +2646,9 @@ describe('PortalSettingsComponent', () => {
     }
 
     it('reads the candidates for the portal the ROUTE names, not the caller\u2019s own', () => {
-      // The whole reason the read lives on the portal resource. A host account configuring one of
-      // several tenants must see THAT tenant's administrators, which a caller-scoped read cannot
-      // answer - and the request proves the portal travels in the path.
+      // The whole reason the read lives on the portal resource. A host account configuring one of several
+      // tenants must see THAT tenant's administrators, which a caller-scoped read cannot answer - and the
+      // request proves the portal travels in the path.
       fixture.componentRef.setInput('portalId', 7);
       http.expectOne(settingsUrl(7)).flush(envelope(settingsBody({ portalId: 7 })));
       http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
@@ -3394,9 +2676,9 @@ describe('PortalSettingsComponent', () => {
 
       expect(control.disabled).toBeFalse();
       expect(optionValuesOf('administratorId')).toEqual(['2', '3']);
-      // BOTH NAMES on each entry. The display name is the one account field a tenant may compose
-      // from a format string, so two administrators can legitimately share one; the login name is
-      // unique within a portal, so the pair is always distinguishable.
+      // BOTH NAMES on each entry. The display name is the one account field a tenant may compose from a
+      // format string, so two administrators can legitimately share one; the login name is unique within a
+      // portal, so the pair is always distinguishable.
       expect(optionsOf('administratorId')).toEqual([
         'Ada Lovelace (ada)',
         'Grace Hopper (grace)',
@@ -3413,9 +2695,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('offers NO empty entry when the portal already designates an administrator', () => {
-      // MIGRATION: the legacy selector had no empty entry at all - it added one item per role
-      // member and nothing else - and the server refuses an update that would clear a designation.
-      // An empty option here would therefore be an option whose only outcome is a refusal.
       arrive(0);
       showAdvanced();
       ensureSectionOpen('other');
@@ -3425,9 +2704,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('offers the empty entry only when the portal designates nobody', () => {
-      // The one case in which absence is a legal value: the server's guard permits it for a portal
-      // that already has none. The option carries the sentinel, and the sentinel is what becomes
-      // absence on the wire.
+      // The one case in which absence is a legal value: the server's guard permits it for a portal that
+      // already has none. The option carries the sentinel, and the sentinel is what becomes absence on the
+      // wire.
       arrive(0, { settings: settingsBody({ administratorId: null }) });
       showAdvanced();
       ensureSectionOpen('other');
@@ -3437,8 +2716,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends the chosen account, so the administrator can actually be reassigned', () => {
-      // ⚠ THE FINDING, STATED AS A CASE. The value used to be returned unchanged from the loaded
-      // resource whatever the operator did, because there was no control to change it with.
       arrive(0);
       showAdvanced();
       ensureSectionOpen('other');
@@ -3453,9 +2730,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('round-trips the stored administrator untouched when the operator changes nothing', () => {
-      // The other half of the same guarantee: a save of the other seventeen fields must not move
-      // the administrator. It is now sent from the CONTROL rather than from the loaded resource, so
-      // this is the case that proves the control was seeded correctly.
+      // The other half of the same guarantee: a save of the other seventeen fields must not move the
+      // administrator. It is now sent from the CONTROL rather than from the loaded resource, so this is the
+      // case that proves the control was seeded correctly.
       arrive(0);
       submit();
 
@@ -3466,9 +2743,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends ABSENCE for the empty entry, never the sentinel', () => {
-      // The sentinel exists only inside the form, because a select must hold the value of the
-      // option it shows and the wire contract's absence is `null`. Minus one is not a legal
-      // `Users.UserID` - the column seeds `IDENTITY(1, 1)` - so sending it would name no account.
+      // The sentinel exists only inside the form, because a select must hold the value of the option it
+      // shows and the wire contract's absence is `null`. Minus one is not a legal `Users.UserID` - the
+      // column seeds `IDENTITY(1, 1)` - so sending it would name no account.
       arrive(0, { settings: settingsBody({ administratorId: null }) });
       submit();
 
@@ -3480,11 +2757,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('retains a designated administrator the candidate list no longer holds', () => {
-      // ⚠ A REAL STATE, AND THE ONE MISTAKE AN OPERATOR COULD NOT HAVE INTENDED. An account removed
-      // from the administrator role while still designated is absent from the candidates; a selector
-      // that dropped them would silently reassign the portal on the next save. The entry names the
-      // account key because that is all this screen knows - the settings projection publishes the
-      // identifier and no name, and the candidate read is precisely the read that omitted it.
       arrive(0, { administrators: [{ userId: 3, username: 'grace', displayName: 'Grace Hopper' }] });
       showAdvanced();
       ensureSectionOpen('other');
@@ -3504,10 +2776,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('says so, and keeps the stored administrator, when the candidates cannot be read', () => {
-      // Reported rather than escalated, on the same terms as the page listing: the field still holds
-      // the stored administrator and still round-trips it, and the other seventeen fields still
-      // save. Saying what was LOST is what stops a one-entry selector looking like a site with one
-      // eligible administrator.
       arrive(0, { administrators: null });
       showAdvanced();
       ensureSectionOpen('other');
@@ -3524,9 +2792,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('offers no candidates at all while the read is still in flight, and says so', () => {
-      // The selector must not offer the previous portal's accounts, nor an empty list that looks
-      // settled. Until the read lands the only entry is the stored administrator, and the screen
-      // says the list is coming.
+      // The selector must not offer the previous portal's accounts, nor an empty list that looks settled.
+      // Until the read lands the only entry is the stored administrator, and the screen says the list is
+      // coming.
       fixture.componentRef.setInput('portalId', 5);
       http.expectOne(settingsUrl(5)).flush(envelope(settingsBody({ portalId: 5 })));
       http.expectOne(portalUrl(5)).flush(envelope(detailBody({ portalId: 5 })));
@@ -3546,9 +2814,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('offers no candidate belonging to a portal the screen has moved away from', () => {
-      // ⚠ THE GATE ON THE RECORDED PORTAL. Without it the held list is simply "the last list read",
-      // which during a move between portals is the wrong one and is indistinguishable from the
-      // right one - long enough to submit an account the new portal has never heard of.
+      // ⚠ THE GATE ON THE RECORDED PORTAL. Without it the held list is simply "the last list read", which
+      // during a move between portals is the wrong one and is indistinguishable from the right one - long
+      // enough to submit an account the new portal has never heard of.
       arrive(0);
 
       fixture.componentRef.setInput('portalId', 9);
@@ -3570,13 +2838,8 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('names the field from the resource wording and associates the label with the control', () => {
-      // `plAdministrator.Text` is 'Administrator:' and `plAdministrator.Help` is 'The Administrator
-      // User for the site.' Both are supplied verbatim.
-      //
-      // ⚠ THE RENDERED LABEL HAS NO TRAILING COLON, and that is the SHARED wrapper's own documented
-      // rule rather than a divergence here: it normalises every label it is given. So the colon is
-      // asserted on what this screen supplies and its absence on what reaches the document -
-      // asserting only the rendered form would let a screen that dropped the colon itself pass.
+      // ⚠ THE RENDERED LABEL HAS NO TRAILING COLON, and that is the SHARED wrapper's own documented rule
+      // rather than a divergence here: it normalises every label it is given.
       arrive(0);
       showAdvanced();
       ensureSectionOpen('other');
@@ -3605,15 +2868,13 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('carries no client-side required rule, because the invariant is the server\u2019s', () => {
-      // Measured: a full case-insensitive sweep of the 568-line legacy markup finds exactly two
-      // validators on the whole screen, both data-type comparisons, and neither is on this field.
-      // The rule that a portal keeps an administrator is enforced on both server write paths, and a
-      // second authority for it here could disagree with the first.
+      // Measured: a full case-insensitive sweep of the 568-line legacy markup finds exactly two validators
+      // on the whole screen, both data-type comparisons, and neither is on this field.
       arrive(0);
 
-      // Asserted through the control's own state rather than by naming the validator function,
-      // which would require importing it here purely to compare an identity: a control that is
-      // valid holding the sentinel is a control with no required rule on it.
+      // Asserted through the control's own state rather than by naming the validator function, which would
+      // require importing it here purely to compare an identity: a control that is valid holding the
+      // sentinel is a control with no required rule on it.
       form().controls.administratorId.setValue(-1);
       fixture.detectChanges();
 
@@ -3623,29 +2884,14 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // O3. THE REVISION MARKER'S OWN CONTRACT
-  // =========================================================================
-  //
-  // Mounted WITHOUT arriving anywhere first, deliberately: the subject is a malformed read, and a
-  // screen that already holds a decoded projection is not the state in which that matters.
+  // Mounted WITHOUT arriving anywhere first, deliberately: the subject is a malformed read, and a screen
+  // that already holds a decoded projection is not the state in which that matters.
 
   describe('O3. a projection with no revision marker', () => {
     beforeEach(() => {
       holdsHostAccount.set(true);
     });
 
-    // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
-    //
-    // It asserted that a projection serving NO marker produced a marker-less save, and called that a
-    // last-writer-wins update. The premise was false: `PortalSettingsDto.ConcurrencyToken` is declared
-    // `public string ... = string.Empty` and is always populated by `PortalMappings.ConcurrencyTokenFor`,
-    // so a projection serving no marker is a MALFORMED response rather than a supported mode.
-    //
-    // Tolerating it was the defect, and on THIS screen it was the most expensive place to tolerate it: the
-    // save returns nine members the screen never displays, so a marker-less stale save restores nine stale
-    // values over committed edits neither administrator opened, and the API answers 200. The decoder now
-    // refuses the response, and this case pins the consequence - no projection, so no form and no save.
     it('offers no form and composes no save when the projection served no marker', () => {
       fixture.componentRef.setInput('portalId', 7);
 
@@ -3711,11 +2957,7 @@ describe('PortalSettingsComponent', () => {
         'processorUserId',
         'processorPassword',
         'processorCredentialReference',
-        // ⚠ `currency` IS NO LONGER IN THIS LIST, and its removal is the point rather than an
-        // omission. It was dropped with the payment SECTION, but the FIELD is a column the API
-        // publishes and the update replaces, so dropping it meant a non-null value appeared on no
-        // tab while being re-submitted on every save. It now has a control in Other Settings.
-        // Usability and the control panel.
+        // ⚠ `currency` IS NO LONGER IN THIS LIST, and its removal is the point rather than an omission.
         'inlineEditor',
         'controlPanelMode',
         'controlPanelVisibility',
@@ -3725,9 +2967,9 @@ describe('PortalSettingsComponent', () => {
         'sslEnforced',
         'sslUrl',
         'stdUrl',
-        // Localisation, logging, premium modules and the file system. ⚠ `defaultLanguage` is NOT
-        // here either: the localisation MECHANISM is out of scope, which is why its control is a text
-        // box rather than the legacy culture selector, but the COLUMN is in scope and now editable.
+        // Localisation, logging, premium modules and the file system. ⚠ `defaultLanguage` is NOT here
+        // either: the localisation MECHANISM is out of scope, which is why its control is a text box rather
+        // than the legacy culture selector, but the COLUMN is in scope and now editable.
         'siteLogHistory',
         'desktopModules',
         'homeDirectory',
@@ -3781,11 +3023,8 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('sends the six unshown members back UNCHANGED rather than clearing them', () => {
-      // Required rather than tidy: the update resource REPLACES every column it names, so a
-      // member sent as absent is a member cleared. Two of these would do worse than clear —
-      // the site-log retention is one of the six the server compares for a non-host caller, and
-      // the administrator must be returned because the server refuses an update that would
-      // leave the portal without one.
+      // Required rather than tidy: the update resource REPLACES every column it names, so a member sent as
+      // absent is a member cleared.
       submit();
 
       const write = takeSave(0);
@@ -3799,22 +3038,20 @@ describe('PortalSettingsComponent', () => {
       expect(body.siteLogHistory).toBe(-1);
       expect(body.homeDirectory).toBe('Portals/0');
 
-      // ⚠ THE CURRENCY AND THE DEFAULT LANGUAGE ARE STILL SENT, BUT NO LONGER FROM THIS SET. They
-      // now come from their own controls, hydrated from the same projection, so an untouched save
-      // returns exactly what it read - the property this case is about - while an operator who wants
-      // to change either one finally can. The two assertions stay here to hold that equivalence.
+      // ⚠ THE CURRENCY AND THE DEFAULT LANGUAGE ARE STILL SENT, BUT NO LONGER FROM THIS SET. They now come
+      // from their own controls, hydrated from the same projection, so an untouched save returns exactly
+      // what it read - the property this case is about - while an operator who wants to change either one
+      // finally can.
       expect(body.currency).toBe('USD');
       expect(body.defaultLanguage).toBe('en-US');
       completeSave(write);
     });
 
     /**
-     * ⚠ THE TWO FIELDS THAT WERE ON THE WIRE AND ON NO TAB.
-     *
-     * `GET /portals/-1/settings` published `currency: "USD"` and `defaultLanguage: "en-US"`, the `PUT`
-     * re-submitted both from the loaded snapshot, and neither appeared in any section of either tab -
-     * so a legacy workflow (`cboCurrency` at `sitesettings.ascx:L300`, `cboDefaultLanguage` at `:L401`,
-     * written as arguments eight and twenty-five at `SiteSettings.ascx.vb:L774,L780`) had no successor.
+     * ⚠ THE TWO FIELDS THAT WERE ON THE WIRE AND ON NO TAB. `GET /portals/-1/settings` published
+     * `currency: "USD"` and `defaultLanguage: "en-US"`, the `PUT` re-submitted both from the loaded
+     * snapshot, and neither appeared in any section of either tab - so a legacy workflow had no
+     * successor.
      */
     it('carries an EDITED currency and default language to the wire', () => {
       form().controls.currency.setValue('GBP');
@@ -3845,9 +3082,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('refuses a currency longer than the column, without sending anything', () => {
-      // `Portals.Currency` is `char(3)` and the server declares `MaximumLength(3)`. The box also
-      // carries the attribute, so a browser stops the fourth character; the validator is what makes
-      // the rule hold for a value that reached the control any other way.
       form().controls.currency.setValue('TOOLONG');
       submit();
 
@@ -3905,14 +3139,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     /**
-     * ⚠ THE REVISION MARKER, WHICH IS WHAT MAKES THE NOTE ABOVE SAFE RATHER THAN MERELY NECESSARY.
-     *
-     * The case above establishes that nine unshown members are returned unchanged, because a member
-     * sent as absent is a member cleared. That is exactly what turned a stale save into a silent
-     * catastrophe: a second administrator whose snapshot predated the first administrator's save
-     * returned NINE STALE VALUES the screen never displayed, overwriting committed edits neither of
-     * them had opened, and the API answered `200` to both. The token is the only thing that
-     * distinguishes "returning values I read" from "restoring values someone has since changed".
+     * ⚠ THE REVISION MARKER, WHICH IS WHAT MAKES THE NOTE ABOVE SAFE RATHER THAN MERELY NECESSARY. The
+     * case above establishes that nine unshown members are returned unchanged, because a member sent as
+     * absent is a member cleared.
      */
     it('returns the revision marker it read, so a stale save is refusable', () => {
       submit();
@@ -3920,12 +3149,11 @@ describe('PortalSettingsComponent', () => {
       const write = takeSave(0);
 
       // From the projection the form was hydrated FROM - the same source as the nine preserved members
-      // asserted above. Re-reading it immediately before the save would obtain the current revision and
-      // the server's check would then always pass while looking watertight.
+      // asserted above. Re-reading it immediately before the save would obtain the current revision and the
+      // server's check would then always pass while looking watertight.
       expect(bodyOf(write).concurrencyToken).toBe('revision-1');
       completeSave(write);
     });
-
 
     it('always carries a marker on a save, because a projection serving none is refused', () => {
       // The positive half of the pair, stated as a total: every save this screen can compose carries a
@@ -3947,10 +3175,6 @@ describe('PortalSettingsComponent', () => {
       expect(bodyOf(first).concurrencyToken).toBe('revision-1');
       completeSave(first, settingsBody({ concurrencyToken: 'revision-2' }));
 
-      // ⚠ THE PROPERTY THAT MAKES CONSECUTIVE SAVES WORK. The store adopts the projection the write
-      // returned, so the next save carries the revision the write PRODUCED rather than the one it was
-      // composed against. Without this, saving twice without reloading would refuse the second save
-      // against the operator's own edit.
       submit();
 
       const second = takeSave(0);
@@ -3972,9 +3196,9 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('offers no wizard step, no template selector, no export and no import', () => {
-      // The site wizard and the portal-template screen are reference inputs only: the wizard's
-      // remaining subject matter IS these same columns, presented as two tabs a caller may visit
-      // in any order, and no portal-template resource is published to call.
+      // The site wizard and the portal-template screen are reference inputs only: the wizard's remaining
+      // subject matter IS these same columns, presented as two tabs a caller may visit in any order, and no
+      // portal-template resource is published to call.
       const rendered = revealEverything();
 
       expect(rendered).not.toContain('Next');
@@ -3996,16 +3220,7 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // Q. ACCESSIBILITY
-  // =========================================================================
-  //
-  // The legacy section head rendered its toggle with a NEGATIVE TAB INDEX
-  // (`sectionheadcontrol.ascx:L3`), which put every collapsible group beyond keyboard reach.
-  // The target reverses that defect rather than reproducing it, and these cases hold it reversed.
-  //
-  // The screen also declares no semantic landmark of its own: the application shell owns each of
-  // them exactly once, and a second would create two "main" regions on one page.
+  // Q. ACCESSIBILITY.
 
   describe('Q. accessibility', () => {
     beforeEach(() => {
@@ -4109,9 +3324,6 @@ describe('PortalSettingsComponent', () => {
 
       const rendered = fields();
 
-      // FOURTEEN: the twelve that were here plus the currency and the default language, both of
-      // which are captioned and control-associated through the same shared wrapper as every other
-      // field - which is the whole reason the count is asserted rather than the names.
       expect(rendered.length).toBe(14);
 
       for (const field of rendered) {
@@ -4127,10 +3339,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('names a radio GROUP from its caption, the caption being a span rather than a label because it has no single control to point at', () => {
-      // Measured requirement rather than an omission: 5 of the 186 legacy labels declare no
-      // control association at all, and a group of radios is exactly that case — a `for` naming
-      // one member would label that member instead of the group. The wrapper leaves the attribute
-      // off and references the caption from the group instead, so the association still exists.
       const banners = required(fieldLabelled('Banners:'), 'the banners field');
 
       expect(banners.for).toBe('');
@@ -4143,9 +3351,8 @@ describe('PortalSettingsComponent', () => {
       );
 
       // ⚠ THE CAPTION IS A `span`, NOT A `label`, AND THAT IS THE POINT. A `label` associates with a
-      // control through `for` or by wrapping it, and this field can do neither — so a `label` here
-      // would name nothing, which Chrome reports as "No label associated with a form field". The
-      // association is carried by the group's `aria-labelledby` instead, asserted below.
+      // control through `for` or by wrapping it, and this field can do neither — so a `label` here would
+      // name nothing, which Chrome reports as "No label associated with a form field".
       expect(caption.tagName.toLowerCase()).toBe('span');
       expect(element.querySelector('label.form-field__label'))
         .withContext('no caption-level label element may survive on a field that names no control')
@@ -4158,19 +3365,8 @@ describe('PortalSettingsComponent', () => {
       expect(caption.id.length).toBeGreaterThan(0);
       expect(query(`#${caption.id}`)).not.toBeNull();
 
-      // AND the caption is not a `label` element at all. `LabelControl.vb:L292-L295` attached `for`
-      // only when it had a control name, so the legacy rendered a `label` captioning nothing here;
-      // reproducing that made this one of six fields raising the application's only form-label
-      // diagnostic. A `span` carries the same id and the same accessible name and raises nothing.
-      // Asserted by tag name rather than by `instanceof`, so a `label` would fail this outright
-      // rather than passing on a shared base type.
       expect(caption.tagName).toBe('SPAN');
 
-      // Scoped to the CAPTION ROW, not to the whole field. The field legitimately contains one
-      // `label` per radio choice — each wrapping its own input — and those are what make the radios
-      // individually named. Asserting zero labels anywhere in the field would have been wrong, and
-      // measuring it proved it: the Banners field holds three. So the contract is that the caption
-      // row holds none, and the control slot holds exactly one per radio.
       const captionRow = required(
         element.querySelector('.form-field__label-row'),
         'the banners caption row',
@@ -4181,9 +3377,9 @@ describe('PortalSettingsComponent', () => {
       expect(radios.length).toBeGreaterThan(1);
       expect(slot.querySelectorAll('label').length).toBe(radios.length);
 
-      // The counterpart, so this test discriminates rather than merely passing: a field that DOES
-      // name one control still RENDERS a real `label` with a real `for`, which is what preserves
-      // click-to-focus on the other 112 fields in the application.
+      // The counterpart, so this test discriminates rather than merely passing: a field that DOES name one
+      // control still RENDERS a real `label` with a real `for`, which is what preserves click-to-focus on
+      // the other 112 fields in the application.
       const namedField = required(
         fieldElementLabelled('Description:'),
         'the description field element',
@@ -4196,9 +3392,6 @@ describe('PortalSettingsComponent', () => {
       expect(namedCaption.tagName).toBe('LABEL');
       expect(namedCaption.getAttribute('for')).toBe('portal-settings-description');
 
-      // The same wiring names the four page selectors' groups, which DO also name their control.
-      // Read from the component's own input record rather than from the DOM, so both sides of the
-      // boundary are covered: what the screen ASKED for, and what the wrapper RENDERED.
       const withControl = required(fieldLabelled('Description:'), 'the description field');
 
       expect(withControl.for).toBe('portal-settings-description');
@@ -4250,21 +3443,8 @@ describe('PortalSettingsComponent', () => {
     });
   });
 
-  // =========================================================================
-  // R. ARCHITECTURE
-  // =========================================================================
-  //
-  // The facts a reader cannot check by reading the template, and the two that fail SILENTLY when
-  // they are wrong: the route input's NAME, because router input binding matches by name and a
-  // rename severs the binding with no compile error and no runtime complaint; and the tracking
-  // expression on every repeat, because a missing one degrades rendering rather than failing.
-
   describe('R. architecture', () => {
     it('is the class the route contract loads, and carries its own root element', () => {
-      // The framework mounts a component under test inside a plain container of its own making,
-      // so the host tag here is NOT the component's selector and asserting it would assert the
-      // test harness. The SELECTOR is proven separately, at the foot of this file, by rendering
-      // the component from a host template that names it.
       expect(PortalSettingsComponent.name).toBe('PortalSettingsComponent');
       expect(fixture.componentInstance instanceof PortalSettingsComponent).toBeTrue();
       expect(query('.portal-settings')).not.toBeNull();
@@ -4286,9 +3466,6 @@ describe('PortalSettingsComponent', () => {
     });
 
     it('reaches no transport type of its own and imports no environment module', () => {
-      // Data access goes through the store and the two services, so the screen holds no client
-      // and composes no URL. The relative prefix is asserted through the requests the STORE and
-      // the SERVICES issue, which every case above does.
       const view = component as unknown as Record<string, unknown>;
 
       expect(view['http']).toBeUndefined();
@@ -4317,9 +3494,6 @@ describe('PortalSettingsComponent', () => {
 
       const raw = form().getRawValue();
 
-      // NINETEEN: the seventeen that were here plus the currency and the default language. Both are
-      // declared `nonNullable`, so an emptied box resets to `''` rather than to null and the raw
-      // value stays complete - the property this case exists to hold.
       expect(Object.keys(raw).length).toBe(19);
       for (const value of Object.values(raw)) {
         expect(value).not.toBeNull();
@@ -4420,19 +3594,7 @@ describe('PortalSettingsComponent', () => {
   });
 });
 
-
-// ---------------------------------------------------------------------------
 // The selector, proven by naming it
-// ---------------------------------------------------------------------------
-//
-// Its own suite because it needs its own host. The framework mounts a component under test inside
-// a container it creates itself, so the host element in the suite above is not the component's
-// selector and no assertion there could establish it. Rendering the screen from a template that
-// NAMES it does establish it: the element resolves to this component only if the selector matches,
-// and strict template checking refuses an element that resolves to nothing.
-//
-// The host imports the component directly. No module declaration is involved anywhere — the screen
-// is standalone, as every component in this workspace is.
 
 /** A host whose only purpose is to name the element under test. */
 @Component({
@@ -4485,9 +3647,6 @@ describe('PortalSettingsComponent selector and change-detection contract', () =>
   });
 
   it('declares the OnPush change-detection strategy', () => {
-    // Read from the compiled definition, because the strategy is a compile-time decision with no
-    // runtime accessor. `1` is the enumeration member for OnPush; `0` is the default strategy, so
-    // the two are distinguishable and a silent regression to the default would fail here.
     const compiled = PortalSettingsComponent as unknown as {
       readonly ɵcmp?: { readonly onPush?: boolean };
     };

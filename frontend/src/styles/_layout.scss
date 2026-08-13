@@ -1,80 +1,6 @@
 // Document and shell scaffolding: the CSS Grid that places the application shell's four regions, the
-// width-capped column that centres a screen's content inside them, and two content primitives every
-// admin screen composes from. Five selectors' worth of structure and nothing else.
-//
-// LOAD ORDER. This is the third of five global partials, and the single global stylesheet must load
-// them in the order tokens -> reset -> layout -> tables -> forms. Loading after the reset is what
-// lets a convention here refine a bare-element rule the reset established, by cascade order alone;
-// no rule in this file carries an importance flag and none needs one. A Sass partial is never a
-// build entry point and must not be added to the build's own style list.
-//
-// WHAT IT DOES NOT OWN.
-//   * The shell, header, sidebar and footer COMPONENTS. This file hands them the region vocabulary
-//     and stops. It sets no padding, background or font on a region a component renders: the host
-//     and the landmark are two different boxes, so a padding declared here would ADD to the
-//     component's own rather than override it.
-//   * The `body` and bare `hr` element rules, which belong to _reset.scss along with the universal
-//     border-box declaration. No rule here depends on that declaration, because this file sets no
-//     element's inline size at all.
-//   * Table and form internals, and every shared component's own stylesheet.
-//   * A utility-class framework. Global CSS is never tree-shaken, so every byte here ships to every
-//     reader on every route; ordering and intra-component spacing belong to the component that
-//     needs them. Text alignment is the one bounded exception, because the design system's
-//     semantic-parity checklist names the legacy `.DNNAlign{left,center,right}` family explicitly.
-//
-// GRID HERE, FLEXBOX THERE. The shell is Grid because it places named regions in two dimensions and
-// needs one of them to absorb the leftover block space. Intra-component layout is Flexbox inside the
-// component's own stylesheet, which is why this file contains no flex container at all.
-//
-// REACHING THE SIBLING MODULES. Inside this folder they are reached by bare name, `@use 'mixins' as
-// mx`. The workspace configures no Sass load path, so every reference resolves relative to the
-// importing file. A COMPONENT STYLESHEET MUST LOAD THE MIXINS ITSELF: Sass modules are scoped to the
-// file that loads them, so a `@use` here does not make `mx.respond-above` visible in a component,
-// and forwarding would not help either, since a forward re-exports only to files that load THIS
-// module. Design tokens need no load at all - a custom property is resolved at run time through
-// `var()`, so loading _tokens.scss here would re-emit its declaration block for no benefit.
-//
-// RESPONSIVE BEHAVIOUR COMES ONLY FROM THE MIXINS. _mixins.scss is the only file permitted to write
-// a viewport query. This partial is the one most tempted to break that rule and does not: its single
-// breakpoint is `mx.respond-above('md')` and its content cap is `mx.breakpoint('xl')`, so the
-// workspace has exactly one definition of each step.
-//
-// EXPORTED SURFACE. `.shell` is the document grid; `.shell__skip-link` occupies a row that measures
-// nothing until the link takes focus; `.shell__header`, `.shell__sidebar` and `.shell__footer` are
-// placement only; `.shell__main` is placement plus the page gutter, because the shell renders
-// `<main>` itself and the gutter has nowhere else to live. `.layout-container` centres a block and
-// caps its inline size. `.content-region` and `.content-region__section` carry vertical rhythm and
-// the between-sections separator; `.panel` and `.panel__body` are the bordered surface and its
-// padded interior - omit the interior when the panel wraps something that supplies its own padding,
-// a data table for instance, so the two never nest.
-//
-// INTENDED MARKUP. The region classes go on the shell's DIRECT children. Two of those children are
-// component hosts and those components render the real landmark element inside themselves, which is
-// why the classes carry no element assumption of their own; each region is meant to resolve to the
-// landmark for its role, so the accessibility tree is correct without a single ARIA attribute. A
-// grid item is blockified automatically, so no `display` declaration is needed on any region, and
-// the skip link's `href` is a fragment naming the main region's `id`.
-//
-// The sidebar region is the navigation rail's OWN host: the shell imports `SidebarComponent` and
-// renders it directly, so the region class sits on `app-sidebar` and the grid places the rail itself
-// rather than a wrapper around it. The `:empty` branch below is retained as a guard rather than as a
-// live case - see its own note.
-//
-//     <div class="shell">
-//       <a class="shell__skip-link" [href]="skipLinkTarget" (click)="focusMainRegion($event)">Skip to main content</a>
-//       <app-header class="shell__header" />
-//       <app-sidebar class="shell__sidebar" />
-//       <main class="shell__main" [id]="mainRegionId" tabindex="-1">
-//         <div class="layout-container">
-//           <div class="content-region">
-//             <section class="content-region__section">
-//               <div class="panel"><div class="panel__body">…</div></div>
-//             </section>
-//           </div>
-//         </div>
-//       </main>
-//       <app-footer class="shell__footer" />
-//     </div>
+// width-capped column that centres a screen's content inside them, and two content primitives every admin
+// screen composes from. Five selectors' worth of structure and nothing else.
 
 @use 'mixins' as mx;
 
@@ -83,9 +9,9 @@
 .shell {
   display: grid;
 
-  // Stacked first, widened second. Authoring the narrow layout unconditionally and layering the
-  // wider one on top is the direction the shared responsive mixin is built around, and it keeps this
-  // file's query count at one.
+  // Stacked first, widened second. Authoring the narrow layout unconditionally and layering the wider one
+  // on top is the direction the shared responsive mixin is built around, and it keeps this file's query
+  // count at one.
   grid-template-areas:
     'skip'
     'header'
@@ -93,30 +19,21 @@
     'main'
     'footer';
 
-  // The fluid track rather than a bare fraction. A bare `1fr` carries an automatic minimum, so a
-  // single wide descendant - a data table with many columns, say - would widen the track and push a
-  // horizontal scrollbar onto the whole document. The token clamps that minimum to zero, which makes
-  // the track shrinkable and confines the overflow to the element that actually caused it; resolving
-  // it from the vocabulary is what stops one call site quietly omitting the clamp.
+  // The fluid track rather than a bare fraction. A bare `1fr` carries an automatic minimum, so a single
+  // wide descendant - a data table with many columns, say - would widen the track and push a horizontal
+  // scrollbar onto the whole document.
   grid-template-columns: var(--grid-track-fluid);
 
-  // The main row takes the slack, which is what pins the footer to the bottom of a short screen. It
-  // uses the remainder track rather than the fluid one: main must be free to grow PAST the viewport
-  // when its content is taller, which a zero minimum would prevent. The first row belongs to the skip
-  // link, whose only occupant is out of flow until focused, so an `auto` row measures nothing at rest.
+  // The main row takes the slack, which is what pins the footer to the bottom of a short screen. It uses
+  // the remainder track rather than the fluid one: main must be free to grow PAST the viewport when its
+  // content is taller, which a zero minimum would prevent.
   grid-template-rows: auto auto auto var(--grid-track-remainder) auto;
 
-  // Declaration order is load-bearing and the two must stay in this order: a declaration whose unit
-  // an engine cannot resolve is discarded, leaving the preceding one in force. The dynamic unit
-  // therefore goes second, because on a mobile browser whose toolbar retracts the static unit
-  // overshoots the visible area.
+  // Declaration order is load-bearing and the two must stay in this order: a declaration whose unit an
+  // engine cannot resolve is discarded, leaving the preceding one in force. The dynamic unit therefore goes
+  // second, because on a mobile browser whose toolbar retracts the static unit overshoots the visible area.
   min-block-size: var(--size-viewport-block);
   min-block-size: var(--size-viewport-block-dynamic);
-
-  // No `gap`. The four regions are contiguous bands: a gap would open strips of page background
-  // between the header, the sidebar and the footer, cutting through backgrounds those components
-  // legitimately paint edge to edge. The spacing the layout genuinely needs is a gutter INSIDE the
-  // main region and a rhythm BETWEEN content sections, and both are declared where they belong.
 
   @include mx.respond-above('md') {
     grid-template-areas:
@@ -125,19 +42,8 @@
       'sidebar main'
       'footer  footer';
 
-    // MIGRATION: `auto` for the sidebar column rather than a fixed track, and it STAYS `auto` now
-    // that a rail width exists. The rail component declares `--layout-rail-inline-size` on itself,
-    // which is precisely what the closing sentence below asked any future width to do, so this track
-    // now measures a definite item instead of a bold-weight-dependent one - and every collapse case
-    // named below still holds, because an absent or empty region still contributes no item to
-    // measure. Composing a width from the spacing scale would have put the real design decision - the
-    // multiplier - outside the sole token owner. Sizing the track intrinsically needs no width and
-    // handles every state without a modifier class: present, and it fits the region's own content
-    // and padding; empty, and the region leaves the flow so the track collapses to zero; absent, and
-    // there is no item to measure so it collapses to zero. A fixed track would leave an empty column
-    // standing in the latter two cases, and the second track's fluid token already guarantees
-    // the main region absorbs whatever the first does not take. If a sidebar-width token is ever
-    // added, apply it in the sidebar COMPONENT's own stylesheet; this track follows it either way.
+    // `auto` for the sidebar column rather than a fixed track, and it STAYS `auto` now that a rail width
+    // exists.
     grid-template-columns: auto var(--grid-track-fluid);
     grid-template-rows: auto auto var(--grid-track-remainder) auto;
   }
@@ -149,30 +55,10 @@
   grid-area: skip;
 
   // The hide-and-reveal geometry comes wholly from the shared mixin, which scopes it to a compound
-  // `:not(:focus-visible)` selector. `display: none` is expressly not used anywhere in this file's
-  // hiding: it would strip the link from the accessibility tree and silence the very affordance the
-  // rule exists to provide.
+  // `:not(:focus-visible)` selector.
   @include mx.visually-hidden-focusable;
   @include mx.focus-ring;
 
-  // ⚠ REVEALED AS AN OVERLAY, NOT AS A ROW THAT GROWS, AND THAT IS A FIX RATHER THAN A PREFERENCE.
-  // The mixin returns the element to normal flow when it takes focus - its own documentation says so
-  // and names positioning-on-focus as the consumer's alternative - and this rule used to accept that,
-  // on the reasoning that a link which pushes the page down obscures nothing. Measured in a browser:
-  // the FIRST Tab press on every screen moved the entire document down 33px, and tabbing past the
-  // link moved it back up again, so the reflow happened twice on the way in to every page and had to
-  // be re-read by anyone watching the screen. Staying out of flow in both states costs one corner of
-  // the header band while the link holds focus, which is the near-universal convention for exactly
-  // this trade.
-  //
-  // `fixed` rather than `absolute`, so the containing block is the viewport and the link cannot be
-  // resolved against - or clipped by - whichever ancestor happens to be positioned. The insets are
-  // logical, so the link lands at the start corner in both writing directions. The layer comes from
-  // the scale in _tokens.scss, at its topmost step, because this is the first tab stop on the screen
-  // and nothing may paint over it; the reasoning is recorded with the token.
-  //
-  // `justify-self` is deliberately absent: it applied to the grid item this used to be, and an
-  // out-of-flow box shrink-wraps its content anyway, so restating it would only mislead.
   position: fixed;
   inset-block-start: 0;
   inset-inline-start: 0;
@@ -182,13 +68,6 @@
   color: var(--color-background);
 }
 
-// PLACEMENT ONLY. Three of the four regions resolve to a component that paints its own padding,
-// background and typography. A padding declared here would not override that padding, it would ADD
-// to it, because the host and the landmark are two different boxes - so these rules assign a grid
-// area and, where the grid genuinely needs to know it, an inline size. The main region is the
-// exception for a structural reason: the shell renders `<main>` itself around the routed outlet, so
-// the page gutter has nowhere else to live.
-
 .shell__header {
   grid-area: header;
 }
@@ -196,20 +75,6 @@
 .shell__sidebar {
   grid-area: sidebar;
 
-  // PLACEMENT ONLY, with no inline size, which is why this rule has no breakpoint branch at all. The
-  // shell's `auto` track measures this region intrinsically, so the width it occupies is decided by
-  // the rail's own box, in the rail's own scoped stylesheet, where a width can be expressed against
-  // whatever tokens actually exist. Declaring a width here would also be the one appearance-adjacent
-  // value in a section whose entire contract is placement.
-
-  // Taking the region out of flow rather than merely zeroing its width is what lets the shell's
-  // `auto` column collapse with it; a zero width alone would leave the region's own padding standing
-  // and the column open. ⚠ THIS IS NOW A GUARD, NOT THE LIVE CASE. The shell renders the rail
-  // itself, so the region always has content and this branch never matches in the shipping
-  // arrangement - which is the point: an empty navigation region used to be reachable by simply not
-  // supplying a rail, and that failed silently. It is kept because a region that somehow rendered
-  // nothing must still not hold a column open. A zero-RESULTS affordance inside a populated region is
-  // a different concern.
   &:empty {
     display: none;
   }
@@ -218,20 +83,8 @@
 .shell__main {
   grid-area: main;
 
-  // ⚠ THE POSITIONING CONTEXT FOR THE NOTIFICATION OVERLAY, and the reason it is declared here
-  // rather than on the notification surface itself: an absolutely positioned element resolves
-  // against its nearest POSITIONED ancestor, and every ancestor in this shell was static, so
-  // without this the overlay would escape to the initial containing block and anchor to the
-  // viewport instead of to the page.
-  //
-  // It also CONFINES that overlay. The notification surface is clipped to nothing by no ancestor,
-  // and a toast anchored to the viewport would sit over the header and the navigation rail rather
-  // than over the content it concerns.
   position: relative;
 
-  // The page gutter. A grid item whose inline size is automatic fits its border box to the track, so
-  // padding declared here can never overflow the track regardless of which box model is in force -
-  // which is why the gutter lives on this element and not on .layout-container.
   padding: var(--space-6) var(--space-4);
 }
 
@@ -240,17 +93,9 @@
 }
 
 .layout-container {
-  // The widest breakpoint step, read through the shared lookup function rather than written as a
-  // length, so the cap and the point at which the shell stops widening resolve from one definition.
-  // Calling that function is not a licence to hand-roll a viewport query.
   max-inline-size: mx.breakpoint('xl');
 
   margin-inline: auto;
-
-  // Deliberately no inline padding. The shell region already supplies the page gutter, and an
-  // element carrying BOTH a max inline size and padding measures differently under content-box and
-  // border-box. Keeping the cap and the gutter on separate elements makes this rule independent of
-  // the box model, so it stays correct even where the reset has not reached.
 }
 
 .content-region {
@@ -260,71 +105,35 @@
   // able to widen the column that contains it.
   grid-template-columns: var(--grid-track-fluid);
 
-  // The rhythm between sections and between stacked panels. `row-gap` rather than margins on the
-  // children, so no rule has to be unwound for the first or last item and no collapsing margin can
-  // surprise a consumer.
+  // The rhythm between sections and between stacked panels. `row-gap` rather than margins on the children,
+  // so no rule has to be unwound for the first or last item and no collapsing margin can surprise a
+  // consumer.
   row-gap: var(--space-6);
 }
 
-// Only the layout half of a section separator lives here: the spacing around the rule, and the fact
-// that a rule falls BETWEEN sections rather than beneath every one of them, so a lone section is not
-// underlined for no reason. The bare `hr` element rule stays in _reset.scss, and drawing the
-// separator as a border rather than emitting a rule element keeps presentation out of the markup.
 .content-region__section + .content-region__section {
   padding-block-start: var(--space-6);
   border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
 }
 
-// A full-width surface filled with the page background and enclosed by a hairline in the brand
-// colour. A `width: 100%` is deliberately not declared: a block-level element already fills its
-// container, and re-declaring the width alongside a border is exactly the combination that overflows
-// under content-box. Square corners and no elevation are equally deliberate - a radius token exists,
-// but this surface is defined by its border, and visual continuity outranks the mere availability of
-// a token.
+// A full-width surface filled with the page background and enclosed by a hairline in the brand colour. A
+// `width: 100%` is deliberately not declared: a block-level element already fills its container, and
+// re-declaring the width alongside a border is exactly the combination that overflows under content-box.
 .panel {
   background-color: var(--color-background);
 
-  // The shorthand is correct here rather than a shortcut: all four sides carry identical values, so a
-  // single symmetric declaration carries no writing-mode assumption that a logical longhand would
-  // need to correct.
   border: var(--border-width) var(--border-style) var(--color-primary);
 }
 
-// The padded slot arbitrary content lands in, so it has to survive values with no break opportunity
-// - connection strings, module identifiers, portal aliases, file paths. The initial
-// `overflow-wrap: normal` forbids breaking inside a word, so such a value overruns this box; the
-// keyword restores the break opportunity and costs nothing on content that already wraps.
 .panel__body {
   padding: var(--space-4);
 
-  // Deliberately `overflow-wrap` and NOT an `overflow` value. `hidden` would silently amputate
-  // content, and `auto` would make this a scroll container - which clips the focus ring of every
-  // control inside it and neutralises any `position: sticky` placed within, trading a cosmetic
-  // problem for two functional ones. Content that genuinely cannot reflow, a wide data table whose
-  // minimum width is the sum of its columns, needs a scroll container scoped to the table itself and
-  // belongs to _tables.scss; the clamped tracks above already stop such a table from dragging the
-  // shell's regions out of alignment, which is the part that IS this file's responsibility.
+  // Deliberately `overflow-wrap` and NOT an `overflow` value. `hidden` would silently amputate content, and
+  // `auto` would make this a scroll container - which clips the focus ring of every control inside it and
+  // neutralises any `position: sticky` placed within, trading a cosmetic problem for two functional ones.
   overflow-wrap: break-word;
 }
 
-// MIGRATION: the direct successor to the legacy alignment family, which declared `text-align` and
-// nothing else so that a module could opt into an alignment from its own settings. That is the whole
-// of the definition below too: one property, three values, no padding, no display change, no width,
-// no float. Anything more would invent a convention the legacy portal never had.
-//
-// The legacy class NAMES are deliberately not reused - they carry the vendor prefix of the platform
-// being migrated away from - and no stylesheet in this workspace defines one anywhere. `start` and
-// `end` replace the legacy physical `left` and `right`: in this application's writing mode the
-// rendering is identical, every other directional declaration in this file is already logical, and
-// the physical form would silently mis-align under a right-to-left locale.
-//
-// THE BOUNDARY. These three classes are the complete alignment vocabulary and the complete utility
-// surface of this file. `justify` is not offered: it was not in the legacy family, it degrades
-// readability at narrow measures, and no screen asks for it. No alignment MODIFIER is offered
-// either, and no importance escape hatch, because a variant per breakpoint is the exact first step
-// by which a three-rule helper becomes the utility framework the design system declined. A screen
-// that needs alignment to change with the viewport expresses that in its own stylesheet through the
-// shared breakpoint mixins, where it is scoped and tree-shaken with the component.
 .align-start {
   text-align: start;
 }
@@ -337,31 +146,6 @@
   text-align: end;
 }
 
-// -----------------------------------------------------------------------------
-//  The visually-hidden attribute hook, for any element
-// -----------------------------------------------------------------------------
-//  Carried as an ATTRIBUTE rather than a class because it states a presentational
-//  fact about one element rather than joining it to a component's vocabulary, and
-//  because the table conventions already established the spelling for `caption`.
-//  That rule stays where it is - it is scoped to the element it documents and
-//  resolves to the same mixin - and this generalises the hook so the same spelling
-//  works wherever the need recurs.
-//
-//  WHAT IT IS FOR, and what it is not. It is for text that names a region for a
-//  reader who cannot see the region's own visual grouping, on a screen where a
-//  visible heading would duplicate something already on screen - which is exactly
-//  the case the caption rule's own note describes. It is NOT a way to hide content
-//  that ought to be visible: the mixin clips the element rather than removing it,
-//  so the text stays in the reading order and in the accessibility tree, and
-//  neither `display: none` nor `visibility: hidden` is used anywhere near it.
-//
-//  ⚠ THE ELEMENT LEAVES NORMAL FLOW, because the mixin positions it absolutely.
-//  Two consequences a consumer must respect: it never becomes a grid item or a flex
-//  item, so it cannot open a track or a slot in a laid-out container; and it
-//  resolves its position against the nearest POSITIONED ancestor, so it must be
-//  placed inside ordinary flow content rather than as a direct child of a scrolling
-//  region that is not itself positioned - a 1px box at an unexpected origin was
-//  previously measured extending a scroll container's scrollable width.
 [data-visually-hidden] {
   @include mx.visually-hidden;
 }

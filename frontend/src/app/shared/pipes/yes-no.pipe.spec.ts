@@ -13,12 +13,6 @@ describe('YesNoPipe', () => {
     expect(pipe.transform(true).trim().length).toBeGreaterThan(0);
   });
 
-  // The one case here whose loss would be a behavioural regression rather than a
-  // cosmetic one: `false` is data, not an absent value. The legacy cell drew a
-  // glyph in both states and was never blank, so emitting empty output for
-  // `false` would turn a definite "no" into an apparent "no data". Emptiness is
-  // asserted positively, and more than once, because a bare equality check would
-  // still pass if the expected word itself were weakened to blank text.
   it('renders the negative text for false, and never empty output', () => {
     const rendered = pipe.transform(false);
 

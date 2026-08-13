@@ -10,35 +10,7 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Persistence;
 
-/// <summary>
-/// Exercises the design-time context factory the Entity Framework Core tooling activates.
-/// </summary>
-/// <remarks>
-/// <para>
-/// <strong>Why this type had no test.</strong> Nothing in the application ever calls it. It exists solely so
-/// that <c>dotnet ef</c> can obtain a context without starting the API, which means the only thing that ever
-/// exercised it was a developer running a command by hand - and a fault in it does not fail a build, a test
-/// run or a deployment. It fails the one moment it is used, on a developer machine, with the tooling's
-/// generic "unable to create an object of type 'DnnDbContext'" message that names nothing about the actual
-/// cause.
-/// </para>
-/// <para>
-/// <strong>What is actually at stake is bigger than a convenience.</strong> This factory decides which
-/// database the tooling talks to. It reads <c>ConnectionStrings__Default</c>, which on any deployed host is
-/// the PRODUCTION database - <c>docker/docker-compose.yml</c> sets exactly that variable on the API
-/// container. A factory that silently ignored the variable and fell back to the local design-time database
-/// would make <c>dotnet ef migrations</c> quietly operate on the wrong catalogue; one that fell back the
-/// other way, or that opened a connection or ran a query while merely being constructed, would reach a
-/// production database from a command a developer believed was offline. The assertions below pin both
-/// halves: the environment wins when it says something, the local fallback applies when it says nothing, and
-/// in neither case is anything contacted.
-/// </para>
-/// <para>
-/// The factory is reached by name rather than by reflection because the test assembly holds the
-/// <c>InternalsVisibleTo</c> grant for the Infrastructure assembly. Its DISCOVERABILITY by the tooling - the
-/// part reflection is genuinely the subject of - is asserted separately and explicitly.
-/// </para>
-/// </remarks>
+/// <summary>Exercises the design-time context factory the Entity Framework Core tooling activates.</summary>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class DnnDbContextFactoryTests
@@ -49,27 +21,20 @@ public sealed class DnnDbContextFactoryTests
     /// <summary>The provider the tooling must be given, spelled as Entity Framework Core reports it.</summary>
     private const string SqlServerProviderName = "Microsoft.EntityFrameworkCore.SqlServer";
 
-    /// <summary>
-    /// The connection string the factory falls back to, asserted as a literal.
-    /// </summary>
+    /// <summary>The connection string the factory falls back to, asserted as a literal.</summary>
     /// <remarks>
-    /// Duplicating the production constant here is deliberate. This value decides which catalogue a developer
-    /// running <c>dotnet ef</c> with no environment variable set operates on, so a change to it must be a
-    /// visible, deliberate edit in two places rather than a one-line change that silently repoints the
-    /// tooling. The properties that make it safe - a local instance, its own database name, and no credential
-    /// of any kind - are asserted separately, so this is not merely an echo.
+    /// Duplicating the production constant here is deliberate. This value decides which catalogue a
+    /// developer running <c>dotnet ef</c> with no environment variable set operates on, so a change to it
+    /// must be a visible, deliberate edit in two places rather than a one-line change that silently
+    /// repoints the tooling.
     /// </remarks>
     private const string DesignTimeFallbackConnectionString =
         "Server=(localdb)\\MSSQLLocalDB;Database=DnnMigrationDesignTime;"
         + "Trusted_Connection=True;TrustServerCertificate=True;";
 
-    /// <summary>The factory is the type the tooling looks for, and can be activated the way it activates it.</summary>
-    /// <remarks>
-    /// The tooling scans the assembly for a type implementing the closed interface and creates it with a
-    /// parameterless constructor. Each of those three facts is a separate way the factory can become
-    /// undiscoverable without any compiler complaining: a differently closed interface, a constructor that
-    /// grew a parameter, or a move into another assembly.
-    /// </remarks>
+    /// <summary>
+    /// The factory is the type the tooling looks for, and can be activated the way it activates it.
+    /// </summary>
     [Fact]
     public void TheFactory_IsDiscoverableAndActivatableByTheTooling()
     {
@@ -102,8 +67,8 @@ public sealed class DnnDbContextFactoryTests
     /// <summary>The factory hands the tooling a SQL Server context.</summary>
     /// <remarks>
     /// The provider decides the SQL a generated migration would contain. A context configured for any other
-    /// provider - or for none, which throws only when the context is first used - would produce a script that
-    /// cannot be applied to the DotNetNuke database.
+    /// provider - or for none, which throws only when the context is first used - would produce a script
+    /// that cannot be applied to the DotNetNuke database.
     /// </remarks>
     [Fact]
     public void CreateDbContext_SelectsTheSqlServerProvider()
@@ -139,12 +104,6 @@ public sealed class DnnDbContextFactoryTests
     }
 
     /// <summary>An absent, empty or whitespace value falls back to the local design-time database.</summary>
-    /// <remarks>
-    /// All three spellings of "says nothing" are covered because the factory tests for whitespace rather than
-    /// only for null, and an empty variable is the shape a container supplies when a compose file interpolates
-    /// an unset value. Falling THROUGH to an empty connection string would fail later with a message about
-    /// the connection rather than about the configuration.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -165,8 +124,8 @@ public sealed class DnnDbContextFactoryTests
     /// <summary>The fallback carries no credential and names no shared server.</summary>
     /// <remarks>
     /// The fallback string is committed to source control, so anything credential-shaped in it would be a
-    /// committed secret. It is also the value used when the operator has said nothing, which is exactly when
-    /// it must not be able to reach anything but the developer's own machine.
+    /// committed secret. It is also the value used when the operator has said nothing, which is exactly
+    /// when it must not be able to reach anything but the developer's own machine.
     /// </remarks>
     [Fact]
     public void TheFallbackConnectionString_CarriesNoCredential()
@@ -197,8 +156,8 @@ public sealed class DnnDbContextFactoryTests
     /// <remarks>
     /// Construction being inert is what makes it safe for the tooling to build a context against a
     /// production connection string in order to read the model. A connection opened here would hold a
-    /// session open for the life of the command, and a query issued here would run against production from a
-    /// command whose whole purpose may have been to write a script to a file.
+    /// session open for the life of the command, and a query issued here would run against production from
+    /// a command whose whole purpose may have been to write a script to a file.
     /// </remarks>
     [Fact]
     public void CreateDbContext_OpensNoConnection()
@@ -213,13 +172,9 @@ public sealed class DnnDbContextFactoryTests
             + "tooling command is the observable form of breaking that");
     }
 
-    /// <summary>Nothing is contacted, proven by pointing the factory at an address that refuses connections.</summary>
-    /// <remarks>
-    /// A closed connection state is evidence that nothing is open NOW. This is the stronger statement: the
-    /// address is one the operating system has confirmed nothing is listening on, so any attempt to reach it
-    /// during construction would surface as a transport failure rather than as a silent success. It also
-    /// covers the case a state check cannot - a connection opened and closed again inside the factory.
-    /// </remarks>
+    /// <summary>
+    /// Nothing is contacted, proven by pointing the factory at an address that refuses connections.
+    /// </summary>
     [Fact]
     public void CreateDbContext_ContactsNothing_EvenWhenTheAddressRefusesConnections()
     {
@@ -246,9 +201,8 @@ public sealed class DnnDbContextFactoryTests
     /// <summary>The context the factory returns exposes the mapped model.</summary>
     /// <remarks>
     /// Reading the model is what the tooling does with the context it is handed, and it does it without a
-    /// database. A context that could not build its model offline would fail every migrations command with a
-    /// connection error. The expectation comes from the independently derived terminal-schema manifest, so it
-    /// tracks the model rather than restating a list.
+    /// database. A context that could not build its model offline would fail every migrations command with
+    /// a connection error.
     /// </remarks>
     [Fact]
     public void CreateDbContext_ExposesTheMappedModelWithoutADatabase()
@@ -277,11 +231,6 @@ public sealed class DnnDbContextFactoryTests
     }
 
     /// <summary>The arguments the tooling forwards are deliberately ignored.</summary>
-    /// <remarks>
-    /// The tooling passes whatever followed <c>--</c> on the command line. The factory takes no argument of
-    /// its own, and reading one accidentally - a stray value interpreted as a connection string, say - would
-    /// repoint the tooling at whatever a developer happened to type.
-    /// </remarks>
     [Fact]
     public void CreateDbContext_IgnoresTheArgumentsTheToolingForwards()
     {
@@ -328,11 +277,6 @@ public sealed class DnnDbContextFactoryTests
     }
 
     /// <summary>The connection string the factory produced names the database the test asked for.</summary>
-    /// <remarks>
-    /// A guard against the suite above passing vacuously: every case builds its connection string through
-    /// <see cref="RefusedEndpoint"/>, and this confirms that helper produces something the SQL Server client
-    /// parses into the catalogue named, so the equality assertions are comparing real connection strings.
-    /// </remarks>
     [Fact]
     public void TheProbeConnectionStrings_AreWellFormedForTheSqlServerClient()
     {

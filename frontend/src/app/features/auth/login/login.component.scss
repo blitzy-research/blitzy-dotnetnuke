@@ -1,32 +1,3 @@
-// Component stylesheet for the sign-in screen, served by the route /login.
-//
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
-// component's own content attribute, so a class name that drifts does not error - it
-// silently matches nothing and the screen renders unstyled. The template emits exactly
-// this vocabulary and nothing else, and the component specification queries six of the
-// nine by name, so none may be renamed or retired:
-//
-//     .login__failure   .login__notice   .login__message   .login__dismiss
-//     .login__form      .login__fields   .login__control
-//     .login__actions   .login__submit
-//
-// THERE IS NO `.login` BLOCK CLASS, deliberately. The template emits no wrapper element of
-// its own - the page title, the failure banner, the outstanding-revocation advisory and the
-// form are all direct children of the component host - so the host IS the layout container
-// and owns the vertical rhythm. The template states that arrangement in as many words and
-// asks this file to honour it. A block class here would either be dead or would require
-// inventing an element for it to sit on.
-//
-// LEGACY VALUES ARE DESCRIBED IN WORDS, NEVER QUOTED. This file adopts the discipline its
-// paired template states for markup: writing a legacy colour or length literally would put
-// the very tokens-only rule this stylesheet is held to back into its own bytes, where an
-// audit cannot tell a citation from a relapse. Every legacy figure below is therefore named
-// by role and by source line, and the reader can open the cited line to see the value.
-//
-// THE SURFACE IS FLAT - element and modifier classes only, no deep descendant chains and no
-// piercing selector. `form-field`, `error-banner`, `loading-spinner` and `page-header` own
-// their own encapsulated appearance; this file only places them.
-
 // ONLY THE MIXINS PARTNER IS LOADED, and the omission of the tokens partner is deliberate
 // rather than an oversight. `_tokens.scss` exposes no Sass variable, mixin or function at
 // all - it emits one document-root block of custom properties and nothing else - and its own
@@ -44,56 +15,9 @@
 // that does not exist and fail the build.
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  THE HOST - THE SIGN-IN CARD
-// -----------------------------------------------------------------------------
-// A custom element defaults to `display: inline` and would not contain its block-level
-// children correctly, so a box-generating display is required here regardless of layout.
-// Grid rather than flex because the children form a single ordered column and the template
-// describes them as exactly that; `gap` then supplies the whole vertical rhythm.
-//
-// Body type is declared here and inherited by every region below rather than restated per
-// rule, and it is declared on the component root rather than left to a global base rule:
-// without it the browser falls back to its own serif default for every label, help string
-// and message on the screen.
-//
-// MIGRATION: the measure is capped at the small breakpoint step and the card is then
-// centred in the space the shell's main region gives it. `Login.ascx:L5` set the legacy
-// layout table to a fixed 160 units and its three boxes to 150 units (L10, L16, L29); a
-// sign-in form stretched across a desktop viewport is measurably harder to aim at than a
-// narrow one, so the INTENT is preserved as a fluid maximum rather than as a pixel match.
-// The cap is read through the shared breakpoint lookup rather than written as a length,
-// which is the sanctioned use of that function and the same idiom `_layout.scss` uses for
-// the shell's own container. Reading it is not a licence to hand-roll a viewport query, and
-// this file declares none.
-//
-// MIGRATION: the card's frame is the legacy BORDERED PANEL convention, and it is adopted
-// because the legacy sign-in chrome turned out to be EMPTY. The legacy stylesheet's four
-// sign-in rules are named here by role and line rather than by class name, per this file's
-// citation discipline. The sign-in panel rule (default.css L979-L982), the provider-tab
-// group rule (L984-L987) and the provider-container rule (L1028-L1030) all declare EMPTY
-// bodies - three rules, no declarations between them - and the one non-empty member of that
-// family, the container-group rule (L1022-L1026), carries only a float clear and a top
-// padding, both artefacts of a float-and-table layout this screen does not use. There was
-// therefore no sign-in-specific decoration to preserve, and none is invented in its place.
-//
-// What IS preserved is the legacy admin panel convention at L8-L16, which declares a
-// full-width surface on the page background with a one-unit brand border on all four sides
-// (four separate side declarations, L11-L14). That rule is the closest thing the legacy
-// portal had to a card, and every one of its values has an exact token. Its co-declared
-// companion in the same selector list is a grid pager, whose fixed block size (L883-L886) is
-// a pager metric with no relevance to a sign-in card and is deliberately not carried across.
-//
-// MIGRATION: the inline padding and the corner radius are NET ADDITIONS. The legacy panel
-// declared a border with no padding, which let content sit flush against the rule; the
-// spacing scale supplies the inset instead. The radius scale is likewise net-new - the
-// legacy stylesheet declares no corner radius anywhere - and it is recorded as an
-// intentional visual refinement that alters no behaviour. No elevation is introduced: the
-// legacy design is flat and the border alone carries the card.
-//
-// The cap and the padding sit on the same element, which is safe here because the reset
-// establishes `box-sizing: border-box` document-wide, so the padding resolves inside the
-// capped measure rather than widening past it.
+// THE HOST - THE SIGN-IN CARD
+// A custom element defaults to `display: inline` and would not contain its block-level children correctly,
+// so a box-generating display is required here regardless of layout.
 :host {
   display: grid;
   gap: var(--space-4);
@@ -111,27 +35,10 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FAILURE REGION
-// -----------------------------------------------------------------------------
-// Stacked, and its children left at their own content width by `start` justification so the
-// dismiss command is not stretched across the card. The region carries NO frame of its own:
-// the banner above it is already a framed surface, and a second frame around a sentence and
-// a command would read as a nesting level that does not exist.
+// THE FAILURE REGION
 .login__failure {
   display: grid;
   gap: var(--space-2);
-
-  // ⚠ THE BANNER STRETCHES; ONLY THE COMMAND IS HELD TO ITS CONTENT WIDTH. This region
-  // used to declare `justify-items: start`, which achieved the second of those and broke
-  // the first: a start-aligned grid item is sized to its content, so the shared error
-  // banner shrank to the width of its longest line - measured at 228px against the 1072px
-  // the identical component occupies on a screen that renders it outside a grid. One
-  // component was therefore rendering at two widths for no reason a reader could see, and
-  // a framed surface that stops short of the content it belongs to reads as a stray box
-  // rather than as the screen's error state. Alignment now belongs to the ONE item that
-  // needed it and is declared on that item, so another item added to this region cannot
-  // silently inherit a width constraint that was never meant for it.
 }
 
 // The failure region's only start-aligned item. Declared here rather than as a
@@ -141,16 +48,7 @@
   justify-self: start;
 }
 
-
-// THE CALM ADVISORY TREATMENT, and it has TWO consumers rather than one. The template
-// renders this class for the rate-limited state inside the failure region and again, on its
-// own, for the outstanding-revocation advisory beneath the title - and it states that this
-// stylesheet describes the treatment against the rate-limited case only because that is the
-// older of the two readers, "not as an exclusive claim on it". Both are advisories on the
-// same surface tone: nothing has broken in either case, so neither reads in the danger
-// colour, and a person must be able to tell either one from a refused credential at a
-// glance. For the rate-limited state that distinction is load-bearing, because it is the
-// compensating control for the removed human-verification challenge.
+// THE CALM ADVISORY TREATMENT, and it has TWO consumers rather than one.
 .login__notice {
   padding: var(--space-2) var(--space-3);
   border: var(--border-width) var(--border-style) var(--color-border);
@@ -158,79 +56,32 @@
   background-color: var(--color-surface);
 }
 
-// The refusal sentence.
-//
-// COLOUR IS NOT THE ONLY CARRIER. The sentence itself says what is wrong in words, and the
-// template gives the element an alert role so a reader who perceives no colour at all still
-// receives it. The bold weight is what distinguishes it from the calm notice above without
-// introducing a second hue. The TEXT variant of the danger token is used rather than the raw
-// one, because the raw value is tuned for a border or an indicator and does not clear the
-// contrast threshold as body text - the token vocabulary declares that split explicitly and
-// names this as the token a text consumer must reach for.
+// COLOUR IS NOT THE ONLY CARRIER. The sentence itself says what is wrong in words, and the template gives
+// the element an alert role so a reader who perceives no colour at all still receives it. The bold weight
+// is what distinguishes it from the calm notice above without introducing a second hue.
 .login__message {
   color: var(--color-danger);
   font-weight: var(--font-weight-bold);
 }
 
-// THE DISMISS COMMAND CARRIES NO RULE OF ITS OWN, deliberately, and the absence is recorded
-// because a previous revision of this file DID declare one. It set the ink to the brand
-// token - which is byte-for-byte what `_forms.scss` already gives every button - so the
-// declaration matched, changed nothing and could never be observed to break. Dead CSS is
-// worse than absent CSS: it cannot be exercised, so it rots unnoticed and invites the next
-// reader to believe a distinction exists here that does not. That revision's comment also
-// claimed the control was "deliberately not a filled button", which misdescribed what
-// actually renders - the shared button vocabulary gives every button a surface fill and a
-// brand border. The dismiss command is the ordinary button of this screen and needs nothing
-// from this file; the primary command below is the one that is distinguished, and it is
-// distinguished from here.
-
-// -----------------------------------------------------------------------------
-//  THE FORM
-// -----------------------------------------------------------------------------
-// One column, always. Grid rather than flex is the PAIRED TEMPLATE'S OWN INSTRUCTION: it
-// records that the legacy layout table carried a summary describing itself as a design table,
-// concludes that none of it is structure, and states that its rows "become a CSS grid in the
-// paired stylesheet". That is this rule. The legacy rows were a single stack of
-// label-then-control pairs and this screen has too few fields for a second column to help, so
-// no responsive rearrangement is declared - and none is withdrawn either, which is why this
-// file includes no breakpoint mixin. The legacy stylesheets declare no viewport query at all,
-// so there is no responsive behaviour to preserve and inventing a step here would be
-// unjustified; a browser confirmed the single column reflows to a narrow viewport with no
-// horizontal overflow and no query.
-//
-// MIGRATION: the row rhythm resolves to the spacing scale. The legacy layout table set it
-// with a cell padding of three units (`Login.ascx:L5`), and the label-to-control separation
-// was a forced line break inside `Website/controls/labelcontrol.ascx:L8`. Neither survives:
-// `gap` is real spacing that reflows, whereas a break element and the literal spacing
-// characters the legacy admin markup used as gutters are content that merely looks like
-// spacing. There is not one of either in the paired template.
+// THE FORM
+// One column, always. Grid rather than flex is the PAIRED TEMPLATE'S OWN INSTRUCTION: it records that the
+// legacy layout table carried a summary describing itself as a design table, concludes that none of it is
+// structure, and states that its rows "become a CSS grid in the paired stylesheet".
 .login__form,
 .login__fields {
   display: grid;
   gap: var(--space-3);
 }
 
-// Every control fills the measure the card sets rather than sizing itself, so the three
-// boxes line up - which is what replaces the legacy per-box width of 150 units without
-// reproducing it as a length. `min-inline-size: 0` is load-bearing rather than defensive: a
-// text input carries an intrinsic minimum width from its own size attribute, and without
-// this a long seeded account name could push the field past the card's cap.
-//
-// This is the ONLY declaration this file makes about a control. Borders, padding, type,
-// invalid appearance and disabled appearance all belong to `_forms.scss`, which loads last
-// in the global cascade and owns the form vocabulary; re-stating any of it here would
-// duplicate a definition that already exists.
+// Every control fills the measure the card sets rather than sizing itself, so the three boxes line up -
+// which is what replaces the legacy per-box width of 150 units without reproducing it as a length.
 .login__control {
   inline-size: var(--size-full);
   min-inline-size: 0;
 }
 
-// -----------------------------------------------------------------------------
-//  THE SUBMIT ROW
-// -----------------------------------------------------------------------------
-// A real gap rather than literal spacing characters, so the separation survives white-space
-// collapsing, and wrapping is intrinsic so the progress indicator drops below the command on
-// a narrow viewport instead of overflowing the card.
+// THE SUBMIT ROW
 .login__actions {
   display: flex;
   flex-wrap: wrap;
@@ -238,96 +89,23 @@
   align-items: center;
 }
 
-// THE PRIMARY COMMAND.
-//
-// MIGRATION: the legacy submit control was styled by the standard-button rule at
-// default.css L475-L484, and the shared button vocabulary in `_forms.scss` already resolves
-// that rule in full, in tokens: its type size token IS the legacy eleven-unit size, its
-// normal weight token IS the legacy weight, its inline padding token replaces the legacy
-// five-unit side padding, its surface fill is the nearest vocabulary member to the legacy
-// light-grey fill, and its brand ink replaces the legacy near-black ink. This file therefore
-// declares NONE of those, because the definition already exists one layer up.
-//
-// MIGRATION: the two legacy colours in that rule have no token and could not be reproduced.
-// The legacy fill and the legacy ink each occur EXACTLY ONCE in the 1,030-line legacy
-// stylesheet, and neither is a member of the colour vocabulary - which is closed, and which
-// this file may not extend. Both are resolved to existing members: the fill to the shared
-// neutral surface token, the nearest vocabulary member to it, and the ink to the brand
-// token, which the vocabulary measures at 7.85 to 1 on that surface and which therefore
-// clears the contrast threshold for normal text comfortably. Design-system compliance
-// outranks legacy fidelity in the governing precedence order, so a token that differs
-// slightly from the measured value is the CORRECT outcome rather than a compromise, and
-// accessibility outranks fidelity as well, so the pairing had to stay legible either way.
-//
-// MIGRATION: the bold weight is a deliberate divergence from the measured legacy weight,
-// which was normal. It is the only difference this file makes to the control, and it exists
-// because this screen now has TWO buttons where the legacy screen had one - the dismiss
-// command is a net addition with no legacy counterpart - and the single primary action must
-// be distinguishable from a secondary one. Weight is used rather than a second fill because
-// it is a NON-COLOUR carrier: a reader who perceives no colour still sees the hierarchy, and
-// the accessible name and the submit behaviour carry it independently of both. Promoting the
-// fill instead was rejected for a second, concrete reason: a fill declared here would
-// out-weigh the shared `:disabled` rule on specificity and leave the in-flight button
-// looking enabled, which is the defect the disabled state exists to prevent.
-//
-// No size or position change between states: a control that moved between its resting and
-// in-flight states would shift under a pointer that was already on it.
+// The legacy submit control was styled by the standard-button rule at default.css L475-L484, and the shared
+// button vocabulary in `_forms.scss` already resolves that rule in full, in tokens: its type size token IS
+// the legacy eleven-unit size, its normal weight token IS the legacy weight, its inline padding token
+// replaces the legacy five-unit side padding, its surface fill is the nearest vocabulary member to the
+// legacy light-grey fill, and its brand ink replaces the legacy near-black ink.
 .login__submit {
   font-weight: var(--font-weight-bold);
 
-  // Applied again on this control even though the reset and the form vocabulary both reach
-  // every button already. The shared mixin is documented as idempotent and explicitly safe
-  // to apply broadly and again on an individual control, so the cost is nothing and the
-  // guarantee is local: this is the first control a keyboard user meets in the application,
-  // and its focus indicator should not depend on a global rule staying as it is. The mixin
-  // scopes the ring to `:focus-visible`, so a mouse press never draws it, and nothing in
-  // this file suppresses an outline anywhere.
+  // Applied again on this control even though the reset and the form vocabulary both reach every button
+  // already.
   @include mx.focus-ring;
 
-  // The in-flight cursor. The template sets a busy attribute on this control for exactly as
-  // long as the request is outstanding, and nothing in the global cascade styles it - the
-  // shared disabled rule resolves the pointer to unavailable, which is true of a disabled
-  // control in general but says the wrong thing here: the command has not been refused, it
-  // is working. This is the sighted-pointer counterpart to the announcement the attribute
-  // already makes to assistive technology, it is the one state on this control the shared
-  // vocabulary cannot know about, and it changes nothing about the box.
   &[aria-busy='true'] {
     cursor: progress;
   }
 }
 
-// =============================================================================
-//  RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//
-// MIGRATION: the legacy sign-in screen offered a choice of authentication providers as a
-// row of tabs, and those tab rules (default.css L989-L1020) are painted with a background
-// sprite image. Nothing of that is carried across, on two independent grounds: the single
-// bearer-token path replaced the multi-provider container, so there are no tabs to style,
-// and no raster asset ships in this workspace at all beyond the favicon. No rule in this
-// file references an external resource of any kind.
-//
-// MIGRATION: every spacing value above resolves to the shared spacing scale, and that scale
-// is itself a NET ADDITION - the legacy stylesheets declare no spacing system, only ad-hoc
-// values. The radius scale is a net addition on the same grounds and the legacy stylesheet
-// declares no corner radius anywhere; it is used here only on the card and on the calm
-// advisory. No elevation is introduced anywhere, so the flatness of the legacy design is
-// preserved even though an elevation scale exists.
-//
-// MIGRATION: the three near-identical legacy font stacks are consolidated into the single
-// base family token, an imperceptible divergence the design system records once. The
-// monospaced family is not used on this screen at all: the support reference - the one value
-// that would warrant it - is rendered by the shared banner, which owns the document it is
-// read from, and the template records why no reference region exists here.
-//
-// MIGRATION: the legacy screen styled its refusal through a rule that conveyed failure by
-// coloured text ALONE. That is not reproduced: the sentence carries the meaning in words,
-// the template's alert role carries it to assistive technology, and the bold weight carries
-// it to a reader who perceives no colour - so the hue is the fourth carrier rather than the
-// only one. Reversing a colour-only signal costs nothing visually, which is why the
-// precedence order permits it.
-//
-// NOTHING HERE RENDERS A CREDENTIAL. No rule reveals, echoes or reserves space for a typed
-// value, and no `content` declaration exists anywhere in this file - so a credential cannot
-// reach the painted output through the stylesheet even in a forced-colours or print context.
-// =============================================================================
+// RECORDED RATHER THAN ABSORBED
+// MIGRATION: the three near-identical legacy font stacks are consolidated into the single base family
+// token, an imperceptible divergence the design system records once.

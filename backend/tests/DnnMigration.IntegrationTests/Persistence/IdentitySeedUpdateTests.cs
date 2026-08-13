@@ -11,37 +11,10 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// the existing row instead of inserting a duplicate.
 /// </summary>
 /// <remarks>
-/// <para>
 /// WHY THIS SUITE EXISTS, AND WHY IT COVERS FIVE TABLES RATHER THAN ONE. Entity Framework Core's
-/// <c>DbSet&lt;T&gt;.Update</c> and <c>DbSet&lt;T&gt;.Attach</c> do not ask the caller what state the entity
-/// is in; they infer it, and they infer <c>Added</c> whenever a store-generated integer key holds the CLR
-/// default. That inference is safe only for a table whose identity begins at 1, because it silently equates
-/// "the key is zero" with "the key was never assigned". Five tables in this schema break that equivalence:
-/// </para>
-/// <list type="bullet">
-///   <item><description><c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so an installation's first
-///   two tenants are numbered -1 and 0 - and -1 is simultaneously the legacy absent-integer sentinel.</description></item>
-///   <item><description><c>dbo.Tabs.TabID</c> is <c>IDENTITY(0, 1)</c>, so a tenant's first page is page 0.</description></item>
-///   <item><description><c>dbo.Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so a tenant's first role - by
-///   convention its administrators role, the most privileged there is - is role 0.</description></item>
-///   <item><description><c>dbo.RoleGroups.RoleGroupID</c> is <c>IDENTITY(0, 1)</c>.</description></item>
-///   <item><description><c>dbo.Modules.ModuleID</c> is <c>IDENTITY(0, 1)</c>.</description></item>
-/// </list>
-/// <para>
-/// The failure mode is silent and destructive rather than loud: the caller receives a success, the row it
-/// meant to change is untouched, a duplicate appears, and any value the application layer derives from the
-/// row it believes it just saved - a page's path, for instance - is then computed against the wrong row. A
-/// unit test cannot catch it, because the inference only decides anything once a real store-generated key is
-/// in play, which is why these assertions live in the integration suite and read the row back from the
-/// store.
-/// </para>
-/// <para>
-/// Every case here deliberately obtains its entity in ONE scope and stages the change in ANOTHER. That is
-/// not ceremony: an entity the writing context already tracks takes a different branch entirely, and it is
-/// the DETACHED branch that carries the defect. Reading through a second scope reproduces exactly what a
-/// request does when it reads through a no-tracking query, hands the entity across a layer boundary, and
-/// stages it back.
-/// </para>
+/// <c>DbSet&lt;T&gt;.Update</c> and <c>DbSet&lt;T&gt;.Attach</c> do not ask the caller what state the
+/// entity is in; they infer it, and they infer <c>Added</c> whenever a store-generated integer key holds
+/// the CLR default.
 /// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
@@ -54,15 +27,10 @@ public sealed class IdentitySeedUpdateTests
     public IdentitySeedUpdateTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// Staging a detached page whose identifier is the zero identity seed updates that page and adds no row.
+    /// Staging a detached page whose identifier is the zero identity seed updates that page and adds no
+    /// row.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The page's descendants are checked as well. A staged insert took a new identifier, so the path the
-    /// application layer then recomputed for the children was composed against a page that had only just
-    /// appeared - which is how a sibling's stored path came to name a page its parent had never been renamed
-    /// to.
-    /// </remarks>
     [Fact]
     public async Task TabUpdate_AtTheZeroIdentitySeed_WritesTheExistingRow()
     {
@@ -107,12 +75,6 @@ public sealed class IdentitySeedUpdateTests
     /// adds no row, and still writes only the four ordering columns.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The narrowness is asserted alongside the row count because the two properties are in tension: the
-    /// member has to begin tracking the entity without consulting its key AND without widening the write to
-    /// the columns the caller did not mean to change. A name carried on the same instance is therefore
-    /// deliberately altered and expected NOT to reach the store.
-    /// </remarks>
     [Fact]
     public async Task TabOrderUpdate_AtTheZeroIdentitySeed_WritesTheExistingRowAndOnlyTheOrderingColumns()
     {
@@ -151,7 +113,8 @@ public sealed class IdentitySeedUpdateTests
     }
 
     /// <summary>
-    /// Staging a detached role whose identifier is the zero identity seed updates that role and adds no row.
+    /// Staging a detached role whose identifier is the zero identity seed updates that role and adds no
+    /// row.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -266,8 +229,8 @@ public sealed class IdentitySeedUpdateTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The module repository already assigned the state rather than inferring it, so this case is a guard
-    /// against regression rather than a fix being proven. It is included because the hazard is a property of
-    /// the schema and not of any one repository, and a future edit that "simplified" this member back to
+    /// against regression rather than a fix being proven. It is included because the hazard is a property
+    /// of the schema and not of any one repository, and a future edit that "simplified" this member back to
     /// <c>DbSet.Update</c> would otherwise pass every existing test.
     /// </remarks>
     [Fact]
@@ -317,8 +280,8 @@ public sealed class IdentitySeedUpdateTests
     }
 
     /// <summary>
-    /// Staging a detached tenant whose identifier is the negative identity seed updates that tenant and adds
-    /// no row.
+    /// Staging a detached tenant whose identifier is the negative identity seed updates that tenant and
+    /// adds no row.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>

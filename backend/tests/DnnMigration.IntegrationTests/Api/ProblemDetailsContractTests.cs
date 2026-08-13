@@ -14,22 +14,6 @@ namespace DnnMigration.IntegrationTests.Api;
 /// Covers the single failure contract every endpoint publishes: one RFC 7807 body, one status vocabulary,
 /// and no response that advertises a problem document and then answers without one.
 /// </summary>
-/// <remarks>
-/// <para>
-/// These facts exist because three refusal paths used to bypass the shared contract while every action
-/// declared it. The authorisation middleware answered 401 and 403 with an EMPTY body; a read that succeeded
-/// while finding nothing answered a bare 404; and a failure that described a server fault was reported as
-/// 400, which told the caller to correct a request that was already correct and hid the fault from every
-/// monitor watching the 5xx rate. A status-code assertion cannot detect any of the three, so each is
-/// asserted here against the payload.
-/// </para>
-/// <para>
-/// The media type is deliberately not asserted, for the reason recorded on the sibling portal fact: the
-/// framework answers <c>application/json</c> rather than <c>application/problem+json</c> for a
-/// controller-produced document, and pinning the current value would cement a deviation instead of leaving
-/// room to correct it.
-/// </para>
-/// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class ProblemDetailsContractTests
@@ -61,26 +45,10 @@ public sealed class ProblemDetailsContractTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// WHAT WAS INCONSISTENT, AND WHY IT MATTERED. Refusals decided outside MVC were labelled
-    /// <c>application/problem+json</c> while every controller-produced one was labelled
-    /// <c>application/json</c>, so a client could not select a problem parser from the media type - which is
-    /// the reason RFC 7807 registers one. And the mandatory-remediation refusal named its type
-    /// <c>https://httpstatuses.com/403</c>: a THIRD-PARTY, non-resolving URI, on the same status where the
-    /// ordinary authorisation refusal already carried this API's own identifier. A client branching on
-    /// <c>type</c> therefore had to know which producer had answered before it could interpret the member.
-    /// </para>
-    /// <para>
     /// THE PRODUCERS ARE EXERCISED TOGETHER, deliberately. Each one is a different code path - a
     /// short-circuiting middleware, the router, the formatter selector, the model-validation filter and a
     /// controller action - and the property being asserted is that they AGREE. Testing them one at a time
     /// would let any two drift apart and still pass, which is exactly how the inconsistency arose.
-    /// </para>
-    /// <para>
-    /// The type is asserted by PREFIX rather than by exact value, because the point is the namespace: each
-    /// producer names its own condition, and pinning the codes here would make this fact fail whenever a
-    /// refusal was renamed for a reason it is not about.
-    /// </para>
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -149,8 +117,6 @@ public sealed class ProblemDetailsContractTests
                 body.RootElement.TryGetProperty("detail", out _).Should().BeTrue();
             }
 
-            // The prefix assertion above is satisfied by any member of the namespace, so the two producers
-            // that used to disagree with each other on the SAME status are pinned exactly.
             answers[1].Response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         }
         finally
@@ -169,9 +135,9 @@ public sealed class ProblemDetailsContractTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// These two statuses are decided before any endpoint is entered, and the router answers them with the
-    /// status line alone - so a client with one parser for error responses had two cases it could not parse.
-    /// The <c>Allow</c> header is asserted alongside the body because supplying a body must not cost the
-    /// header: it is the only thing that tells the caller which method to use instead.
+    /// status line alone - so a client with one parser for error responses had two cases it could not
+    /// parse. The <c>Allow</c> header is asserted alongside the body because supplying a body must not cost
+    /// the header: it is the only thing that tells the caller which method to use instead.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -217,16 +183,8 @@ public sealed class ProblemDetailsContractTests
             "the health document is not a problem document and must keep its own media type");
     }
 
-    /// <summary>
-    /// A request carrying no credential answers a problem document rather than an empty body.
-    /// </summary>
+    /// <summary>A request carrying no credential answers a problem document rather than an empty body.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This response is produced by the authorisation middleware, not by an action, so it is the one that
-    /// used to arrive empty. The bearer challenge header is asserted alongside the body because the fix
-    /// wraps the framework's handler rather than replacing it, and losing the header would break the very
-    /// clients the body was added to help.
-    /// </remarks>
     [Fact]
     public async Task ProtectedEndpoint_WithoutCredentials_AnswersAProblemDocument()
     {
@@ -250,15 +208,8 @@ public sealed class ProblemDetailsContractTests
             "a client branches on the problem type rather than parsing prose");
     }
 
-    /// <summary>
-    /// A known caller who holds no grant answers a problem document rather than an empty body.
-    /// </summary>
+    /// <summary>A known caller who holds no grant answers a problem document rather than an empty body.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The refusal must disclose nothing about why. The assertion therefore checks that the detail is
-    /// present and generic rather than checking for any particular explanation, and separately that no
-    /// account name reaches the body.
-    /// </remarks>
     [Fact]
     public async Task ProtectedEndpoint_AsUnprivilegedCaller_AnswersAProblemDocument()
     {
@@ -287,28 +238,10 @@ public sealed class ProblemDetailsContractTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the one place the failure contract and the success contract diverge, and the divergence has to
-    /// be pinned because it is invisible in the source. The serializer is configured with
+    /// This is the one place the failure contract and the success contract diverge, and the divergence has
+    /// to be pinned because it is invisible in the source. The serializer is configured with
     /// <c>JsonIgnoreCondition.Never</c>, so every declared member of every response is written even when it
     /// holds null - which is why the client declares each nullable SUCCESS member as required-and-nullable.
-    /// The framework's problem-details type is the exception: it annotates each of its five standard members
-    /// with a per-member null-omission condition, and a per-member condition overrides the collection-wide
-    /// one, so a member with no value is genuinely ABSENT here exactly as RFC 7807 describes.
-    /// </para>
-    /// <para>
-    /// <c>instance</c> is the member that proves it. Nothing in this application ever assigns one, so it is
-    /// null on every document, and the two possible wire forms - omitted, or present as null - imply
-    /// different client declarations. <c>problem-details.model.ts</c> declares it optional and non-null,
-    /// which is correct only for the omitted form; asserting that form here is what stops the two layers
-    /// drifting apart silently after a framework upgrade or a change to the serializer policy.
-    /// </para>
-    /// <para>
-    /// The document is read as raw JSON rather than deserialised, because deserialising into the
-    /// problem-details type would materialise a null <c>Instance</c> whether the member was on the wire or
-    /// not, and so could not tell the two forms apart at all. Both a middleware-produced refusal and an
-    /// action-produced validation failure are inspected, because they are written by different writers.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task ProblemDocument_OmitsMembersItHasNoValueFor()
@@ -332,15 +265,9 @@ public sealed class ProblemDetailsContractTests
         await AssertOmitsInstanceAsync(invalid);
     }
 
-    /// <summary>
-    /// Asserts that one problem document carries no <c>instance</c> member at all.
-    /// </summary>
+    /// <summary>Asserts that one problem document carries no <c>instance</c> member at all.</summary>
     /// <param name="response">The refusal to inspect.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The presence of <c>type</c>, <c>title</c> and <c>status</c> is asserted alongside the absence, so a
-    /// document that omitted everything - which would also satisfy the absence on its own - cannot pass.
-    /// </remarks>
     private static async Task AssertOmitsInstanceAsync(HttpResponseMessage response)
     {
         string body = await response.Content.ReadAsStringAsync();
@@ -364,12 +291,6 @@ public sealed class ProblemDetailsContractTests
     /// A read that succeeds while finding nothing answers a problem document rather than a bare 404.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The role read reports absence as a successful outcome carrying no value, which is the path that used
-    /// to produce an empty 404 - distinct from the portal read, whose absence arrives as a failed outcome
-    /// and therefore always had a body. Both are asserted, in their own suites, because they are different
-    /// code paths that must produce the same shape.
-    /// </remarks>
     [Fact]
     public async Task AbsentResource_FromASuccessfulOutcome_AnswersAProblemDocument()
     {
@@ -397,16 +318,8 @@ public sealed class ProblemDetailsContractTests
             "an absence must not confirm which identifiers were probed");
     }
 
-    /// <summary>
-    /// A failure that names an internal fault is reported in the 5xx range, not as a bad request.
-    /// </summary>
+    /// <summary>A failure that names an internal fault is reported in the 5xx range, not as a bad request.</summary>
     /// <param name="failureCode">A failure code produced by the application or module boundary.</param>
-    /// <remarks>
-    /// Asserted against the translator directly rather than by provoking each fault through HTTP. Every one
-    /// of these codes is raised only when a write or a third-party module fails, which cannot be arranged
-    /// deterministically from outside the process; the classification is nevertheless the whole of the
-    /// behaviour, and it is a pure function of the code.
-    /// </remarks>
     [Theory]
     [InlineData("portal.creation_failed")]
     [InlineData("role.create_failed")]
@@ -427,12 +340,7 @@ public sealed class ProblemDetailsContractTests
     /// <param name="failureCode">A representative failure code.</param>
     /// <param name="expectedStatus">The status the caller must receive.</param>
     /// <remarks>
-    /// The refresh-token family is deliberately absent from this set. Every code beginning
-    /// <c>refresh_token.</c> is classified as 401 ahead of any other rule, including the dependency-outage
-    /// rule, which is pre-existing behaviour rather than something these fixes introduced or altered: the
-    /// token store's own outage is escalated as an exception by the authentication service and so never
-    /// reaches this translator as an expected failure. Pinning that quirk here would assert behaviour
-    /// outside the scope of this contract.
+    /// The refresh-token family is deliberately absent from this set.
     /// </remarks>
     [Theory]
     [InlineData("portal.not_found", StatusCodes.Status404NotFound)]
@@ -449,24 +357,14 @@ public sealed class ProblemDetailsContractTests
     }
 
     /// <summary>
-    /// Every reason code a lost uniqueness race is reported under is already a conflict in this vocabulary, so
-    /// no create path had to invent a status and none can drift onto a different one.
+    /// Every reason code a lost uniqueness race is reported under is already a conflict in this vocabulary,
+    /// so no create path had to invent a status and none can drift onto a different one.
     /// </summary>
     /// <param name="failureCode">A code emitted when a unique value turned out to be taken.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. Each of these codes was already emitted by a SEQUENTIAL pre-check and already
-    /// answered 409; the fix made the concurrent path emit the very same codes rather than letting the store's
-    /// refusal escape as a server fault. Pinning them here is what makes "no mapping-table change was needed"
-    /// a measured fact rather than a claim - the classification is by TOKEN, so a code renamed upstream from
-    /// <c>_duplicate</c> to something without a conflict token would silently start answering 500 again, which
-    /// is precisely the defect this work removed.
-    /// </para>
-    /// <para>
-    /// <c>portal.creation_conflict</c> is the one new code, used when the store names a constraint the
-    /// provisioning path does not recognise. It is asserted alongside the others because a fallback that fell
-    /// back to a server fault would defeat the purpose of having one.
-    /// </para>
+    /// Each of these codes was already emitted by a SEQUENTIAL pre-check and already answered 409; the fix
+    /// made the concurrent path emit the very same codes rather than letting the store's refusal escape as
+    /// a server fault.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -492,24 +390,9 @@ public sealed class ProblemDetailsContractTests
     /// <param name="failureCode">A code emitted by the credential write or the sign-in migration path.</param>
     /// <param name="expectedStatus">The status the caller must receive.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-02 and SEC-08. Credential replacement became a compare-and-swap over the representation
-    /// the caller last read, so "the write did not happen" now has a cause the boolean it replaced could not
-    /// express, and each cause gets the status its own properties earn.
-    /// </para>
-    /// <para>
-    /// <c>user.password.superseded</c> is a 409 because somebody else changed the credential between this
-    /// caller reading it and writing it: the request was well formed and authorised, existing state moved
-    /// under it, and the caller resolves it by re-reading and deciding again - which is exactly the
-    /// vocabulary the uniqueness races above already use. <c>auth.credential_migration_store_unavailable</c>
-    /// is a 503 because the credential was CORRECT and what failed was a dependency; reporting it as a
-    /// credential refusal would send an account holder hunting for a mistake it did not make.
-    /// </para>
-    /// <para>
-    /// Both are pinned here because the classification is by TOKEN rather than by code: a rename that dropped
-    /// <c>superseded</c> or <c>store_unavailable</c> from the last dotted segment would silently answer 400
-    /// and nothing else in the suite would notice.
-    /// </para>
+    /// Credential replacement became a compare-and-swap over the representation the caller last read, so
+    /// "the write did not happen" now has a cause the boolean it replaced could not express, and each cause
+    /// gets the status its own properties earn.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -521,24 +404,13 @@ public sealed class ProblemDetailsContractTests
     }
 
     /// <summary>
-    /// The two module portability refusals sit on opposite sides of the caller-fault boundary, and the split
-    /// is asserted together so neither can drift onto the other's status.
+    /// The two module portability refusals sit on opposite sides of the caller-fault boundary, and the
+    /// split is asserted together so neither can drift onto the other's status.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The distinction is about WHO can put it right, which is the only question a status code answers.
-    /// <c>module.content_type_mismatch</c> means the caller submitted a document belonging to a different
-    /// module type - a request to correct, so 400 - and reproduces the refusal
-    /// <c>Website/admin/Modules/Import.ascx.vb</c> lines 195-205 raised for exactly that reason.
-    /// <c>module.export_failed</c> means the MODULE handed back content that an export document cannot
-    /// carry; the request was correct and authorised, nothing the caller changes makes it succeed, so it is
-    /// a server fault.
-    /// </para>
-    /// <para>
     /// Pinned here because both codes are classified by TOKEN rather than by whole code, so a naming change
     /// upstream could silently move either one. The counterpart service-level facts assert that each is
     /// raised at all; these two assert what the caller then receives.
-    /// </para>
     /// </remarks>
     [Fact]
     public void ModulePortabilityRefusals_AreClassifiedByWhoCanCorrectThem()
@@ -554,22 +426,8 @@ public sealed class ProblemDetailsContractTests
     /// malformed request.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// PINNED SEPARATELY BECAUSE THE STATUS CHANGED, and because two independent descriptions of this
-    /// endpoint already asserted the answer this fact now guarantees. The code matched no classification
-    /// table and fell to the request-correction default, so the caller received a 400 telling them to edit
-    /// a request that has nothing wrong with it - while the endpoint's published description declared the
-    /// refusal as a 409 and argued the case in the same words the conflict table uses for a removal blocked
-    /// by a still-referenced resource. The declared 409 was therefore unreachable and the 400 actually
-    /// returned was undeclared.
-    /// </para>
-    /// <para>
-    /// The counterpart to this fact is the service-level assertion that the refusal is raised at all
-    /// (<c>PortalServiceTests.DeletePortal_RefusesToRemoveTheLastRemainingTenant</c>, which pins the code).
-    /// The two together fix the whole path from the rule to the status without a test that empties the
-    /// installation - which is the only way to reach this refusal through the API, and would leave the
-    /// shared host with no tenant for every fact that runs after it.
-    /// </para>
+    /// endpoint already asserted the answer this fact now guarantees.
     /// </remarks>
     [Fact]
     public void RefusingToRemoveTheLastPortal_IsAConflictRatherThanARequestCorrection()
@@ -583,26 +441,6 @@ public sealed class ProblemDetailsContractTests
     /// member name, and publishes the trace identifier separately.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// THE SUPPORT REFERENCE IS THE POINT OF THIS FACT. The browser client quotes a reference taken from the
-    /// BODY, and until this member existed the only candidate there was <c>traceId</c> - which the server
-    /// derives from whatever diagnostic activity happened to be current, and which therefore appears neither
-    /// on the response header, nor on the request envelope in the log, nor on any audit event the request
-    /// produced. A person reporting a problem quoted a value an operator could not find.
-    /// </para>
-    /// <para>
-    /// The identifier is SUPPLIED by this test rather than read back and compared to itself, because a
-    /// server-generated value would let a wrong-but-self-consistent implementation pass: echoing the trace
-    /// identifier in both places would satisfy an equality assertion between them. Supplying a known value
-    /// pins the body member to the identifier the CALLER used.
-    /// </para>
-    /// <para>
-    /// Both members are asserted present, because they are not alternatives: <c>traceId</c> keeps the
-    /// document indistinguishable from a framework-produced one, and no consumer of it is broken by the
-    /// addition.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ProblemDocument_PublishesTheCorrelationIdentifierTheHeaderCarries()
     {

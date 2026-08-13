@@ -15,28 +15,17 @@ namespace DnnMigration.IntegrationTests.Security;
 /// documented only in prose.
 /// </summary>
 /// <remarks>
-/// <para>
 /// WHAT THIS PROBE IS FOR. The store this solution ships keeps refresh state in the API process, so it is
-/// neither shared between replicas nor carried across a restart, and that has one dynamic consequence:
-/// once the tracked-generation ceiling is reached, the oldest refresh families are retired early and their
-/// holders must sign in again. Before this probe existed, the standing limitation appeared in three documents
-/// and in no running deployment, and the dynamic consequence appeared nowhere at all.
-/// </para>
-/// <para>
-/// The DESCRIPTION is asserted as well as the status, and deliberately so: the health response body is
-/// contractually four members, and the API layer's health logging deliberately excludes each probe's data
-/// dictionary, so the description is the ONLY channel by which this probe's numbers reach an operator. A
-/// change that moved a number out of it would silently un-report the thing this probe exists to report.
-/// </para>
+/// neither shared between replicas nor carried across a restart, and that has one dynamic consequence: once
+/// the tracked-generation ceiling is reached, the oldest refresh families are retired early and their
+/// holders must sign in again.
 /// </remarks>
 [Trait("Category", "Integration")]
 public class RefreshTokenStoreHealthTests
 {
     private static readonly DateTime Origin = new(2026, 3, 1, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>
-    /// With capacity to spare the probe is healthy and states the locality and the usage.
-    /// </summary>
+    /// <summary>With capacity to spare the probe is healthy and states the locality and the usage.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task AnUnsaturatedInProcessStoreIsHealthyAndReportsItsLocality()
@@ -69,11 +58,6 @@ public class RefreshTokenStoreHealthTests
     /// A store at its ceiling is degraded, and says which setting to change and what the alternative is.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Degraded rather than unhealthy on purpose: a saturated store still serves every request and still
-    /// issues tokens, so reporting it unhealthy would take a working instance out of service over a condition
-    /// whose cost is a sign-in.
-    /// </remarks>
     [Fact]
     public async Task AStoreAtItsCeilingIsDegradedAndNamesTheRemedy()
     {
@@ -99,11 +83,6 @@ public class RefreshTokenStoreHealthTests
     /// With a deployment-supplied store active the probe reports the substitution and claims nothing else.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Capacity is a property of this solution's implementation rather than of the contract, so a replacement
-    /// is not obliged to answer for it. Reporting it healthy with an explicit "no capacity or locality" is the
-    /// honest answer; inventing one would be worse than saying nothing.
-    /// </remarks>
     [Fact]
     public async Task ASubstitutedStoreIsReportedAsSubstitutedAndNothingIsClaimedForIt()
     {
@@ -263,13 +242,6 @@ public class RefreshTokenStoreHealthTests
             throw new NotSupportedException("The substitute store is registered, not exercised.");
 
         /// <inheritdoc />
-        /// <remarks>
-        /// PRIV-02. Answers with an empty reclamation rather than refusing, and it is the ONE member that does.
-        /// The reclamation sweep is a hosted service that runs on a schedule in every host these facts build,
-        /// so a substitute that threw here would raise out of a background timer during an unrelated
-        /// assertion - a failure attributed to whichever fact happened to be running. Reporting "nothing to
-        /// reclaim" is also true of a store that holds nothing.
-        /// </remarks>
         public Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(RefreshTokenPurgeResult.NothingHeld());
     }

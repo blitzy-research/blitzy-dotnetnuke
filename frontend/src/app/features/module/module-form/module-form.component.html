@@ -1,156 +1,14 @@
 <!--
-  THE MODULE CREATE / EDIT SCREEN.
-
-  Ported from `Website/admin/Modules/modulesettings.ascx` (225 lines, read in full), whose sibling
-  code-behind `ModuleSettings.ascx.vb` (485 lines) supplies the workflow. The markup is authoritative for
-  fields, validators and controls; the code-behind is authoritative for sequencing and error handling.
-
-  Every member bound below is declared on `ModuleFormComponent`. Nothing is bound that the component does
-  not expose, and nothing here holds state of its own.
-
-  ===================================================================================================
-  STRUCTURE NOTES THAT ARE LOAD-BEARING
-  ===================================================================================================
-
-  1. NO `table` ELEMENT IS EMITTED, and that is measured rather than stylistic. The legacy screen nests
-     EIGHT tables (plus a ninth borderless one at L40), and every one of them carries a
-     `summary="... Design Table"` attribute, which is the layout-table idiom of its era. Three of the
-     seven summary values in this one file are provably wrong or copy-pasted: `tblDetails` (L24) says
-     "Appearance", `tblPage` (L99) says "Advanced Settings" and `tblOther` (L180) says "Security
-     Details". A caption that does not describe its own table is conclusive proof the element carried
-     no data semantics. Grouping is expressed with `fieldset` and `legend`; geometry belongs to the
-     paired stylesheet.
-
-  2. THE LEGACY SECTION HIERARCHY IS PRESERVED BY NESTING, not flattened. Two of the four sub-section
-     captions collide in the resource file: `GeneralDetails.Text` and `Appearance.Text` are BOTH
-     'Basic Settings', and `Security.Text` and `OtherSettings.Text` are BOTH 'Advanced Settings'.
-     Nesting each pair inside its own parent group is what keeps the two accessible names
-     distinguishable while reproducing all six captions verbatim; flattening them would have produced
-     two ambiguous groups, and renaming either one would have invented wording.
-
-  3. THE LEGACY DISCLOSURE BEHAVIOUR IS NOT REPRODUCED. Each legacy caption was a
-     `dnn:sectionhead` that collapsed its table, three of them starting collapsed
-     (`isexpanded="False"`). The component exposes no expansion state and the shared inventory declares
-     no disclosure member, so every group is rendered open. Nothing is hidden from a reader that the
-     legacy screen would eventually have shown.
-
-  4. EVERY MIGRATED STRING IS INTERPOLATED FROM A COMPONENT CONSTANT rather than written as template
-     text. Angular compiles templates with `preserveWhitespaces` disabled - verified unset across
-     `angular.json` and every `tsconfig` - which collapses each run of whitespace inside a text node to
-     a single space. Four of this screen's help strings deliberately carry TWO spaces after a sentence
-     period, so authoring them here would silently rewrite wording an existing operator recognises.
-     Interpolated values are not collapsed. The four group captions are the sole exception: they carry
-     no multi-space run, the component exposes no constant for them, and this file may not add one.
-
-  5. NO SEMANTIC LANDMARK IS EMITTED. `header`, `main`, `nav` and `footer` each belong to
-     `layout/shell`, exactly once per document, and a feature that repeated one would give the document
-     two of that landmark.
-
-  ===================================================================================================
-  MIGRATION REGISTER FOR THIS TEMPLATE
-  ===================================================================================================
-
-  MIGRATION: THE LEGACY SCREEN HAD NO CREATE PATH, so the create mode this template renders is
-    NET-NEW. `cmdUpdate_Click` calls `GetModule(ModuleId, TabId, False)` unconditionally at
-    `ModuleSettings.ascx.vb:L341` and dereferences the result at `:L343`, so the legacy screen would
-    have thrown for a module that did not exist. Only three create facts are legacy-derived, all from
-    `:L225-L227`: the visibility starts maximised, the all-pages switch starts clear, and the removal
-    affordance is not rendered. Every one of the three is carried by the component's own declared
-    control defaults, so this template seeds nothing.
-
-  MIGRATION: MODE IS READ FROM `isEditMode()`, NEVER FROM AN IDENTIFIER. `dbo.Modules.ModuleID` is
-    `IDENTITY(0, 1)` and `dbo.Tabs.TabID` is `IDENTITY(0, 1)`, so zero is an ordinary module and an
-    ordinary page, while the legacy null contract simultaneously used -1 to mean "absent". No
-    expression in this file tests an identifier for truthiness or against a numeric marker.
-
-  MIGRATION: THE ACTION BAR MOVED FROM THE FOOT OF THE PAGE INTO THE HEADING. The legacy buttons sat
-    after the last table (`modulesettings.ascx:L221-L225`). The shared page heading owns the action bar
-    in this design system, so the three actions are projected into it. Their wording, their order and
-    their validation behaviour are unchanged.
-
-  MIGRATION: THE THREE NAME FIELDS ARE KEPT DISTINCT. The definition's programmatic name
-    (`ModuleInfo.vb:L437`) is never shown. The definition's DISPLAY name (`:L374`) fills the read-only
-    field, and the operator's INSTANCE title (`:L194`) fills the editable one, in that order, which is
-    the legacy binding order at `ModuleSettings.ascx.vb:L125-L126`.
-
-  MIGRATION: FIELDS THE MODULE CONTRACT DOES NOT TRANSPORT RENDER NOTHING AT ALL. Withheld with their
-    legacy positions: the alignment choices (L120-L127), the colour box (L131-L132), the border box and
-    its comparison validator (L135-L138), the print switch (L156-L157), the syndication switch
-    (L160-L161) and the container picker (L164-L165). The colour and border boxes were DATA columns
-    rather than stylesheet values, and no value from either reaches a style declaration anywhere.
-
-  MIGRATION: THE PERMISSIONS GRID IS WITHHELD (`dgPermissions`, L42) because permission mutation is out
-    of scope. The inherit switch beside it (L46-L47) IS transported, since it is an ordinary member of
-    both write contracts. Its legacy `autopostback="true"` reloaded the grid; with no grid there is
-    nothing to reload.
-
-  MIGRATION: THE MODULE-SPECIFIC PANEL IS WITHHELD (`pnlSpecific`, L214, with its help row at
-    L204-L210) because the legacy module loader is excluded. That panel hosted a control loaded by
-    reflection from the module's own assembly, which has no counterpart here.
-
-  MIGRATION: BOTH HELP PANELS ARE WITHHELD as rendered blocks (L16-L17 and L102-L103). The first one's
-    wording survives as the heading's supporting sentence, which the component supplies. Recorded
-    while here: the markup at L103 misspells "occurence" where `PageSettingsHelp.Text` spells
-    "occurrence" correctly - a sixth markup-versus-resource disagreement in this one screen, and the
-    resource wins in all six.
-
-  MIGRATION: RESOURCE TEXT IS RENDERED AS PLAIN TEXT, ALWAYS. Across the 37 in-scope resource files
-    seventy-six values carry an HTML tag and four carry a live script element. Two entries belong to
-    this very screen: `InheritPermissions.Text` wraps two of its words in bold tags, and
-    `ModuleHelp.Text` carries a heading and a paragraph. Every string here arrives through
-    interpolation, so the framework escapes it. No trusted-markup binding, no sanitiser bypass and no
-    pre-escaped member appears anywhere in this file.
-
-  MIGRATION: LOCALISATION IS NOT PORTED. The legacy resource-provider mechanism is a Web Forms feature
-    with no counterpart, and no translation runtime is installed, so no localisation attribute and no
-    localisation call appears here. The resource file remains the AUTHORITY for wording.
--->
-
-<!--
-  ONE FORM WRAPS THE WHOLE SCREEN, HEADING INCLUDED, and the reason is the action bar. The three
-  actions are projected into the shared heading, so the heading has to sit inside the form element for
-  the save action to be the form's own submit button. That is what makes the Enter key save the form
-  from any text field, which the legacy postback did too.
-
   `novalidate` suppresses the browser's own validation bubbles. It is load-bearing rather than
   defensive: the component answers a missing page or a missing definition with a specific ported
-  sentence, and a native bubble would preempt that sentence with the browser's own wording. The
-  requirement still reaches assistive technology, through the shared field's required marker and
-  through `aria-required` on the two controls that carry one.
+  sentence, and a native bubble would preempt that sentence with the browser's own wording.
 -->
 <form class="module-form" novalidate [formGroup]="form" (ngSubmit)="submit()">
-  <!--
-    The heading and the action bar. The title and its supporting sentence are chosen by mode inside the
-    component: an existing module is headed with the resource value 'Module Settings', and the create
-    heading is a documented net addition, the resource file supplying no create wording because the
-    legacy screen had no create path.
-  -->
+  <!-- The heading and the action bar. -->
   <app-page-header [title]="heading()" [subtitle]="subheading()">
     <!--
-      SAVE. `cmdUpdate` (L222) declares no `causesvalidation` attribute, so it defaulted to True and
-      validated the page. `type="submit"` is the faithful translation: it runs the form's validators
-      through the submit handler.
-
-      Withheld when the screen has nothing to save - an address that names no readable module, a module
-      that could not be found, or a read the server refused - because in those states a save could only
-      ever be refused. The refusal case is the third of the set rather than being folded into the
-      second: the two are distinct facts and are reported as such (see `readRefused`).
-
-      ⚠ IT IS DELIBERATELY NOT WITHHELD FOR AN INVALID FORM, AND THAT WAS ASKED FOR AND DECLINED.
-      Pressing submit is how an operator asks to be TOLD what is wrong: the two required choices now
-      report themselves beside their own controls, and every one of those messages is gated on a
-      submission attempt, so a control that cannot be pressed would hide the very feedback the fix
-      exists to produce. It is also the legacy behaviour rather than a preference - `cmdUpdate` was
-      always enabled and its handler was wrapped in `If Page.IsValid Then`
-      (`ModuleSettings.ascx.vb:L328`), so the legacy screen validated ON CLICK and did nothing when
-      validation failed. The same rule is stated on the portal creation form for the same reason
-      (`Signup.ascx.vb:L155`), so the console behaves one way throughout.
-
-      Disabling on invalidity would additionally strand a form whose only fault is a SERVER-side
-      refusal, since the control would be enabled and disabled by a rule the server does not share.
-
-      Disabled only while a request is outstanding. The component guards this as well; the attribute
-      makes the reason visible rather than leaving a click silently ignored.
+      SAVE. `cmdUpdate` declares no `causesvalidation` attribute, so it defaulted to True and validated
+      the page.
     -->
     @if (addressUnreadable() === false && moduleMissing() === false && readRefused() === false) {
       <button
@@ -164,27 +22,17 @@
     }
 
     <!--
-      ABANDON. `cmdCancel` (L223) carries `causesvalidation="False"`, and `type="button"` is what
-      reproduces that exactly: the click cannot submit the form, so no validator runs, nothing is
-      marked touched, and an invalid form does not disable it. The legacy handler was a bare redirect
-      with no validation and no confirmation (`:L279-L286`).
+      ABANDON. `cmdCancel` carries `causesvalidation="False"`, and `type="button"` is what reproduces
+      that exactly: the click cannot submit the form, so no validator runs, nothing is marked touched,
+      and an invalid form does not disable it.
     -->
     <button class="page-action module-form__action" type="button" (click)="cancel()">
       {{ cancelLabel }}
     </button>
 
     <!--
-      REMOVE. `cmdDelete` (L225) also carries `causesvalidation="False"`, so this is a
-      `type="button"` for the same reason, and it is likewise never disabled by an invalid form.
-
-      Rendered only when the component reports a module it has actually read, which covers both legacy
-      conditions at once: `cmdDelete.Visible = False` while placing a module (`:L227`), and the fact
-      that removing ONE placement has to name that placement.
-
-      MIGRATION: this removes the module from a single page. The legacy affordance called
-      `DeleteTabModule(TabId, ModuleId)` (`:L305`), not `DeleteModule`, so the module itself is
-      soft-deleted only once its last placement is gone. There is no restore path: the legacy recycle
-      bin lived under `Website/admin/Tabs/` and is out of scope.
+      REMOVE. `cmdDelete` also carries `causesvalidation="False"`, so this is a `type="button"` for the
+      same reason, and it is likewise never disabled by an invalid form.
     -->
     @if (canDelete()) {
       <button
@@ -199,82 +47,36 @@
 
   <!--
     THE REFUSAL SURFACE, RENDERED UNCONDITIONALLY AND DELIBERATELY SO. The shared banner keeps its live
-    region in the document at all times and puts its own emptiness test inside it, because a live
-    region has to exist before its content arrives in order to be announced. Wrapping this element in a
-    control-flow block would insert the region and its text in the same change, and the announcement
-    would be lost.
-
-    The whole problem document is handed over rather than reduced to a sentence here. That is what
-    retains the trace identifier, which is the only join key between what a person saw and what the
-    server logged, and the per-field dictionary travels with it.
-
-    MIGRATION: a net-new affordance rather than a ported one. A case-insensitive census finds
-    `asp:ValidationSummary` ZERO times in the whole of `Website/`; the legacy screen showed each
-    message beside its own field and summarised nothing.
+    region in the document at all times and puts its own emptiness test inside it, because a live region
+    has to exist before its content arrives in order to be announced.
   -->
   <app-error-banner [problem]="problem()" />
 
   @if (addressUnreadable()) {
-    <!--
-      The address carries something that is not a module identifier.
-
-      MIGRATION: the legacy screen called `Int32.Parse` on the query-string value with no guard
-      (`:L449`), so a mistyped address raised an exception its page handler absorbed. Reporting the
-      address is the same outcome without the exception - and it is emphatically NOT the same as
-      treating the parameter as absent, which would present the create screen and place a new module.
-    -->
+    <!-- The address carries something that is not a module identifier. -->
     <p class="module-form__notice">{{ unreadableAddressMessage }}</p>
   } @else if (readRefused()) {
     <!--
       THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
       render nothing beneath it - which is what makes the refusal one statement rather than two.
-
-      Reaching this branch is what suppresses both the "could not be found" sentence below and the form
-      itself: a refusal is not an absence, and a form seeded from no module would offer a save the
-      server has already said it will refuse.
-
-      MIGRATION: this is the legacy access-denied page's whole content - a heading and a single
-      `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`) - and it
-      is now the identical presentation this feature's settings and export screens give the same
-      status.
     -->
   } @else if (moduleMissing()) {
     <!--
-      A readable identifier that resolved to nothing: a stale bookmark, or a module already removed.
-      A legitimate state, reported as such rather than as a fault, and distinguished from "still
-      reading" by the component before it is ever true here.
+      A readable identifier that resolved to nothing: a stale bookmark, or a module already removed. A
+      legitimate state, reported as such rather than as a fault, and distinguished from "still reading"
+      by the component before it is ever true here.
     -->
     <p class="module-form__notice">{{ notFoundMessage }}</p>
   } @else if (isEditMode() && loading()) {
-    <!--
-      Reading the addressed module. The fields wait for it rather than rendering empty and then
-      filling, because the replacement is a whole-row one: the stored placement position and the
-      stored recycle-bin flag have to be in hand before anything can be saved, and a form that looked
-      ready before they arrived would invite a save that moved the module to the bottom of its pane.
-
-      The mode is tested ALONGSIDE the flag, and that pairing is load-bearing rather than belt-and-
-      braces. The read flag belongs to a store that is scoped to the application, not to this screen,
-      so a neighbouring screen's read can legitimately be in flight while this one is placing a new
-      module. On the create route there is no module to wait for, so waiting on that flag would swap a
-      perfectly usable form for an indicator that nothing on this screen is going to resolve.
-    -->
+    <!-- Reading the addressed module. -->
     <app-loading-spinner size="medium" label="Loading module…" />
   } @else {
     <div class="module-form__body">
-      <!--
-        ==========================================================================================
-        MODULE SETTINGS - the facts that are the same on every page the module appears on.
-        Legacy `dshModule` / `tblModule`, L11-L95. Caption from `ModuleSettings.Text`.
-        ==========================================================================================
-      -->
+      <!-- MODULE SETTINGS - the facts that are the same on every page the module appears on. -->
       <fieldset class="module-form__group">
         <legend class="module-form__group-title"><h2>Module Settings</h2></legend>
 
-        <!--
-          Legacy `dshDetails` / `tblDetails`, L22-L52. Caption from `GeneralDetails.Text`, whose value
-          is 'Basic Settings' - identical to `Appearance.Text` further down, which is why this group
-          is nested rather than flattened.
-        -->
+        <!-- Legacy `dshDetails` / `tblDetails`, L22-L52. -->
         <fieldset class="module-form__group module-form__group--nested">
           <legend class="module-form__group-title module-form__group-title--nested">
             Basic Settings
@@ -284,21 +86,7 @@
             <!--
               THE DEFINITION, CHOSEN ONCE. There is no legacy counterpart for this control: the legacy
               screen was edit-only and the definition was already fixed, which is why it rendered the
-              name in a box that could not be typed into. The caption is the legacy one all the same,
-              `plFriendlyName.Text`, because the legacy screen showed the definition under exactly that
-              word. The supporting sentence is a documented net addition, the legacy one describing a
-              read-only display rather than a choice.
-
-              `ngValue` rather than `value`, and this is not interchangeable. A native option value is
-              a string, so `value` would put the text "7" into a control declared over
-              `number | null` and then send a string to the server; `ngValue` preserves the number.
-
-              The empty choice is bound to `null`, which is the only value in this screen that means
-              "not chosen". No numeric value could carry that meaning: definition identifiers seed at
-              1 and page identifiers seed at 0, so neither zero nor -1 is available as a marker.
-
-              `aria-required` rather than a native `required`, so the requirement is announced without
-              handing the browser a chance to answer it with its own wording.
+              name in a box that could not be typed into.
             -->
             <app-form-field
               [label]="labels.moduleDefId"
@@ -314,15 +102,6 @@
                 [attr.aria-required]="true"
                 [attr.aria-busy]="definitionsLoading()"
               >
-                <!--
-                  The unmade choice. Its wording is `Not_Specified.Text` from
-                  `Website/App_GlobalResources/SharedResources.resx`, which is the exact caption the
-                  legacy screen used for the empty entry of its own choice list
-                  (`modulesettings.ascx:L126`, the alignment list's `value=""` item). Written as
-                  template text because the component exposes no constant for it and this file may not
-                  add one; the value carries no multi-space run, so whitespace collapsing cannot alter
-                  it.
-                -->
                 <option [ngValue]="null">Not Specified</option>
                 @for (definition of definitions(); track definition.moduleDefId) {
                   <option [ngValue]="definition.moduleDefId">{{ definition.friendlyName }}</option>
@@ -331,17 +110,9 @@
             </app-form-field>
           } @else {
             <!--
-              THE DEFINITION, FIXED. `txtFriendlyName` (L28) was a text box carrying
-              `Enabled="False"`, because the replacement contract has no definition member: measured at
-              `ModuleController.vb:L645` against `:L1095`, ten provider values against nine, the
-              definition being the one that is absent. The component disables the underlying control as
-              well, so the value cannot reach a submission even if this branch were rendered wrongly.
-
               MIGRATION: `readonly` rather than `disabled`. A disabled control is removed from the tab
               order and skipped by assistive technology, so the legacy field could not be reached or
-              read at all; a read-only one is focusable and is announced with its value. The
-              restriction is identical - neither can be edited - and the defect is annotated rather
-              than reproduced.
+              read at all; a read-only one is focusable and is announced with its value.
             -->
             <app-form-field
               [label]="labels.friendlyName"
@@ -358,15 +129,8 @@
           }
 
           <!--
-            THE INSTANCE TITLE. `txtTitle` (L32) carries NO length attribute and NO validator of any
-            kind, and both of those absences are reproduced faithfully.
-
-            MIGRATION: NO REQUIRED RULE AND NO LENGTH CAP ARE ADDED. The legacy markup declares ZERO
-            presence validators anywhere, and both write contracts declare this member nullable and
-            not required, so adding either rule would be a parity break in the opposite direction. The
-            documented column bound of 256 characters is documentation, not an attribute the legacy
-            control carried. `required` is therefore left at its default of false and no marker is
-            shown.
+            THE INSTANCE TITLE. `txtTitle` carries NO length attribute and NO validator of any kind, and
+            both of those absences are reproduced faithfully.
           -->
           <app-form-field
             [label]="labels.moduleTitle"
@@ -389,13 +153,7 @@
             <!--
               WHAT A BLANK HEADING MEANS. The heading is optional on every tier and stays optional: the
               legacy markup declares no presence validator on `txtTitle`, both server validators gate
-              their only title rule on the value being non-empty, and the column is nullable. A module in
-              the measured data stores the empty string, so a required rule here would make an existing
-              record unsavable for an operator who came to change something else.
-              What was missing is that the choice has a consequence: the module is then listed under its
-              definition's name, exactly as `ControlPanelBase.vb:192-196` did on finding `title = ""`.
-              Same treatment as the reversed schedule above — state the outcome, accept the value, never
-              through the field's `error` channel.
+              their only title rule on the value being non-empty, and the column is nullable.
             -->
             @if (titleFallbackNotice() !== null) {
               <p class="module-form__schedule-notice" aria-live="polite">{{ titleFallbackNotice() }}</p>
@@ -403,14 +161,9 @@
           </app-form-field>
 
           <!--
-            INHERIT THE VIEW PERMISSION FROM THE PAGE. `chkInheritPermissions` (L46-L47).
-
             MIGRATION: THE EMPHASIS IN THE LEGACY CAPTION IS DROPPED, NOT RENDERED.
             `InheritPermissions.Text` wraps two of its words in bold tags, and the component holds the
-            plain-text reduction. The shared field takes its caption as text, so re-authoring the
-            emphasis would mean writing markup into a string binding - which is precisely the
-            injection route this workspace refuses, in a corpus where four resource values carry a
-            live script element. The words are intact; only the bolding is lost.
+            plain-text reduction.
           -->
           <app-form-field
             [label]="labels.inheritViewPermissions"
@@ -430,41 +183,13 @@
         <!--
           Legacy `dshSecurity` / `tblSecurity`, L54-L92. Caption from `Security.Text`, whose value is
           'Advanced Settings' - the MARKUP at L54 says "Security Settings" and the resource file
-          disagrees. The resource file wins, here and in all six disagreements on this screen.
-
-          The group started collapsed (`isexpanded="False"`) and is rendered open, per structure note 3.
+          disagrees.
         -->
         <fieldset class="module-form__group module-form__group--nested">
           <legend class="module-form__group-title module-form__group-title--nested">
             Advanced Settings
           </legend>
 
-          <!--
-            SHOW THE MODULE ON EVERY PAGE. `chkAllTabs` (L59-L60).
-
-            MIGRATION: `Page_Load:L215-L220` disabled this switch, the two portal-wide instructions
-            below and the page picker for a caller who was not a portal administrator, testing
-            `PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName)` - a per-portal SETTING,
-            not a fixed role name. THIS SWITCH NOW FOLLOWS THAT RULE AGAIN. An earlier revision of this
-            note declined to reproduce it, on the grounds that nothing among this screen's dependencies
-            could answer the question - the identity contract exposed a super-user flag and a role list,
-            and comparing against a literal role name would have been a weaker second copy of a server
-            rule that keys on a column. The session store now publishes the server's own derived answer,
-            host arm included, so the control's state follows the authority that will actually decide the
-            write. The paired class disables the control rather than removing it, so the label and its
-            help text stay legible and the form's shape does not change between callers.
-
-            ⚠ THE OTHER THREE CONTROLS STAY ENABLED, DELIBERATELY. The page picker must remain usable:
-            on the create route it is how a page administrator names the one page they administer, and
-            withholding it would make this screen useless to exactly the callers the legacy application
-            admitted. The two propagation instructions are edit-mode-only and carry their own refusal.
-
-            ⚠ THIS IS AN AFFORDANCE AND NOT THE ENFORCEMENT. The service requires portal administration
-            for an all-pages placement on BOTH the create and the update path, decided from stored state,
-            so a submission that never rendered this control is refused with a 403 all the same. That
-            refusal surfaces at WARNING severity, on the precedent of the legacy access-denied screen,
-            which used its yellow warning in both branches.
-          -->
           <app-form-field
             [label]="labels.allTabs"
             [help]="administersPortal() ? hints.allTabs : allTabsWithheldHint"
@@ -480,12 +205,8 @@
           </app-form-field>
 
           <!--
-            HEADER AND FOOTER TEXT. `txtHeader` (L63-L65) and `txtFooter` (L68-L70), both
-            `textmode="MultiLine"` with `rows="6"`.
-
-            MIGRATION: RICH TEXT IS REDUCED TO PLAIN MULTI-LINE TEXT. The editor provider these fields
-            used is excluded, so each is a plain `textarea`. `rows="6"` reproduces the legacy height
-            exactly; the width was a legacy inline attribute and belongs to the stylesheet here.
+            HEADER AND FOOTER TEXT. `txtHeader` and `txtFooter`, both `textmode="MultiLine"` with
+            `rows="6"`.
           -->
           <app-form-field
             [label]="labels.header"
@@ -516,31 +237,9 @@
           </app-form-field>
 
           <!--
-            THE DISPLAY SCHEDULE. `txtStartDate` (L73-L79) and `txtEndDate` (L83-L89).
-
             MIGRATION: A NATIVE DATE CONTROL REPLACES A FREE-TEXT BOX PLUS A CALENDAR LINK. The legacy
             pair was a text box carrying `maxlength="11"` beside a `cmdStartCalendar` hyperlink that
-            opened a picker popup. The popup control is not ported, and `type="date"` supplies the
-            picker natively, keyboard-operable and localised by the user agent. `maxlength` has no
-            meaning on a date control and is therefore not carried across - it constrained a text box
-            that no longer exists.
-
-            MIGRATION: THE VALUE FORMAT IS NOW UNAMBIGUOUS, WHICH FIXES A REAL CULTURE DEFECT. The
-            legacy comparison validator resolved `Type="Date"` against the REQUEST's culture
-            (`:L78`, `:L88`) while the handler then called `Convert.ToDateTime` against the SERVER's
-            (`ModuleSettings.ascx.vb:L368`, `:L373`), so the two could disagree about the same text. A
-            date control produces one calendar date in one format and there is no culture left to
-            disagree about.
-
-            MIGRATION: NO ORDER RULE EXISTS AND NONE IS INVENTED. Both legacy validators declared
-            `Operator="DataTypeCheck"` with NO `ControlToCompare`, so an end date before a start date
-            was accepted. It still is, and no message for one is rendered. The surviving rule is
-            parseability alone, and an empty box remains valid: the legacy screen declares no presence
-            validator anywhere.
-
-            The legacy absent-date marker is the minimum date, and the component blanks exactly that
-            one value before it reaches these controls. The maximum date is an ordinary schedule value
-            and survives untouched.
+            opened a picker popup.
           -->
           <app-form-field
             [label]="labels.startDate"
@@ -550,9 +249,7 @@
           >
             <!--
               `min` and `max` are the storable range of the column behind the field, so a date picker
-              offers only dates the server can keep. They ASSIST and do not replace the validator: a
-              typed or pasted value outside the range still reaches it, and the picker's own refusal
-              says nothing a person can read.
+              offers only dates the server can keep.
             -->
             <input
               id="module-form-start-date"
@@ -579,21 +276,6 @@
               [attr.aria-invalid]="errorsFor('endDate').length > 0"
             />
 
-            <!--
-              ⚠ A WARNING, NOT A VALIDATION FAILURE, AND THE DISTINCTION IS DELIBERATE AND SOURCED.
-              An end date before its start date is accepted by both tiers, and that is legacy-faithful
-              rather than an oversight: the legacy screen's two date validators are independent
-              `DataTypeCheck` comparisons, each naming no control to compare against, so neither could
-              ever have related the two fields to one another. The AAP's Minimal Change Clause item 4
-              requires validation rules to MATCH the legacy screens, and §0.9.1 requires a discovered
-              legacy defect to be ANNOTATED rather than corrected — so refusing the save here, or adding
-              the rule server-side, would both be departures from the plan rather than compliance with
-              it. The server-side rules were consequently left exactly as measured.
-              What the operator gets instead is a statement of what they have entered. It never blocks
-              the submit, it is `aria-live="polite"` so it does not interrupt, and it is deliberately
-              NOT rendered through the field's `error` channel — that channel means "this was refused",
-              and this was not.
-            -->
             @if (scheduleReversed()) {
               <p class="module-form__schedule-notice" aria-live="polite">{{ reversedScheduleNotice }}</p>
             }
@@ -601,37 +283,17 @@
         </fieldset>
       </fieldset>
 
-      <!--
-        ==========================================================================================
-        PAGE SETTINGS - the facts that belong to THIS placement of the module on THIS page.
-        Legacy `dshPage` / `tblPage`, L97-L198. Caption from `PageSettings.Text`.
-        ==========================================================================================
-      -->
+      <!-- PAGE SETTINGS - the facts that belong to THIS placement of the module on THIS page. -->
       <fieldset class="module-form__group">
         <legend class="module-form__group-title"><h2>Page Settings</h2></legend>
 
-        <!--
-          Legacy `dshAppearance` / `tblAppearance`, L108-L176. Caption from `Appearance.Text`, whose
-          value is 'Basic Settings' - byte-identical to `GeneralDetails.Text` above. The duplication is
-          the legacy author's, is reproduced rather than corrected, and is what the nesting
-          disambiguates.
-        -->
+        <!-- Legacy `dshAppearance` / `tblAppearance`, L108-L176. -->
         <fieldset class="module-form__group module-form__group--nested">
           <legend class="module-form__group-title module-form__group-title--nested">
             Basic Settings
           </legend>
 
-          <!--
-            THE TITLE-BAR ICON. `ctlIcon` (L113-L117).
-
-            MIGRATION: A PLAIN TEXT FIELD REPLACES THE URL AND FILE PICKER. The legacy control was a
-            `portal:url` composite declaring `showurls="False" showtabs="False" showlog="False"
-            showtrack="False"`, which reduced it to a file chooser over the portal's own folders. No
-            filesystem, upload or disk-space affordance is in scope, so the stored value is edited
-            directly. The documented column bound of 100 characters is documentation rather than an
-            attribute the legacy control carried, so no length cap is imposed - the same reasoning as
-            the instance title.
-          -->
+          <!-- THE TITLE-BAR ICON. `ctlIcon`. -->
           <app-form-field
             [label]="labels.iconFile"
             [help]="hints.iconFile"
@@ -647,64 +309,7 @@
             />
           </app-form-field>
 
-          <!--
-            HOW THE PLACEMENT IS PRESENTED. `cboVisibility` (L142-L148).
-
-            MIGRATION: A RADIO GROUP, NOT A DROPDOWN, because the legacy control was an
-            `asp:radiobuttonlist` carrying `repeatdirection="Horizontal"`. The three entries and their
-            order are the legacy ones, and their wording comes from `Maximized.Text`, `Minimized.Text`
-            and `None.Text` in the shared resource file.
-
-            MIGRATION: BOUND THROUGH THE ENUMERATION, NEVER THROUGH A POSITION. The legacy code
-            assigned the stored code straight into the list's SELECTED INDEX
-            (`ModuleSettings.ascx.vb:L134`), which worked only because the list items happened to be
-            declared in the same order as the enumeration members - and the legacy enumeration
-            (`ModuleInfo.vb:L30-L34`) declared no explicit values, so its numbering came from
-            declaration order too. Two stacked coincidences. Each choice here carries its own code, so
-            nothing depends on the order of this loop. `None` is a real choice meaning "render without
-            the container", never an absent value.
-
-            No `for` is passed to the shared field: a group of controls has no single control to name,
-            so the field omits the attribute entirely rather than emitting a reference to nothing - and
-            because nothing is named, the field renders its caption as a `span` rather than as a
-            `label` that would associate with no control at all. The naming below is unaffected: it
-            works by reference to that caption's identifier, which is the same in either form.
-
-            The wrapper is declared `role="radiogroup"` and named from the shared field's own label,
-            reached through the `labelId` signal that field exposes publicly for exactly this purpose -
-            its declaration reads "Public so a caller that wants to name something of its own from this
-            field - a fieldset, a composite control, a second group - can point at the same text rather
-            than duplicating the wording." Naming it by REFERENCE rather than by repeating the string is
-            what keeps one caption for one field: the field's own caption and the group's name cannot
-            drift apart, and the wording still comes from the resource value the component holds.
-            `radiogroup` is the precise role for a container of radios, where the field's outer
-            `role="group"` describes the composite field around it.
-
-            ⚠ THE LAYOUT IS HORIZONTAL, AND THAT REQUIREMENT LIVES IN THE PAIRED STYLESHEET. The legacy
-            control declared `repeatdirection="Horizontal"` (`modulesettings.ascx:L144`), so the three
-            options belong on ONE row. This wrapper exists to be the single hook for it and wraps
-            exactly the three options and nothing else; `.module-form__choices` needs a row-direction
-            flex layout in `module-form.component.scss`. Without it the options inherit the global
-            rule that makes each choice label a block-level flex row and they stack vertically, which
-            is measurably NOT the legacy arrangement. The geometry is deliberately not asserted here:
-            an inline style is not permitted and would not be overridable by the stylesheet that owns
-            this decision.
-
-            BLITZY [A11Y]: these are native radios at the user agent's own size, measured in the
-            browser at 13 by 13 pixels with 11.6 pixels of safe clickable space, which is below the
-            24-pixel target-size threshold. That is the legacy control's own size - the legacy screen
-            rendered plain radios and its stylesheets set no dimension for them - so the design source
-            is being followed rather than silently overridden, and the deferral is flagged here for
-            review instead. Enlarging the target is a stylesheet decision and belongs with the
-            row-direction layout above; nothing in this template constrains it.
-
-            The static `name` is load-bearing for keyboard operability. Angular's radio accessor sets
-            only its own internal name, used for model grouping, and does NOT reflect one to the DOM;
-            without a DOM `name` the browser treats each input as a group of one, which costs the
-            group its single tab stop and its arrow-key selection. The value equals the control name,
-            so the accessor's name check is satisfied. Invisible to the eye, and it makes the group a
-            genuine one.
-          -->
+          <!-- HOW THE PLACEMENT IS PRESENTED. `cboVisibility`. -->
           <app-form-field
             #visibilityField
             [label]="labels.visibility"
@@ -732,13 +337,7 @@
             </div>
           </app-form-field>
 
-          <!--
-            SHOW THE PLACEMENT'S CONTAINER. `chkDisplayTitle` (L152-L153).
-
-            The caption is `plDisplayTitle.Text`, whose value is 'Display Container?' - the MARKUP at
-            L152 says "Display Title?" and is wrong about its own field: the flag governs the whole
-            container, not the title alone. The resource file wins.
-          -->
+          <!-- SHOW THE PLACEMENT'S CONTAINER. `chkDisplayTitle`. -->
           <app-form-field
             [label]="labels.displayTitle"
             [help]="hints.displayTitle"
@@ -755,31 +354,8 @@
 
           @if (cacheTimeOffered()) {
             <!--
-              HOW LONG THIS PLACEMENT'S OUTPUT MAY BE CACHED. `txtCacheTime` (L167-L173), which sat
-              inside `rowCache`, a row the code-behind could hide.
-
-              MIGRATION: THE WHOLE FIELD DISAPPEARS, NOT MERELY ITS INPUT.
-              `ModuleSettings.ascx.vb:L136-L142` read the selected DEFINITION and, when its default
-              cache period equalled the legacy integer absence marker, set `rowCache.Visible = False`.
-              Removing the field rather than disabling it is what reproduces that, and removal also
-              keeps it out of the accessibility tree.
-
-              MIGRATION: THE TWO CACHE VALUES ARE NEVER COALESCED. A placement's own period and its
-              definition's default are different facts, initialised differently on purpose
-              (`ModuleInfo.vb:L731` against `:L759`): zero on a placement means "do not cache this
-              placement", while the marker on a definition means "no default was declared". This
-              condition reads the DEFINITION's value only; the control below edits the PLACEMENT's.
-
-              The caption is `plCacheTime.Text`, whose value is 'Cache Time (secs):' - the markup at
-              L168 says "Cache Timeout (seconds):" and the resource file wins.
-
-              A text field rather than a numeric one, and that is deliberate: an emptied numeric input
-              reports null, which cannot be held by a control declared over a string, and the empty
-              string is exactly the state the legacy handler translated to zero (`:L349-L353`).
-              `inputmode` still brings up a numeric keypad, and `maxlength` reproduces the legacy
-              attribute. The surviving rule is integrality with no bound - the legacy comparison
-              validator declared no minimum and no maximum, so none is imposed and in particular no
-              non-negative rule is added.
+              HOW LONG THIS PLACEMENT'S OUTPUT MAY BE CACHED. `txtCacheTime`, which sat inside
+              `rowCache`, a row the code-behind could hide.
             -->
             <app-form-field
               [label]="labels.cacheTime"
@@ -811,20 +387,7 @@
           </legend>
 
           @if (isEditMode()) {
-            <!--
-              THE TWO PORTAL-WIDE INSTRUCTIONS. `chkDefault` (L183-L184) and `chkAllModules`
-              (L187-L188).
-
-              MIGRATION: OFFERED ONLY FOR AN EXISTING MODULE, because only the replacement contract
-              carries them - neither appears in the create contract, since neither describes the module
-              being placed. They are INSTRUCTIONS rather than state: the component seeds both clear on
-              every visit and never echoes a previous one back, so an instruction given once is not
-              silently reapplied by the next save.
-
-              The second of the two is the furthest-reaching control on this screen: it copies this
-              placement's appearance onto every module in the portal. Both are administrator-gated on
-              the server, for the reason recorded on the all-pages switch above.
-            -->
+            <!-- THE TWO PORTAL-WIDE INSTRUCTIONS. `chkDefault` and `chkAllModules`. -->
             <app-form-field
               [label]="labels.setAsDefaultSettings"
               [help]="hints.setAsDefaultSettings"
@@ -854,28 +417,7 @@
             </app-form-field>
           }
 
-          <!--
-            THE PAGE. `cboTab` (L191-L193), an `asp:dropdownlist` bound over `TabName` and `TabId`.
-
-            The caption is `plTab.Text`, whose value is 'Move To Page:' - the markup at L191 says
-            "Move To Tab:" and the resource file wins. The legacy wording is a move instruction, and it
-            still is on an existing module; while placing one it names the page to place it on. The
-            supporting sentence is the legacy one either way.
-
-            Required structurally in both modes, and the check is EXISTENCE ONLY. `dbo.Tabs.TabID` is
-            `IDENTITY(0, 1)`, so page zero is an ordinary page: no comparison against zero, against -1
-            or against truthiness could tell a real identifier apart from an unmade choice. `null` is
-            the unmade choice, and `ngValue` is what keeps the real ones numbers.
-
-            MIGRATION: THIS IS NOT A DEDICATED MOVE OPERATION. The legacy handler called a move,
-            a copy and a bulk removal directly after saving (`:L403-L418`); none of those is exposed by
-            the module API. Re-parenting still happens, as an ordinary member of the replacement body.
-
-            The list is portal-scoped, and which portal is answered by the module that was read on the
-            edit route and by the signed-in session on the create route — the same portal the API resolves
-            a create request into. It is therefore populated on both routes; an empty list means no portal
-            has been resolved yet, not that this route has none. Administrator-gated on the server.
-          -->
+          <!-- THE PAGE. `cboTab`, an `asp:dropdownlist` bound over `TabName` and `TabId`. -->
           <app-form-field
             [label]="labels.tabId"
             [help]="hints.tabId"
@@ -898,56 +440,22 @@
           </app-form-field>
         </fieldset>
       </fieldset>
-
-      <!--
-        TWO MEMBERS OF THE REPLACEMENT BODY HAVE NO CONTROL HERE, AND THAT IS CORRECT RATHER THAN
-        MISSING. Recorded because both are load-bearing and their absence from the markup looks like an
-        oversight.
-
-        The PLACEMENT POSITION is a real form control that deliberately has no DOM element. A reactive
-        control lives on its form group independently of the template: the component seeds it from the
-        module that was read and reads it back through the group's raw value, so it round-trips without
-        a hidden input. That round trip matters - the replacement writes every member it is given, and
-        the contract's own default for this one APPENDS the module at the bottom of its pane, so
-        dropping it would move a module every time its title changed. There is no reorder affordance
-        because the API exposes no route for one.
-
-        The RECYCLE-BIN FLAG is not a control at all. The component reads it from the module it loaded
-        and sends the stored value back. The legacy handler assigned False to it on EVERY update
-        (`ModuleSettings.ascx.vb:L364`), so saving any field silently restored a module from the bin;
-        that defect is annotated here and not reproduced. `false` is data, not absence.
-      -->
     </div>
   }
 </form>
 
 <!--
-  THE DESTRUCTIVE CONFIRMATION.
-
   Presence in the document IS the open state: the shared dialog has no visibility input by design, and
   opens itself modally when it is created. So it is created only while the component reports a pending
-  removal, and destroying it is what closes it. It brings a focus trap, dismissal on the escape key and
-  focus restoration with it, none of which the legacy browser prompt offered.
-
-  Placed OUTSIDE the form on purpose. A modal that opened inside the form would put its two buttons in
-  the form's own submit scope, and the confirming button would post the form as well as confirm.
-
-  MIGRATION: the message is the exact string the legacy screen resolved.
-  `ClientAPI.AddButtonConfirm(cmdDelete, GetString("DeleteItem"))` at `:L205` looked the key up WITHOUT
-  a property suffix, and `DeleteItem.Text` in the shared resource file holds 'Are You Sure You Wish To
-  Delete This Item?'. The heading is a documented net addition: the legacy prompt was a browser dialog
-  with a message and no title.
+  removal, and destroying it is what closes it.
 -->
 @if (removalConfirmVisible()) {
-  <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
-       shows the SAME title, which the shared dialog declares as its default; binding one here is how
-       five different titles for one action came about - runtime testing found `Delete`,
-       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
-       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
-       `window.confirm()` carrying the single shared string `DeleteItem`
-       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
-       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
-       resource value this migration must preserve. -->
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
   <app-confirm-dialog
     [message]="deleteConfirmMessage"
     [confirmLabel]="deleteLabel"

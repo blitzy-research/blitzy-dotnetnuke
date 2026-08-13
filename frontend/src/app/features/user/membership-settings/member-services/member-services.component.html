@@ -1,81 +1,28 @@
-<!--
-  THE ACCOUNT HOLDER'S OWN SUBSCRIPTIONS, AS A PANEL INSIDE THE ACCOUNT-POLICY SCREEN.
-
-  Every bindable name below is declared by the paired component class and nothing else: this
-  template introduces no member, no wording key and no piece of state of its own. Templates
-  compile with strict checking, so a reference to a member the class does not declare is a
-  build failure rather than a blank on the screen.
-
-  MIGRATION: replaces `Website/admin/Users/MemberServices.ascx`, whose 77 lines are a help
-  paragraph, an RSVP code box with a subscribe command, and a seven-column services grid
-  carrying two command columns. All three are here, in that order.
-
-  ⚠ NO PAGE HEADER AND NO LEVEL-ONE HEADING. This is a SECTION of the screen that mounts it,
-  which already emits the page's landmark heading, so the panel opens at level two and skips no
-  level. The shared page header is deliberately not imported: rendering a second one would claim
-  this panel is a page, and it is not addressable as one - AAP 0.4.4 freezes the route table and
-  names no member-services address. The paired class records the whole arrangement.
-
-  MIGRATION: EVERY STRING RENDERED HERE IS INTERPOLATED PLAIN TEXT. Legacy resource wording is
-  untrusted markup by measurement - 76 values across the 37 in-scope resource files carry a raw
-  tag and four carry a live script element - so no trusted-markup binding, no sanitiser and no
-  bypass appears in this file. The one legacy value that carried break tags, the help
-  paragraph, has them dropped by the paired class rather than rendered.
-
-  THE WAITING AND EMPTY STATES ARE DELEGATED TO THE SHARED GRID, which renders both itself in
-  one spanning row and lets waiting win over empty. No custom empty wording is supplied,
-  because the legacy grid showed none.
--->
 <section class="member-services" aria-labelledby="member-services-heading">
   <h2 class="member-services__heading" id="member-services-heading">{{ sectionTitle }}</h2>
 
   <!--
-    THE FAILURE SURFACE.
-
-    Mounted UNCONDITIONALLY and given the document to render, so its live region exists before
-    the first failure arrives; a guarded element would be inserted at the same moment its content
-    changed and the announcement would be lost. Its stylesheet paints nothing while empty.
-
-    Severity is the component's to derive and is not overridden here. This is where the server's
-    refusals appear in the server's own words: a service that requires payment, a trial that is
-    not offered, an assignment the tenant protects, a code that matched nothing, and a site whose
-    self-service switch is off - five distinct reasons the screen deliberately does not restate.
+    Mounted UNCONDITIONALLY and given the document to render, so its live region exists before the first
+    failure arrives; a guarded element would be inserted at the same moment its content changed and the
+    announcement would be lost. Its stylesheet paints nothing while empty.
   -->
   <app-error-banner [problem]="problem()" />
 
   @if (accountKey() === null) {
     <!--
-      THE HOST HAS NOT RESOLVED AN ACCOUNT YET. No request is issued without an account key, so
-      there is nothing for the server to have refused and nothing to render but this. It is a
-      transient state rather than a refusal: the host derives the account from the session.
+      THE HOST HAS NOT RESOLVED AN ACCOUNT YET. No request is issued without an account key, so there is
+      nothing for the server to have refused and nothing to render but this.
     -->
     <p class="member-services__notice">{{ accountUnknownMessage }}</p>
   } @else if (ownership() === 'other') {
-    <!--
-      THE HOST SUPPLIED SOMEBODY ELSE'S ACCOUNT.
-
-      MIGRATION: the legacy container expressed this by hiding the tab outright whenever an
-      administrator reached an account through the administrative edit entry point
-      (`ManageUsers.ascx.vb` L61-L66), which a mounted panel cannot do for itself. Every endpoint
-      here is gated on account ownership, so no request is issued either: a refusal the client can
-      predict is better explained than provoked. In the shipped arrangement the host supplies the
-      caller's own account, so this branch is a guard rather than a route a reader can reach.
-    -->
+    <!-- THE HOST SUPPLIED SOMEBODY ELSE'S ACCOUNT. -->
     <p class="member-services__notice">{{ notOwnAccountMessage }}</p>
   } @else {
     <p class="member-services__help">{{ servicesHelp }}</p>
 
     <!--
-      THE INVITATION CODE.
-
-      `MemberServices.ascx` L12-L15: a labelled box of fifty characters and a link button
-      captioned `cmdRSVP.Text`. A FORM element here where the legacy had a link button inside a
-      postback page, so the browser's own submit gesture works - pressing Enter in the field
-      submits, which the legacy arrangement did not support.
-
-      The submit control is genuinely disabled while any command is in flight rather than merely
-      announced as unavailable, which is what stops an impatient second activation issuing a
-      second redemption.
+      `MemberServices.ascx` L12-L15: a labelled box of fifty characters and a link button captioned
+      `cmdRSVP.Text`.
     -->
     <form class="member-services__code" [formGroup]="codeForm" (ngSubmit)="onRedeem()">
       <app-form-field
@@ -101,16 +48,7 @@
       </button>
     </form>
 
-    <!--
-      THE SUCCESS HALF OF THE LEGACY TWO-MESSAGE REPORT.
-
-      `RSVPSuccess.Text`, followed by the roles the code actually joined - which the legacy could
-      not report, because its walk subscribed silently and then showed one fixed sentence. The
-      list matters: the walk had no early exit, so one code may join several roles at once.
-
-      A polite live region, because it reports the outcome of a gesture the operator made and the
-      focus stays in the form. The failure half is the banner above, in the server's own words.
-    -->
+    <!-- THE SUCCESS HALF OF THE LEGACY TWO-MESSAGE REPORT. -->
     @if (redeemedRoleNames(); as joined) {
       <div class="member-services__report" role="status" aria-live="polite">
         <p class="member-services__report-text">{{ codeSuccess }}</p>
@@ -125,20 +63,7 @@
       </div>
     }
 
-    <!--
-      THE SERVICES GRID.
-
-      `MemberServices.ascx` L26-L71. Row activation is not bound: the legacy grid had no select
-      command, so nothing listens for one, and both command columns are declared as action
-      columns, which suppresses row activation for their cells as well.
-
-      NO COLUMN IS SORTABLE AND `sortChange` IS UNBOUND, BECAUSE THE ENDPOINT ACCEPTS NO ORDERING.
-      `UsersController.ListMemberServicesAsync` takes the account key and a cancellation token and
-      answers an unpaged `IReadOnlyList`, so there is no sort parameter to send and
-      `SortableFields.cs` declares no permitted set for this collection. Where the endpoint DOES
-      accept an ordering the affordance is offered - see the portal, account, role, membership and
-      module listings - so this absence is a property of the collection rather than a gap.
-    -->
+    <!-- THE SERVICES GRID. -->
     <app-data-table
       [columns]="columns()"
       [rows]="services()"
@@ -148,26 +73,9 @@
       <span dataTableCaption>{{ sectionTitle }}</span>
     </app-data-table>
   }
-
 </section>
 
-<!--
-  ROW COMMAND ONE - SUBSCRIBE, UNSUBSCRIBE OR RENEW.
-
-  Legacy `asp:templatecolumn` at `MemberServices.ascx` L30-L41, whose link bound
-  `ServiceText(Subscribed, ExpiryDate)` to BOTH its text and its `CommandName` and was rendered
-  only when `ShowSubscribe(RoleID)` allowed it.
-
-  ⚠ THREE OUTCOMES, WHERE THE LEGACY HAD TWO. The legacy rendered the link or rendered nothing;
-  here a service the legacy would have sent to a payment page renders a STATED refusal instead.
-  Sales administration is outside this migration, so there is no payment page to reach: showing
-  a command that could only ever be refused would be worse than saying why there is none, and
-  dropping the row entirely would hide a service the tenant genuinely offers.
-
-  THE ACCESSIBLE NAME NAMES THE SERVICE. The bare word repeated once per row tells a reader
-  moving between controls nothing about which service they are on, and the name CONTAINS the
-  visible word so a spoken command still matches what is seen.
--->
+<!-- ROW COMMAND ONE - SUBSCRIBE, UNSUBSCRIBE OR RENEW. -->
 <ng-template #subscribeCommand let-row>
   @if (row.subscriptionOffered) {
     @if (row.subscriptionRequiresPayment) {
@@ -186,14 +94,7 @@
   }
 </ng-template>
 
-<!--
-  ROW COMMAND TWO - USE TRIAL.
-
-  Legacy `asp:templatecolumn` at `MemberServices.ascx` L42-L53, whose link carried the fixed
-  command name `UseTrial` and the caption `UseTrial.Text`, rendered only when
-  `ShowTrial(RoleID)` allowed it. A trial the server offers is always performable - its gate is
-  a zero trial fee - so there is no payment counterpart here.
--->
+<!-- ROW COMMAND TWO - USE TRIAL. -->
 <ng-template #trialCommand let-row>
   @if (row.trialOffered) {
     <button
@@ -208,22 +109,7 @@
   }
 </ng-template>
 
-<!--
-  THE EXPIRY CELL.
-
-  Legacy `FormatExpiryDate` (`MemberServices.ascx.vb` L172-L185): nothing for an absent expiry,
-  the lapsed word when the expiry is not in the future, and a short date otherwise.
-
-  ⚠ THE LAPSED TEST IS THE SERVER'S FLAG, NOT A COMPARISON MADE HERE, and that unifies a
-  disagreement the legacy screen carried. `FormatExpiryDate` rendered "Expired" for an expiry
-  falling exactly today, while `ServiceText` still offered "Unsubscribe" for the same row -
-  the first tested "not later than today", the second "earlier than today". One
-  server-decided flag now drives both the word in this cell and the command in the first, so
-  the two cannot disagree; the cost is that a row expiring exactly today reads as current
-  rather than expired, which is the second helper's reading of the boundary day. Comparing
-  against the browser's clock instead would reintroduce the disagreement AND disagree with the
-  server that refuses the command.
--->
+<!-- THE EXPIRY CELL. -->
 <ng-template #expiryCell let-row>
   @if (row.isExpired) {
     {{ expiredLabel }}

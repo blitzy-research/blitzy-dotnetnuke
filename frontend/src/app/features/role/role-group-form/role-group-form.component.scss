@@ -1,94 +1,12 @@
-// =============================================================================
-//  role-group-form — the create-a-role-group screen
-// =============================================================================
-//  Served by `role-groups/new`, a top-level leaf reached with `loadComponent`
-//  (app.routes.ts L219), so everything here is emitted into that route's own
-//  lazily loaded chunk rather than into the initial bundle.
-//
-//  MARKUP CONTRACT. Emulated view encapsulation rewrites every selector here with
-//  this component's content attribute, so a class name that drifts does not error
-//  — it silently matches nothing and the screen renders unstyled. The template
-//  emits exactly this vocabulary, and this file styles nothing else:
-//
-//      .role-group-form            the section that is the screen
-//      .role-group-form__form      the form, and the screen's only measure cap
-//      .role-group-form__fields    the two labelled fields, as one group
-//      .role-group-form__actions   the command row beneath them
-//
-//  OWNERSHIP — WHY THIS FILE IS SO SMALL. Four stylesheets already own everything
-//  rendered inside those four boxes, and restating any of it would only start a
-//  specificity contest with no winner worth having. shared/components/form-field
-//  owns the labelled-control block: label type, required marker, help affordance
-//  and panel, error line, and the label-beside-control arrangement discussed
-//  below. styles/_forms.scss owns every bare control and both command buttons —
-//  type scale, boundary, corner, padding, hover, disabled — including the
-//  multi-line control's own full-measure width and vertical-only resize.
-//  styles/_reset.scss applies the shared focus-ring mixin to every anchor,
-//  button, input, select, textarea and summary, so NO focus rule appears here and
-//  none may be added: a component that restates focus can only weaken it.
-//  styles/_tokens.scss owns the workspace's single global custom-property block
-//  and emits real CSS, so it is deliberately not loaded — tokens are global CSS,
-//  read with `var()`. Only the mixin partial is loaded, and it emits no CSS.
-//
-//  LEGACY SOURCE. Website/admin/Security/EditGroups.ascx, 28 lines and the
-//  smallest screen in the legacy security folder: two fields inside a nested pair
-//  of layout tables, then a paragraph of command links. Visual conventions are
-//  measured from Website/Portals/_default/default.css and cited by line wherever
-//  a decision rests on one.
-//
-//  MIGRATION: neither layout table survives. The outer one carried a table
-//  description reading "Edit Roles Design Table" — wording copy-pasted from the
-//  role editor, a different screen — and neither table had a header cell or
-//  expressed a relationship, so both were presentational scaffolding. They become
-//  the grid and flex containers below, and the inaccurate description is dropped
-//  rather than carried onto an element that is no longer tabular. The legacy
-//  defect is recorded here, not corrected in a legacy tree this migration does
-//  not edit.
-//
-//  MIGRATION: the legacy registered a collapsible section-head control on its
-//  first line and never placed one in the body, so this screen has no disclosure
-//  and none is styled.
-//
-//  MIGRATION: radius, elevation, motion and responsive behaviour are NET
-//  ADDITIONS, not translations — the legacy stylesheet declares `border-radius`,
-//  `box-shadow`, `transition` and a media feature query zero times each. Its
-//  design is square-cornered, flat, static and fixed-width, so this file adds no
-//  corner and no shadow of its own and declares no responsive rearrangement.
-//
-//  MIGRATION: the legacy's three overlapping font stacks consolidate into the
-//  single family token, set once on the root below and inherited by every region.
-//  The visual difference between the three is imperceptible.
+// role-group-form — the create-a-role-group screen
 
 @use '../../../../styles/mixins' as mx;
 
-// A custom element has no intrinsic display and would default to inline, which
-// cannot correctly contain the block-level section inside it. Block is the whole
-// of what is needed: the section owns the screen's rhythm, so the host stays a
-// plain wrapper.
 :host {
   display: block;
 }
 
-// -----------------------------------------------------------------------------
-//  ROOT — the screen and its vertical rhythm
-// -----------------------------------------------------------------------------
-// Heading, failure banner and form stack here, spaced by a gap rather than by
-// margins on the children, so the rhythm is declared once and cannot be doubled
-// by a child bringing its own inset.
-//
-// Body type is set on the root and inherited by every region rather than restated
-// per rule; without it the browser falls back to its own serif default for every
-// label, help sentence and message on the screen. The step is the measured legacy
-// body size (default.css L92-97, the same step its label rule at L74-80 used),
-// and the controls resolve one step ABOVE it through the shared form vocabulary —
-// which is the measured relationship, the legacy text-box rule at L123-128 being
-// larger than the body text around it, never smaller.
-//
-// The line height is the TIGHT step rather than the base one, and that choice is
-// measured too: the legacy stylesheet declares `line-height` zero times, so its
-// body text rendered at whatever the browser called normal — which sits nearer
-// the tight step than the base one. It is also the trio the sibling role editor
-// and the sign-in screen each declare, so the admin screens share one baseline.
+// ROOT — the screen and its vertical rhythm
 .role-group-form {
   display: grid;
   gap: var(--space-4);
@@ -97,106 +15,38 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FORM — the screen's only measure cap
-// -----------------------------------------------------------------------------
-// The larger step separates the field group from the command row, while the group
-// below uses the smaller one between its own fields; that is what gives the
-// screen two legible levels instead of one flat run of equal gaps.
-//
-// MIGRATION: the cap replaces four hardcoded widths and is a deliberate SNAP to
-// the declared breakpoint scale rather than a pixel match. Measured on the
-// markup: a label cell of 150 beside a control cell of 325 (L9-L10, repeated at
-// L16-L17), inside a table declared 525 in a cell declared 560, with two units of
-// cell padding either side of both cells — so the pair occupied a little over 480
-// units, which is exactly what the small step resolves to at the default root
-// type size. Reading the breakpoint function for a raw width is its sanctioned
-// use; writing a media query by hand is barred, and this file writes none.
-//
-// A maximum rather than a fixed width, so the form stays fluid below the step and
-// stops short of a full desktop measure above it. A text box the width of a wide
-// viewport is measurably harder to aim at than one held to a readable measure,
-// and a fixed legacy width could not do both.
+// THE FORM — the screen's only measure cap
+// The cap replaces four hardcoded widths and is a deliberate SNAP to the declared breakpoint scale rather
+// than a pixel match.
 .role-group-form__form {
   display: grid;
   gap: var(--space-4);
   max-inline-size: mx.breakpoint('sm');
 }
 
-// -----------------------------------------------------------------------------
-//  THE FIELD GROUP
-// -----------------------------------------------------------------------------
-// One column at every viewport, which is faithful rather than lazy: the legacy
-// laid its two fields out as two stacked table rows, so there is no second column
-// to reproduce and nothing to withdraw when narrow. This file therefore includes
-// no breakpoint mixin — the only responsive behaviour on the screen is the shared
-// field's own label-beside-control arrangement, declared in that component.
-//
-// THE MEASURED LABEL-TO-CONTROL RATIO IS DELIBERATELY NOT DECLARED HERE. It is
-// the shared field's own `grid-template-columns`, built from the shared label
-// track — the measured 150-unit label cell expressed against the root type size,
-// clamped to a zero minimum so the column yields when narrow — beside the shared
-// fluid track, which takes the remainder. Restating it here is impossible without
-// piercing this component's encapsulation, because label and control both live
-// inside that child, and it would duplicate a decision two screens must make
-// identically. No piercing selector appears anywhere in this file.
+// THE FIELD GROUP
+// One column at every viewport, which is faithful rather than lazy: the legacy laid its two fields out as
+// two stacked table rows, so there is no second column to reproduce and nothing to withdraw when narrow.
 .role-group-form__fields {
   display: grid;
   gap: var(--space-3);
 
-  // THE GAP ABOVE IS THE SINGLE SOURCE OF THIS SCREEN'S RHYTHM, and clearing the
-  // shared field's trailing inset is what makes that true. That inset sits on the
-  // field's host element precisely so a placing screen can override it — its own
-  // stylesheet says so — and without the override every field would carry two
-  // spacings at once: gap plus inset, a sum landing on no step of the scale, with
-  // a trailing inset below the LAST field pushing the command row further away
-  // than the fields sit from each other.
-  //
-  // A plain element selector, not a piercing one: a child component's host
-  // element sits in this template, so it carries this component's own scoping
-  // attribute and is addressable directly.
+  // THE GAP ABOVE IS THE SINGLE SOURCE OF THIS SCREEN'S RHYTHM, and clearing the shared field's trailing
+  // inset is what makes that true.
   app-form-field {
     margin-block-end: 0;
   }
 
-  // MIGRATION: both legacy boxes were declared 325 wide (L11, L17), so they
-  // rendered as one aligned column. The multi-line box already fills its column
-  // through the shared form vocabulary; a single-line box does not, because it is
-  // a flex item of the shared field's control slot and sizes from its own
-  // intrinsic width — which would leave the group name visibly narrower than the
-  // description directly beneath it. Filling restores the alignment the legacy
-  // had, expressed as the proportional token rather than as either legacy width,
-  // so the control tracks its column instead of one device-pixel count.
-  //
-  // Scoped to the single-line kind so it can never stretch a choice control a
-  // later revision might add. The lower intrinsic bound this relies on is already
-  // set by the shared form vocabulary and is not restated.
+  // Both legacy boxes were declared 325 wide, so they rendered as one aligned column.
   input[type='text'] {
     inline-size: var(--size-full);
   }
 }
 
-// -----------------------------------------------------------------------------
-//  THE COMMAND ROW
-// -----------------------------------------------------------------------------
-// MIGRATION: the legacy separated its command links with two literal
-// non-breaking-space characters (L24, L26). They become a real gap from the
-// spacing scale, which survives the template compiler's collapsing of blank
-// space, is adjustable in one place, and is not smuggled into the markup as
-// content.
-//
-// Wrapping is intrinsic rather than defensive: when narrow the second command
-// drops to its own line instead of overflowing the measure, and the gap then
-// supplies row spacing as well as column spacing. Centred on the cross axis so
-// the in-flight indicator, itself an inline-flex box, sits on the commands' line.
-//
-// MIGRATION: the commands are real buttons and take the shared button treatment,
-// a visible change from the legacy — whose command class (default.css L442-447,
-// with four link states at L449-473) was an underlined text link turning the
-// error colour on hover. An element that acts rather than navigates must be a
-// button, and spending the error colour on a benign hover would dilute the one
-// colour that must stay unambiguous. Both decisions belong to the shared form
-// vocabulary, which records them; nothing here restyles a button.
+// THE COMMAND ROW
+// Wrapping is intrinsic rather than defensive: when narrow the second command drops to its own line instead
+// of overflowing the measure, and the gap then supplies row spacing as well as column spacing. Centred on
+// the cross axis so the in-flight indicator, itself an inline-flex box, sits on the commands' line.
 .role-group-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -204,29 +54,5 @@
   gap: var(--space-2);
 }
 
-// =============================================================================
-//  RECORDED, NOT ABSORBED — measurements that produced no declaration
-// =============================================================================
-//  MIGRATION: the multi-line box's legacy fixed height (L17) is not reproduced as
-//  a length and needs no rule. The template gives that control four rows — the
-//  HTML mechanism for a multi-line control's intrinsic height — and four rows at
-//  the shared control step and base line height, plus the shared vertical padding
-//  and boundary, land within a couple of units of the legacy figure. The shared
-//  form vocabulary states outright that block size is left to the row count and
-//  that no minimum is to be invented, so inventing one here would both duplicate
-//  and contradict it.
-//
-//  MIGRATION: the legacy column count on both boxes (L11, L17) produced no rule
-//  either. It was inert in the legacy rendering, where the explicit width on the
-//  same element governed, so translating it into a character measure would
-//  reproduce a width the legacy screen never showed.
-//
-//  MIGRATION: no length, colour, family or corner literal appears above — every
-//  value is a token, a scale step read through the mixin partial, or a permitted
-//  keyword. Three legacy colours this screen touches sit outside the token
-//  vocabulary and are NOT restored here: the help panel's highlight and its dark
-//  boundary (default.css L424-439, where all four boundaries are declared,
-//  including the bottom one at L436) are the shared field's translation to make,
-//  and the disabled-text grey (L100-103) fails legibility outright and already
-//  has a documented replacement in the token vocabulary.
-// =============================================================================
+// RECORDED, NOT ABSORBED — measurements that produced no declaration
+// MIGRATION: the multi-line box's legacy fixed height is not reproduced as a length and needs no rule.

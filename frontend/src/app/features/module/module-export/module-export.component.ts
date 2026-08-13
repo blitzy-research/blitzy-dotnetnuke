@@ -27,270 +27,100 @@ import type { ModuleStoreFailure } from '../../../core/state/module.store';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
-/**
- * The shape of this screen's one form control.
- *
- * Declared locally and never shared. Each screen in this feature folder owns its own form model, so a field
- * added to a neighbouring screen cannot silently widen this one, and there is no barrel through which such a
- * model could travel.
- *
- * One control, because there is exactly one thing left to ask for - see the note on the dropped folder
- * picker in {@link ModuleExportComponent}.
- */
+/** The shape of this screen's one form control. */
 interface ModuleExportFormModel {
-  /**
-   * The base name the operator wants the exported document labelled with.
-   */
+  /** The base name the operator wants the exported document labelled with. */
   readonly fileName: FormControl<string>;
 }
 
 // WORDING
-//
-//  Every operator-facing string on this screen is taken from the VALUE of a legacy resource entry, never from
-//  a markup attribute. The two disagree on this screen, which is what makes the rule worth stating: see the
-//  note on EXPORT_ACTION_LABEL.
-//
-//  MIGRATION: resource text is untrusted HTML and is rendered as plain text. Across the in-scope legacy
-//  resource files 76 values carry an HTML tag and four carry a live script element, and this screen's own
-//    `ModuleHelp.Text` carries `<h1>` and `<p>`. Nothing below is bound as markup: the template interpolates
-//    these as text, and no sanitiser, trusted-value wrapper or inner-HTML binding appears anywhere in this
-//    component. Where the legacy wording genuinely needed a heading or a paragraph it is re-authored as real
-//    template markup instead. The legacy precedent for encoding rather than trusting is
-//    `Website/admin/Security/AccessDenied.ascx.vb`, which HTML-encoded its message before display.
-//
-//  MIGRATION: localisation is not ported. The legacy screen resolved all of these through its resource file
-//  at run time, falling back from the control's local file to the shared global one. That mechanism is
-//  specific to the legacy page framework and no translation runtime is part of this workspace, so the English
-//  values are authored directly here and the resource files are read for wording only.
 
-/**
- * The page heading, from `Export.ascx.resx` key `ControlTitle_exportmodule.Text`.
- *
- * MIGRATION: legacy titles were keyed by the screen's MODE - the key name embeds `exportmodule` - so the
- * title was resolved per mode at run time. There is one mode here, so the resolved string is the constant,
- * and the shared page header takes it already resolved rather than mapping a key.
- */
+/** The page heading, from `Export.ascx.resx` key `ControlTitle_exportmodule.Text`. */
 const PAGE_TITLE = 'Export Module';
 
-/**
- * The supporting sentence beneath the heading.
- *
- * Taken from the paragraph inside `ModuleHelp.Text`, whose full value is `<h1>Export
- * Module</h1><p>Administrators can export content for the specified module.</p>`. Only the sentence is
- * carried across: the heading element in that value duplicates the title above, and the shared page header
- * already emits the page's single `<h1>`, so reproducing it would put two competing headings in the document
- * outline.
- */
+/** The supporting sentence beneath the heading. */
 const PAGE_SUBTITLE = 'Administrators can export content for the specified module.';
 
-/**
- * The field label, from `Export.ascx.resx` key `plFile.Text`.
- */
+/** The field label, from `Export.ascx.resx` key `plFile.Text`. */
 const FILE_LABEL = 'File';
 
 /**
- * The field help text, from `Export.ascx.resx` key `plFile.Help`.
- *
- * Handed to the shared form field, which owns the help affordance entirely. The legacy affordance had three
- * defects the shared component already resolves - it was keyboard-unreachable, it lived inside the label so
- * activating it also focused the input, and its icon carried no alternate text - and none of that is
- * re-implemented here.
+ * The field help text, from `Export.ascx.resx` key `plFile.Help`. Handed to the shared form field, which
+ * owns the help affordance entirely.
  */
 const FILE_HELP = 'Enter the export filename';
 
-/**
- * The DOM id tying the label to the input, so the shared form field can associate the two.
- *
- * A constant rather than a generated value: there is exactly one of this screen mounted at a time, and a
- * generated id would need a random or counter source, neither of which this component is permitted.
- */
+/** The DOM id tying the label to the input, so the shared form field can associate the two. */
 const FILE_CONTROL_ID = 'module-export-file-name';
 
-/**
- * The filename control's name within the form group.
- *
- * Held once because it is used twice - to look the control up, and to ask which of a problem document's
- * per-field messages belong to it. The lookup on the second of those is case-insensitive and tolerant of the
- * prefixes a model-state key can carry, and it lives in the shared utility rather than here, because the
- * keys are the server's spelling rather than this form's.
- */
+/** The filename control's name within the form group. */
 const FILE_NAME_CONTROL = 'fileName';
 
-/**
- * The label on the confirming action, from `Export.ascx.resx` key `cmdExport.Text`.
- *
- * MIGRATION: d10 - the markup and the resource file disagree, and the resource file wins.
- * `Website/admin/Modules/export.ascx` declares the export link with the inline attribute `text="Import"`, a
- * copy-paste defect carried over from the near-identical import screen. The control also carries
- * `resourcekey="cmdExport"`, and at run time the legacy page framework overwrote the inline text with the
- * resource value, so an operator always read "Export" and never saw the defect. The corrected value is
- * therefore not a change in behaviour - it is the behaviour, stated once instead of twice. This is the
- * clearest available proof that a markup attribute is not a source of wording.
- */
 const EXPORT_ACTION_LABEL = 'Export';
 
-/**
- * The label on the dismissing action.
- *
- * Absent from this screen's own resource file: it resolves from the shared global file, key
- * `cmdCancel.Text`, which the legacy framework consulted when a local entry was missing. The wording rule is
- * unchanged by the fallback - the value still comes from a resource entry rather than from the
- * `text="Cancel"` attribute on `export.ascx`.
- */
+/** The label on the dismissing action. */
 const CANCEL_ACTION_LABEL = 'Cancel';
 
 /**
  * The message shown when the filename is missing, from `Export.ascx.resx` key `Validation.Text`.
- *
- * MIGRATION: preserved verbatim even though the rule behind it is narrower. The legacy sentence names two
- * things, because the legacy gate at `Export.ascx.vb` tested two - `cboFolders.SelectedIndex <> 0 And
- * txtFile.Text <> ""`. The folder half of that gate is gone with the folder picker, so only the filename
- * half is enforced here. The sentence is nonetheless carried across unaltered rather than quietly rewritten,
- * because the operator-facing wording is part of the contract this migration is required to preserve and
- * re-authoring it would be an undocumented change to what an operator reads. The narrowing is the documented
- * divergence; the words are not.
- *
- * MIGRATION: the rule is also now DECLARATIVE. The legacy screen carried no validator markup at all - no
- * required-field validator, no validation summary, not even a form element in its seventeen lines - and
- * enforced the condition imperatively inside the click handler. Here it is a validator on the control, so
- * the condition is stated once, next to the field it governs.
- *
- * MIGRATION: the legacy test was UNTRIMMED. `txtFile.Text <> ""` admitted a value of a single space, which
- * then reached the name sanitiser and was reduced to nothing, because a space is one of the characters that
- * sanitiser strips. That is a defect and it is not reproduced: the validator below rejects a blank value,
- * which is what the legacy sentence already claimed to require.
+ * preserved verbatim even though the rule behind it is narrower.
  */
 const VALIDATION_MESSAGE = 'You must specify a folder and file for export';
 
-/**
- * The greatest number of characters the filename field accepts.
- *
- * From `maxlength="200"` on the input at `Website/admin/Modules/export.ascx`, and independently the bound
- * the API's own request contract states for this member.
- */
+/** The greatest number of characters the filename field accepts. */
 const FILE_NAME_MAX_LENGTH = 200;
 
 /**
- * The message shown when the filename is longer than the field accepts.
- *
- * MIGRATION: NET-NEW WORDING, because the legacy condition was unreachable rather than unhandled. The legacy
- * input carried a length attribute, so a browser refused the two-hundred-and-first character and no message
- * was ever needed. The same attribute is present on this screen's input, so this message is likewise a
- * second line of defence - reachable only when a value arrives by some route other than typing - and it
- * exists because a rule enforced with no explanation is worse than one explained.
+ * The message shown when the filename is longer than the field accepts. MIGRATION: NET-NEW WORDING,
+ * because the legacy condition was unreachable rather than unhandled.
  */
 const FILE_NAME_TOO_LONG_MESSAGE = `The export filename may be at most ${FILE_NAME_MAX_LENGTH} characters.`;
 
 /**
- * The message shown when the module has no content to export, from `Export.ascx.resx` key `NoContent.Text`.
- *
- * MIGRATION: the condition moved sides, and the wording is retained for it anyway. The legacy branch at
- * `Export.ascx.vb` tested the module's raw payload with `Content <> ""` BEFORE wrapping it, and reported
- * this sentence when it was empty. The API instead wraps an empty payload and answers successfully with an
- * envelope that is not itself empty, so it publishes no failure code for this condition and the refusal is
- * no longer reachable from a status code. The distinction is nevertheless preserved on the wire and in the
- * store, both of which deliberately keep an empty document distinct from an absent one, so the legacy
- * outcome is honoured here: an empty document is reported with this sentence and is not offered as a
- * download. A file containing nothing is not an export.
+ * The message shown when the module has no content to export, from `Export.ascx.resx` key
+ * `NoContent.Text`. the condition moved sides, and the wording is retained for it anyway.
  */
 const NO_CONTENT_MESSAGE = 'The module specified does not have any content';
 
 /**
  * The message shown when the module cannot export, from `Export.ascx.resx` key `ExportNotSupported.Text`.
- *
- * The legacy screen emitted this one sentence from TWO places - `Export.ascx.vb` when the module declared no
- * business controller class or was not portable, and when the resolved object turned out not to implement
- * the portability contract after all. The API collapses both into one code, which is the same consolidation
- * stated once.
- *
- * MIGRATION: THE "specified" AND "selected" ASYMMETRY IS REPRODUCED, NOT HARMONISED. The sibling import
- * screen's equivalent entry reads "The module SELECTED does not support the IMPORTING of content"
- * (`Import.ascx.resx`), while this one reads "specified" - and both screens' help text says "specified". The
- * inconsistency is in the legacy wording itself. Both sentences this screen owns say "specified", and no
- * attempt is made to reconcile them with the neighbouring screen, because equivalent wording means the
- * wording that was there.
- *
- * MIGRATION: the shared refusal table cannot supply this sentence. `core/utils/form-errors.util.ts` maps the
- * same server code to the sibling screen's wording, which is correct there and wrong here. That is precisely
- * why this wording is owned locally rather than resolved through the shared table.
+ * The legacy screen emitted this one sentence from TWO places - `Export.ascx.vb` when the module declared
+ * no business controller class or was not portable, and when the resolved object turned out not to
+ * implement the portability contract after all.
  */
 const EXPORT_NOT_SUPPORTED_MESSAGE =
   'The module specified does not support the exporting of content';
 
-/**
- * The failure code the API publishes when a module cannot export its content.
- *
- * The server's own spelling, taken from the export operation's published contract, and lower-case by that
- * contract's convention. It is deliberately NOT the legacy resource key: the legacy names never appeared on
- * the wire, so matching on one would match nothing. The two remaining codes this operation can publish - a
- * module that does not exist, and a document the format cannot carry - are left to the shared
- * problem-details surface, which already words both.
- */
+/** The failure code the API publishes when a module cannot export its content. */
 const NOT_PORTABLE_CODE = 'module.not_portable';
 
-/**
- * The message shown when this address does not name a module.
- *
- * MIGRATION: a missing module is a failure, not a success. The legacy helper at `Export.ascx.vb` opened `If
- * Not objModule Is Nothing Then` and never wrote an `Else`, so a module that could not be read left the
- * status string empty - and treated an empty status string as success and navigated away. An operator
- * therefore saw a successful export of a module that did not exist. The condition is surfaced here instead
- * of being swallowed.
- *
- * MIGRATION: the legacy also had no message for a MALFORMED identifier. `Export.ascx.vb` parsed the request
- * value with a conversion that throws on anything non-numeric, and the surrounding handler swallowed the
- * exception into the generic page-load failure path. That is one of the coercions the legacy compiler
- * settings permitted and strict typing forbids, so it is made explicit and given this sentence.
- */
 const NO_MODULE_ADDRESSED_MESSAGE = 'This address does not name a module to export.';
 
-/**
- * Reported when the loaded module does not describe the module this address names.
- *
- * The store is shared, so it can be holding another screen's module. Refusing is correct because the
- * composed filename is derived from the loaded module's name, and proceeding would label one module's
- * document with another module's name.
- */
+/** Reported when the loaded module does not describe the module this address names. */
 const STALE_MODULE_MESSAGE =
   'The module on screen no longer matches this address, so nothing was exported. Please try again.';
 
 /**
- * Reported when an exported document arrives after the address has moved to a different module.
- *
- * The document is discarded rather than delivered. An export is tenant data leaving the application for the
- * operator's device, and a file that claims to be one module while containing another cannot be corrected
- * after the fact.
+ * Reported when an exported document arrives after the address has moved to a different module. The
+ * document is discarded rather than delivered.
  */
 const STALE_EXPORT_MESSAGE =
   'The export finished after you moved to a different module, so the file was not downloaded. Please export again.';
 
 /**
- * What the progress indicator announces while the module is being read.
- *
- * MIGRATION: NET-NEW, because the legacy screen had nothing to announce. It read the module during its own
- * server-side render, so the field was already populated by the time an operator saw the page and there was
- * no interval to describe. Reading it over the network creates that interval, and an indicator that
- * announces nothing is an accessibility defect.
+ * What the progress indicator announces while the module is being read. MIGRATION: NET-NEW, because the
+ * legacy screen had nothing to announce.
  */
 const LOADING_MODULE_LABEL = 'Loading module…';
 
 /**
- * What the progress indicator announces while an export is in flight.
- *
- * MIGRATION: NET-NEW for the same reason as {@link LOADING_MODULE_LABEL}. The legacy export happened inside
- * a full page postback, during which the browser showed its own progress and the page was simply gone.
+ * What the progress indicator announces while an export is in flight. MIGRATION: NET-NEW for the same
+ * reason as {@link LOADING_MODULE_LABEL}.
  */
 const EXPORTING_LABEL = 'Exporting module content…';
 
 /**
- * The message announced when an export completes.
- *
- * MIGRATION: success feedback is a net addition. `Export.ascx.vb` navigated away on success and raised no
- * message of any kind, so an operator's only evidence that anything happened was a file appearing in a
- * folder on the server. There is no such folder now, so silence would leave the outcome entirely unreported.
- * The sentence names the file, which is safe to interpolate as text: every character that could open a tag
- * or close an attribute - the angle brackets, the ampersand, the double quote and the apostrophe - is
- * removed by the name sanitiser before it can reach here.
+ * The message announced when an export completes. MIGRATION: success feedback is a net addition.
  *
  * @param fileName The composed document name, already sanitised.
  * @returns One plain-text sentence.
@@ -300,55 +130,19 @@ function exportCompleteMessage(fileName: string): string {
 }
 
 /**
- * The message announced when the document was produced but could not be handed to the browser.
- *
- * MIGRATION: NET-NEW, because the failure it describes did not exist. The legacy wrote the document to a
- * server path and catalogued it; nothing was ever handed to a browser, so there was no save step to fail.
- * See the note on {@link ModuleExportComponent.save} for why the download itself is net-new.
+ * The message announced when the document was produced but could not be handed to the browser. MIGRATION:
+ * NET-NEW, because the failure it describes did not exist.
  */
 const DOWNLOAD_FAILED_MESSAGE = 'The export document could not be saved to your device.';
 
 /**
- * The media type the exported document is offered under.
- *
- * The payload is an XML document - the API composes an `<?xml ... ?>` declaration and a `content` root
- * around the module's own markup - so this states what the bytes are.
- *
- * MIGRATION: deliberately not the legacy value, and the legacy value was not a media type for a response.
- * `Export.ascx.vb` and pass `application/octet-stream` to the calls that insert or update the catalogue row
- * for the written file: it is a COLUMN VALUE recorded in a table, not a header on anything sent to a
- * browser, because the legacy screen sent nothing to a browser at all. Reusing it here on the strength of
- * that appearance would be reasoning from a misread source, and it would also describe the payload less
- * accurately than the type below.
+ * The media type the exported document is offered under. The payload is an XML document - the API
+ * composes an `<?xml ... ?>` declaration and a `content` root around the module's own markup - so this
+ * states what the bytes are.
  */
 const EXPORT_MEDIA_TYPE = 'application/xml';
 
-/**
- * The characters the legacy name sanitiser removes, in the order it removed them.
- *
- * Thirty-three characters, transcribed from `Export.ascx.vb`, where the set is written as a thirty-one
- * character literal followed by two characters supplied by code point:
- *
- * ```vb
- * Dim strBadChars As String = ". ~`!@#$%^&*()-_+={[}]|\:;<,>?/" & Chr(34) & Chr(39)
- * ```
- *
- * Enumerated so a reviewer can verify the set without decoding anything:
- *
- *  1 `.`   2 SPACE  3 `~`   4 `` ` ``  5 `!`   6 `@`   7 `#`   8 `$`   9 `%`  10 `^`  11 `&`
- * 12 `*`  13 `(`   14 `)`  15 `-`      16 `_`  17 `+`  18 `=`  19 `{`  20 `[`  21 `}`  22 `]`
- * 23 `|`  24 `\`   25 `:`  26 `;`      27 `<`  28 `,`  29 `>`  30 `?`  31 `/`
- * 32 `"`  (code point 34)   33 `'`  (code point 39)
- *
- * The set includes the space, the full stop, the hyphen and the underscore - the four a reader is most
- * likely to assume are safe and preserve, when preserving any of them would change the composed name. It is
- * stated as a character list rather than a pattern so that no escaping question arises: four of these
- * characters are significant inside a regular-expression character class, and a set this load-bearing should
- * not depend on getting that right.
- *
- * The set is NOT extended. Letters, digits, accented and other non-ASCII characters and control characters
- * all survive, exactly as they did.
- */
+/** The characters the legacy name sanitiser removes, in the order it removed them. */
 const SANITISER_REMOVED_CHARACTERS: readonly string[] = Object.freeze([
   '.',
   ' ',
@@ -498,8 +292,8 @@ function nonBlankFileName(control: AbstractControl<string>): ValidationErrors | 
  * composes a name, and turns the document the store holds into a file. It builds no URL, sets no header,
  * speaks to no endpoint, and holds no copy of the exported document.
  *
- * MIGRATION: the module edit policy is ADDED here, guarding a screen that was previously unguarded - the
- * legacy screen contained no authorisation check of any kind, so any caller who could reach the address could
+ * MIGRATION: the module edit policy is ADDED here, guarding a screen the legacy application left open:
+ * that screen contained no authorisation check of any kind, so any caller who could reach the address could
  * export a module's content. The hardening is declared on the route rather than in this component, which
  * declares no route and attaches no guard, and it is an affordance rather than an enforcement point: the
  * server is authoritative and answers a denied request with a refusal this screen then presents.
@@ -867,7 +661,6 @@ export class ModuleExportComponent {
     });
   }
 
-
   /**
    * Whether this address names a module at all.
    *
@@ -993,7 +786,7 @@ export class ModuleExportComponent {
     // the status string empty - and an empty status string was the success signal, so the screen navigated
     // away as though the export had worked.
     //
-    //   The order here is part of the correction, not an incidental detail. The legacy gate tested the
+    //   The order here is deliberate, not an incidental detail. The legacy gate tested the
     //   fields first and only then reached the helper, and reproducing that order re-introduces a smaller
     //   version of the same dishonesty: the filename is never prepopulated for a module that was not read,
     //   so the fields fail first and the operator is told to supply a filename - an instruction that cannot

@@ -1,146 +1,3 @@
-/**
- * Specification for `features/auth/login/login.component.ts` and its paired template.
- *
- * THE SCREEN UNDER TEST IS THE APPLICATION'S ONLY AUTHENTICATION VIEW, and two of its
- * responsibilities cannot be verified by reading it:
- *
- * 1. THE OPEN-REDIRECT BOUNDARY. The address a completed sign-in navigates to arrives in a
- *    query parameter, so anyone can choose it - a link in an e-mail, a message, another
- *    site. An unchecked value would let this screen deliver a person who has just supplied
- *    their credentials to an attacker's page carrying a convincing copy of it. The guard is
- *    five independent rejections wide and every one of them is exercised below, together
- *    with the acceptances that prove it is not merely refusing everything.
- * 2. THE REFUSAL IS THIS SCREEN'S TO EXPLAIN, AND NOBODY ELSE'S. The bearer-token
- *    interceptor lists the sign-in endpoint among the anonymous ones, so no credential is
- *    attached and no renewal is attempted; the error interceptor then returns early on
- *    exactly 401, deliberately, because announcing a sign-in refusal globally as well would
- *    report it twice. If this component and its template do not render the refusal, the
- *    person sees a form that visibly did nothing.
- *
- * ## Provenance
- *
- * `Website/DesktopModules/AuthenticationServices/DNN/Login.ascx` (37 lines of markup) and
- * `Login.ascx.vb` (205 lines) are the legacy screen. Supporting sources are
- * `Library/Components/Users/Membership/UserLoginStatus.vb` for the outcome vocabulary,
- * `Library/Components/Shared/Null.vb` for the sentinel contract that governs the
- * verification code, `Website/App_GlobalResources/SharedResources.resx` and
- * `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` for wording, and
- * `Website/release.config` for the credential policy. THE LEGACY TREE CONTAINS NO
- * AUTOMATED TEST OF ANY KIND, so nothing here is ported - every case is authored against
- * those sources.
- *
- * ## What is real and what is doubled
- *
- * EVERYTHING IS REAL EXCEPT THE TRANSPORT AND THE NAVIGATION.
- *
- * - The COMPONENT is imported as the standalone unit it is, so its own `imports` list is
- *   what supplies the four shared components. A missing entry there is a compile error in
- *   this file rather than a silently unrendered element.
- * - The SESSION STORE is the genuine root-provided store, driven through real HTTP
- *   responses. Doubling it would make the verification ladder - the single most stateful
- *   behaviour on this screen - a property of the double rather than of the application.
- * - The ROUTER is genuine and only `navigateByUrl` is spied, because no route table is
- *   declared here: what these cases assert is the DESTINATION, and a real navigation would
- *   fail to match and report a routing failure instead of the value under test.
- * - The ACTIVATED ROUTE is a minimal double, because the component reads exactly one thing
- *   from it - `snapshot.queryParamMap.get(key)` - and the map it is given is built by the
- *   router's own `convertToParamMap`, so it is a genuine `ParamMap` rather than an object
- *   pretending to be one.
- * - The TRANSPORT is the testing backend, so every request is asserted by method, address
- *   and body, and `verify()` in `afterEach` fails any case that left one unconsumed or
- *   issued one nobody expected.
- *
- * ## Driven through the DOM, deliberately
- *
- * Every value is typed into a real `input` and every submission is a real press of a real
- * submit button. The component's own members are `protected`, so reaching them would not
- * compile - but that is a happy accident rather than the reason: driving the DOM is what
- * proves the template's `formControlName` bindings, its label associations, its disabled
- * binding and its native return-key submission actually work, none of which a direct call
- * to `submit()` would touch.
- *
- * ## The divergences these cases pin
- *
- * Migration discipline is to ANNOTATE a deliberate difference rather than absorb it, so each
- * one is named here and exercised below by the case that proves it. Every entry is a
- * behavioural claim with a case behind it, not a note.
- *
- * MIGRATION: the human-verification challenge is REMOVED. `Login.ascx.vb:L162` gated the
- * entire handler on `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)` and was
- * the only anti-automation control in the legacy sign-in path; its control lives under
- * `Library/Controls/**`, which this migration excludes wholesale. The compensating control is
- * the API's credential window, applied by the GLOBAL limiter to every request the server
- * classifies as credential-bearing - from the `[CredentialEndpoint]` marker on the action
- * first, and from a whole credential path segment on a body-carrying method only as a
- * fall-back. Sign-in carries that marker and additionally declares the `auth` policy, so this
- * screen's own write draws the credential budget: thirty requests a minute per partition,
- * partitioned by the caller's observable address, with a refusal answered `429`. A health
- * probe is never throttled because a GET carries no marker and the fall-back matcher
- * considers only POST, PUT and PATCH, so it resolves to the shared no-limit partition. The
- * refusal is exercised by "reports a rate-limited refusal calmly" and "issues exactly one
- * request for a rate-limited refusal".
- *
- * MIGRATION: `Login.ascx.vb:L187` carries a DEFECT that is recorded and NOT reproduced. It
- * reads `authenticated = (loginStatus <> UserLoginStatus.LOGIN_FAILURE)`, and because the
- * branch above it consumes only the not-approved outcome, ordinals 3, 5 and 6 all counted as
- * authenticated - a locked-out account among them. The correction is SERVER-SIDE: lockout
- * becomes a 403 and the two insecure-default outcomes are successes carrying an informational
- * code. Nothing is asserted about that mapping here, because this screen implements none of
- * it and keys on no numeric ordinal from the network; the claim these cases make is only that
- * a failure renders AS a failure.
- *
- * MIGRATION: `Login.ascx.vb:L123` is not carried forward. It wrote the submitted credential
- * into an HTML attribute so the box survived a post-back; "leaves the credential in the box
- * and writes it into no attribute" pins both halves of the replacement.
- *
- * MIGRATION: a `verificationcode` query parameter seeds the control's VALUE and never reveals
- * the field, because the legacy reveal at L109-L116 was gated on a per-request portal setting
- * an unauthenticated caller cannot read. Pinned by "seeds the verification code WITHOUT
- * revealing the field".
- *
- * MIGRATION: required-ness moved from imperative refusal to declarative validators with its
- * BEHAVIOUR unchanged, and nothing was tightened while it moved. The credential policy
- * measured at `Website/release.config:L241-L245` governs creating and changing a password, not
- * signing in with one, so "accepts a six-character credential" and "applies no length,
- * pattern or complexity rule" exist to catch a minimum length that crept in.
- *
- * MIGRATION: an empty verification code travels as the EMPTY STRING. `Null.vb:L71-L75` has
- * the body `Return ""`, so the legacy absent-text sentinel IS the empty string and
- * `Login.ascx.vb:L177` compared against it untrimmed. Pinned by "transmits an empty
- * verification code as the empty string".
- *
- * MIGRATION: localisation is not ported. No translation runtime exists in the pinned
- * dependency surface, so the resource files are the authority for WORDING only and every
- * sentence asserted below is compared against the shared form-errors utility's own constant
- * rather than a copy fossilised here.
- *
- * MIGRATION: the five failure sentences live in
- * `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` (L162, L165, L168, L216,
- * L222), NOT in the resource file beside the legacy control - that one holds four entries and
- * none of these. Reading the nearer file would find nothing and invite invented wording.
- *
- * MIGRATION: the wording the server may return for a locked account refers to a password
- * reminder the target does not have, because retrieval is abolished rather than ported.
- * Composing that sentence belongs to the shared utility, so it is recorded here rather than
- * patched, and no recovery affordance is asserted into existence.
- *
- * MIGRATION: the resource file's account-does-not-exist entry is never rendered by any path.
- * It is a dead key of an out-of-scope screen and an account-enumeration vector, and
- * "never renders the dead account-enumeration message" asserts its absence.
- *
- * ⚠ A DIVERGENCE THAT CANNOT BE FIXED FROM THIS FOLDER, recorded rather than papered over.
- * The global error interceptor announces 403, 404, 409, 422, 429 and server faults, so on a
- * rate-limited or forbidden refusal a person may read BOTH that announcement and this
- * screen's inline sentence. Suppressing the inline one would break the property that a
- * refusal is never silent, and the interceptor is another module's. What is assertable here,
- * and is asserted, is that THIS screen announces nothing itself - see the notification spy.
- *
- * D-S4: the shared field's message input accepts a read-only ARRAY, so the messages a server
- * reports for one control are handed over unreduced. "renders every message the server
- * reported for one field" pins that, and contradicts a folder-level expectation that a
- * reduction to a single string was required.
- */
-
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
@@ -154,16 +11,11 @@ import type {
   ProblemDetails,
   ValidationProblemDetails,
 } from '../../../core/models/problem-details.model';
-// A root-provided service, listed here for ONE reason: its single sink is spied so that
-// "this screen announces nothing globally" is an assertion rather than a claim. It is never
-// substituted - the spy calls through - because replacing it would prove nothing about the
-// real one.
+// A root-provided service, listed here for ONE reason: its single sink is spied so that "this screen
+// announces nothing globally" is an assertion rather than a claim. It is never substituted - the spy calls
+// through - because replacing it would prove nothing about the real one.
 import { NotificationService } from '../../../core/services/notification.service';
 import { REVOCATION_FAILED_MESSAGE, AuthStore } from '../../../core/state/auth.store';
-// Wording is imported from its single owner rather than copied, so a case cannot fossilise a
-// duplicate of a legacy sentence. `isValidationProblemDetails` is imported from HERE and not
-// from the model module: this is the file that declares it, and a second copy would be a
-// second answer to one question.
 import {
   TOO_MANY_ATTEMPTS,
   authFailureMessage,
@@ -185,55 +37,23 @@ import {
   LoginComponent,
 } from './login.component';
 
-// ---------------------------------------------------------------------------
 // ADDRESSES
-//
-// Hand-written relative literals rather than values composed from the endpoint table. A
-// literal is what catches a change to that table, whereas a composed address would move
-// with it and assert nothing.
-// ---------------------------------------------------------------------------
+// Hand-written relative literals rather than values composed from the endpoint table. A literal is what
+// catches a change to that table, whereas a composed address would move with it and assert nothing.
 
 /** `POST /api/v1/auth/login`. The credential exchange. */
 const LOGIN_URL = '/api/v1/auth/login';
 
 /**
- * `GET /api/v1/auth/me`. The identity read that COMPLETES a sign-in.
- *
- * ⚠ A COMPLETED SIGN-IN IS TWO REQUESTS, NOT ONE, and every case below has to answer both or
- * the sign-in never completes at all. `AuthStore.login` posts the credentials through the
- * transport, maps the response to a session, and then `switchMap`s into this read carrying the
- * freshly issued token as an explicit bearer header - storing the session and emitting the
- * identity only once BOTH have answered. A fixture that flushed only the exchange would leave
- * the observable pending, and every consequence of success - the navigation, the withdrawn
- * verification field, the lowered progress indicator - would appear not to happen.
- *
- * MIGRATION: the composition used to live on `auth.service.ts`, which performed the second read
- *   for itself and stored the session. Composing a multi-step flow is not API communication, so
- *   it moved to the session's owner; the two requests, their order and the hand-set header are
- *   unchanged, which is why every fixture below is unchanged too.
- *
- * The token travels as an explicit header rather than through the bearer interceptor because
- * the custodian has not been written yet at that moment: the session is stored only after
- * this read succeeds, so there is nothing for an interceptor to attach.
+ * `GET /api/v1/auth/me`. The identity read that COMPLETES a sign-in. ⚠ A COMPLETED SIGN-IN IS TWO
+ * REQUESTS, NOT ONE, and every case below has to answer both or the sign-in never completes at all.
  */
 const ME_URL = '/api/v1/auth/me';
 
-/**
- * `POST /api/v1/auth/logout`. The withdrawal of the renewal credential.
- *
- * Named here because this screen renders the CONSEQUENCE of that request failing, and the only
- * honest way to reach that state is to fail the genuine request rather than to write the flag
- * directly. It is the one authentication address this screen never issues itself.
- */
+/** `POST /api/v1/auth/logout`. The withdrawal of the renewal credential. */
 const LOGOUT_URL = '/api/v1/auth/logout';
 
-// ---------------------------------------------------------------------------
 // THE FAILURE VOCABULARY
-//
-// Every value below is the server's own, taken from the API layer's global exception handler
-// and its validation problem-details factory. A fixture that invented a code or a status would
-// describe a response the API cannot send, and the case would then prove nothing.
-// ---------------------------------------------------------------------------
 
 /** The prefix `failureCode` requires before it will read a code out of `type` at all. */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
@@ -259,35 +79,21 @@ const REQUEST_INVALID_CODE = 'request.invalid';
 /** An unexpected server fault. 500. */
 const SERVER_FAILURE_CODE = 'server.unexpected_failure';
 
-/**
- * The media type every refusal below is flushed with.
- *
- * RFC 7807's own type rather than plain JSON, because that is what the API answers with and a
- * fixture that answered otherwise would describe a response it cannot send. It changes nothing
- * about how the document is read - the testing backend hands the body over as an object - which
- * is exactly why stating it costs nothing and keeps the fixtures honest.
- */
+/** The media type every refusal below is flushed with. */
 const PROBLEM_MEDIA_TYPE = 'application/problem+json';
 
 /**
- * The model-state keys the server reports the two credential fields under.
- *
- * ⚠ PASCAL-CASED, AND DELIBERATELY NOT CAMEL-CASED. These name model members on the server
- * rather than members of the serialised body, so the serialiser's camel-casing policy does not
- * reach them. The first is spelled with an INNER CAPITAL that the component's own key does not
- * have, which is the point: matching is case-insensitive in the shared utility, and a case that
- * used the component's exact spelling would never exercise that.
- *
- * ⚠ READ WITH BRACKETS EVERYWHERE. `errors` is an index-signature type, so property access is
- * not even syntactically available under the compiler settings this workspace uses.
+ * The model-state keys the server reports the two credential fields under. ⚠ PASCAL-CASED, AND
+ * DELIBERATELY NOT CAMEL-CASED. These name model members on the server rather than members of the
+ * serialised body, so the serialiser's camel-casing policy does not reach them.
  */
 const SERVER_USERNAME_KEY = 'UserName';
 const SERVER_PASSWORD_KEY = 'Password';
 
 /**
  * The three ladder sentences, verbatim from
- * `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` L162, L165 and L222,
- * as the shared form-errors utility reproduces them.
+ * `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` L162, L165 and L222, as the shared
+ * form-errors utility reproduces them.
  */
 const VERIFICATION_REQUIRED_MESSAGE = 'Enter Your Verification Code';
 const VERIFICATION_CODE_INVALID_MESSAGE = 'Invalid Verification Code';
@@ -300,11 +106,9 @@ const RATE_LIMIT_MESSAGE = 'Too many attempts. Wait a moment and try again.';
 const SERVER_ERROR_MESSAGE = 'The server could not complete the request. Try again shortly.';
 
 /**
- * The per-status title from the server's own vocabulary table.
- *
- * The title describes the CLASS of failure and is derived from the status alone, which is
- * exactly why nothing on this screen may branch on it - the four 401 outcomes below all
- * share one title and are told apart only by their `type`.
+ * The per-status title from the server's own vocabulary table. The title describes the CLASS of failure
+ * and is derived from the status alone, which is exactly why nothing on this screen may branch on it -
+ * the four 401 outcomes below all share one title and are told apart only by their `type`.
  */
 const STATUS_TITLE: Readonly<Record<number, string>> = {
   400: 'Bad Request',
@@ -319,13 +123,10 @@ const TRACE_ID = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 /** The correlation identifier the same factory attaches, and the one a person is asked to quote. */
 const CORRELATION_ID = 'e6c9c0d6-1e8f-4b3f-9a0f-2f5a8c7d4b11';
 
-// ---------------------------------------------------------------------------
 // CREDENTIALS AND TOKENS USED IN FIXTURES
-//
-// Every one of them is obviously fake and says so in its own value. None is a credential,
-// none resembles a real token, and the last group exists so that "no credential reaches
-// the document" can be asserted against a value that would be unmistakable if it did.
-// ---------------------------------------------------------------------------
+// Every one of them is obviously fake and says so in its own value. None is a credential, none resembles a
+// real token, and the last group exists so that "no credential reaches the document" can be asserted
+// against a value that would be unmistakable if it did.
 
 const FAKE_ACCESS_TOKEN = 'fake-access-token-not-a-real-credential';
 const FAKE_RENEWAL_TOKEN = 'fake-renewal-token-not-a-real-credential';
@@ -341,32 +142,22 @@ const SUBMITTED_PASSWORD = ' not-a-real-password ';
 const SUBMITTED_CODE = 'wrong-code';
 
 /**
- * A six-character value, one character short of the legacy CREATION policy's minimum.
- *
- * Named for its LENGTH because its length is the only property under test: the case that uses it
- * proves a minimum-length rule has not crept onto the sign-in form, where it would lock out every
- * account whose credential predates the policy. Its length is asserted at the point of use so the
- * intent cannot drift if the literal is ever edited.
+ * A six-character value, one character short of the legacy CREATION policy's minimum. Named for its
+ * LENGTH because its length is the only property under test: the case that uses it proves a
+ * minimum-length rule has not crept onto the sign-in form, where it would lock out every account whose
+ * credential predates the policy.
  */
 const SIX_CHARACTER_VALUE = 'sixchr';
 
 /**
- * The minimum length the legacy membership provider required, measured at
- * `Website/release.config:L242` (`minRequiredPasswordLength="7"`).
- *
- * ⚠ IT GOVERNS CREATING AND CHANGING A CREDENTIAL, NEVER SIGNING IN WITH ONE, and it is declared
- * here only so the case below can state what it is one character short of. Nothing on this screen
- * enforces it, deliberately.
+ * The minimum length the legacy membership provider required, measured at `Website/release.config:L242`
+ * (`minRequiredPasswordLength="7"`). ⚠ IT GOVERNS CREATING AND CHANGING A CREDENTIAL, NEVER SIGNING IN
+ * WITH ONE, and it is declared here only so the case below can state what it is one character short of.
+ * Nothing on this screen enforces it, deliberately.
  */
 const LEGACY_CREATION_MINIMUM_LENGTH = 7;
 
-// ---------------------------------------------------------------------------
 // THE RESPONSE ENVELOPE
-//
-// Declared locally and two members wide. A fixture returning a bare contract object would
-// be unwrapped into `undefined`, and every downstream assertion would then pass vacuously
-// against absent data.
-// ---------------------------------------------------------------------------
 
 interface SuccessEnvelope<T> {
   readonly data: T;
@@ -391,10 +182,8 @@ function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
 }
 
 /**
- * A credential-exchange payload, wrapped.
- *
- * All three advisories are stated as `false` rather than omitted, because `false` is DATA on
- * this contract and an omission would not compile.
+ * A credential-exchange payload, wrapped. All three advisories are stated as `false` rather than omitted,
+ * because `false` is DATA on this contract and an omission would not compile.
  */
 function credentialPayload(overrides: Partial<LoginResponse> = {}): SuccessEnvelope<LoginResponse> {
   return {
@@ -418,14 +207,11 @@ function identityPayload(user: CurrentUser = currentUser()): SuccessEnvelope<Cur
 }
 
 /**
- * A problem document carrying a code, in the exact shape the API emits.
- *
- * ⚠ NO `instance` MEMBER, AND ITS ABSENCE IS MEASURED. Every call site supplies null for it,
- * and although the surrounding serializer policy writes members holding null, the framework's
- * problem type carries a per-member null-omission condition on each of its five standard
- * members which overrides that policy - so a live document has no `instance` at all.
- *
- * ⚠ `type` IS ALWAYS PRESENT. The factory fills an unspecified type from the status
+ * A problem document carrying a code, in the exact shape the API emits. ⚠ NO `instance` MEMBER, AND ITS
+ * ABSENCE IS MEASURED. Every call site supplies null for it, and although the surrounding serializer
+ * policy writes members holding null, the framework's problem type carries a per-member null-omission
+ * condition on each of its five standard members which overrides that policy - so a live document has no
+ * `instance` at all. ⚠ `type` IS ALWAYS PRESENT. The factory fills an unspecified type from the status
  * vocabulary, so a type-less document is not emittable and is never modelled here.
  */
 function refusal(code: string, status: number, detail: string): ProblemDetails {
@@ -440,17 +226,9 @@ function refusal(code: string, status: number, detail: string): ProblemDetails {
 }
 
 /**
- * A field-level refusal, in the shape the validation factory emits.
- *
- * ⚠ THE ENVELOPE IS CLOSED AT FIVE MEMBERS - the type, the title, the status, the detail and
- * the error map - plus the two identifiers the factory attaches. There is deliberately no
- * stack, no exception type, no inner exception and no developer-facing message: a server that
- * returned any of those would be handing an operator its own internals, and a fixture that
- * modelled one would invite a reader to render it.
- *
- * The map is built with bracket-keyed literals so the Pascal-cased server keys survive exactly,
- * and it is typed as the validation shape rather than the general one, which is what makes
- * `errors` a required member the compiler will not let a call site forget.
+ * A field-level refusal, in the shape the validation factory emits. ⚠ THE ENVELOPE IS CLOSED AT FIVE
+ * MEMBERS - the type, the title, the status, the detail and the error map - plus the two identifiers the
+ * factory attaches.
  *
  * @param detail The form-level sentence.
  * @param errors The per-field messages, keyed as the server keys them.
@@ -473,67 +251,36 @@ function validationRefusal(
 
 describe('LoginComponent', () => {
   /**
-   * The screen under test.
-   *
-   * Created by a case rather than in a shared `beforeEach`, because the activated-route double
-   * has to be seeded BEFORE construction: the component reads the route snapshot exactly once.
+   * The screen under test. Created by a case rather than in a shared `beforeEach`, because the
+   * activated-route double has to be seeded BEFORE construction: the component reads the route snapshot
+   * exactly once.
    */
   let fixture: ComponentFixture<LoginComponent>;
 
-  /**
-   * The same fixture, or null when nothing has been created yet.
-   *
-   * A second handle rather than widening the one above, so that every ordinary case can use
-   * `fixture` without a null test on every line. Only the re-entrant return-address helper and
-   * the teardown read this one.
-   */
+  /** The same fixture, or null when nothing has been created yet. */
   let mounted: ComponentFixture<LoginComponent> | null;
   let httpMock: HttpTestingController;
   let store: AuthStore;
   let navigateSpy: jasmine.Spy;
 
   /**
-   * The global announcement channel's single sink, spied.
-   *
-   * ⚠ THE REAL ROOT SERVICE, CALLED THROUGH - not a double. Substituting it would prove
-   * something about the substitute; spying on the genuine one proves that nothing on this
-   * screen's failure path reaches it. The four convenience methods all funnel through this one
-   * member, so one spy covers every way a message could be raised.
-   *
-   * WHY IT MATTERS RATHER THAN BEING TIDY: a sign-in refusal is rendered INLINE, beside the
-   * field it concerns and above the form, and the global error interceptor deliberately stays
-   * silent on 401 for exactly that reason. A screen that announced as well would report one
-   * refusal twice - and on a rate-limited or forbidden refusal, where the interceptor does
-   * announce, three times.
+   * The global announcement channel's single sink, spied. ⚠ THE REAL ROOT SERVICE, CALLED THROUGH - not a
+   * double. Substituting it would prove something about the substitute; spying on the genuine one proves
+   * that nothing on this screen's failure path reaches it.
    */
   let notifySpy: jasmine.Spy;
 
   /**
-   * The router's command-array navigation, spied.
-   *
-   * ⚠ SPIED FOR A REASON THAT WAS DISCOVERED RATHER THAN ASSUMED, and it is worth recording
-   * because the alternative fails in a way that looks like a component defect. The screen removes
-   * the seeded account name and verification code from the browser's address by navigating
-   * relative to the activated route, and the router builds that address from the route's SNAPSHOT
-   * TREE - its children, its path from the root - none of which a minimal double has. Without this
-   * spy the router walks an absent child list and throws, and because the screen's own guard is
-   * `.catch()` on the returned promise it cannot catch a SYNCHRONOUS throw: the remainder of
-   * `ngOnInit` - the initial focus placement - is then skipped, and a case that asserted the
-   * caret's position would fail against a screen that is perfectly correct in the application,
-   * where the route is genuine.
-   *
-   * Spying is therefore the harness telling the truth rather than hiding a fault, and it earns
-   * something as well: the scrub's own arguments become assertable, which is the only way to prove
-   * single-use material really does leave the address.
+   * The router's command-array navigation, spied. ⚠ SPIED FOR A REASON THAT WAS DISCOVERED RATHER THAN
+   * ASSUMED, and it is worth recording because the alternative fails in a way that looks like a component
+   * defect.
    */
   let relativeNavigateSpy: jasmine.Spy;
 
   /**
-   * The query parameters the activated-route double will report.
-   *
-   * Mutated by a case BEFORE the component is created, because the component reads the
-   * SNAPSHOT exactly once - which is the direct analogue of the legacy
-   * `If Page.IsPostBack = False Then` guard at `Login.ascx.vb:L104`.
+   * The query parameters the activated-route double will report. Mutated by a case BEFORE the component
+   * is created, because the component reads the SNAPSHOT exactly once - which is the direct analogue of
+   * the legacy `If Page.IsPostBack = False Then` guard at `Login.ascx.vb:L104`.
    */
   let queryParams: Record<string, string>;
 
@@ -541,9 +288,9 @@ describe('LoginComponent', () => {
     queryParams = {};
     mounted = null;
 
-    // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that
-    // displaces it. Reversing the two leaves the live backend in place and every
-    // expectation times out against a request nothing intercepted.
+    // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it. Reversing
+    // the two leaves the live backend in place and every expectation times out against a request nothing
+    // intercepted.
     await TestBed.configureTestingModule({
       imports: [LoginComponent],
       providers: [
@@ -552,17 +299,9 @@ describe('LoginComponent', () => {
         provideRouter([]),
         {
           provide: ActivatedRoute,
-          // ⚠ THE ROUTE IS STUBBED RATHER THAN THE PARAMETERS BEING BOUND AS INPUTS, and the
-          // choice follows the component rather than taste. Component input binding is configured
-          // application-wide, so a screen MAY receive a query parameter as an input - but this one
-          // does not: it reads `snapshot.queryParamMap.get(key)`, once, which is the direct
-          // analogue of the legacy `If Page.IsPostBack = False Then` guard. Setting an input would
-          // exercise a path this screen does not use. What is fixed either way is the SPELLING of
-          // the keys, and those are imported from the component rather than retyped here.
-          //
-          // A getter rather than a fixed value, so a case can seed `queryParams` after the
-          // module is configured and before the component is created. The map itself is the
-          // router's own conversion, so it is a genuine `ParamMap`.
+          // A getter rather than a fixed value, so a case can seed `queryParams` after the module is
+          // configured and before the component is created. The map itself is the router's own conversion,
+          // so it is a genuine `ParamMap`.
           useValue: {
             snapshot: {
               get queryParamMap() {
@@ -597,9 +336,9 @@ describe('LoginComponent', () => {
       mounted = null;
     }
 
-    // The house rule. It fails a case that left a request unconsumed just as loudly as one
-    // that issued a request nobody expected - and on this screen an unexpected request would
-    // mean a credential was sent somewhere no assertion looked.
+    // The house rule. It fails a case that left a request unconsumed just as loudly as one that issued a
+    // request nobody expected - and on this screen an unexpected request would mean a credential was sent
+    // somewhere no assertion looked.
     httpMock.verify();
   });
 
@@ -627,13 +366,10 @@ describe('LoginComponent', () => {
   }
 
   /**
-   * The rendered element for a selector, or a failure naming what was missing.
-   *
-   * ⚠ NARROWED, NEVER ASSERTED. A document query answers with an element or null, and several
-   * of this screen's elements genuinely may not be rendered - the verification field and the
-   * whole failure region are both behind template conditions. Throwing on absence reports the
-   * selector that was not found, whereas a non-null assertion would compile and then fail
-   * somewhere else with a message about a property of null.
+   * The rendered element for a selector, or a failure naming what was missing. ⚠ NARROWED, NEVER
+   * ASSERTED. A document query answers with an element or null, and several of this screen's elements
+   * genuinely may not be rendered - the verification field and the whole failure region are both behind
+   * template conditions.
    *
    * @param selector The selector to find.
    * @returns The element.
@@ -670,13 +406,7 @@ describe('LoginComponent', () => {
     return queryOrFail<HTMLInputElement>(`#${controlId}`);
   }
 
-  /**
-   * Types a value into a control the way a person does.
-   *
-   * The value is assigned and an `input` event dispatched, which is the channel the reactive
-   * forms value accessor listens on - so this exercises the template's `formControlName`
-   * binding rather than reaching past it.
-   */
+  /** Types a value into a control the way a person does. */
   function type(controlId: string, value: string): void {
     const element = requiredControl(controlId);
 
@@ -690,39 +420,21 @@ describe('LoginComponent', () => {
     return queryOrFail<HTMLButtonElement>('.login__submit');
   }
 
-  /**
-   * Presses the submit button.
-   *
-   * A real press of a real `type="submit"` button inside a real `form`, so the native
-   * submission path is what raises `ngSubmit` - which is the PORT of the legacy key capture
-   * at `Login.ascx.vb:L101` and is therefore itself under test.
-   */
   function submit(): void {
     submitButton().click();
     fixture.detectChanges();
   }
 
-  /**
-   * Submits through the form itself rather than through the button.
-   *
-   * This is the path a RETURN KEY takes: the browser raises `submit` on the form, and a real
-   * form with a submit-typed button needs nothing else - which is the PORT of the key capture
-   * `Login.ascx.vb:L101` had to register for a Web Forms button. Driving it this way also
-   * bypasses the disabled attribute, which is what lets the in-flight guard be tested as a
-   * guard rather than as a styling state.
-   */
   function submitThroughForm(): void {
     queryOrFail('.login__form').dispatchEvent(new Event('submit'));
     fixture.detectChanges();
   }
 
   /**
-   * The screen's caller-supplied controls and its submit control, in document order.
-   *
-   * ⚠ SCOPED TO THE BOXES AND THE SUBMIT CONTROL DELIBERATELY. A blanket query for every
-   * focusable element would also collect each shared field's own help toggle, which belongs to
-   * that component and would make this a specification of the design system rather than of this
-   * screen's field order.
+   * The screen's caller-supplied controls and its submit control, in document order. ⚠ SCOPED TO THE
+   * BOXES AND THE SUBMIT CONTROL DELIBERATELY. A blanket query for every focusable element would also
+   * collect each shared field's own help toggle, which belongs to that component and would make this a
+   * specification of the design system rather than of this screen's field order.
    *
    * @returns Each control's identifier, with the submit control named for what it is.
    */
@@ -739,16 +451,10 @@ describe('LoginComponent', () => {
   }
 
   /**
-   * Every sign-in request issued so far, taken as a SET so it can be counted.
-   *
-   * ⚠ COUNTED RATHER THAN INFERRED, because "exactly one" is the whole claim in two places: a
-   * refused attempt must not be retried automatically, and a second submission arriving while
-   * one is in flight must not become a second request. The teardown's `verify()` fails an
-   * unconsumed request but cannot say HOW MANY there were, and an expectation for one request
-   * would pass on the first of two.
-   *
-   * ⚠ MATCHING CONSUMES. The matched requests leave the outstanding set, so a caller that wants
-   * to answer one must answer the value returned here rather than asking for it again.
+   * Every sign-in request issued so far, taken as a SET so it can be counted. ⚠ COUNTED RATHER THAN
+   * INFERRED, because "exactly one" is the whole claim in two places: a refused attempt must not be
+   * retried automatically, and a second submission arriving while one is in flight must not become a
+   * second request.
    *
    * @returns The matched requests, in the order they were issued.
    */
@@ -802,21 +508,13 @@ describe('LoginComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Answers BOTH requests of a completed sign-in.
-   *
-   * See {@link ME_URL} for why one flush is not enough.
-   */
+  /** Answers BOTH requests of a completed sign-in. */
   function completeSignIn(): void {
     expectLoginRequest().flush(credentialPayload());
     completeIdentityRead();
   }
 
-  /**
-   * Answers the outstanding sign-in request with a refusal document.
-   *
-   * Flushed with RFC 7807's own media type, because that is what the API answers with.
-   */
+  /** Answers the outstanding sign-in request with a refusal document. */
   function refuseSignIn(problem: ProblemDetails): void {
     const status = problem.status ?? 500;
 
@@ -847,24 +545,12 @@ describe('LoginComponent', () => {
 
       expect(headings.length).withContext('the page header renders exactly one h1').toBe(1);
 
-      // `ControlTitle_signin.Text` from
-      // `Website/admin/Authentication/App_LocalResources/Login.ascx.resx`, verbatim. The
-      // nearer resource file's `Title.Text` reads "Standard", which was the CAPTION OF A TAB
-      // in the out-of-scope multi-provider container and is deliberately not used.
       expect((headings[0]?.textContent ?? '').trim()).toBe('User Log In');
     });
 
     it('issues no request of any kind while merely being shown', () => {
       create();
 
-      // A screen that reached the network on arrival would attempt a sign-in nobody asked
-      // for.
-      //
-      // Stated as a COUNTED expectation rather than through `expectNone`: that member asserts
-      // by throwing, so the runner records no expectation for it and reports this spec exactly
-      // as it reports one that asserts nothing at all. `match` returns what it matched, so the
-      // emptiness of that list IS the assertion, and it fails just as loudly on an unexpected
-      // request. It matched nothing, so the `verify()` in `afterEach` still covers this spec.
       expect(httpMock.match(() => true))
         .withContext('merely being shown reaches the network for nothing')
         .toEqual([]);
@@ -876,10 +562,8 @@ describe('LoginComponent', () => {
       expect(control(LOGIN_CONTROL_IDS.username)).not.toBeNull();
       expect(control(LOGIN_CONTROL_IDS.password)).not.toBeNull();
 
-      // ⚠ THE VERIFICATION FIELD IS ABSENT FROM THE DOCUMENT, not merely hidden. A box a
-      // person is not being asked to fill in must not be reachable by Tab nor announced by a
-      // screen reader. `rowVerification1` and `rowVerification2` are both declared
-      // `visible="false"` at `Login.ascx:L12` and L15.
+      // ⚠ THE VERIFICATION FIELD IS ABSENT FROM THE DOCUMENT, not merely hidden. A box a person is not
+      // being asked to fill in must not be reachable by Tab nor announced by a screen reader.
       expect(control(LOGIN_CONTROL_IDS.verificationCode))
         .withContext('the verification field is not in the document until the server asks for it')
         .toBeNull();
@@ -890,9 +574,6 @@ describe('LoginComponent', () => {
 
       const associations = queryAll('label').map((label) => label.getAttribute('for'));
 
-      // The legacy label control already derived this association -
-      // `Library/Controls/LabelControl.vb:L295` set `label.Attributes("for") = c.ClientID` -
-      // so this is a PORT rather than an addition, and the shared field component renders it.
       expect(associations).toContain(LOGIN_CONTROL_IDS.username);
       expect(associations).toContain(LOGIN_CONTROL_IDS.password);
 
@@ -908,17 +589,10 @@ describe('LoginComponent', () => {
 
       const labelText = queryAll('label').map((label) => (label.textContent ?? '').trim());
 
-      // ⚠ THE TRAILING COLON IS STRIPPED BY THE SHARED FIELD, AND THAT IS THE POLICY RATHER
-      // THAN A DEFECT. The template passes the measured resource values `'User Name:'` and
-      // `'Password:'` (`SharedResources.resx` L1023 and L1017) exactly as they are stored, and
-      // the shared component owns the punctuation: it strips ONE trailing colon whatever the
-      // colon's origin and adds none of its own. That matches the legacy majority - of the 186
-      // label instances across the 39 in-scope screens, 133 declared no suffix at all - so the
-      // rendered wording is the legacy DOMINANT form, and the screens that baked a colon into
-      // the resource value do not end up punctuated differently from the ones that did not.
-      //
-      // Asserted on the RENDERED text rather than on the bound input, because that is what a
-      // person reads and because it pins the policy: a change to it would surface here.
+      // ⚠ THE TRAILING COLON IS STRIPPED BY THE SHARED FIELD, AND THAT IS THE POLICY RATHER THAN A DEFECT.
+      // The template passes the measured resource values `'User Name:'` and `'Password:'` exactly as they
+      // are stored, and the shared component owns the punctuation: it strips ONE trailing colon whatever
+      // the colon's origin and adds none of its own.
       expect(labelText.some((text) => text.startsWith('User Name'))).toBeTrue();
       expect(labelText.some((text) => text.startsWith('Password'))).toBeTrue();
       expect(labelText.some((text) => text.includes(':')))
@@ -929,9 +603,9 @@ describe('LoginComponent', () => {
     it('renders the password box as a password box, the one security attribute the legacy carried', () => {
       create();
 
-      // `Login.ascx:L29` declares `textmode="password"`. Of every attribute on that markup it
-      // is the only one expressing a security property rather than a layout one, so it is the
-      // one attribute that must survive exactly.
+      // `Login.ascx:L29` declares `textmode="password"`. Of every attribute on that markup it is the only
+      // one expressing a security property rather than a layout one, so it is the one attribute that must
+      // survive exactly.
       expect(requiredControl(LOGIN_CONTROL_IDS.password).type).toBe('password');
       expect(requiredControl(LOGIN_CONTROL_IDS.username).type).toBe('text');
     });
@@ -944,9 +618,6 @@ describe('LoginComponent', () => {
       expect(form).withContext('a real form element').not.toBeNull();
       expect(form?.tagName).toBe('FORM');
 
-      // The PORT of `Login.ascx.vb:L101`, which had to register a key capture so the return
-      // key submitted a Web Forms button. A real submit button inside a real form does it
-      // natively, which is why no key listener exists anywhere in the component.
       expect(submitButton().type).toBe('submit');
       expect(form?.contains(submitButton())).toBeTrue();
 
@@ -970,9 +641,8 @@ describe('LoginComponent', () => {
     it('reports no field as rejected before a submission has been attempted', () => {
       create();
 
-      // An `aria-invalid="false"` on every field is noise; omitting the attribute is the
-      // default state, which is why the template renders it only when there is something to
-      // report.
+      // An `aria-invalid="false"` on every field is noise; omitting the attribute is the default state,
+      // which is why the template renders it only when there is something to report.
       expect(requiredControl(LOGIN_CONTROL_IDS.username).getAttribute('aria-invalid')).toBeNull();
       expect(requiredControl(LOGIN_CONTROL_IDS.password).getAttribute('aria-invalid')).toBeNull();
     });
@@ -980,21 +650,14 @@ describe('LoginComponent', () => {
     it('places the caret in the account-name box, as the legacy screen did', () => {
       create();
 
-      // A PORT of `Login.ascx.vb:L126-L130`, which focused the account-name box when it was empty
-      // and the password box otherwise. It costs nothing visually and it is what lets a person
-      // start typing without reaching for the pointer.
       expect(document.activeElement?.id).toBe(LOGIN_CONTROL_IDS.username);
     });
 
     it('renders the two credential boxes and the submit control in that order', () => {
       create();
 
-      // ⚠ ORDER IS BEHAVIOUR, not decoration: it is the order a person tabs through and the
-      // order a screen reader announces. The legacy rows ran account name, verification code,
-      // challenge, password, submit - the challenge genuinely sat BEFORE the password
-      // (`Login.ascx:L19-L24`) - so with the challenge removed the surviving order is account
-      // name, conditional verification code, password, submit. The conditional member of that
-      // sequence is asserted by the ladder case that reveals it.
+      // ⚠ ORDER IS BEHAVIOUR, not decoration: it is the order a person tabs through and the order a screen
+      // reader announces.
       expect(controlSequence()).toEqual([
         LOGIN_CONTROL_IDS.username,
         LOGIN_CONTROL_IDS.password,
@@ -1008,27 +671,20 @@ describe('LoginComponent', () => {
       const username = requiredControl(LOGIN_CONTROL_IDS.username);
       const password = requiredControl(LOGIN_CONTROL_IDS.password);
 
-      // MIGRATION: net additions, and two of them are load-bearing rather than cosmetic. A
-      // mobile keyboard that capitalises the first letter of a CASE-SENSITIVE account name
-      // silently produces a credential the server refuses - and the legacy refusal wording
-      // itself warned that passwords are case sensitive, so the trap was already known.
+      // MIGRATION: net additions, and two of them are load-bearing rather than cosmetic.
       expect(username.getAttribute('autocomplete')).toBe('username');
       expect(username.getAttribute('autocapitalize')).toBe('none');
       expect(username.getAttribute('spellcheck')).toBe('false');
 
-      // The standard token for this field: it asks the BROWSER's own credential manager to
-      // fill the box. Nothing in the workspace reads, copies, stores or logs the value, and no
-      // web storage of any kind is touched.
+      // The standard token for this field: it asks the BROWSER's own credential manager to fill the box.
+      // Nothing in the workspace reads, copies, stores or logs the value, and no web storage of any kind is
+      // touched.
       expect(password.getAttribute('autocomplete')).toBe('current-password');
     });
 
     it('points every label at the control it labels, inside its own field', () => {
       create();
 
-      // Asserted PER FIELD rather than across the screen, because a screen-wide check passes
-      // even when two labels point at each other's controls. The shared field owns the
-      // association; what is proven here is that the identifier it was given is the identifier
-      // the control it wraps actually carries.
       const fields = queryAll('app-form-field');
 
       expect(fields.length).withContext('one shared field per rendered control').toBe(2);
@@ -1051,22 +707,16 @@ describe('LoginComponent', () => {
       const username = requiredControl(LOGIN_CONTROL_IDS.username);
       const password = requiredControl(LOGIN_CONTROL_IDS.password);
 
-      // ⚠ NO MINIMUM LENGTH, NO PATTERN AND NO ADDRESS FORMAT ON EITHER BOX. The credential
-      // policy measured at `Website/release.config:L241-L245` - minimum length seven, no
-      // required non-alphanumeric character, no question and answer, no unique address -
-      // governs CREATING and CHANGING a password, never signing in with one. Tightening it
-      // mid-migration would lock out every existing account.
+      // ⚠ NO MINIMUM LENGTH, NO PATTERN AND NO ADDRESS FORMAT ON EITHER BOX. The credential policy measured
+      // at `Website/release.config:L241-L245` - minimum length seven, no required non-alphanumeric
+      // character, no question and answer, no unique address governs CREATING and CHANGING a password,
+      // never signing in with one.
       for (const box of [username, password]) {
         expect(box.getAttribute('minlength')).toBeNull();
         expect(box.getAttribute('pattern')).toBeNull();
         expect(box.type).not.toBe('email');
       }
 
-      // The one bound that IS declared, and it reproduces a SERVER bound rather than inventing
-      // a client one. It is emitted as an ATTRIBUTE rather than as a property binding on
-      // purpose: the property form would satisfy the reactive-forms maximum-length directive's
-      // selector and attach a validator this screen never declared, contributing an error key
-      // nothing renders.
       expect(username.getAttribute('maxlength')).toBe(String(LOGIN_USERNAME_MAX_LENGTH));
 
       // And it is NOT applied to the credential, whose ceiling is counted in UTF-8 bytes and
@@ -1087,17 +737,11 @@ describe('LoginComponent', () => {
 
       expect(requiredControl(LOGIN_CONTROL_IDS.username).value).toBe('seeded-account');
 
-      // ⚠ AWAITED, AND THE REASON IS MEASURED RATHER THAN DEFENSIVE. Seeding also scrubs the
-      // address, and that scrub leaves a settled promise outstanding - so the render hook carrying
-      // the focus move is deferred past this render rather than running inside it. Reading the
-      // caret's position immediately finds it still on the document body; awaiting stability is
-      // what lets the deferred hook run. Nothing is slept on and no timer is involved: stability
-      // is the zone reporting that the work it was waiting for has drained.
+      // ⚠ AWAITED, AND THE REASON IS MEASURED RATHER THAN DEFENSIVE. Seeding also scrubs the address, and
+      // that scrub leaves a settled promise outstanding - so the render hook carrying the focus move is
+      // deferred past this render rather than running inside it.
       await fixture.whenStable();
 
-      // The caret then lands on the box still to be filled in, which is the other half of
-      // `Login.ascx.vb:L126-L130` and the whole reason a link carrying a seeded account name is
-      // useful at all.
       expect(document.activeElement?.id).toBe(LOGIN_CONTROL_IDS.password);
     });
 
@@ -1106,21 +750,13 @@ describe('LoginComponent', () => {
 
       create();
 
-      // A DELIBERATE DIVERGENCE from `Login.ascx.vb:L109-L116`. The legacy revealed the
-      // verification rows here as well, but only inside
-      // `If PortalSettings.UserRegistration = PortalRegistrationType.VerifiedRegistration` -
-      // a per-request server-side setting an unauthenticated caller cannot read. Guessing
-      // would be worse than not asking, so the value is seeded so that it travels on the
-      // first attempt while visibility stays governed solely by the server's own answer.
+      // A DELIBERATE DIVERGENCE from `Login.ascx.vb:L109-L116`.
       expect(control(LOGIN_CONTROL_IDS.verificationCode))
         .withContext('a seeded code does not reveal the field')
         .toBeNull();
     });
 
     it('treats a present-but-empty parameter as present, exactly as the legacy did', () => {
-      // `Login.ascx.vb:L106` and L109 read `If Not Request.QueryString("…") Is Nothing`, so a
-      // parameter that was present but empty was still present. A test for a NON-EMPTY value
-      // would be a different test with a different outcome.
       queryParams = { [USERNAME_QUERY_KEY]: '' };
 
       create();
@@ -1144,16 +780,10 @@ describe('LoginComponent', () => {
 
       create();
 
-      // ⚠ AN ADDRESS IS NOT A PRIVATE CHANNEL. A query string is kept in the browser's history,
-      // offered by the address bar to whoever next uses the machine, handed to third-party origins
-      // in the referrer of any later request, and is the single most commonly recorded part of a
-      // request in proxy and server logs. A verification code is single-use authentication
-      // material and an account name identifies its holder, so neither belongs in any of those
-      // places one moment longer than it takes to read it.
-      //
-      // MIGRATION: a DELIBERATE DIVERGENCE rather than a port. The legacy screen read these values
-      // during a full page render and had no client-side history to rewrite, so it could not have
-      // done this.
+      // ⚠ AN ADDRESS IS NOT A PRIVATE CHANNEL. A query string is kept in the browser's history, offered by
+      // the address bar to whoever next uses the machine, handed to third-party origins in the referrer of
+      // any later request, and is the single most commonly recorded part of a request in proxy and server
+      // logs.
       expect(relativeNavigateSpy).toHaveBeenCalledTimes(1);
 
       const [commands, options] = relativeNavigateSpy.calls.mostRecent().args as [
@@ -1170,9 +800,9 @@ describe('LoginComponent', () => {
         [VERIFICATION_CODE_QUERY_KEY]: null,
       });
 
-      // ⚠ MERGED, SO THE RETURN ADDRESS SURVIVES. Dropping every other parameter here would turn a
-      // privacy measure into a redirect defect, because the return address is still needed after a
-      // successful attempt.
+      // ⚠ MERGED, SO THE RETURN ADDRESS SURVIVES. Dropping every other parameter here would turn a privacy
+      // measure into a redirect defect, because the return address is still needed after a successful
+      // attempt.
       expect(options['queryParamsHandling']).toBe('merge');
 
       // ⚠ AND THE ENTRY IS REPLACED, NOT PUSHED. Pushing would leave the original address - material
@@ -1200,9 +830,9 @@ describe('LoginComponent', () => {
 
       type(LOGIN_CONTROL_IDS.username, 'typed-over-the-seed');
 
-      // A later query change must not reach the form. Reading the route's OBSERVABLE instead
-      // of its snapshot would re-seed here and silently discard what was typed - which is the
-      // behaviour the legacy post-back guard prevented.
+      // A later query change must not reach the form. Reading the route's OBSERVABLE instead of its
+      // snapshot would re-seed here and silently discard what was typed - which is the behaviour the legacy
+      // post-back guard prevented.
       queryParams = { [USERNAME_QUERY_KEY]: 'a-different-account' };
       fixture.detectChanges();
 
@@ -1220,16 +850,13 @@ describe('LoginComponent', () => {
 
       submit();
 
-      // The fail-closed intent of `Login.ascx.vb:L163`, which seeded its outcome variable to
-      // failure so a path that forgot to assign a result failed closed. Nothing is sent.
       httpMock.expectNone(() => true);
 
       const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
 
-      // MIGRATION: these two sentences are NET-NEW. All 37 lines of legacy markup declared no
-      // validator control, so the legacy screen posted whatever was typed and let the server
-      // refuse it. The MECHANISM changed; the BEHAVIOUR - an empty box cannot complete a
-      // sign-in - did not.
+      // MIGRATION: these two sentences are NET-NEW. All 37 lines of legacy markup declared no validator
+      // control, so the legacy screen posted whatever was typed and let the server refuse it. The MECHANISM
+      // changed; the BEHAVIOUR - an empty box cannot complete a sign-in - did not.
       expect(messages).toContain(LOGIN_REQUIRED_MESSAGES.username);
       expect(messages).toContain(LOGIN_REQUIRED_MESSAGES.password);
     });
@@ -1259,10 +886,9 @@ describe('LoginComponent', () => {
     it('applies no length, pattern or complexity rule to either credential', () => {
       create();
 
-      // The credential policy measured in `Website/release.config:L241-L245` - minimum length
-      // seven, no required non-alphanumeric character - governs CREATING and CHANGING a
-      // password, not signing in with one. Tightening it mid-migration would lock out existing
-      // accounts, so a single character must reach the server.
+      // The credential policy measured in `Website/release.config:L241-L245` - minimum length seven, no
+      // required non-alphanumeric character - governs CREATING and CHANGING a password, not signing in with
+      // one.
       type(LOGIN_CONTROL_IDS.username, 'a');
       type(LOGIN_CONTROL_IDS.password, 'b');
       submit();
@@ -1278,18 +904,15 @@ describe('LoginComponent', () => {
     it('does not require a verification code on a first attempt', () => {
       create();
 
-      // Leaving the code permanently required would make the very first attempt
-      // unsubmittable, which no legacy behaviour justifies: the field did not even exist on
-      // screen until the server asked for it.
+      // Leaving the code permanently required would make the very first attempt unsubmittable, which no
+      // legacy behaviour justifies: the field did not even exist on screen until the server asked for it.
       fillCredentials();
       submit();
 
-      // ⚠ THE ASSERTION IS THE DISPATCHED BODY, NOT MERELY THAT A REQUEST HAPPENED. A form held
-      // back by a validator would have produced no request at all, so the presence of one is
-      // half the claim - and the EMPTY code in it is the other half: the member travels as the
-      // empty string rather than being demanded of a person the server has not asked. Asserted
-      // here rather than left to `completeSignIn`, whose `expectOne` asserts by throwing and so
-      // records no expectation for the runner to count.
+      // ⚠ THE ASSERTION IS THE DISPATCHED BODY, NOT MERELY THAT A REQUEST HAPPENED. A form held back by a
+      // validator would have produced no request at all, so the presence of one is half the claim - and the
+      // EMPTY code in it is the other half: the member travels as the empty string rather than being
+      // demanded of a person the server has not asked.
       const attempt = expectLoginRequest();
 
       expect(attempt.request.body).toEqual({
@@ -1306,10 +929,9 @@ describe('LoginComponent', () => {
       create();
 
       // ⚠ SIX CHARACTERS, DELIBERATELY, because the creation policy measured at
-      // `Website/release.config:L242` sets a minimum length of SEVEN. If that rule ever crept
-      // onto this form, six would be refused here and every existing account whose credential
-      // predates the rule would be locked out by a migration that was supposed to preserve
-      // behaviour. The value reaches the server, which remains the only authority on it.
+      // `Website/release.config:L242` sets a minimum length of SEVEN. If that rule ever crept onto this
+      // form, six would be refused here and every existing account whose credential predates the rule would
+      // be locked out by a migration that was supposed to preserve behaviour.
       expect(SIX_CHARACTER_VALUE.length)
         .withContext('the fixture is one character short of the creation minimum')
         .toBe(LEGACY_CREATION_MINIMUM_LENGTH - 1);
@@ -1336,14 +958,9 @@ describe('LoginComponent', () => {
     it('reports the two server bounds in the server’s own words, and sends nothing', () => {
       create();
 
-      // ⚠ THESE ARE THE ONLY TWO BOUNDS ON THE FORM, and both REPRODUCE a server rule rather
-      // than adding one - the sign-in contract's own validator caps the account name, and the
-      // credential ceiling is counted in UTF-8 bytes by the server. Reproducing the server's
-      // exact sentences is what stops one rule being described two different ways depending on
-      // which layer noticed it first.
-      //
-      // The values are assigned rather than typed by hand, so the browser's own attribute
-      // enforcement cannot silently truncate them before the validator sees them.
+      // ⚠ THESE ARE THE ONLY TWO BOUNDS ON THE FORM, and both REPRODUCE a server rule rather than adding
+      // one - the sign-in contract's own validator caps the account name, and the credential ceiling is
+      // counted in UTF-8 bytes by the server.
       type(LOGIN_CONTROL_IDS.username, 'a'.repeat(LOGIN_USERNAME_MAX_LENGTH + 1));
       type(LOGIN_CONTROL_IDS.password, 'b'.repeat(LOGIN_PASSWORD_MAX_BYTES + 1));
       submit();
@@ -1364,11 +981,6 @@ describe('LoginComponent', () => {
     it('refuses an account name of whitespace without trimming it away', () => {
       create();
 
-      // The server's own emptiness rule rejects a value made only of spaces, whereas the
-      // framework's required rule accepts it - so a box holding three spaces looked complete
-      // and was refused a round trip later. TRIMMING it instead of refusing it would be worse:
-      // the legacy screen passed the box through untouched, so a stored name carrying a
-      // trailing space has to keep it.
       type(LOGIN_CONTROL_IDS.username, '   ');
       type(LOGIN_CONTROL_IDS.password, SUBMITTED_PASSWORD);
       submit();
@@ -1400,15 +1012,6 @@ describe('LoginComponent', () => {
       expect(request.request.method).toBe('POST');
       expect(request.request.url).toBe(LOGIN_URL);
 
-      // ⚠ VALUES PASS THROUGH EXACTLY AS TYPED. The mixed-case account name is not
-      // lower-cased and the surrounding spaces on the credential are not trimmed: each of
-      // those would change which credentials succeed, and the legacy screen did neither.
-      //
-      // ⚠ THE EMPTY VERIFICATION CODE TRAVELS AS THE EMPTY STRING. `Login.ascx.vb:L177` tells
-      // a wrong code from a missing one with `If txtVerification.Text <> ""`, and the legacy
-      // absent-text sentinel IS the empty string - `Null.vb:L71-L75` has the body `Return ""`,
-      // not `Return Nothing` - so the two were always one branch. Coalescing to null, omitting
-      // the member or trimming would move that decision boundary silently.
       expect(request.request.body).toEqual({
         username: ACCOUNT_NAME,
         password: SUBMITTED_PASSWORD,
@@ -1428,14 +1031,8 @@ describe('LoginComponent', () => {
       const request = expectLoginRequest();
       const body: unknown = request.request.body;
 
-      // ⚠ THE SENTINEL IS THE WHOLE POINT OF THIS CASE. `Login.ascx.vb:L177` tells a wrong code
-      // from a missing one with `If txtVerification.Text <> ""`, and the legacy absent-text
-      // sentinel IS the empty string - `Null.vb:L71-L75` has the body `Return ""`, not
-      // `Return Nothing`. An empty code and an absent one were therefore always ONE branch, and
-      // rewriting either into the other here would move that decision boundary silently.
-      //
-      // Typed as unknown and narrowed, because a body is whatever was serialised and claiming
-      // otherwise would be a claim the runtime does not honour.
+      // Typed as unknown and narrowed, because a body is whatever was serialised and claiming otherwise
+      // would be a claim the runtime does not honour.
       expect(body).not.toBeNull();
       expect(typeof body).toBe('object');
 
@@ -1451,12 +1048,7 @@ describe('LoginComponent', () => {
       expect(members['verificationCode']).not.toBeNull();
       expect(members['verificationCode']).not.toBeUndefined();
 
-      // ⚠ AND THERE IS NO FOURTH MEMBER. The legacy call took EIGHT arguments; five have no
-      // counterpart. The authentication-type literal went with the single bearer-token path, the
-      // tenant key and display name were ambient server values that a body must never carry
-      // because a caller could then name a site it was not addressing, the caller's address is
-      // observed from the connection rather than posted, and the by-reference status argument
-      // became the awaited outcome.
+      // ⚠ AND THERE IS NO FOURTH MEMBER. The legacy call took EIGHT arguments; five have no counterpart.
       expect(Object.keys(members).sort()).toEqual(['password', 'username', 'verificationCode']);
 
       // ⚠ AND THE CODE IS NOT A QUERY PARAMETER EITHER. It is a member of the request, and the
@@ -1473,10 +1065,6 @@ describe('LoginComponent', () => {
 
       fillCredentials();
 
-      // The PORT of `Login.ascx.vb:L101`, which registered a key capture so the return key
-      // submitted a Web Forms button. Dispatching the form's own submission - rather than
-      // faking a key press, which would prove nothing about the native path - is what a return
-      // key does in a real form.
       submitThroughForm();
 
       const request = expectExactlyOneLoginRequest(
@@ -1531,10 +1119,8 @@ describe('LoginComponent', () => {
       request.flush(credentialPayload());
       fixture.detectChanges();
 
-      // ⚠ STILL IN FLIGHT. The exchange has answered but the identity read has not, and the
-      // sign-in is not complete until it does - so the progress indicator must NOT come down
-      // here. This is the window in which a screen that lowered its indicator on the first
-      // answer would invite a second submission against a half-completed sign-in.
+      // ⚠ STILL IN FLIGHT. The exchange has answered but the identity read has not, and the sign-in is not
+      // complete until it does - so the progress indicator must NOT come down here.
       expect(query('app-loading-spinner'))
         .withContext('the indicator survives until the identity read answers')
         .not.toBeNull();
@@ -1553,10 +1139,9 @@ describe('LoginComponent', () => {
 
       const request = expectLoginRequest();
 
-      // The disabled attribute is a COURTESY, not the lock: a resubmission can still arrive by
-      // return key or by script, so the component refuses it in code as well. The submission is
-      // driven through the form here rather than the button precisely so the disabled attribute
-      // cannot be what prevents it.
+      // The disabled attribute is a COURTESY, not the lock: a resubmission can still arrive by return key
+      // or by script, so the component refuses it in code as well. The submission is driven through the
+      // form here rather than the button precisely so the disabled attribute cannot be what prevents it.
       const form = query('.login__form');
 
       form?.dispatchEvent(new Event('submit'));
@@ -1583,11 +1168,9 @@ describe('LoginComponent', () => {
 
       const password = requiredControl(LOGIN_CONTROL_IDS.password);
 
-      // ⚠ `Login.ascx.vb:L123` IS NOT CARRIED FORWARD. It read
-      // `txtPassword.Attributes.Add("value", txtPassword.Text)`, deliberately writing the
-      // submitted credential into an HTML attribute so the box survived a post-back. The
-      // OUTCOME the person experienced - the value still being there - is simply what a
-      // single-page form does, while the credential-exposure smell is gone.
+      // ⚠ `Login.ascx.vb:L123` IS NOT CARRIED FORWARD. It read `txtPassword.Attributes.Add("value",
+      // txtPassword.Text)`, deliberately writing the submitted credential into an HTML attribute so the box
+      // survived a post-back.
       expect(password.value).toBe(SUBMITTED_PASSWORD);
       expect(password.getAttribute('value'))
         .withContext('the credential is not written into an attribute')
@@ -1619,10 +1202,9 @@ describe('LoginComponent', () => {
       expect(query('app-error-banner')).withContext('the banner is on the screen').not.toBeNull();
       expect(query('.error-banner')).withContext('and it has a document to render').not.toBeNull();
 
-      // ⚠ ANNOUNCED, NOT MERELY DISPLAYED. The banner keeps its live region OUTSIDE its own
-      // condition, so the region exists before the failure does and the insertion is what the
-      // reader hears - a region that appeared together with its content would announce nothing on
-      // some readers.
+      // ⚠ ANNOUNCED, NOT MERELY DISPLAYED. The banner keeps its live region OUTSIDE its own condition, so
+      // the region exists before the failure does and the insertion is what the reader hears - a region
+      // that appeared together with its content would announce nothing on some readers.
       expect(queryOrFail('.error-banner-live').getAttribute('role')).toBe('alert');
 
       expect(textOf('.error-banner__message')).toBe(
@@ -1647,19 +1229,14 @@ describe('LoginComponent', () => {
         refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
       );
 
-      // ⚠ THIS IS THE CASE THAT PROTECTS THE WHOLE ARRANGEMENT. The bearer-token interceptor
-      // lists the sign-in endpoint among the anonymous ones, so no credential is attached and no
-      // renewal is attempted - a 401 here is a wrong password, not a lapsed token. The error
-      // interceptor then returns EARLY on exactly 401, deliberately, because a sign-in refusal is
-      // this screen's to explain and announcing it globally as well would report it twice. So the
-      // inline rendering is not one of two reports: it is the ONLY one.
+      // ⚠ THIS IS THE CASE THAT PROTECTS THE WHOLE ARRANGEMENT. The bearer-token interceptor lists the
+      // sign-in endpoint among the anonymous ones, so no credential is attached and no renewal is attempted
+      // - a 401 here is a wrong password, not a lapsed token.
       expect(query('.login__failure')).withContext('the refusal is rendered here').not.toBeNull();
 
-      // ⚠ AND THIS SCREEN RAISES NOTHING ITSELF. On a 401 the interceptor is silent, so a
-      // notification here would be the second report of one refusal; on the statuses where the
-      // interceptor DOES announce - 403, 404, 409, 422, 429 and server faults - it would be the
-      // third. The real service is spied and called through, so this is a statement about the
-      // genuine channel rather than about a double.
+      // ⚠ AND THIS SCREEN RAISES NOTHING ITSELF. On a 401 the interceptor is silent, so a notification here
+      // would be the second report of one refusal; on the statuses where the interceptor DOES announce -
+      // 403, 404, 409, 422, 429 and server faults - it would be the third.
       expect(notifySpy).withContext('no global announcement from this screen').not.toHaveBeenCalled();
     });
 
@@ -1669,12 +1246,9 @@ describe('LoginComponent', () => {
       fillCredentials();
       submit();
 
-      // ⚠ THE KEYS ARE PASCAL-CASED AND ARE READ WITH BRACKETS. They name model members on the
-      // server rather than members of the serialised body, so the camel-casing policy does not
-      // reach them - and `errors` is an index-signature type, so bracket access is the only form
-      // the compiler allows. The account-name key is spelled with an inner capital the component's
-      // own key does not have, which is exactly what exercises the shared utility's
-      // case-insensitive matching instead of an accidental exact match.
+      // ⚠ THE KEYS ARE PASCAL-CASED AND ARE READ WITH BRACKETS. They name model members on the server
+      // rather than members of the serialised body, so the camel-casing policy does not reach them - and
+      // `errors` is an index-signature type, so bracket access is the only form the compiler allows.
       const document_ = validationRefusal('The request was refused.', {
         [SERVER_USERNAME_KEY]: ['The account name is not recognised.'],
         [SERVER_PASSWORD_KEY]: ['The credential is not correct.', 'Passwords are case sensitive.'],
@@ -1694,17 +1268,13 @@ describe('LoginComponent', () => {
 
       const messages = queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim());
 
-      // D-S4: the shared field's message input accepts a read-only ARRAY, so BOTH sentences for
-      // the credential reach the screen. Reducing to one - which a folder-level expectation
-      // assumed was required - would silently discard a message the person needs to read.
+      // D-S4: the shared field's message input accepts a read-only ARRAY, so BOTH sentences for the
+      // credential reach the screen. Reducing to one - which a folder-level expectation assumed was
+      // required - would silently discard a message the person needs to read.
       expect(messages).toContain('The account name is not recognised.');
       expect(messages).toContain('The credential is not correct.');
       expect(messages).toContain('Passwords are case sensitive.');
 
-      // ⚠ AND NOTHING FROM THE SERVER'S INSIDE REACHES THE DOCUMENT. The envelope is closed at
-      // the five standard members plus the two identifiers: no stack, no exception type, no inner
-      // exception, no developer-facing message. This asserts the screen renders none of those
-      // words even by accident.
       const rendered = host().textContent ?? '';
 
       for (const forbidden of ['stackTrace', 'at Object.', 'Exception', 'innerException']) {
@@ -1722,14 +1292,8 @@ describe('LoginComponent', () => {
         refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
       );
 
-      // The reference is the only join key between what a person saw in the browser and the
-      // request as the server recorded it, and the correlation identifier outranks the trace
-      // identifier because only the former appears in the server's own records.
       expect(textOf('.error-banner__trace')).toBe(`Reference: ${CORRELATION_ID}`);
 
-      // ⚠ AND THE SCREEN ADDS NO SECOND REFERENCE REGION. The store derives that value from
-      // the document itself, so a region gated on "no document yet a reference" could never
-      // render and one gated on the reference alone could only duplicate this.
       expect(queryAll('.error-banner__trace').length).toBe(1);
     });
 
@@ -1749,18 +1313,14 @@ describe('LoginComponent', () => {
       expect(notice).withContext('the calm state is rendered').not.toBeNull();
       expect((notice?.textContent ?? '').trim()).toBe(RATE_LIMIT_MESSAGE);
 
-      // ⚠ POLITE, NOT ASSERTIVE. Nothing has broken - the caller has simply attempted too
-      // often - and this is the compensating control for the human-verification challenge the
-      // migration removed, so it must be distinguishable from a refused credential at a glance
-      // and must not interrupt.
+      // ⚠ POLITE, NOT ASSERTIVE. Nothing has broken - the caller has simply attempted too often - and this
+      // is the compensating control for the human-verification challenge the migration removed, so it must
+      // be distinguishable from a refused credential at a glance and must not interrupt.
       expect(notice?.getAttribute('role')).toBe('status');
 
       // "Say that calmly and say nothing else": the error-toned sentence is suppressed.
       expect(query('.login__message')).toBeNull();
 
-      // ⚠ DISTINCT FROM EVERY OTHER SENTENCE THIS SCREEN CAN SHOW, which is the point of having
-      // a separate state at all. Compared against the shared utility's own constants rather than
-      // against copies, so a change to either would surface here rather than silently agreeing.
       expect(RATE_LIMIT_MESSAGE).toBe(TOO_MANY_ATTEMPTS);
       expect(RATE_LIMIT_MESSAGE).not.toBe(statusMessage(500));
       expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).not.toBe(RATE_LIMIT_MESSAGE);
@@ -1772,9 +1332,9 @@ describe('LoginComponent', () => {
       fillCredentials();
       submit();
 
-      // ⚠ COUNTED, NOT INFERRED. An expectation for "a" request would pass on the first of two,
-      // and the teardown's verify() cannot say how many there were - so the count is asserted
-      // before the refusal is answered.
+      // ⚠ COUNTED, NOT INFERRED. An expectation for "a" request would pass on the first of two, and the
+      // teardown's verify() cannot say how many there were - so the count is asserted before the refusal is
+      // answered.
       const request = expectExactlyOneLoginRequest('one attempt, one request');
 
       request.flush(
@@ -1791,18 +1351,14 @@ describe('LoginComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ AND NOTHING IS RE-ATTEMPTED. There is no retry operator, no backoff and no timed
-      // resubmission anywhere on this screen: automatically re-attempting would defeat the very
-      // control that produced the refusal. That control is the compensating measure for the
-      // removed human-verification challenge - the server rate-limits the credential endpoints by
-      // calling address - so retrying here would quietly undo the mitigation.
+      // ⚠ AND NOTHING IS RE-ATTEMPTED. There is no retry operator, no backoff and no timed resubmission
+      // anywhere on this screen: automatically re-attempting would defeat the very control that produced
+      // the refusal.
       expect(matchLoginRequests().length).withContext('no automatic re-attempt').toBe(0);
       httpMock.expectNone(() => true);
 
-      // ⚠ AND THIS SCREEN STILL ANNOUNCES NOTHING. The global interceptor DOES announce on 429,
-      // so a notification raised here would be the second report of one refusal. That structural
-      // double-report is recorded in this file's header; what is fixable from this folder, and is
-      // fixed, is that the screen contributes no third one.
+      // ⚠ AND THIS SCREEN STILL ANNOUNCES NOTHING. The global interceptor DOES announce on 429, so a
+      // notification raised here would be the second report of one refusal.
       expect(notifySpy).not.toHaveBeenCalled();
     });
 
@@ -1812,9 +1368,9 @@ describe('LoginComponent', () => {
       fillCredentials();
       submit();
 
-      // A body an intermediary wrote on its own behalf: a real case, and the one where the
-      // screen would otherwise say nothing at all, because the banner has no document to
-      // render and the interceptor stays silent.
+      // A body an intermediary wrote on its own behalf: a real case, and the one where the screen would
+      // otherwise say nothing at all, because the banner has no document to render and the interceptor
+      // stays silent.
       expectLoginRequest().flush('<html>Gateway failure</html>', {
         status: 500,
         statusText: 'Internal Server Error',
@@ -1844,9 +1400,9 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // Automatically re-attempting would defeat the very control that produced the refusal.
-      // Counted rather than asserted by `expectNone`, so the claim is recorded as an
-      // expectation instead of only as an absence check that throws.
+      // Automatically re-attempting would defeat the very control that produced the refusal. Counted rather
+      // than asserted by `expectNone`, so the claim is recorded as an expectation instead of only as an
+      // absence check that throws.
       expect(httpMock.match(() => true))
         .withContext('a refusal provokes no retry of any kind')
         .toEqual([]);
@@ -1878,9 +1434,8 @@ describe('LoginComponent', () => {
       expect(query('.login__failure')).withContext('the message is gone').toBeNull();
       expect(query('.error-banner')).toBeNull();
 
-      // ⚠ AND THE FIELD REMAINS. Dismissing a message must not withdraw a box the person is
-      // being asked to fill in - that distinction belongs to the store, and this proves the
-      // screen defers to it.
+      // ⚠ AND THE FIELD REMAINS. Dismissing a message must not withdraw a box the person is being asked to
+      // fill in - that distinction belongs to the store, and this proves the screen defers to it.
       expect(control(LOGIN_CONTROL_IDS.verificationCode))
         .withContext('the verification field survives a dismissal')
         .not.toBeNull();
@@ -1908,19 +1463,11 @@ describe('LoginComponent', () => {
       expect(field).withContext('the field appears').not.toBeNull();
       expect(field?.type).toBe('text');
 
-      // The ladder sentence appears BESIDE THE FIELD, because it is about that one field, and
-      // ALSO as the form-level sentence, because the banner is deliberately not the only place
-      // a refusal is explained.
       const fieldMessages = queryAll('.form-field__error').map((n) => (n.textContent ?? '').trim());
 
       expect(fieldMessages).toContain(VERIFICATION_REQUIRED_MESSAGE);
       expect(textOf('.login__message')).toBe(VERIFICATION_REQUIRED_MESSAGE);
 
-      // ⚠ SHOWN TWICE, ANNOUNCED ONCE. Both surfaces are assertive live regions, so the
-      // form-level line stands down for exactly this turn while the field's region - which
-      // names the box as well as the sentence - keeps the announcement. Asserted as a COUNT of
-      // live regions carrying the sentence rather than as a property of one element, because
-      // the defect being pinned is the duplication itself.
       const liveWithSentence = queryAll('[role="alert"]').filter((node) =>
         (node.textContent ?? '').includes(VERIFICATION_REQUIRED_MESSAGE),
       );
@@ -1933,21 +1480,10 @@ describe('LoginComponent', () => {
         .withContext('the duplicated form-level line is not live on a ladder rung')
         .toBeFalse();
 
-      // Compared against the shared utility's own output rather than a copy of the resource
-      // value, so this case cannot fossilise a duplicate of legacy wording that the utility
-      // later changes.
       expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).toBe(VERIFICATION_REQUIRED_MESSAGE);
     });
 
     it('says the ladder sentence twice on screen but announces it once', () => {
-      // ⚠ TWO VISIBLE COPIES, ONE ANNOUNCEMENT. Both copies are required and neither is a slip:
-      // the form-level line is what the legacy screen showed, and the field-level copy is beside
-      // the control the person must actually use. But the shared field wraps its messages in an
-      // assertive region of its own, so the identical sentence used to be ANNOUNCED twice.
-      //
-      // The FIELD's region is the one kept: it is beside the control that has to be acted on, and
-      // focus is moved there on the rung that reveals the field. It also belongs to the shared
-      // component, so silencing it would silence it for every other screen.
       create();
 
       attemptAndRefuse(refusal(VERIFICATION_REQUIRED_CODE, 401, 'Verification is required.'));
@@ -1974,11 +1510,6 @@ describe('LoginComponent', () => {
     });
 
     it('keeps the form-level sentence assertive when nothing echoes it at field level', () => {
-      // The other side of the same rule, and the reason the suppression is conditional rather than
-      // blanket. This is the case where the form-level line is the ONLY surface saying anything at
-      // all: the refusal carried no document, so the banner has nothing to render, and the sentence
-      // is not a ladder outcome, so no field echoes it. A line silenced unconditionally would have
-      // left this refusal announced by nobody.
       create();
 
       fillCredentials();
@@ -2010,11 +1541,8 @@ describe('LoginComponent', () => {
     });
 
     it('leaves the form-level sentence assertive again once the ladder stops being the reason', () => {
-      // ⚠ THE PREDICATE IS RE-DERIVED FROM THE CURRENT FAILURE, NOT FROM THE FIELD BEING VISIBLE,
-      // and this is the case that separates the two. The store leaves the revealed field in place
-      // deliberately, so after a verification rung followed by an ordinary wrong-credential refusal
-      // the field is STILL on screen while the sentence is no longer a ladder outcome and nothing
-      // echoes it. Suppressing on "the field is visible" would have silenced this one.
+      // ⚠ THE PREDICATE IS RE-DERIVED FROM THE CURRENT FAILURE, NOT FROM THE FIELD BEING VISIBLE, and this
+      // is the case that separates the two.
       create();
 
       attemptAndRefuse(refusal(VERIFICATION_REQUIRED_CODE, 401, 'Verification is required.'));
@@ -2023,9 +1551,6 @@ describe('LoginComponent', () => {
         .withContext('echoed on the rung itself')
         .toBe('true');
 
-      // A second attempt on the revealed form, refused for a different reason and carrying no
-      // document, so the form-level line is once again the only surface. The revealed field carries
-      // a presence rule of its own, so it has to be filled or nothing is submitted at all.
       type(LOGIN_CONTROL_IDS.verificationCode, '123456');
       submit();
       expectLoginRequest().flush('<html>Gateway failure</html>', {
@@ -2062,9 +1587,9 @@ describe('LoginComponent', () => {
 
       expect(wrapper).withContext('the revealed control is inside a shared field').not.toBeNull();
 
-      // ⚠ A NEW FIELD THAT APPEARS SILENTLY IS A FIELD A PERSON USING A SCREEN READER NEVER
-      // LEARNS ABOUT. The shared field wraps its messages in a live region, so the sentence that
-      // asks for the code is ANNOUNCED as well as displayed - which costs nothing visually.
+      // ⚠ A NEW FIELD THAT APPEARS SILENTLY IS A FIELD A PERSON USING A SCREEN READER NEVER LEARNS ABOUT.
+      // The shared field wraps its messages in a live region, so the sentence that asks for the code is
+      // ANNOUNCED as well as displayed - which costs nothing visually.
       const liveRegion = wrapper?.querySelector<HTMLElement>('.form-field__errors');
 
       expect(liveRegion).withContext('the field carries a live region').not.toBeNull();
@@ -2076,12 +1601,9 @@ describe('LoginComponent', () => {
         'Verification Code',
       );
 
-      // ⚠ AND FOCUS MOVES ONTO THE BOX, which is the second half of announcing it: a screen
-      // reader reads the newly focused control and its label, so the person learns a field has
-      // appeared without any visual change whatsoever. The component defers the move to after the
-      // render that shows the field, because a control behind a template condition is not in the
-      // document at the moment the state revealing it changes - and this assertion is what proves
-      // the deferral actually resolves rather than being dropped.
+      // ⚠ AND FOCUS MOVES ONTO THE BOX, which is the second half of announcing it: a screen reader reads
+      // the newly focused control and its label, so the person learns a field has appeared without any
+      // visual change whatsoever.
       expect(document.activeElement?.id)
         .withContext('the revealed field takes focus')
         .toBe(LOGIN_CONTROL_IDS.verificationCode);
@@ -2098,10 +1620,8 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // ⚠ THE LEGACY ODDITY IS PRESERVED. The legacy rows ran account name, verification code,
-      // challenge, password, submit, so the code genuinely sat BEFORE the password
-      // (`Login.ascx:L12-L31`). With the challenge removed this is the surviving order, and it is
-      // the order a person tabs through - which makes it behaviour rather than layout.
+      // ⚠ THE LEGACY ODDITY IS PRESERVED. The legacy rows ran account name, verification code, challenge,
+      // password, submit, so the code genuinely sat BEFORE the password.
       expect(controlSequence()).toEqual([
         LOGIN_CONTROL_IDS.username,
         LOGIN_CONTROL_IDS.verificationCode,
@@ -2113,10 +1633,10 @@ describe('LoginComponent', () => {
     it('holds the revealed state on the shared store, where navigation cannot lose it', () => {
       create();
 
-      // ⚠ READ-ONLY, PROVEN WITHOUT A CAST. The screen ALIASES the store's signal rather than
-      // mirroring it into a field of its own, and the signal it aliases cannot be written: a
-      // template or a component that could set it would be able to reveal the field without the
-      // server ever having asked for a code, which is the ladder's one invariant.
+      // ⚠ READ-ONLY, PROVEN WITHOUT A CAST. The screen ALIASES the store's signal rather than mirroring it
+      // into a field of its own, and the signal it aliases cannot be written: a template or a component
+      // that could set it would be able to reveal the field without the server ever having asked for a
+      // code, which is the ladder's one invariant.
       const revealed = store.verificationRequired;
 
       expect('set' in revealed).withContext('the ladder state cannot be assigned').toBeFalse();
@@ -2137,9 +1657,6 @@ describe('LoginComponent', () => {
 
       submit();
 
-      // The validator is applied by the component's effect the moment the store's revealed
-      // state flips, so the group is invalid immediately rather than staying stale until the
-      // person types.
       httpMock.expectNone(() => true);
 
       const fieldMessages = queryAll('.form-field__error').map((n) => (n.textContent ?? '').trim());
@@ -2183,9 +1700,6 @@ describe('LoginComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ THE FIELD STAYS REVEALED ON A SECOND REFUSAL. `Login.ascx.vb:L171` branched on
-      // `If Not rowVerification1.Visible`, so the legacy ladder turned on whether the field had
-      // ALREADY been revealed - state that survived the post-back in Web Forms control state.
       expect(control(LOGIN_CONTROL_IDS.verificationCode)).not.toBeNull();
       expect(requiredControl(LOGIN_CONTROL_IDS.verificationCode).value).toBe(SUBMITTED_CODE);
 
@@ -2216,10 +1730,6 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // ⚠ THE STAND-DOWN IS NARROW BY DESIGN, and this case is what pins that. The third ladder
-      // outcome does not reveal the verification box, so no field is repeating the sentence and
-      // the form-level line is the ONLY surface - it must therefore stay assertive, or a
-      // refusal would be shown with nothing announcing it at all.
       expect(control(LOGIN_CONTROL_IDS.verificationCode)).toBeNull();
 
       const message = queryOrFail('.login__message');
@@ -2239,16 +1749,9 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // ⚠ THE RUNG `Login.ascx.vb:L180` DESCRIBES IS REACHED CLIENT-SIDE, NOT OVER THE WIRE, and
-      // that is a measured consequence rather than an omission. The legacy line asked for the code
-      // AGAIN when the field was already on screen and nothing had been typed into it; here the
-      // component's effect attaches a required rule the moment the field is revealed, so an EMPTY
-      // code can no longer leave the screen at all - the case above ("requires the code once the
-      // field is on screen") is that rung, enforced one layer earlier and without a request.
-      //
-      // What the wire CAN still carry is the server repeating its request for a code after a
-      // second attempt, and this is that: the field must stay on screen and the sentence must be
-      // asked again rather than replaced by a wrong-code message.
+      // What the wire CAN still carry is the server repeating its request for a code after a second
+      // attempt, and this is that: the field must stay on screen and the sentence must be asked again
+      // rather than replaced by a wrong-code message.
       type(LOGIN_CONTROL_IDS.verificationCode, 'a-code-the-server-has-not-approved');
       submit();
 
@@ -2265,9 +1768,9 @@ describe('LoginComponent', () => {
         .not.toBeNull();
       expect(textOf('.login__message')).toBe(VERIFICATION_REQUIRED_MESSAGE);
 
-      // ⚠ AND THE REVEALED STATE PERSISTS ACROSS THE SCREEN ITSELF BEING DESTROYED. The signal
-      // lives on the root-provided store precisely so that navigating away and back does not
-      // silently restart the ladder at its first rung - a flag on the component would.
+      // ⚠ AND THE REVEALED STATE PERSISTS ACROSS THE SCREEN ITSELF BEING DESTROYED. The signal lives on the
+      // root-provided store precisely so that navigating away and back does not silently restart the ladder
+      // at its first rung - a flag on the component would.
       fixture.destroy();
       mounted = null;
       create();
@@ -2288,10 +1791,6 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // ⚠ UNTRIMMED, DELIBERATELY. `Login.ascx.vb:L177` compares with `<> ""` and does not trim,
-      // so a code of spaces was NON-EMPTY in legacy terms and produced the wrong-code outcome
-      // rather than the ask-again one. Trimming here would silently reroute that input to the
-      // other rung and change an outcome the migration is required to preserve.
       type(LOGIN_CONTROL_IDS.verificationCode, ' ');
       submit();
 
@@ -2331,9 +1830,6 @@ describe('LoginComponent', () => {
         ),
       );
 
-      // `Login.ascx.vb` assigns EXACTLY THREE message codes - at L175 and L180, at L178, and at
-      // L184 - so there are exactly three ladder outcomes and no fourth is invented. This is
-      // the third.
       expect(textOf('.login__message')).toBe(ACCOUNT_NOT_APPROVED_MESSAGE);
     });
 
@@ -2394,15 +1890,10 @@ describe('LoginComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // PROOF 6b — WHICH TENANT THE CREDENTIALS ARE OFFERED TO
-  // -------------------------------------------------------------------------
-  //
-  // ⚠ THIS IS A SECURITY BOUNDARY. The tenant selector is attacker-controlled query text and it
-  // decides which portal receives the credentials, so a malformed value must yield NO selector
-  // rather than a DIFFERENT one. Every rejection below was a real substitution under the
-  // previous `Number.parseInt(raw, 10)` + `Number.isInteger` implementation, which was
-  // prefix-tolerant and precision-blind.
+  // ⚠ THIS IS A SECURITY BOUNDARY. The tenant selector is attacker-controlled query text and it decides
+  // which portal receives the credentials, so a malformed value must yield NO selector rather than a
+  // DIFFERENT one.
 
   describe('the tenant selector', () => {
     /**
@@ -2428,9 +1919,8 @@ describe('LoginComponent', () => {
     }
 
     it('accepts both identity seeds, because -1 and 0 are real tenants', () => {
-      // `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant is -1 and the second is 0.
-      // A digits-only grammar would refuse the first and a truthiness test would discard the
-      // second.
+      // `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant is -1 and the second is 0. A
+      // digits-only grammar would refuse the first and a truthiness test would discard the second.
       expect(selectorSentFor('-1')).toBe('-1');
     });
 
@@ -2458,12 +1948,8 @@ describe('LoginComponent', () => {
     });
 
     it('omits the selector for every malformed value rather than substituting a tenant', () => {
-      // Each entry is a value the previous implementation converted into a CONFIDENT selection
-      // of a real, different tenant. `'1junk'` and `'1 2'` became 1 through prefix tolerance;
-      // `'0x10'` became 0 because the stated radix stops the parse at the `x`, and 0 is a real
-      // portal; `'1e3'` and `'1.9'` became 1 by truncation; `'  7  '` became 7 through leading
-      // whitespace tolerance; and `'9007199254740993'` ROUNDED to 9007199254740992 while still
-      // satisfying `Number.isInteger`.
+      // Each entry is a value the previous implementation converted into a CONFIDENT selection of a real,
+      // different tenant.
       const malformed: readonly string[] = [
         '1junk',
         'junk1',
@@ -2492,12 +1978,8 @@ describe('LoginComponent', () => {
       for (const raw of malformed) {
         queryParams = { [PORTAL_ID_QUERY_KEY]: raw };
 
-        // Rebuilt per value so each is judged in isolation: the selector is read from the
-        // ACTIVATION SNAPSHOT during initialisation, so reseeding a live component would
-        // change nothing. The PREVIOUS fixture is torn down rather than the current one, because
-        // on the first pass there is none yet - an unguarded destroy here made this case depend
-        // on some earlier specification having left a fixture behind, which under Jasmine's
-        // random ordering it does not reliably do.
+        // Rebuilt per value so each is judged in isolation: the selector is read from the ACTIVATION
+        // SNAPSHOT during initialisation, so reseeding a live component would change nothing.
         previous?.destroy();
         create();
         previous = fixture;
@@ -2518,7 +2000,7 @@ describe('LoginComponent', () => {
     });
 
     it('states the accepted grammar as a whole-string, both-ends-anchored expression', () => {
-      // The anchoring IS the fix, so it is asserted directly rather than only through the
+      // The anchoring IS the property, so it is asserted directly rather than only through the
       // component: an unanchored expression would match the numeric part of `'1junk'`.
       expect(SIGNED_DECIMAL_INTEGER.source.startsWith('^')).toBeTrue();
       expect(SIGNED_DECIMAL_INTEGER.source.endsWith('$')).toBeTrue();
@@ -2534,31 +2016,13 @@ describe('LoginComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // PROOF 7 — WHERE A COMPLETED SIGN-IN GOES
-  // -------------------------------------------------------------------------
-  //
-  // ⚠ THIS IS THE OPEN-REDIRECT BOUNDARY. Every case below completes a real sign-in and
-  // asserts the single address the screen navigated to. The five rejections each cover a
-  // distinct way a value can leave the application, and every rejection falls back SILENTLY:
-  // a hostile parameter is not the person's mistake and reporting it would only confuse them.
 
   describe('the return address', () => {
     /**
-     * Completes a sign-in with the given return parameter and reports where it navigated.
-     *
-     * ⚠ RE-ENTRANT BY DESIGN, because several cases below exercise more than one hostile value
-     * and each has to be judged in isolation. Three things therefore have to be undone before
-     * each value, and every one of them was proven necessary by a real failure rather than
-     * added defensively:
-     *
-     * - the PREVIOUS FIXTURE is destroyed, so its `effect` and its subscriptions stop;
-     * - the STORE IS RESET, which discards the session the previous value established. Without
-     *   it the next `create()` would find a held session, take the already-signed-in path in
-     *   `ngOnInit` and navigate before a single credential was typed - so the value under test
-     *   would never be reached;
-     * - the NAVIGATION SPY's calls are cleared, so the count assertion describes this value
-     *   alone.
+     * Completes a sign-in with the given return parameter and reports where it navigated. ⚠ RE-ENTRANT BY
+     * DESIGN, because several cases below exercise more than one hostile value and each has to be judged
+     * in isolation.
      */
     function signInWithReturnUrl(returnUrl: string | null): string {
       if (mounted !== null) {
@@ -2606,13 +2070,6 @@ describe('LoginComponent', () => {
 
     describe('an address the account may not enter', () => {
       /**
-       * Signs in with a return address the router will REFUSE, and reports every address the
-       * screen tried to navigate to.
-       *
-       * ⚠ A REFUSAL IS A RESOLVED `false`, NOT A REJECTION, which is the whole reason this
-       * defect survived. The screen used to chain only a `catch`, so a cancelled navigation
-       * looked exactly like a successful one and the operator was left on this screen.
-       *
        * @param returnUrl The address the gate asked to be returned to.
        * @param at What `Router.url` reports once the refusal has settled.
        * @param inFlight Whether a further navigation is already under way.
@@ -2650,9 +2107,8 @@ describe('LoginComponent', () => {
         submit();
         completeSignIn();
 
-        // The fallback is decided in a `then`, so the microtask queue has to drain before the
-        // second call can have been made. Awaiting a resolved promise is enough and is more
-        // honest than a timer.
+        // The fallback is decided in a `then`, so the microtask queue has to drain before the second call
+        // can have been made. Awaiting a resolved promise is enough and is more honest than a timer.
         await Promise.resolve();
         await Promise.resolve();
 
@@ -2662,17 +2118,16 @@ describe('LoginComponent', () => {
       it('falls back to the console landing address when the gate refuses the address', async () => {
         const attempted = await signInAndBeRefused('/portals', '/login?returnUrl=%2Fportals', false);
 
-        // Both navigations, in order: what the gate asked for, then where the operator actually
-        // belongs. The second is the application root, which resolves the landing screen from
-        // the caller's own authority and therefore cannot repeat this defect.
+        // Both navigations, in order: what the gate asked for, then where the operator actually belongs.
+        // The second is the application root, which resolves the landing screen from the caller's own
+        // authority and therefore cannot repeat this defect.
         expect(attempted).toEqual(['/portals', DEFAULT_SIGNED_IN_ROUTE]);
       });
 
       it('leaves a gate that redirects alone, rather than overriding its destination', async () => {
-        // A gate that returns an address expresses it by cancelling THIS navigation and
-        // scheduling its own, so a refusal with a navigation already in flight must not be
-        // answered - doing so would race the gate and could send the operator somewhere the
-        // gate had just decided against.
+        // A gate that returns an address expresses it by cancelling THIS navigation and scheduling its own,
+        // so a refusal with a navigation already in flight must not be answered - doing so would race the
+        // gate and could send the operator somewhere the gate had just decided against.
         const attempted = await signInAndBeRefused('/portals', '/login?returnUrl=%2Fportals', true);
 
         expect(attempted).toEqual(['/portals']);
@@ -2700,12 +2155,8 @@ describe('LoginComponent', () => {
     });
 
     it('round-trips the address the route guard writes, byte for byte', () => {
-      // ⚠ A NON-DEFAULT TARGET WITH A QUERY AND A ZERO IDENTIFIER, chosen so the assertion cannot
-      // pass by accident: it differs from the fallback address in its path, its query and its
-      // identifier at once. It is also the exact value the route guard's own specification
-      // round-trips, so the two ends of that contract are pinned to one literal - the guard
-      // refuses a protected address with the attempted address preserved whole, and this screen
-      // must hand back what it was given rather than a rebuilt approximation.
+      // ⚠ A NON-DEFAULT TARGET WITH A QUERY AND A ZERO IDENTIFIER, chosen so the assertion cannot pass by
+      // accident: it differs from the fallback address in its path, its query and its identifier at once.
       expectAccepted('/users/0?page=2');
     });
 
@@ -2744,11 +2195,6 @@ describe('LoginComponent', () => {
     });
 
     it('refuses a scheme separator ANYWHERE, including inside a query', () => {
-      // Deliberately stricter than strictly necessary. A leading slash followed by an absolute
-      // address is the attack this catches, and refusing the separator wherever it appears is
-      // both simpler to reason about and impossible to slip past - at the cost of refusing a
-      // legitimate address that carries an absolute URL in its query, which the console has
-      // none of.
       expectRejected('/redirect?next=https://evil.test', 'a scheme separator inside a query');
       expectRejected('/a/https://evil.test', 'a scheme separator inside a path segment');
     });
@@ -2757,18 +2203,11 @@ describe('LoginComponent', () => {
       expectRejected('/\\evil.test/portals', 'a backslash after the slash becomes scheme-relative');
       expectRejected('/portals\\..\\evil', 'a backslash anywhere is refused');
 
-      // ⚠ AND THE PURELY BACKSLASHED FORM, which is the one a reader is most likely to assume is
-      // already covered by the two above. It is refused one step earlier - it does not begin with
-      // a forward slash at all - and stating it is what proves the two rejections COMPOSE rather
-      // than leaving a value that satisfies neither.
       expectRejected('\\\\evil.test', 'two backslashes are the scheme-relative form on some engines');
       expectRejected('\\evil.test/portals', 'and one backslash is no more internal than two');
     });
 
     it('refuses a C0 control character, which a browser strips before resolving the address', () => {
-      // Stripping is what makes these dangerous: a control character can break up any of the
-      // sequences already refused above, so `/\u0000/evil.test` would resolve as
-      // scheme-relative once the browser removed it.
       expectRejected('/\u0000/evil.test', 'a null');
       expectRejected('/portals\u0009evil', 'a tab');
       expectRejected('/portals\u000aevil', 'a line feed');
@@ -2794,9 +2233,6 @@ describe('LoginComponent', () => {
     function establishSession(): void {
       store.login({ username: ACCOUNT_NAME, password: SUBMITTED_PASSWORD }).subscribe();
 
-      // Both halves of the exchange, for the reason recorded on {@link ME_URL}. The session is
-      // not stored - and the store therefore does not report a session - until the second one
-      // answers.
       httpMock
         .expectOne((candidate) => candidate.method === 'POST' && candidate.url === LOGIN_URL)
         .flush(credentialPayload());
@@ -2812,11 +2248,6 @@ describe('LoginComponent', () => {
 
       create();
 
-      // `Login.ascx.vb:L103` guarded the whole of its preparation with
-      // `If Not Request.IsAuthenticated Then`, and the legacy screen sent an authenticated
-      // visitor on. This address is reachable with no credentials at all - guarding the
-      // sign-in screen would deadlock the application, and the bearer-token interceptor
-      // navigates HERE when a session cannot be renewed - so the case is real.
       expect(navigateSpy).toHaveBeenCalledOnceWith(DEFAULT_SIGNED_IN_ROUTE, { replaceUrl: true });
     });
 
@@ -2856,32 +2287,8 @@ describe('LoginComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE UNCONFIRMED-WITHDRAWAL NOTICE, AND HOW LONG IT STANDS
-  //
-  // ⚠ THIS SCREEN IS WHERE THE REPORT IS SEEN, WHICH MAKES IT WHERE A STALE ONE DOES HARM.
-  // A sign-out whose withdrawal the server never confirmed leaves a renewal credential that may
-  // still be live, and sign-out sends the operator here — so this is the one place the report is
-  // certain to be read. That is also why its LIFETIME is a property of this screen and not only
-  // of the store: the flag used to be retired by exactly one thing, a later sign-out that
-  // succeeded, so after a single refused withdrawal the sentence stood above this form
-  // indefinitely — through the next successful sign-in, through the next expiry that returned
-  // somebody here, and in front of whoever typed next. A sentence about a session two boundaries
-  // ago, presented as though it described theirs.
-  //
-  // Driven through the REAL store and the REAL transport rather than by writing a signal: the
-  // report exists only as the consequence of a withdrawal request failing, and a case that set
-  // the flag by hand would prove the template renders a boolean while proving nothing about when
-  // that boolean is true.
-  // -------------------------------------------------------------------------
-
   describe('an unconfirmed withdrawal from the session before this one', () => {
-    /**
-     * Signs in on the real store, then signs out with a withdrawal the server refuses.
-     *
-     * Leaves the store reporting an outstanding revocation and nothing signed in — which is
-     * exactly the state an operator is in when sign-out lands them back on this screen.
-     */
+    /** Signs in on the real store, then signs out with a withdrawal the server refuses. */
     function signOutWithAnUnconfirmedWithdrawal(): void {
       store.login({ username: ACCOUNT_NAME, password: SUBMITTED_PASSWORD }).subscribe();
       httpMock
@@ -2905,12 +2312,10 @@ describe('LoginComponent', () => {
     }
 
     /**
-     * Answers the withdrawal retry this screen drives the moment it is created.
-     *
-     * ⚠ SEC-03. EVERY CASE THAT ARRIVES HERE WITH A RETAINED CREDENTIAL MUST CALL THIS, and its
-     * existence is itself the proof that the retry is wired: before the fix the screen issued no
-     * request at all on arrival, so no case needed a helper like this and `verify()` in
-     * `afterEach` passed while the mechanism was dead.
+     * Answers the withdrawal retry this screen drives the moment it is created. ⚠ EVERY CASE THAT ARRIVES
+     * HERE WITH A RETAINED CREDENTIAL MUST CALL THIS, and its existence is itself the proof that the
+     * retry is wired: a screen that issued no request on arrival would need no such helper, and
+     * `verify()` in `afterEach` would pass while the mechanism lay dead.
      *
      * @param status The transport status to answer the attempt with.
      */
@@ -2925,14 +2330,10 @@ describe('LoginComponent', () => {
 
       create();
 
-      /*
-       * ⚠ THE MEASURED DEFECT, AND THIS IS THE CASE THAT WOULD HAVE CAUGHT IT. The store retained
-       * the credential and published a bounded retry for it, and a security review found that
-       * NOTHING in the application ever called that retry: every refused withdrawal was retained
-       * and then left retained until the tab closed, so the session it named stayed renewable
-       * until its absolute expiry. This screen is where a sign-out lands the operator and where
-       * the residue notice is rendered, so it is the caller.
-       */
+      // ⚠ THE MEASURED DEFECT, AND THIS IS THE CASE THAT WOULD HAVE CAUGHT IT. The store retained the
+      // credential and published a bounded retry for it, and a security review found that NOTHING in the
+      // application ever called that retry: every refused withdrawal was retained and then left retained
+      // until the tab closed, so the session it named stayed renewable until its absolute expiry.
       const attempt = httpMock.expectOne(
         (candidate) => candidate.method === 'POST' && candidate.url === LOGOUT_URL,
       );
@@ -2959,24 +2360,18 @@ describe('LoginComponent', () => {
 
       create();
 
-      // Starting a retry must not retract the report: the residue is unconfirmed until the
-      // server says otherwise, and an optimistic clear would tell the operator the session was
-      // ended by a request that has not been answered.
+      // Starting a retry must not retract the report: the residue is unconfirmed until the server says
+      // otherwise, and an optimistic clear would tell the operator the session was ended by a request that
+      // has not been answered.
       expect(query('.login__notice'))
         .withContext('the report stands over an in-flight retry')
         .not.toBeNull();
       expect(store.revocationOutstanding()).toBeTrue();
 
-      // What happens when the retry FAILS is the store's own specification to prove, under
-      // virtual time: a transient refusal climbs a real backoff ladder, and driving one here
-      // would leave a timer outliving this case.
       answerRetainedWithdrawal();
     });
 
     it('drives nothing at all for a visitor with no outstanding withdrawal', () => {
-      // The other half of the wiring: the drive is unconditional, so it must cost nothing in the
-      // ordinary case. Every other case in this file relies on that - none of them answers a
-      // withdrawal, and `verify()` would fail them all if one were posted.
       create();
 
       httpMock.expectNone((candidate) => candidate.url === LOGOUT_URL);
@@ -2999,9 +2394,6 @@ describe('LoginComponent', () => {
         .withContext('and it is not dressed as a refused attempt')
         .toBeNull();
 
-      // SEC-03: the arrival also drives the outstanding withdrawal, asserted in its own case
-      // above. Answered here so the transport verification at the end of the case sees nothing
-      // unconsumed.
       answerRetainedWithdrawal();
     });
 
@@ -3011,9 +2403,6 @@ describe('LoginComponent', () => {
       create();
       expect(query('.login__notice')).withContext('the precondition is on screen').not.toBeNull();
 
-      // ⚠ SEC-03. THE RETRY IS DELIBERATELY LEFT UNANSWERED UNTIL THE END OF THIS CASE. Answering
-      // it here would retire the report by CONFIRMING the withdrawal, and this case is about the
-      // report being retired by the ATTEMPT beginning - the two would then be indistinguishable.
       fillCredentials();
       submit();
 
@@ -3021,9 +2410,9 @@ describe('LoginComponent', () => {
 
       fixture.detectChanges();
 
-      // ⚠ ASSERTED WITH THE CREDENTIAL EXCHANGE STILL UNANSWERED. Retiring the report only on a
-      // SUCCESSFUL sign-in would leave the previous session's sentence standing above the form
-      // for the whole duration of the attempt, which is precisely when it is being read.
+      // ⚠ ASSERTED WITH THE CREDENTIAL EXCHANGE STILL UNANSWERED. Retiring the report only on a SUCCESSFUL
+      // sign-in would leave the previous session's sentence standing above the form for the whole duration
+      // of the attempt, which is precisely when it is being read.
       expect(query('.login__notice'))
         .withContext('the previous session\'s report does not accompany this attempt')
         .toBeNull();
@@ -3036,9 +2425,9 @@ describe('LoginComponent', () => {
 
       expect(query('.login__notice')).toBeNull();
 
-      // SEC-03: answered last, and its outcome deliberately cannot restore the report - the
-      // session epoch moved when this attempt began, so the drain's report is withheld behind
-      // that boundary. See `core/state/auth.store.spec.ts` for the case that pins it.
+      // answered last, and its outcome deliberately cannot restore the report - the session epoch moved
+      // when this attempt began, so the drain's report is withheld behind that boundary. See
+      // `core/state/auth.store.spec.ts` for the case that pins it.
       answerRetainedWithdrawal();
 
       fixture.detectChanges();
@@ -3050,19 +2439,8 @@ describe('LoginComponent', () => {
 
     it('paints NO required message after a SUCCESSFUL sign-in, though it has just emptied both boxes', () => {
       // ⚠ THE MEASURED DEFECT, AND IT IS THE SCREEN ACCUSING ITSELF. The credential is cleared the moment a
-      // session is held, deliberately and for a stated security reason - a review found the account name and
-      // sixteen masked characters still in the DOM after a successful authentication. But the flag that
-      // licenses this screen to word its own validators was left raised, so the instant those two controls
-      // became empty they were reported as MISSING, on a sign-in that had SUCCEEDED. A browser audit measured
-      // the window at 165.6 milliseconds - from +502.4 to +668.0 after the press, corroborated by five
-      // consecutive animation frames and nine screencast frames - with the form carrying
-      // `ng-submitted ng-pristine ng-invalid` and the signed-in shell ALREADY PAINTED behind an empty
-      // red-outlined card reading both sentences.
-      //
-      // The navigation that follows normally destroys this component before a person registers it, which is
-      // why it survived review; and by the same reasoning that clears the credential at all, that navigation
-      // is not guaranteed - a refused route leaves this form standing, and then the false accusation is the
-      // resting state rather than a flash.
+      // session is held, deliberately and for a stated security reason - a review found the account name
+      // and sixteen masked characters still in the DOM after a successful authentication.
       create();
       fillCredentials();
       submit();
@@ -3118,9 +2496,6 @@ describe('LoginComponent', () => {
     });
 
     it('is absent for a visitor who never signed out at all', () => {
-      // The baseline the three cases above are measured against: the region is not simply
-      // always rendered, so its presence above is a fact about the session that ended and not
-      // about this screen.
       create();
 
       expect(query('.login__notice')).toBeNull();
@@ -3135,11 +2510,9 @@ describe('LoginComponent', () => {
     it('offers no keep-me-signed-in box, no recovery link and no registration link', () => {
       create();
 
-      // The 37 lines of legacy markup contain none of the three, and the authentication
-      // surface is closed at four endpoints - sign in, renew, sign out, read one's own
-      // identity - so no endpoint exists for any of them. The resource file of the
-      // OUT-OF-SCOPE multi-provider container screen does carry all three captions, which is
-      // exactly why their absence is asserted rather than assumed.
+      // The 37 lines of legacy markup contain none of the three, and the authentication surface is closed
+      // at four endpoints - sign in, renew, sign out, read one's own identity - so no endpoint exists for
+      // any of them.
       const text = host().textContent ?? '';
 
       expect(text).not.toContain('Remember');
@@ -3153,10 +2526,6 @@ describe('LoginComponent', () => {
     it('offers no human-verification challenge', () => {
       create();
 
-      // `Login.ascx:L19-L24` declared one and `Login.ascx.vb:L162` gated the whole handler on
-      // it. Its control lives under `Library/Controls/**`, a tree this migration excludes
-      // wholesale, so the removal is a documented functional reduction. The compensating
-      // control is the server's rate limiter, whose refusal this screen surfaces calmly.
       const text = host().textContent ?? '';
 
       expect(text).not.toContain('Security Code');
@@ -3170,11 +2539,6 @@ describe('LoginComponent', () => {
         refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
       );
 
-      // The administrative resource file carries an entry stating that an account does not
-      // exist, and `Login.ascx.vb` never assigns it: it is a dead key belonging to an
-      // out-of-scope screen AND an account-enumeration vector, because it would disclose
-      // whether an account exists - a distinction the legacy sign-in never drew. There is no
-      // fourth failure message and no path can reach it.
       const text = host().textContent ?? '';
 
       expect(text).not.toContain('Does Not Exist');

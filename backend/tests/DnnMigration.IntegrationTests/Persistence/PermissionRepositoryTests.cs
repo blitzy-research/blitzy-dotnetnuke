@@ -9,11 +9,6 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// <summary>
 /// Verifies that permission-catalogue reads honour the resource identifiers supplied to the repository.
 /// </summary>
-/// <remarks>
-/// SEC-033: the legacy page-catalogue procedure ignored its page argument. The migrated repository keeps
-/// the shared <c>SYSTEM_TAB</c> catalogue for every existing page, but an arbitrary identifier must no
-/// longer disclose that installation-wide metadata.
-/// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class PermissionRepositoryTests
@@ -22,12 +17,8 @@ public sealed class PermissionRepositoryTests
 
     /// <summary>
     /// The all-users pseudo-principal, defined by the legacy source as <c>glbRoleAllUsers = "-1"</c> at
-    /// <c>Library/Components/Common/Globals.vb</c>:L95 and stored in the grant tables' role column.
+    /// <c>Library/Components/Shared/Globals.vb</c>:L95 and stored in the grant tables' role column.
     /// </summary>
-    /// <remarks>
-    /// It names no <c>dbo.Roles</c> row, the column being <c>IDENTITY(0, 1)</c>, which is why neither grant
-    /// table declares a foreign key on it. A role-scoped removal must therefore leave it standing.
-    /// </remarks>
     private const int AllUsersPseudoRoleId = -1;
 
     /// <summary>
@@ -79,24 +70,14 @@ public sealed class PermissionRepositoryTests
     }
 
     /// <summary>
-    /// SEC-F8: the role-scoped module and page removals take exactly the grants addressed to the named role
-    /// and nothing else.
+    /// the role-scoped module and page removals take exactly the grants addressed to the named role and
+    /// nothing else.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the two removals reproduce the middle statements of the terminal <c>DeleteRole</c>
-    /// procedure, <c>03.00.10.SqlDataProvider</c> - <c>delete from ModulePermission where RoleId = @RoleId</c>
-    /// and the same over <c>TabPermission</c>. This test proves the PREDICATE rather than the caller: the
-    /// role column is nullable and shares the table with an account column and with negative pseudo-
-    /// principals, so a predicate written even slightly too widely destroys grants no role removal owns.
-    /// </para>
-    /// <para>
-    /// Each removal is issued on its own and asserted separately, because the two tables are separate rows in
-    /// separate statements and a single combined assertion would not say which of the two had gone wrong.
-    /// Neither is followed by a commit: both reach the store as set-based statements the moment they are
-    /// issued, which is precisely why their caller opens a transaction around them.
-    /// </para>
+    /// The two removals reproduce the middle statements of the terminal <c>DeleteRole</c> procedure,
+    /// <c>03.00.10.SqlDataProvider</c> - <c>delete from ModulePermission where RoleId = @RoleId</c> and the
+    /// same over <c>TabPermission</c>.
     /// </remarks>
     [Fact]
     public async Task DeleteGrantsByRoleId_TakesOnlyTheGrantsAddressedToThatRole()
@@ -154,28 +135,15 @@ public sealed class PermissionRepositoryTests
     }
 
     /// <summary>
-    /// SEC-F8: the folder removal takes the named role's rows out of the legacy folder grant table when that
-    /// table is present.
+    /// the folder removal takes the named role's rows out of the legacy folder grant table when that table
+    /// is present.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the FIRST statement of the terminal <c>DeleteRole</c> procedure,
-    /// <c>03.00.10.SqlDataProvider</c> - <c>delete from FolderPermission where RoleId = @RoleId</c>. The
-    /// table is not part of the mapped model, because file management is out of this migration's scope, so
-    /// the greenfield schema this suite provisions does not create it - which would leave the statement
-    /// untested if the test simply called the member and observed nothing.
-    /// </para>
-    /// <para>
     /// So the table is created HERE, for the duration of this one test, in the terminal shape the legacy
     /// chain arrives at: <c>02.02.00.SqlDataProvider</c>:L659 creates it with a NOT NULL role column and
     /// <c>04.05.00.SqlDataProvider</c>:L750-L790 rebuilds that column as nullable and adds an account
-    /// column. Creating it here rather than in the committed schema is deliberate on two counts: the
-    /// committed schema mirrors what this migration binds to and must not acquire a table this migration does
-    /// not own, and the sibling test below needs the table ABSENT to prove the other half of the contract.
-    /// The whole integration suite shares one collection and therefore runs serially, so the table cannot be
-    /// observed by a concurrent test, and it is dropped again whatever happens.
-    /// </para>
+    /// column.
     /// </remarks>
     [Fact]
     public async Task DeleteFolderPermissionsByRoleId_WhenTheLegacyTableExists_TakesOnlyThatRolesRows()
@@ -232,23 +200,14 @@ public sealed class PermissionRepositoryTests
     }
 
     /// <summary>
-    /// SEC-F8: the folder removal is a no-op against a database that does not have the legacy folder grant
-    /// table, and creates nothing in order to reach that outcome.
+    /// the folder removal is a no-op against a database that does not have the legacy folder grant table,
+    /// and creates nothing in order to reach that outcome.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the schema-preserving half of the contract, and both halves are load-bearing. An
-    /// unconditional statement would fault every role removal on a database provisioned from this
-    /// migration's own schema - where the table genuinely does not exist - and a member that reached the
-    /// outcome by CREATING the table would have altered a schema this migration does not own, which Rule T4
-    /// forbids outright.
-    /// </para>
-    /// <para>
     /// The absence is asserted BEFORE and AFTER, so the test cannot pass by the member quietly provisioning
     /// what it needs. The precondition also documents the fact the sibling test above depends on: this
     /// suite's committed schema does not declare the table.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task DeleteFolderPermissionsByRoleId_WhenTheLegacyTableIsAbsent_RemovesNothingAndCreatesNothing()
@@ -476,16 +435,13 @@ public sealed class PermissionRepositoryTests
     private Task<int> LegacyFolderGrantTableExistsAsync() => _fixture.Database.ScalarAsync<int>(
         "SELECT CASE WHEN OBJECT_ID(N'[dbo].[FolderPermission]', N'U') IS NULL THEN 0 ELSE 1 END;");
 
-    /// <summary>
-    /// Creates the legacy folder grant table in its terminal shape, for the duration of one test.
-    /// </summary>
+    /// <summary>Creates the legacy folder grant table in its terminal shape, for the duration of one test.</summary>
     /// <returns>A task that completes once the table exists.</returns>
     /// <remarks>
-    /// The shape is taken from the legacy chain rather than invented:
-    /// <c>02.02.00.SqlDataProvider</c>:L659 declares the identity key, the folder and permission columns and
-    /// the access flag, and <c>04.05.00.SqlDataProvider</c>:L750-L790 rebuilds the role column as nullable
-    /// and adds the account column. No foreign key is declared, matching both grant tables in the committed
-    /// schema and for the same reason - the negative pseudo-principals name no role row.
+    /// The shape is taken from the legacy chain rather than invented: <c>02.02.00.SqlDataProvider</c>:L659
+    /// declares the identity key, the folder and permission columns and the access flag, and
+    /// <c>04.05.00.SqlDataProvider</c>:L750-L790 rebuilds the role column as nullable and adds the account
+    /// column.
     /// </remarks>
     private async Task CreateLegacyFolderGrantTableAsync() => _ = await _fixture.Database.ExecuteAsync(
         """

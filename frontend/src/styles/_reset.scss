@@ -1,17 +1,7 @@
-// User-agent normalisation and the bare-element type ramp: box sizing, the
-// document baseline, and type for headings, table sections, anchors, inline
-// elements, lists and rules. Declares no custom property — it only consumes
-// them — and stays deliberately thin so the layout, form and table partials can
-// style freely without overriding anything here.
+// User-agent normalisation and the bare-element type ramp: box sizing, the document baseline, and type for
+// headings, table sections, anchors, inline elements, lists and rules.
 
 @use 'mixins' as mx;
-
-// -----------------------------------------------------------------------------
-//  1. Box sizing
-// -----------------------------------------------------------------------------
-//  Set once on the root and inherited, rather than assigned by a universal
-//  selector, so a component that genuinely needs the content-box model can opt
-//  its own subtree out without fighting a blanket rule.
 
 html {
   box-sizing: border-box;
@@ -20,36 +10,11 @@ html {
   // The ramp is deliberately compact, so silent inflation would break it.
   -webkit-text-size-adjust: var(--size-full);
 
-  // Reserves the scrollbar's track WHETHER OR NOT a scrollbar is showing, so that a modal
-  // confirmation locking background scroll cannot shift the page sideways underneath it.
-  //
-  // ⚠ THIS IS THE OTHER HALF OF THE SCROLL LOCK, and removing it reintroduces a jump rather
-  // than a scroll. `.dnn-scroll-locked` below hides the root overflow while a modal dialog is
-  // open, which removes the scrollbar and would otherwise give every element on the page an
-  // extra scrollbar's width - a visible sideways lurch at the exact moment a person is being
-  // asked to confirm a deletion. Reserving the gutter permanently costs nothing on the
-  // administration screens, every one of which is a list long enough to scroll, and it needs
-  // no measurement of the scrollbar in script.
+  // ⚠ THIS IS THE OTHER HALF OF THE SCROLL LOCK, and removing it reintroduces a jump rather than a scroll.
   scrollbar-gutter: stable;
 }
 
-// -----------------------------------------------------------------------------
-//  1a. Background scroll lock, applied only while a modal dialog is open
-// -----------------------------------------------------------------------------
-//  MIGRATION: a net addition with no legacy counterpart - the legacy confirmations were
-//  `window.confirm()` calls, which the browser blocks the whole page for.
-//
-//  A native `<dialog>` opened with `showModal()` makes the page inert to POINTER interaction
-//  and puts itself in the top layer, but it does NOT stop the page scrolling: runtime testing
-//  measured a real Page Down moving the page from 364 to 891 pixels while a confirmation was
-//  open, which scrolled the content the confirmation was about clean out of view and left the
-//  dialog floating over unrelated rows.
-//
-//  Applied to the root element rather than the body because `overflow: hidden` on the body
-//  alone is honoured inconsistently, and toggled by the dialog component through a depth
-//  counter so two nested dialogs cannot release the lock early. Declared here, globally,
-//  because a component stylesheet cannot reach the root element from inside its own
-//  encapsulation - and reaching for it with a piercing selector would be the deeper wrong.
+// 1a. Background scroll lock, applied only while a modal dialog is open.
 .dnn-scroll-locked {
   overflow: hidden;
 }
@@ -60,15 +25,6 @@ html {
   box-sizing: inherit;
 }
 
-// -----------------------------------------------------------------------------
-//  2. Document baseline
-// -----------------------------------------------------------------------------
-//  Stated once so the ramp below inherits it. Only the body margin is
-//  normalised: the user-agent flow margins on headings, paragraphs and lists are
-//  left in place on purpose, because they are proportional to each element's own
-//  font size, so setting the sizes below reproduces the intended rhythm without
-//  authoring a single margin. List indentation is left to the browser likewise.
-
 body {
   margin: 0;
   background-color: var(--color-background);
@@ -76,13 +32,6 @@ body {
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
 }
-
-// -----------------------------------------------------------------------------
-//  3. Replaced elements
-// -----------------------------------------------------------------------------
-//  Keeps media inside its container and removes the descender gap that the
-//  inline default leaves beneath an image. `height: auto` preserves the
-//  intrinsic aspect ratio when a container constrains the width.
 
 img,
 svg,
@@ -92,14 +41,6 @@ video {
   height: auto;
 }
 
-// -----------------------------------------------------------------------------
-//  4. Native form controls — inheritance only
-// -----------------------------------------------------------------------------
-//  Controls do not inherit typography by default, which is why an unstyled
-//  control renders in the browser's own face and size. Only that inheritance is
-//  corrected here; borders, padding, sizing and invalid or disabled appearance
-//  belong to the forms partial.
-
 button,
 input,
 select,
@@ -108,34 +49,13 @@ textarea {
   color: inherit;
 }
 
-// -----------------------------------------------------------------------------
-//  5. Tables — structural normalisation only
-// -----------------------------------------------------------------------------
-//  Collapsing the borders and removing the inherited cell spacing gives the
-//  tables partial a predictable starting point. Table presentation belongs
-//  there.
+// Collapsing the borders and removing the inherited cell spacing gives the tables partial a predictable
+// starting point. Table presentation belongs there.
 
 table {
   border-collapse: collapse;
   border-spacing: 0;
 }
-
-// -----------------------------------------------------------------------------
-//  6. Headings
-// -----------------------------------------------------------------------------
-//  The levels are paired — h1 with h2, h3 with h4, h5 with h6 and dt — because
-//  that is the ramp being reproduced, not because a step is missing. Sharing a
-//  size costs assistive technology nothing, which derives heading rank from the
-//  element rather than from its rendered size.
-
-//  MIGRATION: the two top heading levels take the brand colour, where the legacy
-//  module-title rule used a near-black grey. The colour vocabulary is closed at
-//  nine members and that grey is not one of them, so the choice was between
-//  widening a closed vocabulary for two selectors or resolving to a member of it;
-//  the brand colour already paints h3 and h4 below and the legacy subheading rule
-//  used it too, so the whole heading ramp becomes one colour instead of two. The
-//  contrast against the page background is indistinguishable from the grey it
-//  replaces, so the only visible change is a grey-to-navy shift on h1 and h2.
 
 h1,
 h2 {
@@ -159,11 +79,7 @@ dt {
   color: var(--color-primary);
 }
 
-// -----------------------------------------------------------------------------
-//  7. Table section typography
-// -----------------------------------------------------------------------------
-//  Type and alignment only. Padding, borders, background and sort affordances
-//  for a header cell are the tables partial's to define.
+// 7. Table section typography.
 
 thead,
 tfoot {
@@ -178,19 +94,9 @@ th {
   color: var(--color-primary);
 }
 
-// -----------------------------------------------------------------------------
-//  8. Anchors
-// -----------------------------------------------------------------------------
-//  Visited is grouped with unvisited because the two share a treatment rather
-//  than being distinguished.
-//
-//  The hover colour resolves through `--color-primary-hover`, not through the
-//  danger token: the MIGRATION note below the unvisited rule records why the
-//  measured legacy hover red was not reproduced, and the rule itself is the
-//  authority. There is therefore NO coupling between error messaging and link
-//  hover — retuning either danger token moves nothing here. The underline is
-//  carried alongside the colour shift, so hover is never signalled by colour
-//  alone.
+// The hover colour resolves through `--color-primary-hover`, not through the danger token: the MIGRATION
+// note below the unvisited rule records why the measured legacy hover red was not reproduced, and the rule
+// itself is the authority.
 
 a:link,
 a:visited {
@@ -198,17 +104,7 @@ a:visited {
   text-decoration: none;
 }
 
-//  MIGRATION: the hover ink is the darker brand tint, where the legacy sheet used
-//  pure red. This is a corrected accessibility defect rather than a preference:
-//  red falls below the 4.5-to-1 minimum that governs normal text against both the
-//  page background and the secondary surface, and body copy here is well under
-//  the size at which the relaxed large-text ratio would apply, so reproducing it
-//  would have made every hovered link unreadable for a low-vision operator - and
-//  this selector governs every anchor on every screen. The substitute is the token
-//  the vocabulary already designates as the hover and active companion to the
-//  brand colour, and it clears the minimum on both surfaces. The underline the
-//  legacy hover state carried is retained, so the state never depends on colour
-//  alone.
+// The hover ink is the darker brand tint, where the legacy sheet used pure red.
 
 a:hover {
   color: var(--color-primary-hover);
@@ -233,13 +129,9 @@ pre {
   font-family: var(--font-family-mono);
 }
 
-// -----------------------------------------------------------------------------
-//  9. Nested list markers
-// -----------------------------------------------------------------------------
-//  Every value is a plain CSS keyword, so the marker progression needs no token.
-//  The last rule is the non-obvious one: an unordered list nested inside an
-//  ordered one restarts at a filled marker rather than continuing to inherit the
-//  unordered progression above.
+// Every value is a plain CSS keyword, so the marker progression needs no token. The last rule is the
+// non-obvious one: an unordered list nested inside an ordered one restarts at a filled marker rather than
+// continuing to inherit the unordered progression above.
 
 ul li {
   list-style-type: square;
@@ -269,14 +161,8 @@ ol ul li {
   list-style-type: disc;
 }
 
-// -----------------------------------------------------------------------------
-//  10. Horizontal rule
-// -----------------------------------------------------------------------------
-//  Drawn as a single leading hairline. Clearing the border first discards the
-//  browser's inset default, which would otherwise render a two-tone groove
-//  instead of a flat rule. Pinning the inline margins keeps the rule flush to
-//  the leading edge; the block margins are left to the browser, consistent with
-//  the flow-margin decision above.
+// Drawn as a single leading hairline. Clearing the border first discards the browser's inset default, which
+// would otherwise render a two-tone groove instead of a flat rule.
 
 hr {
   border: 0;
@@ -284,14 +170,7 @@ hr {
   margin-inline: 0;
 }
 
-// -----------------------------------------------------------------------------
-//  11. Focus visibility
-// -----------------------------------------------------------------------------
-//  The shared mixin scopes its ring to `:focus-visible`, so the indicator appears
-//  for keyboard and other non-pointer interaction and never decorates a mouse
-//  click. No rule in this file removes an outline, so focus is never invisible.
-//  Elements carrying an explicitly negative tab index are excluded because they
-//  are deliberately outside the tab order.
+// 11. Focus visibility.
 
 a,
 button,
@@ -303,40 +182,10 @@ summary,
   @include mx.focus-ring;
 }
 
-// -----------------------------------------------------------------------------
-//  12. Interactive state transitions
-// -----------------------------------------------------------------------------
-//  ONE HOME FOR EVERY STATE INTERPOLATION IN THE APPLICATION. Measured before
-//  this rule: a CSSOM sweep of every stylesheet found `transition` declared zero
-//  times, so each hover, press and validity change - here, in _forms.scss and in
-//  every component that tints a control on `:active` - snapped instantly between
-//  two appearances.
-//
-//  WHY THIS FILE AND THIS SELECTOR LIST. `transition` is not inherited, so it has
-//  to be declared on the element whose own state changes, and those elements are
-//  spread across this partial (the anchor states in section 8), _forms.scss (the
-//  control and button states) and the component stylesheets (the `:active` tints).
-//  Declaring it once here on the element types themselves covers all three at the
-//  source without any of them restating the duration, and it is deliberately the
-//  SAME selector list as section 11 above: an element that needs a focus ring is
-//  exactly an element that carries interactive state.
-//
-//  ⚠ COLOUR-LIKE PROPERTIES ONLY, AND THE OMISSIONS ARE THE POINT.
-//    * `outline` is excluded, so a focus ring is always drawn immediately and can
-//      never fade in behind a keyboard user who has just arrived on the control.
-//    * Geometry and layout properties are excluded, so nothing here can animate a
-//      reflow, delay a measurement or slide a pointer target out from under a
-//      pointer that is already moving toward it - which would turn a motion
-//      refinement into a WCAG 2.2 target defect.
-//    * `transition-property` is enumerated rather than written as `all` for that
-//      reason: `all` would silently adopt every future property a component
-//      animates, including both of the above.
-//
-//  Wrapped in the shared reduced-motion guard, which is the mixin surface's stated
-//  contract for animation and transition alike. The unguarded presentation remains
-//  the instantaneous one, so a reader who has asked their system for less motion -
-//  or whose engine does not report the preference - keeps precisely the behaviour
-//  that shipped before this section existed.
+// ONE HOME FOR EVERY STATE INTERPOLATION IN THE APPLICATION. Measured before this rule: a CSSOM sweep of
+// every stylesheet found `transition` declared zero times, so each hover, press and validity change - here,
+// in _forms.scss and in every component that tints a control on `:active` - snapped instantly between two
+// appearances.
 @include mx.motion-safe {
   a,
   button,

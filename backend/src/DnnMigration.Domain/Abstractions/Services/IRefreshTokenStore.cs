@@ -3,20 +3,19 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Domain.Abstractions.Services;
 
 /// <summary>
-/// Persists refresh-token digests and their family lifecycle so rotation and revocation remain
-/// consistent across process restarts and replicas.
+/// Persists refresh-token digests and their family lifecycle so rotation and revocation remain consistent
+/// across process restarts and replicas.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: the legacy forms-authentication ticket had no server-side rotation record. The target
-/// stores only a one-way token digest plus minimal identity, expiry and revocation state. No raw
-/// refresh token, access token, role, permission, password or key may be persisted by this contract.
+/// The legacy forms-authentication ticket had no server-side rotation record. The target stores only a
+/// one-way token digest plus minimal identity, expiry and revocation state.
 /// </para>
 /// <para>
 /// Every operation is asynchronous so that an implementation backed by shared storage satisfies this
-/// contract without changing it; the shipped implementation is process-local and completes
-/// synchronously. Rotation and revocation are atomic at the store boundary, and cancellation is
-/// observed before any state is examined.
+/// contract without changing it; the shipped implementation is process-local and completes synchronously.
+/// Rotation and revocation are atomic at the store boundary, and cancellation is observed before any state
+/// is examined.
 /// </para>
 /// </remarks>
 public interface IRefreshTokenStore
@@ -26,17 +25,7 @@ public interface IRefreshTokenStore
     /// here" is the same statement as "no such family anywhere".
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the one fact a caller cannot deduce and must not assume. A revocation that finds nothing is
-    /// a COMPLETED retirement when the store is authoritative and an UNCONFIRMED one when it is not: a
-    /// process-local store asked to end a session established on another instance recognises nothing, and
-    /// reporting that as a successful sign-out leaves the session live somewhere else while the caller
-    /// discards the only credential that could have retried.
-    /// </para>
-    /// <para>
-    /// An implementation returns <see langword="true"/> only when its state is genuinely shared and
-    /// durable - a store every replica reads and writes, surviving a restart.
-    /// </para>
+    /// This is the one fact a caller cannot deduce and must not assume.
     /// </remarks>
     bool IsAuthoritativeAcrossReplicas { get; }
 
@@ -53,8 +42,8 @@ public interface IRefreshTokenStore
     /// </summary>
     /// <param name="refreshToken">The opaque material presented by the caller.</param>
     /// <param name="clientBinding">
-    /// A bounded server-observed client fingerprint used only to distinguish a near-simultaneous retry
-    /// from a replay arriving from another client.
+    /// A bounded server-observed client fingerprint used only to distinguish a near-simultaneous retry from
+    /// a replay arriving from another client.
     /// </param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The stored subject when redeemable, or a refusal outcome.</returns>
@@ -91,34 +80,16 @@ public interface IRefreshTokenStore
         int userId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// DELETES every record this store holds about one subject, rather than marking it revoked.
-    /// </summary>
+    /// <summary>DELETES every record this store holds about one subject, rather than marking it revoked.</summary>
     /// <param name="scope">The account, the tenant, or the account within one tenant to erase.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>How many records were removed, or the store refusal.</returns>
     /// <remarks>
-    /// <para>
-    /// PRIV-02. REVOCATION IS NOT DELETION, AND THIS CONTRACT USED TO OFFER ONLY THE FIRST.
-    /// <see cref="RevokeAsync"/> and <see cref="RevokeAllForUserAsync"/> STAMP a record so that a family
-    /// can no longer be redeemed and a replay of one of its generations is still recognisable - which is
-    /// exactly right for a sign-out and exactly wrong for a deletion. Every stamped row keeps its token
-    /// digest and its subject identifiers, so an account or a tenant that had been deleted from the
-    /// application went on being described here until its family ceiling elapsed, with no member on this
-    /// contract capable of removing the description.
-    /// </para>
-    /// <para>
     /// The deletion paths call this AFTER their own removal has been committed, and the reason is the
     /// asymmetry between the two failures: revoking first and deleting the rows afterwards leaves, in the
-    /// worst case, revoked rows describing a subject that no longer exists - reclaimed by
-    /// <see cref="PurgeRetiredAsync"/> in any case - whereas deleting the rows first and then failing to
-    /// remove the account would leave an account whose sessions were no longer even recorded.
-    /// </para>
-    /// <para>
-    /// An implementation MUST NOT interpret a scope naming neither an account nor a tenant;
-    /// <see cref="RefreshTokenPurgeScope"/> makes that unrepresentable rather than trusting each
-    /// implementation to check.
-    /// </para>
+    /// worst case, revoked rows describing a subject that no longer exists - reclaimed by <see
+    /// cref="PurgeRetiredAsync"/> in any case - whereas deleting the rows first and then failing to remove
+    /// the account would leave an account whose sessions were no longer even recorded.
     /// </remarks>
     Task<RefreshTokenPurgeResult> PurgeSubjectAsync(
         RefreshTokenPurgeScope scope,
@@ -131,32 +102,15 @@ public interface IRefreshTokenStore
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>How many records were removed, or the store refusal.</returns>
     /// <remarks>
-    /// <para>
     /// PRIV-02. IT EXISTS SO THAT RECLAMATION IS NOT A SIDE EFFECT OF TRAFFIC. Both shipped stores
     /// reclaimed expired records only while issuing or rotating a token, which means an installation that
     /// nobody signs in to retains every expired and revoked record it ever wrote - indefinitely, and
-    /// precisely in the case where there is no operator activity to notice. A caller independent of any
-    /// operation drives this member on a schedule.
-    /// </para>
-    /// <para>
-    /// It is idempotent and safe to call concurrently with any other member. It never removes a record that
-    /// is still redeemable, and it never removes a revoked record before the retention window has elapsed:
-    /// a revoked digest is what makes a replay of that family recognisable, so the window is the documented
-    /// minimum period for which that signal is kept.
-    /// </para>
+    /// precisely in the case where there is no operator activity to notice.
     /// </remarks>
     Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default);
 }
 
-/// <summary>
-/// Names the subject whose refresh-token records are to be erased.
-/// </summary>
-/// <remarks>
-/// PRIV-02. A closed set of three factory methods rather than a pair of nullable properties a caller
-/// assembles, because the fourth combination - neither identifier supplied - would instruct a store to
-/// erase every record it holds. Making it unrepresentable is stronger than validating for it in three
-/// implementations independently.
-/// </remarks>
+/// <summary>Names the subject whose refresh-token records are to be erased.</summary>
 public sealed class RefreshTokenPurgeScope
 {
     private RefreshTokenPurgeScope(int? userId, int? portalId)
@@ -171,9 +125,7 @@ public sealed class RefreshTokenPurgeScope
     /// <summary>Gets the tenant whose records are erased, or <see langword="null"/> for every tenant.</summary>
     public int? PortalId { get; }
 
-    /// <summary>
-    /// Erases every record belonging to one account, in every tenant it was a member of.
-    /// </summary>
+    /// <summary>Erases every record belonging to one account, in every tenant it was a member of.</summary>
     /// <param name="userId">The account being deleted outright.</param>
     /// <returns>The scope.</returns>
     /// <remarks>
@@ -222,12 +174,6 @@ public sealed class RefreshTokenPurgeResult
     }
 
     /// <summary>Gets the outcome the caller must act on.</summary>
-    /// <remarks>
-    /// <see cref="RefreshTokenOutcome.Succeeded"/> when records were removed,
-    /// <see cref="RefreshTokenOutcome.Unknown"/> when the store held none matching, and
-    /// <see cref="RefreshTokenOutcome.StoreUnavailable"/> when it could not be asked. Nothing else is
-    /// produced: a purge cannot be expired, replayed or over capacity.
-    /// </remarks>
     public RefreshTokenOutcome Outcome { get; }
 
     /// <summary>Gets how many records were removed.</summary>
@@ -255,13 +201,11 @@ public sealed class RefreshTokenPurgeResult
         new(RefreshTokenOutcome.StoreUnavailable, 0);
 }
 
-/// <summary>
-/// The minimal non-secret identity persisted with a refresh family.
-/// </summary>
+/// <summary>The minimal non-secret identity persisted with a refresh family.</summary>
 /// <remarks>
-/// Roles, permission keys, display fields and host authority are deliberately absent. Authorization
-/// is re-read from authoritative stores, and access tokens carry only the identity needed to perform
-/// those reads.
+/// Roles, permission keys, display fields and host authority are deliberately absent. Authorization is
+/// re-read from authoritative stores, and access tokens carry only the identity needed to perform those
+/// reads.
 /// </remarks>
 public sealed class RefreshTokenSubject
 {

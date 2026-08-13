@@ -1,24 +1,20 @@
 // Karma configuration for the `dnn-migration` Angular 19 workspace.
 // Reference: https://karma-runner.github.io/6.4/config/configuration-file.html
 //
-// MIGRATION: this file has no legacy counterpart. The DotNetNuke 4.9.0 source tree
-// (`Library/`, `Website/`) contains no automated tests of any kind, so the entire
-// front-end test harness is net-new rather than a translation of anything. Every
-// piece of correctness evidence for the migrated SPA is produced by this harness,
-// which is why its configuration is documented switch by switch below.
+// The DotNetNuke 4.9.0 source tree contains no automated tests, so the whole
+// front-end test harness is authored here rather than translated; every piece of
+// correctness evidence for the migrated SPA is produced by it.
 //
-// MIGRATION: the validation gate this file exists to serve is fixed and may not be
-// edited:
+// THE VALIDATION GATE THIS FILE SERVES IS FIXED AND MAY NOT BE EDITED:
 //
 //     ng test --watch=false --browsers=ChromeHeadless --code-coverage
 //
 // Chrome's setuid sandbox cannot be established when the browser process runs as
 // root - the default inside a container - so the stock `ChromeHeadless` launcher
 // exits immediately with "Running as root without --no-sandbox is not supported"
-// (crbug.com/638180) and Karma gives up after two attempts. Verified by execution
-// in this environment against Google Chrome 151. Because the gate passes
+// (crbug.com/638180) and Karma gives up after two attempts. Because the gate passes
 // `ChromeHeadless` and not `ChromeHeadlessNoSandbox`, the command line overrides
-// whatever `browsers` default this file declares, so a config that only defines
+// whatever `browsers` default this file declares, so a config that only defined
 // `ChromeHeadlessNoSandbox` would still fail the gate. Two custom launchers sharing
 // one flag set are therefore declared:
 //
@@ -30,15 +26,14 @@
 //     plugins, so this entry replaces the same-named launcher contributed by
 //     karma-chrome-launcher and wins even when the CLI asks for `ChromeHeadless`.
 //
-// MIGRATION: the shadowing entry derives from `Chrome`, not from `ChromeHeadless`.
-// Karma 6.4 registers each `customLaunchers` key as a dependency-injection provider
-// named `launcher:<key>` whose factory resolves the token `launcher:<base>` through
-// a child injector (karma/lib/config.js). Because that generated module also
-// replaces the provider karma-chrome-launcher published under the same name, an
-// entry keyed `ChromeHeadless` with `base: 'ChromeHeadless'` resolves to itself and
-// dies with `Cannot load browser "ChromeHeadless"! RangeError: Maximum call stack
-// size exceeded` - reproduced deliberately against karma 6.4.4 before this file was
-// written. Deriving the shadow from `Chrome` is behaviourally equivalent because
+// ⚠ THE SHADOWING ENTRY DERIVES FROM `Chrome`, NOT FROM `ChromeHeadless`. Karma 6.4
+// registers each `customLaunchers` key as a dependency-injection provider named
+// `launcher:<key>` whose factory resolves the token `launcher:<base>` through a child
+// injector (karma/lib/config.js), and that generated module also replaces the
+// provider karma-chrome-launcher published under the same name - so an entry keyed
+// `ChromeHeadless` with `base: 'ChromeHeadless'` resolves to itself and dies with
+// `Cannot load browser "ChromeHeadless"! RangeError: Maximum call stack size
+// exceeded`. Deriving the shadow from `Chrome` is behaviourally equivalent because
 // `--headless=new` is already part of the shared flag set, and the only switch the
 // `ChromeHeadless` base would add beyond it is `--remote-debugging-port=9222`, which
 // this configuration does not need. `ChromeHeadlessNoSandbox` keeps
@@ -51,8 +46,8 @@
  * Declared once and shared by both custom launchers below so that the two can never
  * drift apart. Every switch is load-bearing:
  *
- *   --no-sandbox             Chrome refuses to start as root without it. This is the
- *                            root cause of the gate failure described above.
+ *   --no-sandbox             Chrome refuses to start as root without it, which is
+ *                            the gate failure described above.
  *   --disable-gpu            no GPU device exists in a headless container; without
  *                            this Chrome may stall attempting GPU initialisation.
  *   --disable-dev-shm-usage  /dev/shm defaults to 64 MB under Docker; Chrome
@@ -74,9 +69,9 @@ const CHROME_HEADLESS_FLAGS = [
 /**
  * Candidate filesystem locations of a Chrome or Chromium executable, in probe order.
  *
- * MIGRATION: this list exists because the gate command is fixed and cannot name a
- * binary. `ng test --watch=false --browsers=ChromeHeadless --code-coverage` says
- * WHICH launcher to use and nothing about where the browser lives, so the only
+ * This list exists because the gate command is fixed and cannot name a binary.
+ * `ng test --watch=false --browsers=ChromeHeadless --code-coverage` says WHICH
+ * launcher to use and nothing about where the browser lives, so the only
  * remaining channel is `process.env.CHROME_BIN`, which karma-chrome-launcher reads.
  * When it is unset the launcher falls back to its own search, and on a distribution
  * whose package installs under a name the launcher does not try, that search fails

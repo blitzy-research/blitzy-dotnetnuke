@@ -1,166 +1,65 @@
+<!-- The portal (tenant) listing screen, served at /portals. -->
 <!--
-  The portal (tenant) listing screen, served at /portals.
-
-  MARKUP CONTRACT. Emulated view encapsulation rewrites every class below with this
-  component's own content attribute, so a class name that drifts does not error - it
-  silently matches nothing and the region renders unstyled. The paired stylesheet expects
-  exactly this vocabulary:
-
-      .portal-list
-      .portal-list__filters
-      .portal-list__letters
-      .portal-list__letter
-      .portal-list__search
-      .portal-list__status
-      .portal-list__action
-      .portal-list__row-command
-      .portal-list__row-command--danger
-      .portal-list__aliases
-      .portal-list__alias
-      .portal-list__new-context
-
-  TWELVE names, and the stylesheet declares exactly those twelve - no more, so nothing here
-  is styled by a rule this file cannot see, and no fewer, so nothing here renders unstyled.
-
-  Built-in control flow only - @if, @else and @for - and every @for declares a track
-  expression. Every string is interpolated, so every string is escaped: no raw-HTML
-  binding, no sanitiser bypass and no trusted-HTML wrapper appears anywhere here, which
-  matters because legacy resource values and stored host names both reach this screen and
-  neither may be treated as markup.
-
-  NO SEMANTIC LANDMARK is emitted below. The application shell renders each of the banner,
-  main, navigation and contentinfo landmarks exactly once, and a screen that added a second
-  would announce a duplicate to anyone navigating by landmark.
+  THE GRID DRAWS NO CELL BORDERS AND NO SELECTED-ROW STATE. `portals.ascx:L13-L14` declares the legacy
+  grid with `GridLines="None"`, and `:L15-L19` declares header, item, alternating-item, footer and pager
+  styles but NO selected-item style at all - so a bordered grid or a highlighted row would both be
+  additions rather than translations.
 -->
-<!-- MIGRATION: THE GRID DRAWS NO CELL BORDERS AND NO SELECTED-ROW STATE. `portals.ascx:L13-L14`
-    declares the legacy grid with `GridLines="None"`, and `:L15-L19` declares header, item,
-    alternating-item, footer and pager styles but NO selected-item style at all - so a
-    bordered grid or a highlighted row would both be additions rather than translations. The
-    shared table is handed no sort binding and no row-selection binding for the same measured
-    reason: the legacy grid declared neither `AllowSorting` nor a selection command. -->
-<!-- MIGRATION: THE GRID GAINS AN ACCESSIBLE NAME. `portals.ascx:L13-L14` carries no `summary`
-    attribute - unusually for this admin set - and the legacy markup declares no caption, so
-    the table reached assistive technology unnamed. A caption is projected into the shared
-    table's caption slot, which clips it out of the painted output, so the name is added at
-    zero visual cost. -->
+<!--
+  THE GRID GAINS AN ACCESSIBLE NAME. `portals.ascx:L13-L14` carries no `summary` attribute - unusually
+  for this admin set - and the legacy markup declares no caption, so the table reached assistive
+  technology unnamed.
+-->
 
 <div class="portal-list">
+  <!-- An anchor and not a button: this navigates. -->
   <!--
-    The heading, with the ONE surviving page-level action projected into its slot - the
-    "Add New Portal" action carried from the `AddContent.Action` resource entry. The legacy
-    screen declared THREE (`Portals.ascx.vb:L435-L437`); the other two are documented
-    reductions rather than hidden ones, annotated immediately below.
-
-    An anchor and not a button: this navigates. The legacy action addressed the sign-up
-    screen through `EditUrl("Signup")` (`Portals.ascx.vb:L435`), and a navigation affordance
-    is a link.
+    MIGRATION: THE TEMPLATE-EXPORT ACTION IS DROPPED. `Portals.ascx.vb:L436` declared a second
+    page-level action addressing `EditUrl("Template")` behind an administrator access level.
   -->
-  <!-- MIGRATION: THE TEMPLATE-EXPORT ACTION IS DROPPED. `Portals.ascx.vb:L436` declared a
-      second page-level action addressing `EditUrl("Template")` behind an administrator
-      access level. No portal-template endpoint exists in the target API - the endpoint
-      registry lists the site-wizard and portal-template surface among the absent set - so
-      the action is omitted outright. It is NOT rendered disabled: a disabled control
-      announces itself as a command that is momentarily unavailable, which would be a false
-      promise for a capability that has no server behind it at all. -->
-  <!-- MIGRATION: THE BULK EXPIRED-PORTAL DELETION IS DROPPED. `Portals.ascx.vb:L437` declared a
-      third action carrying the command argument "Delete", guarded by a browser confirmation
-      and dispatching into `DeleteExpiredPortals()` (`Portals.ascx.vb:L189-L198`). No bulk
-      operation endpoint exists in the target API, so it too is omitted rather than rendered
-      inert. Single-row deletion survives in full, further down. -->
   <!--
-    ⚠ P-M9 — THE RANGE AND TOTAL, RESTATED HERE BECAUSE THE PAGER IS BELOW THE FOLD.
-    Measured at y = 908 in a 900-tall viewport on page one. The pager keeps its legacy position
-    below the grid (`portals.ascx:L56-L58`) and the grid keeps its legacy row heights
-    (`Portals.ascx.vb:L273-L288` appended a line break after every host name), so the honest
-    remedy is to bring the count up to the operator rather than to rearrange either. A net
-    addition: the legacy screen stated the total only inside its paging control.
+    MIGRATION: THE BULK EXPIRED-PORTAL DELETION IS DROPPED. `Portals.ascx.vb:L437` declared a third
+    action carrying the command argument "Delete", guarded by a browser confirmation and dispatching
+    into `DeleteExpiredPortals()`.
+  -->
+  <!--
+    ⚠ P-M9 — THE RANGE AND TOTAL, RESTATED HERE BECAUSE THE PAGER IS BELOW THE FOLD. Measured at y = 908
+    in a 900-tall viewport on page one.
   -->
   <app-page-header [title]="heading" [subtitle]="resultSummary()">
     <a class="page-action portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
   </app-page-header>
 
   <!--
-    The two filters, side by side.
-
-    The letter strip is rendered here rather than delegated: none of the ten shared
-    components covers a first-letter filter, and the shared grid exposes no slot for one.
-    A group role with an accessible name rather than a navigation landmark - the
-    application shell already renders the single navigation landmark, and a second one on
-    every list screen would announce a duplicate.
-
-    WHERE THE STRIP SITS is the paired stylesheet's business, and it is viewport-conditional
-    by design rather than by accident: the legacy panel declared `HorizontalAlign="Center"`
-    (`portals.ascx:L4`) at a time when the strip WAS the whole row, because that screen had no
-    free-text filter beside it. The stylesheet therefore centres the strip while it still owns
-    its row and lets it start from the inline edge once it shares the row with the name filter,
-    which is the faithful reading of the legacy intent rather than a literal copy of one
-    declaration. Nothing about that placement is expressed here.
-  -->
-  <!--
-    ⚠ THE STRIP COMES FIRST HERE AND SECOND ON THE ACCOUNT LISTING, AND THAT DIFFERENCE IS THE
-    LEGACY'S RATHER THAN AN OVERSIGHT. `portals.ascx` opens with the letter panel at L4 and
-    declares NO free-text filter anywhere on the screen, so the strip was that screen's first
-    element; `users.ascx` opens with the search row at L3-L12 and places its letter panel after
-    it at L14. Each screen therefore keeps its own legacy order, and the name filter beside the
-    strip here is a net addition on a screen that had none - which is why it takes the position
-    after the element the legacy put first, rather than displacing it.
+    The letter strip is rendered here rather than delegated: no shared component covers a first-letter
+    filter, and the shared grid exposes no slot for one.
   -->
   <div class="portal-list__filters">
-    <!--
-      ⚠ THE SECTION HEADING, CLIPPED FROM THE PAINTED PAGE. Measured before it existed: `<main>`
-      exposed exactly ONE heading on this screen - the page title - so a reader navigating by
-      heading could not move between the controls that narrow the list and the list itself. This
-      names the first of those two regions. It is clipped rather than shown because the region is
-      already obvious to anyone who can see it and a visible heading would add furniture the
-      legacy screen never had; the records region needs no counterpart because the grid carries
-      its own accessible name in a real `<caption>`.
-    -->
     <h2 data-visually-hidden>Filter Sites</h2>
 
     <div class="portal-list__letters" role="group" [attr.aria-label]="filterStripLabel">
       <!-- TWENTY-SEVEN entries: A to Z, then the entry that CLEARS the filter. -->
-      <!-- MIGRATION: THE STRIP IS TWENTY-SEVEN ENTRIES, NOT THE LEGACY TWENTY-EIGHT, BECAUSE THE
-          EXPIRED-PORTALS ENTRY IS DROPPED. `Portals.ascx.vb:L170-L174` built the legacy list
-          in three steps - the twenty-six letters from the local `Filter.Text` entry, then the
-          global "All" entry, then a local expired-portals entry - and `:L138-L140` shows what
-          selecting that last one did: it abandoned the paged query entirely for
-          `PortalController.GetExpiredPortals()` and hid the pager. The target API exposes no
-          expired-portals listing, so that entry has nothing to call and no chip is rendered
-          for it here. A chip that returned the unfiltered page would be worse than its
-          absence, because it would silently answer a different question than the one asked. -->
-      <!-- MIGRATION: THE CLEARING ENTRY STAYS AFTER Z RATHER THAN MOVING TO THE FRONT.
-          `Portals.ascx.vb:L173` APPENDS the global "All" entry to the twenty-six letters, so
-          the legacy strip read A to Z and then that entry. Leading with it would read better
-          to a modern eye, and is exactly the kind of opportunistic improvement the migration
-          discipline forbids, so the measured order is preserved. Selecting it clears the
-          filter rather than sending a value, which `Portals.ascx.vb:L351-L353` establishes -
-          the legacy screen tested the incoming filter against that same wording and emptied
-          it - and the component owns that mapping, not this template. -->
       <!--
-        Buttons and not links, because selecting an entry changes client state and no
-        address. The legacy entries were hyperlinks only because the filter round-tripped
-        through the query string (`Portals.ascx.vb:L215-L232`); an anchor with nowhere to
-        go would be a worse translation than a button that does what the control does.
+        MIGRATION: THE STRIP IS TWENTY-SEVEN ENTRIES, NOT THE LEGACY TWENTY-EIGHT, BECAUSE THE
+        EXPIRED-PORTALS ENTRY IS DROPPED. `Portals.ascx.vb:L170-L174` built the legacy list in three
+        steps - the twenty-six letters from the local `Filter.Text` entry, then the global "All" entry,
+        then a local expired-portals entry - and `:L138-L140` shows what selecting that last one did: it
+        abandoned the paged query entirely for `PortalController.GetExpiredPortals()` and hid the pager.
       -->
-      <!-- MIGRATION: THE APPLIED ENTRY IS ANNOUNCED, WHICH THE LEGACY STRIP DID NOT DO. Every
-          legacy entry rendered identically whatever was applied (`portals.ascx:L4-L11`), so
-          the strip never reported its own state. `aria-pressed` reports it, and the paired
-          stylesheet gives the applied entry a token-driven emphasis, so the state is carried
-          by more than colour and reaches assistive technology as well as the eye. -->
       <!--
-        ⚠ BLITZY [A11Y]: each entry's pointer target is smaller than the 44-by-44
-        recommendation, measured in the browser at roughly 23 by 19 pixels for a single letter,
-        and it is implemented per the design source rather than silently enlarged. The measured
-        legacy affordance is a bare inline text link: `portals.ascx:L7` gives each entry
-        `CssClass="CommandButton"`, and `Website/Portals/_default/default.css:L442-L447` declares
-        that class with nothing but a font family, an 11-pixel size and a normal weight - no
-        padding, no dimension and no minimum. The entries were separated by a pair of
-        non-breaking spaces and nothing more. The strip adds modest token padding, so the target
-        is already better than the legacy one, but it remains below the threshold, and enlarging
-        it further is a stylesheet decision that would also change the strip's density and
-        wrapping. Nothing in this template constrains the size; the deferral is flagged here for
-        designer review. Keyboard operation is unaffected - every entry is a real button with a
-        visible focus ring - so the shortfall is a pointer-target concern only.
+        THE CLEARING ENTRY STAYS AFTER Z RATHER THAN MOVING TO THE FRONT. `Portals.ascx.vb:L173` APPENDS
+        the global "All" entry to the twenty-six letters, so the legacy strip read A to Z and then that
+        entry.
+      -->
+      <!-- Buttons and not links, because selecting an entry changes client state and no address. -->
+      <!--
+        MIGRATION: THE APPLIED ENTRY IS ANNOUNCED, WHICH THE LEGACY STRIP DID NOT DO. Every legacy entry
+        rendered identically whatever was applied, so the strip never reported its own state.
+      -->
+      <!--
+        ⚠ BLITZY [A11Y]: each entry's pointer target is smaller than the 44-by-44 recommendation,
+        measured in the browser at roughly 23 by 19 pixels for a single letter, and it is implemented
+        per the design source rather than silently enlarged.
       -->
       @for (option of filterOptions; track option.label) {
         <button
@@ -174,12 +73,6 @@
       }
     </div>
 
-    <!--
-      The free-text name filter. A shared component rather than a bare input, so the
-      control keeps its label association and owns its own debounce. The placeholder
-      promises neither a starts-with nor a contains test, because the matching rule is the
-      server's to state and it has changed since the legacy screen.
-    -->
     <app-search-input
       #nameFilterInput
       class="portal-list__search"
@@ -188,46 +81,12 @@
     />
   </div>
 
-  <!--
-    A reported listing failure. The whole problem document is handed over, which is what
-    preserves the trace and correlation identifiers an operator quotes when reporting a
-    fault; the banner carries its own live region and decides its own severity from the
-    status. The retry and dismiss affordances sit beside it rather than inside it, because
-    the shared banner projects nothing.
-
-    ONE presentation for every failure, with no fallback branch. The store composes a problem
-    document for the two modes that carry none - a request that never reached the server, and
-    a response whose body is not a problem document - so the banner always has a severity
-    word, a title and a detail to render. The `@else` that used to sit here rendered a bare
-    `<p role="status">` carrying one sentence, and runtime measurement found it byte-identical
-    for both modes: an operator could not tell "the server refused this" from "the request
-    never left the browser".
-
-    ⚠ THE BANNER IS MOUNTED UNCONDITIONALLY, AND ITS `@if` WAS THE DEFECT. This screen used to
-    create the element only once a failure existed, which put the live region and its first
-    message into the document in the SAME change - the one announcement a screen-reader user
-    most needs to hear, and the one that browsers announce least reliably when the region is
-    born with its content. The shared component states that contract on itself: the `@if` lives
-    INSIDE its region, the region carries no padding, border or background, and both inputs
-    default to null, so an empty banner paints nothing and resolves to zero height. Sixteen
-    sibling templates already mounted it this way; this one, the role listing, the account
-    listing and the account form did not. What stays conditional is only the VISIBLE recovery
-    chrome below - a `Try again` for a failure that has not happened is an offer with no
-    referent, and it carries no announcement semantics to preserve.
-  -->
+  <!-- A reported listing failure. -->
   <app-error-banner [problem]="listProblem()" />
 
   @if (hasListFailure()) {
     <div class="portal-list__status">
       <div>
-        <!--
-          THE WORDING IS "Try again", NOT "Retry", AND IT IS SHARED. Three list screens offer
-          this same recovery and this one used to be the only one that named it differently.
-          There is no legacy authority to defer to - the legacy screens recovered by posting the
-          whole page back and carried no retry affordance at all - so the wording is settled by
-          agreement with the sibling screens and with the shared failure sentence, which itself
-          ends "Try again shortly."
-        -->
         <button type="button" class="portal-list__action" (click)="onRetry()">Try again</button>
         <button type="button" class="portal-list__action" (click)="onFailureDismissed()">
           Dismiss
@@ -236,90 +95,51 @@
     </div>
   }
 
-  <!--
-    Three mutually exclusive surfaces: the first read, an empty result, and the grid.
-
-    The indicator replaces the grid only while the FIRST page is being read. A later read -
-    a filter change, a page turn, the re-read after a deletion - keeps the rows on screen
-    and uses the grid's own indicator, so the table an operator is reading is never blanked
-    out from under them.
-  -->
+  <!-- Three mutually exclusive surfaces: the first read, an empty result, and the grid. -->
   @if (showInitialSpinner()) {
     <app-loading-spinner label="Loading portals…" />
   } @else if (hasRows()) {
     <!--
-      =========================================================================
-      THE TEN-COLUMN GRID - COLUMN MANIFEST
-      =========================================================================
-
-      The DESCRIPTORS are assembled by the component, which is where a column's key, its
-      heading, its bound member and its two alignments belong; four of the ten need a cell
-      template and those four are declared at the foot of this file. The manifest below is
-      the reader's index into that set, in the order `portals.ascx:L21-L54` declares it, and
-      it is here so that this file can be checked against the legacy markup without opening
-      the paired class.
-
-        #   legacy declaration            heading painted      bound member   align
-        1   L21 imagecommandcolumn Edit   Edit this Portal     -              centre
-        2   L22 imagecommandcolumn Delete Delete               -              centre
-        3   L23-L29 TemplateColumn        Portal Id            portalId       start
-        4   L30-L36 TemplateColumn        Title                portalName     start
-        5   L37-L43 TemplateColumn        Portal Aliases       alias list     start
-        6   L44 textcolumn                Users                users          centre
-        7   L45 textcolumn                Pages                pages          centre
-        8   L46 textcolumn                Disk Space           hostSpace      centre
-        9   L47 BoundColumn               Hosting Fee          hostFee        centre
-       10   L48-L54 TemplateColumn        Expires              expiryDate     centre
+      The DESCRIPTORS are assembled by the component, which is where a column's key, its heading, its
+      bound member and its two alignments belong; four of the ten need a cell template and those four
+      are declared at the foot of this file.
     -->
-    <!-- MIGRATION: EVERY HEADING IS THE RESOURCE VALUE AND NOT THE MARKUP ATTRIBUTE, AND ON
-        THREE COLUMNS THE TWO GENUINELY DIFFER. `Portals.ascx.vb:L357` calls
-        `Localization.LocalizeDataGrid`, which walked the grid and overwrote each heading by
-        looking that column's own `HeaderText` up as a resource key - so the markup's
-        `PortalId`, `DiskSpace` and `HostingFee` (`portals.ascx:L23`, `:L46`, `:L47`) were
-        never what the screen painted. It painted "Portal Id", "Disk Space" and "Hosting Fee"
-        from the resource entries of those names. The headings above are the resource values.
-        The BOUND MEMBERS keep the shape of the data and are deliberately NOT renamed to
-        match the headings: the member behind "Disk Space" is `hostSpace` and the member
-        behind "Hosting Fee" is `hostFee`, exactly as the legacy `DataField` attributes read. -->
-    <!-- MIGRATION: ALIGNMENT IS PER COLUMN, NOT ONE SETTING FOR THE GRID. The legacy item style
-        set `horizontalalign="Center"` for the whole grid (`portals.ascx:L16`), and then
-        columns 3, 4 and 5 overrode BOTH their header and their item to the left
-        (`portals.ascx:L24-L25`, `:L31-L32`, `:L38-L39`) while columns 6 to 10 overrode only
-        their vertical alignment and inherited the centre. Each descriptor therefore carries
-        its own pair, and no alignment is applied to the table as a whole - applying one
-        would left-align five columns that were centred or centre three that were not. -->
-    <!-- MIGRATION: THE ALTERNATING-ROW RED TEXT IS A LEGACY DEFECT AND IS DELIBERATELY NOT
-        REPRODUCED. `default.css:L131-L137` declares the alternating-row class with a white
-        background and RED text, so every other row of every legacy grid painted its content
-        in the colour this application reserves for failure. Reproducing it would tell an
-        operator that half their portals are in error. It is recorded here rather than
-        silently corrected, which is what the migration discipline asks: annotate the defect,
-        do not carry it. The related dead style - a selected-row class that no page in the
-        legacy tree references - is likewise not carried, and the pager class the legacy
-        markup names is defined in no stylesheet at all. -->
-    <!-- MIGRATION: THE COUNT COLUMNS RENDER WHATEVER ARRIVES, INCLUDING MINUS ONE.
-        `Library/Components/Portal/PortalInfo.vb:L61-L62` seeds the account and page counts
-        with the legacy absent-integer marker, whose value is minus one, and the legacy grid
-        bound both columns raw through a text column (`portals.ascx:L44-L45`) - so the legacy
-        screen really did paint minus one when a count had not been resolved. Blanking it
-        would be an opportunistic fix of exactly the kind the migration discipline forbids,
-        and it would also hide a real signal: a count that never resolved is worth seeing.
-        So the value is rendered as received. -->
     <!--
-      The caption is projected and clipped, so the table carries an accessible name at no
-      visual cost. Sorting IS bound - see the note below - and no row selection is bound, for
-      the measured reason recorded at the head of this file.
+      EVERY HEADING IS THE RESOURCE VALUE AND NOT THE MARKUP ATTRIBUTE, AND ON THREE COLUMNS THE TWO
+      GENUINELY DIFFER. `Portals.ascx.vb:L357` calls `Localization.LocalizeDataGrid`, which walked the
+      grid and overwrote each heading by looking that column's own `HeaderText` up as a resource key -
+      so the markup's `PortalId`, `DiskSpace` and `HostingFee` were never what the screen painted.
     -->
-    <!-- MIGRATION: SORTING IS A NET ADDITION, AND THE FIVE HEADINGS THAT OFFER IT ARE THE FIVE THE
-        ENDPOINT ACCEPTS. The legacy grid was declared without `AllowSorting` (portals.ascx:L13-L20), so it
-        offered none - and on a real installation that left a twenty-six-letter strip as the only finding
-        aid over hundreds of rows at ten to a page. The collection endpoint orders by `PortalId`,
-        `PortalName`, `ExpiryDate`, `HostFee` and `HostSpace`, matched without regard to case, and answers a
-        sixth name with a field-level 400 listing the five; so exactly those five column descriptors carry
-        `sortable`, and the three that do not - the two tallies and the host names - are omitted for stated
-        reasons rather than forgotten. The grid never decides its own order: it is TOLD which heading is
-        active and in which direction, and it reports activations back, so the ordering in force lives in
-        one place - the address - and the marked heading cannot drift from the rows. -->
+    <!--
+      ALIGNMENT IS PER COLUMN, NOT ONE SETTING FOR THE GRID. The legacy item style set
+      `horizontalalign="Center"` for the whole grid, and then columns 3, 4 and 5 overrode BOTH their
+      header and their item to the left while columns 6 to 10 overrode only their vertical alignment and
+      inherited the centre.
+    -->
+    <!--
+      MIGRATION: THE ALTERNATING-ROW RED TEXT IS A LEGACY DEFECT AND IS DELIBERATELY NOT REPRODUCED.
+      `default.css:L131-L137` declares the alternating-row class with a white background and RED text,
+      so every other row of every legacy grid painted its content in the colour this application
+      reserves for failure.
+    -->
+    <!--
+      THE COUNT COLUMNS RENDER WHATEVER ARRIVES, INCLUDING MINUS ONE.
+      `Library/Components/Portal/PortalInfo.vb:L61-L62` seeds the account and page counts with the
+      legacy absent-integer marker, whose value is minus one, and the legacy grid bound both columns raw
+      through a text column - so the legacy screen really did paint minus one when a count had not been
+      resolved.
+    -->
+    <!--
+      The caption is projected and clipped, so the table carries an accessible name at no visual cost.
+      Sorting IS bound - see the note below - and no row selection is bound, for the measured reason
+      recorded at the head of this file.
+    -->
+    <!--
+      MIGRATION: SORTING IS A NET ADDITION, AND THE FIVE HEADINGS THAT OFFER IT ARE THE FIVE THE
+      ENDPOINT ACCEPTS. The legacy grid was declared without `AllowSorting`, so it offered none - and on
+      a real installation that left a twenty-six-letter strip as the only finding aid over hundreds of
+      rows at ten to a page.
+    -->
     <app-data-table
       [columns]="columns()"
       [rows]="portals()"
@@ -333,29 +153,16 @@
     </app-data-table>
 
     <!--
-      The pager, a SIBLING BELOW the table and never a row inside it, which is measured
-      rather than chosen: `portals.ascx:L56` closes the grid, `:L57` is a pair of line breaks
-      and `:L58` declares the paging control after both. It is handed the same three facts
-      the legacy pager was handed at `Portals.ascx.vb:L148-L150` - the total, the page size
-      in effect, and the page the operator asked for - and reports a zero-based index
-      straight back to the store.
+      The pager, a SIBLING BELOW the table and never a row inside it, which is measured rather than
+      chosen: `portals.ascx:L56` closes the grid, `:L57` is a pair of line breaks and `:L58` declares
+      the paging control after both.
     -->
-    <!-- ⚠ MOUNTED UNCONDITIONALLY. THE PAGER DECIDES ITS OWN SHAPE - the range summary alone
-        when everything fits on one page, the summary plus the steps when it does not - and a
-        wrapper condition here could only remove the summary, which is the only on-screen
-        confirmation of how many portals a filter matched. Runtime testing measured that: the
-        A-Z filter narrowing 250 portals to seven left seven rows and no stated total.
-
-        MIGRATION: a documented divergence from `Portals.ascx.vb:L155-L157`, which set the
-        legacy control's visibility to `PageSize < TotalRecords` whenever suppression was in
-        effect - and `:L108-L114` shows suppression was hard-coded on with the real setting
-        COMMENTED OUT at `:L110-L111`. The legacy users screen, running the identical guard
-        against a live setting that defaults to false, kept its pager for a single page; that
-        is the behaviour adopted here for both. `pagerRequired` remains published by the store
-        as the legacy arithmetic, and is no longer a gate on rendering. The page size bound
-        below is the SERVED one rather than a constant, because the server is free to answer
-        with a different size than was asked for; the legacy equivalent was the hard-coded
-        twenty at `Portals.ascx.vb:L92-L98`. -->
+    <!--
+      MIGRATION: a documented divergence from `Portals.ascx.vb:L155-L157`, which set the legacy
+      control's visibility to `PageSize < TotalRecords` whenever suppression was in effect - and
+      `:L108-L114` shows suppression was hard-coded on with the real setting COMMENTED OUT at
+      `:L110-L111`.
+    -->
     <app-pagination
       [page]="pageIndex()"
       [pageSize]="pageSize()"
@@ -364,12 +171,7 @@
       (pageChange)="onPageChange($event)"
     />
   } @else {
-    <!--
-      Nothing to draw. The wording distinguishes "nothing matched" from "past the end of the
-      results", which the paging contract treats as genuinely different states, and the
-      remedy offered differs with it: a way back to the first page when the page is past the
-      end, and the add action when the list is simply empty.
-    -->
+    <!-- Nothing to draw. -->
     <app-empty-state [message]="emptyMessage()">
       @if (isPastEnd()) {
         <button type="button" class="portal-list__action" (click)="onReturnToFirstPage()">
@@ -383,16 +185,8 @@
 </div>
 
 <!--
-  Presence in the DOM is what OPENS the shared dialog - it calls `showModal()` once it is
-  attached - so it is rendered only while a removal is awaiting confirmation. The dialog
-  brings its own focus trap, its own escape handling and a named cancel affordance, none of
-  which the browser confirmation it replaces offered.
-
-  The message is passed explicitly even though it happens to match the component's own
-  default, so that this screen's wording is traceable to the global resource entry
-  `DeleteItem.Text` that the legacy screen read at `Portals.ascx.vb:L300`. The title and
-  the confirm label are left to the component, whose defaults are "Confirm Delete" and the
-  global `cmdDelete.Text` value of "Delete".
+  Presence in the DOM is what OPENS the shared dialog - it calls `showModal()` once it is attached - so
+  it is rendered only while a removal is awaiting confirmation.
 -->
 @if (pendingRemoval()) {
   <app-confirm-dialog
@@ -404,37 +198,16 @@
 }
 
 <!--
-  =============================================================================
-  CELL TEMPLATES
-  =============================================================================
-
-  All SEVEN MUST stay at the top level, outside every control-flow block: the component
-  resolves them with static view queries so that the column descriptors can be assembled in
-  `ngOnInit`, and a template nested inside an @if block is not yet in the view at that
-  point. The component reports a missing one by name rather than rendering a blank column.
-
-  Each receives the row as `$implicit`, so `let-portal` binds it with no member name. The tally
-  template also takes `let-column="column"`, because it serves TWO columns and the key is what
-  tells them apart.
+  All SEVEN MUST stay at the top level, outside every control-flow block: the component resolves them
+  with static view queries so that the column descriptors can be assembled in `ngOnInit`, and a template
+  nested inside an @if block is not yet in the view at that point.
 -->
 
 <!--
-  Row 0: the row TITLE, which is also the record screen's only way in.
-
   ⚠ MAJOR (reachability) — THE ROUTE `/portals/:portalId` HAD NO INBOUND AFFORDANCE ANYWHERE IN THE
-      APPLICATION. It is part of the frozen route table and it renders the portal RECORD form, but
-      every affordance that named a portal went either to the create form or to the settings child
-      route, so the record screen could be reached only by typing its address. The row's own title is
-      the affordance a person would look for, so it becomes the link.
-
-      NOTHING VISIBLE CHANGES EXCEPT THE LINK ITSELF. The characters are interpolated from the same
-      contract member the bound column read, so the text is identical; the cell is still the row's
-      `<th scope="row">`, because the column descriptor still declares it the row header.
-
-      NO `aria-label` HERE, DELIBERATELY. The title is the link's accessible name, which is what makes
-      it addressable by voice and what WCAG 2.5.3 asks for; a composed label would REPLACE the name
-      with a sentence and a speech-input user saying the portal's name would match nothing. Where the
-      link LEADS is carried as a description instead, so it is announced after the name.
+  APPLICATION. It is part of the frozen route table and it renders the portal RECORD form, but every
+  affordance that named a portal went either to the create form or to the settings child route, so the
+  record screen could be reached only by typing its address.
 -->
 <ng-template #portalNameCell let-portal>
   <a
@@ -446,37 +219,19 @@
 </ng-template>
 
 <!--
-  Row 1: the settings affordance.
-
-  An anchor, which is measured rather than assumed - `portals.ascx:L21` declares this column
-  with `EditMode="URL"`, so it rendered a hyperlink driven by a format string. It targets
-  SITE SETTINGS and not a create form, because the legacy column's address was built from
-  the administration page named "Site Settings" carrying a `pid` pair
-  (`Portals.ascx.vb:L303-L311`).
+  An anchor, which is measured rather than assumed - `portals.ascx:L21` declares this column with
+  `EditMode="URL"`, so it rendered a hyperlink driven by a format string.
 -->
-<!-- MIGRATION: THE AFFORDANCE TARGETS THE PORTAL'S SETTINGS SCREEN, NOT AN EDIT FORM.
-    `Portals.ascx.vb:L303-L311` did not name a destination directly. It resolved the
-    administration page titled "Site Settings" through `GetTabByName`, built an address to
-    that page carrying a `pid` pair with a placeholder identifier, and then substituted the
-    placeholder for the column's format token. So the legacy affordance opened SITE SETTINGS
-    for the row's portal, and the target address is the settings child route of the row's
-    portal rather than the create-or-edit form. Sending it to the form would look right and
-    be wrong. -->
-<!-- MIGRATION: THE AFFORDANCE GAINS A NAME. The legacy column rendered an unlabelled image
-    (`portals.ascx:L21`) whose only name was the tooltip carried by the local `Edit.Text`
-    resource entry - "Edit this Portal" - which repeats identically down every row. The
-    accessible name here is that wording qualified with the row's own portal title, so a
-    screen-reader user moving between rows hears which portal each affordance acts on. -->
+<!--
+  THE AFFORDANCE TARGETS THE PORTAL'S SETTINGS SCREEN, NOT AN EDIT FORM. `Portals.ascx.vb:L303-L311` did
+  not name a destination directly.
+-->
+<!--
+  THE AFFORDANCE GAINS A NAME. The legacy column rendered an unlabelled image whose only name was the
+  tooltip carried by the local `Edit.Text` resource entry - "Edit this Portal" - which repeats
+  identically down every row.
+-->
 <ng-template #editCommand let-portal>
-  <!-- ⚠ MINOR (WCAG 2.5.3 Label in Name) — THE ACCESSIBLE NAME NOW OPENS WITH THE VISIBLE WORD.
-      It read `Edit this Portal: <title>` while the affordance painted `Settings`, so the name did
-      not CONTAIN the visible text and a speech-input user saying "click Settings" matched none of
-      the ten on the page. The legacy tooltip wording is not lost: it moves to the `title`
-      attribute, which is what it was - `portals.ascx:L21` rendered an unlabelled image and this
-      string was its tooltip - and screen readers surface it as the affordance's description.
-
-      The visible word is INTERPOLATED from the same constant the accessible name is composed
-      from, so the two cannot drift apart again. -->
   <a
     class="portal-list__row-command"
     [routerLink]="editSettingsLinks()[portal.portalId]"
@@ -487,32 +242,18 @@
   </a>
 </ng-template>
 
+<!-- Row 2: the delete affordance. -->
 <!--
-  Row 2: the delete affordance.
-
-  A button, which `Portals.ascx.vb:L419-L420` confirms - that column's control really was an
-  image button, since it declared no URL edit mode.
-
-  Disabled while a deletion is in flight, so a second confirmation cannot be started against
-  a page that is about to be re-read.
+  THE AFFORDANCE IS WITHHELD ON THE ROW FOR THE PORTAL BEING BROWSED. `Portals.ascx.vb:L423` set the
+  delete image's visibility to the negation of a single test - whether the row's portal identifier
+  equalled the identifier of the tenant resolved for the current request - so an operator could never
+  delete the portal they were standing in.
 -->
-<!-- MIGRATION: THE AFFORDANCE IS WITHHELD ON THE ROW FOR THE PORTAL BEING BROWSED.
-    `Portals.ascx.vb:L423` set the delete image's visibility to the negation of a single test
-    - whether the row's portal identifier equalled the identifier of the tenant resolved for
-    the current request - so an operator could never delete the portal they were standing in.
-    That rule is reproduced exactly. ABSENT rather than disabled, because the legacy rule set
-    visibility and not enablement: a disabled control still announces itself as a command that
-    is momentarily unavailable, whereas the legacy screen offered nothing at all on that row.
-    The comparison is against the SIGNED-IN tenant and not the selected portal, which are
-    different facts - keying it to the selection would hide the affordance on whichever row an
-    operator last touched. -->
-<!-- MIGRATION: THE BROWSER CONFIRMATION BECOMES A REAL DIALOGUE. `Portals.ascx.vb:L299-L300`
-    attached the wording of the global `DeleteItem.Text` entry to this column as a script
-    confirmation, which offered no focus management, no escape handling and no nameable
-    cancel affordance. The shared dialogue further up carries the same wording and supplies
-    all three. Its label is the global `cmdDelete.Text` value, which is why this column's own
-    heading is that same word: `Portals.ascx.vb:L314-L316` localised each image column by its
-    command name, and no local entry of that name exists to override the global one. -->
+<!--
+  THE BROWSER CONFIRMATION BECOMES A REAL DIALOGUE. `Portals.ascx.vb:L299-L300` attached the wording of
+  the global `DeleteItem.Text` entry to this column as a script confirmation, which offered no focus
+  management, no escape handling and no nameable cancel affordance.
+-->
 <ng-template #deleteCommand let-portal>
   @if (canDelete(portal)) {
     <button
@@ -528,56 +269,31 @@
 </ng-template>
 
 <!-- Row 5: the host names. -->
-<!-- MIGRATION: THE CELL IS RE-AUTHORED AS REAL MARKUP INSTEAD OF CONCATENATED HTML.
-    `Portals.ascx.vb:L273-L288` built this cell as a STRING. Line 282 appended, per host name,
-    an opening anchor tag with the name run through the scheme-prefixing helper, then the name
-    again as the anchor's text, then a closing tag and a line break - and handed the result to
-    a label that emitted it as markup. A stored host name containing a quotation mark or an
-    angle bracket therefore escaped its attribute or its element. Here the address is a
-    property binding and the text is an interpolation, so the host name is escaped by
-    construction: no raw-HTML property, no sanitiser bypass and no trusted-HTML wrapper is
-    involved anywhere. The scheme prefixing the legacy helper performed is preserved by the
-    component, which supplies each pair already resolved. -->
-<!-- MIGRATION: A SEQUENCE OF HOST NAMES IS RENDERED AS A LIST. The legacy separator was a
-    literal line-break tag after each anchor (`Portals.ascx.vb:L282`), which left a trailing
-    break after the last one; the line-per-name layout is reproduced by list items whose
-    spacing the paired stylesheet declares, so nothing dangles after the final entry and a
-    portal with no host names renders nothing at all. -->
-<!-- MIGRATION: THE CONVERSION FEEDING THIS CELL IS NOW EXPLICIT AND TYPED. `portals.ascx:L41`
-    - the legacy cell's own binding expression - calls the framework conversion helper with a
-    lower-case method name, which compiled only because the administration pages were built
-    with strict typing switched OFF (`Website/release.config:L125`); the same spelling in a
-    strictly-typed compilation is an error. The identifier reaching this cell is typed at the
-    model boundary instead, so no run-time conversion happens here at all. -->
+<!--
+  A SEQUENCE OF HOST NAMES IS RENDERED AS A LIST. The legacy separator was a literal line-break tag
+  after each anchor, which left a trailing break after the last one; the line-per-name layout is
+  reproduced by list items whose spacing the paired stylesheet declares, so nothing dangles after the
+  final entry and a portal with no host names renders nothing at all.
+-->
+<!--
+  THE CONVERSION FEEDING THIS CELL IS NOW EXPLICIT AND TYPED. `portals.ascx:L41` - the legacy cell's own
+  binding expression - calls the framework conversion helper with a lower-case method name, which
+  compiled only because the administration pages were built with strict typing switched OFF; the same
+  spelling in a strictly-typed compilation is an error.
+-->
 <ng-template #aliasesCell let-portal>
   <ul class="portal-list__aliases">
     <!--
       ⚠ TRACKED BY THE LABEL, NOT THE ADDRESS. Every value that fails the address allowlist projects a
       null href, so tracking by href would give every refused alias the same key and the block would
-      refuse to render more than one of them. The label is the stored host name and is what distinguishes
-      the rows to a reader in any case.
+      refuse to render more than one of them.
     -->
     @for (alias of aliasLinks(portal); track alias.label) {
       <li class="portal-list__alias">
         <!--
-          A host name that is not an address is rendered as TEXT rather than as a link. The stored value
-          is operator-supplied and only `http` and `https` addresses naming a host are admitted, so a mail
-          address, an application-relative path, a network share or a scheme-bearing value that is not one
-          of the two appears exactly as stored with nothing to follow. The label is identical on both
-          arms: only the address is withheld, because rewriting what an operator stored would make this
-          row disagree with the edit screen.
-
           An ADMITTED address opens in a NEW BROWSING CONTEXT, which is what makes the `rel` mean
           anything: without a target the attribute is inert, because it protects the opener from a
-          document opened into a new context and there was no new context to protect against. The target
-          is the half to add rather than the attribute the half to delete, for a concrete reason: this
-          address leaves the application entirely, and the session's token is held in memory only, so
-          navigating away in the same tab signs the operator out. `noreferrer` joins `noopener` because
-          the destination is another origin and the administration address is not its business.
-
-          The hidden suffix announces the new context to a screen reader without changing what is drawn.
-          It is INSIDE the anchor, so the accessible name still begins with the visible host name — which
-          is what keeps the label and the name consistent for anyone driving this by voice.
+          document opened into a new context and there was no new context to protect against.
         -->
         @if (alias.href === null) {
           {{ alias.label }}
@@ -592,31 +308,17 @@
 </ng-template>
 
 <!-- Row 10: the expiry. -->
-<!-- MIGRATION: AN ABSENT EXPIRY RENDERS AS AN EMPTY CELL - NEVER AS THE MARKER DATE ITSELF AND
-    NEVER AS A PLACEHOLDER WORD. `Portals.ascx.vb:L250-L260` seeded its result with the empty
-    string and formatted the date only when it was not the legacy absent-date marker, so an
-    unset expiry painted nothing at all. That marker is the minimum representable date rather
-    than a null, and it SURVIVES ON THE WIRE because the contract omits nothing - so a cell
-    that simply printed what arrived would show a first-of-January date in year one and read
-    as a real, wildly wrong expiry. The shared date pipe answers the marker, an absent value
-    and an unparseable value alike with an empty cell, which reproduces the legacy outcome
-    exactly. No placeholder wording is substituted either: the legacy cell was blank, so this
-    one is blank. The erasure is confined to the display layer - the contract still carries
-    the marker, so null and the marker remain distinguishable to anything that needs them. -->
-<!-- MIGRATION: AN EXPIRED TERM IS QUALIFIED IN WORDS, WHICH IS A NET ADDITION WITH A LEGACY PRECEDENT AND
-    NOT A DESIGN FLOURISH. This screen's own formatter (`Portals.ascx.vb:L250-L260`) printed the date and
-    nothing else, so a term that lapsed in 2020 and one running to 2099 painted identically - same colour,
-    same weight, no other mark - on the one screen whose purpose is administering hosting terms. Runtime
-    testing measured exactly that pair. The account-services screen DID test the clock:
-    `Website/admin/Users/MemberServices.ascx.vb:L172-L186` prints the date when `expiryDate > Date.Today` and
-    the word `Expired` otherwise, and the shared date pipe's own note says that test belongs to a screen that
-    owns a clock. The word is this screen's own `Expired.Text` resource entry. The DATE is untouched, and the
-    qualifier is added beside it rather than replacing it, because an administrator needs to know when a term
-    lapsed as well as that it has.
-
-    NOT COLOUR ALONE: the state is carried by the WORD, which any reader receives, and the colour is a second
-    cue for those who can use it. An absent expiry stays an entirely empty cell, exactly as the legacy left
-    it - no dash, no placeholder word - so no state is asserted where the legacy asserted none. -->
+<!--
+  AN ABSENT EXPIRY RENDERS AS AN EMPTY CELL - NEVER AS THE MARKER DATE ITSELF AND NEVER AS A PLACEHOLDER
+  WORD. `Portals.ascx.vb:L250-L260` seeded its result with the empty string and formatted the date only
+  when it was not the legacy absent-date marker, so an unset expiry painted nothing at all.
+-->
+<!--
+  MIGRATION: AN EXPIRED TERM IS QUALIFIED IN WORDS, WHICH IS A NET ADDITION WITH A LEGACY PRECEDENT AND
+  NOT A DESIGN FLOURISH. This screen's own formatter printed the date and nothing else, so a term that
+  lapsed in 2020 and one running to 2099 painted identically - same colour, same weight, no other mark -
+  on the one screen whose purpose is administering hosting terms.
+-->
 <ng-template #expiresCell let-portal>
   {{ portal.expiryDate | dateDisplay }}
   @if (expiryState(portal) === 'expired') {
@@ -624,44 +326,16 @@
   }
 </ng-template>
 
-<!-- Rows 6 and 7: the two tallies, served by ONE template.
-
-    The shared grid hands a cell template the column it is rendering, precisely so that one template can
-    answer several columns; the column key is what tells the account tally from the page tally here. -->
-<!-- MIGRATION: THE LEGACY ABSENT-INTEGER MARKER IS PAINTED AS A MARK, NOT AS THE NUMBER MINUS ONE, AND THE
-    REASON IS A COLLISION SPECIFIC TO THIS GRID. `Library/Components/Shared/Null.vb:L41` declares the absent
-    integer as `-1`; `Library/Components/Portal/PortalInfo.vb:L61-L62` seeds BOTH tallies with it; and the
-    terminal `GetTabCount` arithmetic is `COUNT(*) - 1` over a portal's pages after the administration page
-    is excluded, which answers minus one for a portal that records no administration page at all. So minus
-    one really does arrive - runtime testing measured it in the page tally of all 251 rows of a real
-    installation. Meanwhile `Portals.PortalID` is declared `IDENTITY(-1,1)`, so minus one is also a
-    LEGITIMATE portal identifier, and the first column paints it verbatim. The same characters in the same
-    row therefore meant "portal number minus one" in one cell and "no count available" in another, with
-    nothing to tell them apart.
-
-    Rule T7 settles where to fix that: sentinels survive at the BOUNDARY, not in the display. The contract
-    still carries minus one, so anything that needs to tell the marker from a real count still can; only the
-    cell stops painting it as a number. This is the same discipline the expiry column has always applied to
-    the absent-DATE marker. The identifier column is deliberately left alone, because there minus one is
-    real; only the two tallies, which cannot hold a negative count, are answered this way. -->
 <!--
-  ⚠ MINOR (money differentiation) — THE HOSTING-FEE CELL.
-
-  It MUST stay at this template's top level, for the same static-view-query reason the cells above
-  state. The characters painted are unchanged - two fraction digits, no grouping, no currency
-  symbol, reproducing `portals.ascx:L47 DataFormatString="{0:0.00}"` through the same formatter the
-  formatted column used. What is added is that a NEGATIVE fee looks different from a positive one:
-  runtime testing measured `-125.50`, `0.00` and `4321.99` as pixel-identical apart from one minus
-  glyph, so a loss was distinguishable only by reading the value character by character.
-
-  The mark is a colour AND a weight AND a hidden word, deliberately all three: colour alone would
-  carry meaning by colour only, which WCAG 1.4.1 forbids, and the hidden word is what a reader who
-  cannot see either cue is told instead. Zero and positive fees are left entirely alone - zero is
-  the ordinary state for most of these portals and marking it would be noise.
-
-  This is a DISCLOSURE, not an objection. `sitesettings.ascx` declares the fee's only validator as
-  a currency comparison with no lower bound, so a negative fee is legal and stays legal.
+  The shared grid hands a cell template the column it is rendering, precisely so that one template can
+  answer several columns; the column key is what tells the account tally from the page tally here.
 -->
+<!--
+  Rule T7 settles where to fix that: sentinels survive at the BOUNDARY, not in the display. The contract
+  still carries minus one, so anything that needs to tell the marker from a real count still can; only
+  the cell stops painting it as a number.
+-->
+<!-- ⚠ MINOR (money differentiation) — THE HOSTING-FEE CELL. -->
 <ng-template #hostFeeCell let-portal>
   @if (isFeeNegative(portal)) {
     <span class="portal-list__fee--negative">{{ hostingFeeText(portal) }}</span>
@@ -670,11 +344,9 @@
     {{ hostingFeeText(portal) }}
   }
   <!--
-    SEC-F17. THE APPROXIMATION QUALIFIER, ON THE ROWS THAT NEED IT AND NOWHERE ELSE. `Portals.HostFee` is
-    SQL `money` and crosses the wire as a JSON number, so above the exact-cents bound the figure painted
-    above may already differ from the stored one. The cell says so rather than correcting it, because the
-    stored digits are gone before this template runs. The same disclosure exists on the role listing, which
-    is where the guard was first written; this listing formatted to two decimals with no guard at all.
+    THE APPROXIMATION QUALIFIER, ON THE ROWS THAT NEED IT AND NOWHERE ELSE. `Portals.HostFee` is SQL
+    `money` and crosses the wire as a JSON number, so above the exact-cents bound the figure painted
+    above may already differ from the stored one.
   -->
   @if (isHostFeeApproximate(portal)) {
     <span class="portal-list__fee-qualifier">{{ approximateFeeQualifier }}</span>
@@ -683,8 +355,10 @@
 
 <ng-template #tallyCell let-portal let-column="column">
   @if (isTallyAbsent(portal, column.key)) {
-    <!-- The mark is decorative and the words are the content: a reader who cannot see the dash is told what
-        it means, and a reader who can is not read a sentence on every row of a full page. -->
+    <!--
+      The mark is decorative and the words are the content: a reader who cannot see the dash is told
+      what it means, and a reader who can is not read a sentence on every row of a full page.
+    -->
     <span aria-hidden="true">{{ absentTallyMark }}</span>
     <span class="portal-list__absent-tally">{{ absentTallyDescription }}</span>
   } @else {

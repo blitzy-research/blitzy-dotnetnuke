@@ -1,86 +1,8 @@
 /**
- * Specification for {@link RoleGroupFormComponent} — adding a role group.
- *
- * ## WHAT THIS SCREEN IS, AND WHAT IT DELIBERATELY IS NOT
- *
- * It ADDS a role group and nothing else. There is no edit mode, no identifier in the address and no
- * delete: the legacy screen offered exactly one action, and the migrated screen reproduces that scope
- * rather than inventing a fuller resource editor. Every case below is therefore about a single `POST`
- * and about the rules that decide whether it happens at all.
- *
- * ## HOW IT IS DRIVEN
- *
- *   - Mounted as the standalone unit it is, with the REAL {@link RoleService} and {@link RoleStore}
- *     resolved from the injector and every request answered through `HttpTestingController`.
- *   - `Router.navigate` is spied, because the screen navigates with an ARRAY of commands.
- *   - `NotificationService.notify` is spied and called through.
- *
- * ## THE FACTS THAT SHAPE EVERY CASE
- *
- * ⚠ THE NAME RULE IS TRIMMED-REQUIRED, NOT MERELY REQUIRED. A name of nothing but spaces is refused,
- * because a group named `'   '` is indistinguishable from an unnamed one in every listing that shows it
- * while comparing as a distinct value in the database.
- *
- * ⚠ NOTHING IS TRIMMED ON THE WAY OUT. The value travels byte for byte as typed, so a case must not
- * assume the request "tidies" a name that passed the rule.
- *
- * ⚠ A SUCCESSFUL CREATION RE-READS THE GROUP CATALOGUE AND THEN LEAVES, so `GET /role-groups` follows
- * the `POST` and must be answered. The re-read is the STORE's, issued from its own success handler, so
- * it is not optional and not this screen's to suppress.
- *
- * ## WHERE THIS SPECIFICATION ASSERTS SOMETHING OTHER THAN THE OBVIOUS, AND WHY
- *
- * Four things about this screen are not what a reader would first guess, and each shapes several cases
- * below. They are recorded here so that nobody "corrects" a case into failing.
- *
- * ⚠ 1. MIGRATION: FAILURE SEVERITY IS ASSERTED THROUGH THE RENDERED BANNER, NOT THROUGH THE
- * NOTIFICATION QUEUE. This screen queues NO notification for a failure, by design: the shared error
- * interceptor already queues exactly one for every failed response, so a second would report one event
- * twice — and the second would carry generic status wording rather than the legacy sentence this
- * migration preserves. The component-owned surface is the in-page banner, which is also the faithful
- * reproduction of the legacy `AddModuleMessage` block — an in-page block beside the form, never a
- * transient global message. The banner derives its band from the status: a duplicate name (409) is
- * painted as a fault and a permission refusal (403) as a refusal, reproducing `RedError` and
- * `YellowWarning` respectively. Success IS announced through the queue, because the interceptor never
- * sees it. So the severity cases below assert the band and its caption rather than a `notify` argument,
- * and they additionally assert that `notify` was NOT called — which is what proves the single-surface
- * rule holds rather than merely being intended.
- *
- * ⚠ 2. THE DOCUMENT HOLDS FOUR BUTTONS, AND ONLY TWO OF THEM ARE COMMANDS. The shared field contributes
- * one help disclosure per field carrying guidance, and both fields carry it. A bare `button` count is
- * therefore 4; the two commands are counted within the action row, and the disclosures are accounted
- * for explicitly so the narrower scope cannot conceal a stray action.
- *
- * ⚠ 3. `aria-expanded` IS PRESENT, AND ITS PRESENCE IS CORRECT. The legacy registered a collapsible
- * section-head control on its first line and never placed one, so there is no legacy section here — but
- * the shared field's help disclosure is a genuine disclosure and states its own state. The assertion is
- * therefore that every expandable element IS a help disclosure, not that none exists.
- *
- * ⚠ 4. GUIDANCE IS COLLAPSED ON ARRIVAL. Both help sentences exist but are revealed on demand, so a case
- * expecting either to be present before the disclosure is pressed would be asserting a different design.
- *
- * ## MIGRATION: THE SCOPE REDUCTION, AND THE ONE DEFECT THAT IS NOTED RATHER THAN TESTED
- *
- * MIGRATION: the screen is CREATE-ONLY, so there is no edit case, no delete case and no confirmation
- * case below. `EditGroups.ascx.vb:L42` seeded its mode field to -1 and `:L61-L62` overwrote it from the
- * query string, so one legacy control served both modes; `:L83-L84` is the whole create branch and does
- * nothing but hide the delete affordance. Only `role-groups/new` reaches this component, so the edit
- * branch has no way in and asserting it would be asserting a screen nothing can reach.
- *
- * MIGRATION: both outcomes go to the SAME place, resolving a legacy asymmetry rather than reproducing
- * it. `:L120` sent a successful creation to the roles list while `:L121-L124` sent a successful update
- * back to this same screen with the identifier appended — one screen with two notions of "done". Being
- * create-only, this one has a single destination, and both the success case and the cancel case assert
- * it.
- *
- * ⚠ MIGRATION — NOTED, DELIBERATELY NOT TESTED: the legacy passed the group identifier between screens
- * as a query string and the two ends disagreed about its spelling. `Roles.ascx.vb:L84` WRITES
- * `RoleGroupId` with a lower-case `d` while `EditGroups.ascx.vb:L61-L62` READS `RoleGroupID` with a
- * capital one — and `Roles.ascx.vb:L253` reads the capital form too, so a single file writes one spelling
- * and reads the other. It worked only because query-string lookup in that framework is case-insensitive.
- * There is NO case for it here because typed routing eliminates the query string entirely: this component
- * reads no query parameter and no route parameter, so the class of defect cannot recur and there is no
- * behaviour left to assert. Recorded so that its absence reads as a decision rather than as an omission.
+ * Specification for {@link RoleGroupFormComponent} — adding a role group. ## WHAT THIS SCREEN IS, AND
+ * WHAT IT DELIBERATELY IS NOT It ADDS a role group and nothing else. There is no edit mode, no identifier
+ * in the address and no delete: the legacy screen offered exactly one action, and the migrated screen
+ * reproduces that scope rather than inventing a fuller resource editor.
  */
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -119,39 +41,15 @@ const SUBMIT_LABEL = 'Update';
 const CANCEL_LABEL = 'Cancel';
 
 /**
- * Wording this screen must NEVER publish.
- *
- * `EditGroups.ascx.resx` → `ModuleHelp.Text` is the one resource value on this screen that carries
- * live markup (`<h1>About Edit Role Groups</h1><p>…</p>`). Module help has no home in the shared
- * component set, so it is read for context and deliberately not rendered. Asserted as an ABSENCE
- * because the alternative — binding it — would have to bypass the framework's escaping to look right,
- * which is precisely the injection route this migration closes by construction.
+ * Wording this screen must NEVER publish. `EditGroups.ascx.resx` → `ModuleHelp.Text` is the one resource
+ * value on this screen that carries live markup (`<h1>About Edit Role Groups</h1><p>…</p>`).
  */
 const MODULE_HELP_HEADING = 'About Edit Role Groups';
 
-/**
- * The edit-mode title from this screen's own resource file, `ControlTitle_editgroup.Text`.
- *
- * MIGRATION: asserted ABSENT. The screen is create-only, so it takes its heading from the wording the
- * legacy put on the link that REACHES creation (`Roles.ascx.resx` → `AddGroup.Action`) rather than
- * from the edit title its resource file happens to declare. Naming the rejected string here is what
- * stops a later reader "restoring" it.
- */
+/** The edit-mode title from this screen's own resource file, `ControlTitle_editgroup.Text`. */
 const EDIT_MODE_TITLE = 'Edit Role Group';
 
-// =====================================================================================================
 // THE SEVERITY BANDS, AS THE SHARED BANNER PAINTS THEM
-// =====================================================================================================
-// ⚠ SEVERITY IS ASSERTED THROUGH THE RENDERED BANNER, NOT THROUGH THE NOTIFICATION QUEUE, because that
-// is where this screen actually puts it. The banner derives its band from the status the problem
-// document carries, mapping the domain severity onto a presentational one: `error` → `danger`
-// (captioned 'Error'), `warning` → `warning` (captioned 'Warning'), `info` → `calm`. The caption is not
-// decoration — it is what carries the severity to somebody who cannot perceive the colour — so
-// asserting the caption asserts the severity in the form a person receives it.
-//
-// The legacy vocabulary these two bands reproduce is three-valued: `RedError`, `YellowWarning` and
-// `GreenSuccess`. A refusal was YELLOW and a fault was RED, and that distinction is what these
-// constants pin.
 
 /** The band a FAULT is painted in — the migrated `ModuleMessageType.RedError`. */
 const DANGER_BAND = 'danger';
@@ -221,10 +119,8 @@ function problem(
 // =====================================================================================================
 
 /**
- * One role group.
- *
- * ⚠ THE DEFAULT IDENTIFIER IS ZERO, because `dbo.RoleGroups.RoleGroupID` is seeded from zero: group
- * zero is the first group of an installation and is not an absence.
+ * One role group. ⚠ THE DEFAULT IDENTIFIER IS ZERO, because `dbo.RoleGroups.RoleGroupID` is seeded from
+ * zero: group zero is the first group of an installation and is not an absence.
  */
 function roleGroup(roleGroupId = 0, overrides: Partial<RoleGroup> = {}): RoleGroup {
   return {
@@ -245,12 +141,10 @@ function envelope<T>(data: T): ApiResponse<T> {
 // =====================================================================================================
 
 /**
- * Narrows away `null` and `undefined` by THROWING when the value is absent.
- *
- * ⚠ THIS EXISTS SO THAT NO NON-NULL ASSERTION APPEARS IN THIS FILE. An assertion silences the compiler
- * and then fails later as a `TypeError` raised deep inside an expectation, naming a property rather
- * than the thing that was missing. This fails at the point of absence with a sentence saying what was
- * not there, which is the difference between a diagnosable failure and a puzzle.
+ * Narrows away `null` and `undefined` by THROWING when the value is absent. ⚠ THIS EXISTS SO THAT NO
+ * NON-NULL ASSERTION APPEARS IN THIS FILE. An assertion silences the compiler and then fails later as a
+ * `TypeError` raised deep inside an expectation, naming a property rather than the thing that was
+ * missing.
  *
  * @param value The value to narrow.
  * @param what What was expected, named in the failure message.
@@ -265,17 +159,8 @@ function present<T>(value: T | null | undefined, what: string): T {
 }
 
 /**
- * Reads a request body as a dictionary of unknown members.
- *
- * ⚠ A REQUEST BODY IS GENUINELY UNKNOWN, so it is inspected rather than asserted into a shape. Casting
- * it to an interface would make a body of the WRONG shape type-check and then fail as a confusing
- * comparison; this throws immediately if what was sent is not an object at all, and every member is
- * then read with bracket access — which this workspace requires of an index signature anyway.
- *
- * Members are deliberately typed `unknown` on the way out. That is what lets a case prove a member is
- * the empty string RATHER THAN null, which is the whole point of the description contract: a typed
- * reader would have quietly widened `''` and `null` into the same `string | null` and made the
- * distinction unassertable.
+ * Reads a request body as a dictionary of unknown members. ⚠ A REQUEST BODY IS GENUINELY UNKNOWN, so it
+ * is inspected rather than asserted into a shape.
  *
  * @param body The body the request carried.
  * @returns The body's members, keyed by name.
@@ -307,10 +192,9 @@ describe('RoleGroupFormComponent', () => {
       // Standalone, so it is IMPORTED. There is nothing to declare.
       imports: [RoleGroupFormComponent],
       providers: [
-        // ⚠ ORDER IS LOAD-BEARING, AND THESE TWO ARE ON SEPARATE LINES SO IT IS VISIBLE. The real client
-        // is registered FIRST and the testing backend SECOND, because the backend displaces the real
-        // handler already in place. Reversed, the real transport survives and every expectation below
-        // fails for a reason that points nowhere near the cause.
+        // ⚠ ORDER IS LOAD-BEARING, AND THESE TWO ARE ON SEPARATE LINES SO IT IS VISIBLE. The real client is
+        // registered FIRST and the testing backend SECOND, because the backend displaces the real handler
+        // already in place.
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
@@ -333,7 +217,7 @@ describe('RoleGroupFormComponent', () => {
   // HARNESS
   // ---------------------------------------------------------------------------------------------------
 
-  /** Mounts the screen. It reads nothing on arrival, so no request is outstanding afterwards. */
+  /** Mounts the screen. */
   function create(): void {
     fixture = TestBed.createComponent(RoleGroupFormComponent);
     fixture.detectChanges();
@@ -399,14 +283,12 @@ describe('RoleGroupFormComponent', () => {
   }
 
   /**
-   * The action buttons this screen owns, and ONLY those.
-   *
-   * ⚠ SCOPED TO THE ACTION ROW ON PURPOSE. A document-wide `button` query does NOT answer "how many
-   * actions does this screen offer": the shared field component contributes a help-disclosure button
-   * per field that carries help, so both fields add one and a bare count is FOUR. Those two are
-   * affordances belonging to the fields, not commands belonging to the form, and conflating them would
-   * make the count meaningless in either direction — it would pass with a Delete button added and fail
-   * with a help sentence removed.
+   * The action buttons this screen owns, and ONLY those. ⚠ SCOPED TO THE ACTION ROW ON PURPOSE. A
+   * document-wide `button` query does NOT answer "how many actions does this screen offer": the shared
+   * field component contributes a help-disclosure button per field that carries help, so both fields add
+   * one and a bare count is FOUR. Those two are affordances belonging to the fields, not commands
+   * belonging to the form, and conflating them would make the count meaningless in either direction — it
+   * would pass with a Delete button added and fail with a help sentence removed.
    */
   function actions(): readonly HTMLButtonElement[] {
     return queryAll<HTMLButtonElement>('.role-group-form__actions button');
@@ -430,12 +312,7 @@ describe('RoleGroupFormComponent', () => {
     return fixture.componentInstance;
   }
 
-  /**
-   * The band the shared banner is painting, or null when it is painting nothing.
-   *
-   * Absence is decided by an explicit `=== null` on the element rather than by coalescing, so "no
-   * banner" and "a banner with no band" stay distinguishable instead of collapsing into one answer.
-   */
+  /** The band the shared banner is painting, or null when it is painting nothing. */
   function severityBand(): string | null {
     const banner: Element | null = query('.error-banner');
 
@@ -474,11 +351,10 @@ describe('RoleGroupFormComponent', () => {
       expect(field<HTMLInputElement>(NAME_CONTROL_ID).value).toBe('');
       expect(field<HTMLTextAreaElement>(DESCRIPTION_CONTROL_ID).value).toBe('');
 
-      // ⚠ THE GUIDANCE IS COLLAPSED UNTIL ASKED FOR, and that is the shared field's arrangement rather
-      // than this screen's: it reproduces the legacy help BUTTON, which revealed its text on demand, and
-      // it is a real toggle rather than a tooltip so it is operable from the keyboard and readable by a
-      // screen reader. A case expecting the sentence to be present on arrival would be asserting a
-      // different design.
+      // ⚠ THE GUIDANCE IS COLLAPSED UNTIL ASKED FOR, and that is the shared field's arrangement rather than
+      // this screen's: it reproduces the legacy help BUTTON, which revealed its text on demand, and it is a
+      // real toggle rather than a tooltip so it is operable from the keyboard and readable by a screen
+      // reader.
       const toggle: HTMLButtonElement = present(
         query<HTMLButtonElement>('.form-field__help-toggle'),
         'the help affordance',
@@ -517,10 +393,6 @@ describe('RoleGroupFormComponent', () => {
       expect(revealed).withContext('the name guidance').toContain(NAME_HELP);
       expect(revealed).withContext('the description guidance').toContain(DESCRIPTION_HELP);
 
-      // ⚠ PLAIN TEXT, PROVEN STRUCTURALLY. Legacy resource values are untrusted markup — this screen's
-      // own `ModuleHelp.Text` carries an `<h1>` and a `<p>` — so it is not enough that the sentence
-      // appears: it must appear as TEXT. Each guidance paragraph is asserted to contain no child
-      // element at all, which is what "no markup was injected" means in a document rather than in prose.
       queryAll<HTMLElement>('.form-field__help').forEach((paragraph) => {
         expect(paragraph.children.length)
           .withContext('guidance is text, never markup')
@@ -560,9 +432,6 @@ describe('RoleGroupFormComponent', () => {
     it('takes its heading from the create-mode wording, not the edit title its resource file declares', () => {
       create();
 
-      // MIGRATION: this screen's own resource file declares only an EDIT title, and this screen only
-      // ever creates — so the heading is the wording the legacy put on the link that reaches creation.
-      // Naming the rejected string is what stops a later reader "restoring" it.
       expect((query('h1')?.textContent ?? '').trim()).toBe(PAGE_TITLE);
       expect(screenText()).not.toContain(EDIT_MODE_TITLE);
     });
@@ -597,10 +466,7 @@ describe('RoleGroupFormComponent', () => {
     it('holds the name invalid while it is empty, and the form with it', () => {
       create();
 
-      // The rule as the FORM sees it, before any interaction. `EditGroups.ascx:L12` declares a
-      // required-field validator against this one control, so an empty name is invalid on arrival even
-      // though nothing is shown yet — invalid and reported are different states, and only the second is
-      // gated on being touched.
+      // The rule as the FORM sees it, before any interaction.
       expect(screen().form.controls.roleGroupName.hasError('required'))
         .withContext('the required rule is armed')
         .toBeTrue();
@@ -618,9 +484,6 @@ describe('RoleGroupFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // Asserted as the WHOLE message list, not merely as a member of it: the screen publishes exactly
-      // one sentence for this rule, so a second message appearing beside it is a regression that
-      // `toContain` would not catch.
       expect(fieldMessages()).toEqual([NAME_REQUIRED_MESSAGE]);
       expect(screen().form.controls.roleGroupName.touched)
         .withContext('submitting touches the control, which is what reveals the message')
@@ -632,10 +495,6 @@ describe('RoleGroupFormComponent', () => {
     it('bounds the name by a real validator and not by the attribute alone', () => {
       create();
 
-      // ⚠ BOTH HALVES OF THE BOUND ARE ASSERTED, because they do different jobs. The attribute stops
-      // typing and pasting at the source; the VALIDATOR is what guarantees an over-long value can never
-      // be sent however it got into the control. Asserting only the attribute would let the validator be
-      // deleted without a single case failing.
       screen().form.controls.roleGroupName.setValue('a'.repeat(NAME_MAX_LENGTH + 1));
       fixture.detectChanges();
 
@@ -657,10 +516,6 @@ describe('RoleGroupFormComponent', () => {
 
       type(NAME_CONTROL_ID, 'Paid Services');
 
-      // ⚠ THE ASYMMETRY IS THE LEGACY'S OWN, READ OFF THE MARKUP. `EditGroups.ascx:L12` declares a
-      // required-field validator against the name; `:L17` declares this text box with a length cap, a
-      // multi-line mode and a height, and NO VALIDATOR OF ANY KIND. So the field is genuinely optional,
-      // and a case demanding a description would be inventing a rule the legacy screen never had.
       expect(screen().form.controls.description.value).toBe('');
       expect(screen().form.valid).withContext('valid with no description at all').toBeTrue();
     });
@@ -670,9 +525,6 @@ describe('RoleGroupFormComponent', () => {
 
       type(NAME_CONTROL_ID, 'Paid Services');
 
-      // Asserted as the absence of the whole error object rather than of one key. `hasError('required')`
-      // alone would still pass if some other rule had been added; `errors === null` is the assertion that
-      // no rule of any kind is attached.
       expect(screen().form.controls.description.errors)
         .withContext('no rule at all, not merely no required rule')
         .toBeNull();
@@ -705,9 +557,6 @@ describe('RoleGroupFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // ⚠ THIS IS WHY THE RULE IS TRIMMED-REQUIRED RATHER THAN MERELY REQUIRED. A group named with
-      // spaces looks unnamed in every listing that shows it, yet compares as a distinct value in the
-      // database — so two of them can coexist and neither can be told apart.
       expect(fieldMessages()).toContain(NAME_REQUIRED_MESSAGE);
       expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
     });
@@ -719,23 +568,6 @@ describe('RoleGroupFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // ⚠ THIS CASE PREVIOUSLY ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE DEFECT. It demanded
-      // that NO message appear, on the reasoning that the over-length state is "unreachable through
-      // the interface" because the control's own `maxlength` caps typing and pasting. The cap is real
-      // - it is asserted below and has not been removed - but the conclusion drawn from it was wrong
-      // in two ways.
-      //
-      // First, the state IS reachable: it was reproduced from outside, which is exactly what a tool,
-      // an autofill implementation or an assistive technology setting `.value` directly does, none of
-      // which passes through the browser's own editing path. Second, and regardless of how it is
-      // reached, what the operator met there was a dead end - the control was `ng-invalid`, the field
-      // rendered no error text, its error container was never created, `aria-invalid` stayed absent
-      // and pressing Update did nothing whatsoever, with nothing on screen to say why.
-      //
-      // The sibling role form has always reported this same violation, with `maxlength` on its inputs
-      // too - so the two screens of one feature described the identical violation two different ways.
-      // The message can only ever be seen in the state `maxlength` already prevents, so no ordinary
-      // entry produces new text; it simply removes the dead end when something else produces it.
       expect(fieldMessages())
         .withContext('the length bound is now stated in words')
         .toContain(`Enter at most ${String(NAME_MAX_LENGTH)} characters.`);
@@ -809,14 +641,6 @@ describe('RoleGroupFormComponent', () => {
         description: 'Groups that carry a fee',
       });
 
-      // ⚠ THE TWO ABSENT MEMBERS ARE NAMED, not merely implied by the comparison above. The legacy
-      // assembled FOUR facts at `EditGroups.ascx.vb:L107-L111` and this contract carries two, so the two
-      // that were dropped are the interesting part of the assertion and are stated so a reader sees WHY
-      // they are missing rather than wondering whether they were forgotten:
-      //   * the tenant came from the module's server-side context (`:L108`) and is now resolved
-      //     server-side from the request host and the caller's claims;
-      //   * the identifier was the create-or-edit discriminator (`:L109`, seeded -1 at `:L42`) and is
-      //     assigned by the server, this screen having no edit mode to discriminate.
       const body: Readonly<Record<string, unknown>> = bodyRecord(call.request.body);
 
       expect(Object.keys(body)).withContext('exactly the two declared members').toEqual([
@@ -847,11 +671,9 @@ describe('RoleGroupFormComponent', () => {
       expect(notifications()).toEqual([{ severity: 'success', message: CREATED_MESSAGE }]);
       expect(navigateSpy).toHaveBeenCalledOnceWith([ROLES_ROUTE], { replaceUrl: true });
 
-      // ⚠ AND IT SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications on a
-      // completed navigation, so a confirmation announced in the same task as the departure was
-      // swept before it could be painted - the group was created and the operator was returned to
-      // the listing with nothing said. The queue is real here (`notify` is called through), so
-      // running the sweep is what proves the retention rather than asserting a method call.
+      // ⚠ AND IT SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications on a completed
+      // navigation, so a confirmation announced in the same task as the departure was swept before it could
+      // be painted - the group was created and the operator was returned to the listing with nothing said.
       const notificationService = TestBed.inject(NotificationService);
       notificationService.clearOnNavigation();
 
@@ -861,13 +683,6 @@ describe('RoleGroupFormComponent', () => {
     });
 
     it('settles the form on success, so nobody is asked to discard work that was saved', () => {
-      // ⚠ MEASURED IN A REAL BROWSER BEFORE THIS EXISTED. Creating a group succeeded, the
-      // confirmation painted at the listing, and the operator was then shown the native prompt 'You
-      // have unsaved changes on this page. Leave without saving and discard them?' about the very
-      // entry that had just been stored. The cause is a timing fact rather than an oversight in the
-      // guard: this screen's probe reads `dirty && saving() === false`, and by the time the success
-      // is handled the write has SETTLED, so `saving()` has already returned to false while the
-      // controls are still dirty from the typing.
       create();
 
       type(NAME_CONTROL_ID, 'Paid Services');
@@ -884,22 +699,9 @@ describe('RoleGroupFormComponent', () => {
       expect(screen().form.pristine).withContext('the entry is stored, so it is not unsaved').toBeTrue();
       expect(screen().form.untouched).toBeTrue();
 
-      // The decisive assertion: the REAL tracker, holding this screen's own real probe, is asked the
-      // same question the route guard asks. Asserting the form flags alone would not prove the guard
-      // stays quiet, because the probe combines them with the saving state.
       expect(tracker.isDirty())
         .withContext('the guard has nothing to ask about after a completed save')
         .toBeFalse();
-      /*
-       * ⚠ REPLACES, and the option is asserted rather than ignored. The group exists now, so Back
-       * onto its creation form would invite a second identical creation. It is also what
-       * `core/guards/unsaved-changes.guard.ts` reads to recognise a departure the APPLICATION
-       * initiated: without it, the still-dirty form would be met with a prompt offering to discard
-       * the values that had just been saved.
-       *
-       * The CANCEL path deliberately still pushes and passes no options at all - asserted
-       * separately below - because an operator who changed their mind may change it back.
-       */
     });
 
     it('sends an omitted description as the empty string, not as null', () => {
@@ -911,20 +713,13 @@ describe('RoleGroupFormComponent', () => {
 
       const call = expectRequest('POST', ROLE_GROUPS_URL);
 
-      // ⚠ THE EMPTY STRING IS WHAT THIS CONTRACT CARRIES, and it is deliberate: the control is declared
-      // non-nullable so it can never hold null, and the legacy absent-string marker WAS the empty
-      // string — `Null.vb` returns `""` — so `''` is precisely how this schema spells "no description".
       expect(call.request.body).toEqual({
         roleGroupName: 'Paid Services',
         description: '',
       });
 
       // ⚠ AND ASSERTED MEMBER BY MEMBER AGAINST EVERY NEAR MISS, because they are not interchangeable on
-      // the wire and a single deep comparison reads as though they might be. The API serialises with its
-      // null-omission condition set to NEVER, so the member is always present; a client that coalesced
-      // `''` to null, dropped the member, or stringified it would each change what is stored, and each
-      // failure would look identical in a summary. Read with bracket access because the body is an
-      // unknown dictionary, which is also what this workspace's index-signature rule requires.
+      // the wire and a single deep comparison reads as though they might be.
       const body: Readonly<Record<string, unknown>> = bodyRecord(call.request.body);
 
       expect(body['description']).withContext('present and empty').toBe('');
@@ -943,10 +738,6 @@ describe('RoleGroupFormComponent', () => {
     it('keeps the interior spacing of a name, which is the operator\u2019s own', () => {
       create();
 
-      // ⚠ THIS CASE PREVIOUSLY CLAIMED THAT NOTHING IS TRIMMED ON THE WAY OUT, and half of that is
-      // no longer true: the padding at the edges IS now removed, for the reason recorded beside the
-      // tidy in the component. What it was really pinning survives and is the half that matters —
-      // spacing a person put INSIDE a name is part of the name and is never rewritten.
       type(NAME_CONTROL_ID, 'Paid  Services');
 
       press(SUBMIT_LABEL);
@@ -963,10 +754,8 @@ describe('RoleGroupFormComponent', () => {
     it('tidies the padding off a name into the control, so what is shown is what is sent', () => {
       create();
 
-      // MIGRATION: a deliberate divergence, and the same one the sibling role form makes. The
-      // legacy stored what was posted. It is trimmed here because the closed route set carries no
-      // role-group edit screen, so a group created with invisible leading spaces would keep them
-      // for good and would sort ahead of every other group in the scope filter this form fills.
+      // MIGRATION: a deliberate divergence, and the same one the sibling role form makes. The legacy stored
+      // what was posted.
       type(NAME_CONTROL_ID, '  Paid Services  ');
 
       press(SUBMIT_LABEL);
@@ -987,9 +776,9 @@ describe('RoleGroupFormComponent', () => {
     it('leaves a refused whitespace-only name exactly as typed, rather than blanking the box', () => {
       create();
 
-      // The refusal comes from the presence rule, which trims before judging and does not rewrite
-      // the value. A field that empties itself as you are told it is required reads as the screen
-      // having eaten the entry.
+      // The refusal comes from the presence rule, which trims before judging and does not rewrite the
+      // value. A field that empties itself as you are told it is required reads as the screen having eaten
+      // the entry.
       type(NAME_CONTROL_ID, '   ');
 
       press(SUBMIT_LABEL);
@@ -1071,10 +860,6 @@ describe('RoleGroupFormComponent', () => {
       expect(textOf('.error-banner__message').join(' ')).toContain(DUPLICATE_MESSAGE);
       expect(navigateSpy).withContext('nobody is moved').not.toHaveBeenCalled();
 
-      // ⚠ AND IT IS PAINTED AS A FAULT, which is the migrated `ModuleMessageType.RedError` that
-      // `EditGroups.ascx.vb:L117` passed. A duplicate name IS a fault in the sense the legacy meant: the
-      // operator asked for something the system could not do, and the red band is what said so. The
-      // caption is asserted alongside the band because severity must not be carried by colour alone.
       expect(severityBand()).withContext('the fault band').toBe(DANGER_BAND);
       expect(severityCaption()).withContext('and it says so in words').toBe(DANGER_CAPTION);
       expect(severityBand()).withContext('emphatically not a refusal').not.toBe(WARNING_BAND);
@@ -1094,10 +879,6 @@ describe('RoleGroupFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // `EditGroups.ascx.vb:L118` is an `Exit Sub` immediately after presenting the message, so the
-      // legacy left the operator on the screen with what they had typed. Both halves are preserved: no
-      // navigation, and neither value is cleared — a form that emptied itself would make the operator
-      // retype work the server never rejected.
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(field<HTMLInputElement>(NAME_CONTROL_ID).value).toBe('Paid Services');
       expect(field<HTMLTextAreaElement>(DESCRIPTION_CONTROL_ID).value).toBe(
@@ -1147,12 +928,6 @@ describe('RoleGroupFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ THIS IS THE ASSERTION, AND THE NEGATIVE HALF IS THE LOAD-BEARING ONE. The legacy application is
-      // the authority twice over: `AccessDenied.ascx.vb` performs no permission check of its own — it
-      // only presents a denial — and BOTH branches of its `Page_Load` render at
-      // `ModuleMessageType.YellowWarning`; and the legacy renderer styled the two bands differently,
-      // withholding the red that `RedError` used. Painting a refusal red would tell an operator something
-      // is BROKEN when the system is working exactly as configured, so the migration keeps them apart.
       expect(severityBand()).withContext('the refusal band').toBe(WARNING_BAND);
       expect(severityCaption()).withContext('and it says so in words').toBe(WARNING_CAPTION);
       expect(severityBand()).withContext('NOT the fault band').not.toBe(DANGER_BAND);
@@ -1209,9 +984,7 @@ describe('RoleGroupFormComponent', () => {
       press(SUBMIT_LABEL);
 
       // ⚠ BOTH STATUSES CARRY THE SAME DICTIONARY, and the API is free to choose either — 400 is the
-      // automatic model-state refusal while 422 is a semantic one. A screen that handled only 400 would
-      // silently drop every field message on a 422 and show a bare banner instead, so the second status
-      // is asserted rather than assumed to follow from the first.
+      // automatic model-state refusal while 422 is a semantic one.
       expectRequest('POST', ROLE_GROUPS_URL).flush(
         problem('request.invalid', 422, 'The request was understood but refused.', {
           roleGroupName: ['That name is reserved.'],
@@ -1230,11 +1003,9 @@ describe('RoleGroupFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // ⚠ THE KEY ARRIVES PASCAL-CASED, because .NET model-state keys are named after the request
-      // property. The control is named `roleGroupName`, so something has to reconcile the two, and the
-      // shared reader does it by lower-casing the FIRST CHARACTER only — which is why a compound name
-      // survives intact. Asserting the Pascal-cased key is what proves the reconciliation is really
-      // there; a case that sent the already-camel-cased key would pass even if it were removed.
+      // ⚠ THE KEY ARRIVES PASCAL-CASED, because .NET model-state keys are named after the request property.
+      // The control is named `roleGroupName`, so something has to reconcile the two, and the shared reader
+      // does it by lower-casing the FIRST CHARACTER only — which is why a compound name survives intact.
       expectRequest('POST', ROLE_GROUPS_URL).flush(
         problem('request.invalid', 400, 'One or more validation errors occurred.', {
           RoleGroupName: ['The server refused this name.'],
@@ -1261,11 +1032,10 @@ describe('RoleGroupFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ SUBSTITUTING WORDING MUST NOT COST THE DIAGNOSTIC. This screen replaces the server's sentence
-      // for two statuses and leaves every other member of the document alone, and the reference is the
-      // member that matters: it is the operator's ONLY join key between what they saw in a browser and
-      // what the server recorded. The banner prefers the correlation identifier — the value that also
-      // travels on the response header — and falls back to the trace identifier.
+      // ⚠ SUBSTITUTING WORDING MUST NOT COST THE DIAGNOSTIC. This screen replaces the server's sentence for
+      // two statuses and leaves every other member of the document alone, and the reference is the member
+      // that matters: it is the operator's ONLY join key between what they saw in a browser and what the
+      // server recorded.
       const reference: string = textOf('.error-banner__trace').join(' ');
 
       expect(reference).withContext('a reference is offered').not.toBe('');
@@ -1316,12 +1086,6 @@ describe('RoleGroupFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // Not every refusal carries an application code: a framework-level one carries a type URI from
-      // OUTSIDE this application's namespace — anchored in the HTTP specification rather than in the
-      // `urn:dnnmigration:error:` family — and it must still be readable. Written as the registered IETF
-      // urn form rather than as an absolute web address, because this file states no absolute address
-      // anywhere: the production base path is relative, and a fixture carrying a scheme and host reads as
-      // though an address were being asserted when none is.
       expectRequest('POST', ROLE_GROUPS_URL).flush(
         {
           type: 'urn:ietf:rfc:9110#section-15.5.1',
@@ -1381,10 +1145,6 @@ describe('RoleGroupFormComponent', () => {
     it('leaves from an INVALID form without arguing about it, touching nothing', () => {
       create();
 
-      // ⚠ THE EMPTY FORM IS THE POINT OF THIS CASE. Abandoning a form that was already valid proves
-      // almost nothing — the interesting question is whether Cancel VALIDATES, and only an invalid form
-      // can answer it. `EditGroups.ascx:L25` declares the cancel link with `causesvalidation="False"`,
-      // and `EditGroups.ascx.vb:L165-L166` is its create-mode branch, redirecting to the roles list.
       expect(screen().form.invalid).withContext('nothing has been entered').toBeTrue();
 
       press(CANCEL_LABEL);
@@ -1394,10 +1154,9 @@ describe('RoleGroupFormComponent', () => {
         .toHaveBeenCalledOnceWith([ROLES_ROUTE]);
       expect(httpMock.match(() => true)).withContext('nothing sent').toHaveSize(0);
 
-      // ⚠ AND NOTHING WAS MARKED TOUCHED. This is what distinguishes "did not validate" from "validated
-      // and happened to navigate anyway": the submit path marks every control touched, so an untouched
-      // control after Cancel is positive proof the validation path was never entered. Without it, a
-      // Cancel that validated first and then navigated would pass every other assertion here.
+      // ⚠ AND NOTHING WAS MARKED TOUCHED. This is what distinguishes "did not validate" from "validated and
+      // happened to navigate anyway": the submit path marks every control touched, so an untouched control
+      // after Cancel is positive proof the validation path was never entered.
       expect(screen().form.controls.roleGroupName.touched).toBeFalse();
       expect(screen().form.controls.description.touched).toBeFalse();
       expect(screen().form.touched).toBeFalse();
@@ -1416,13 +1175,6 @@ describe('RoleGroupFormComponent', () => {
 
       fixture.destroy();
 
-      // ⚠ THE WRITE IS THE STORE'S, NOT THE SCREEN'S, AND SO IT SURVIVES THE SCREEN. Cancelling it
-      // here would cancel nothing that matters: the server has already been asked and will create the
-      // group whatever this browser does next, so abandoning the request would only mean the
-      // application never LEARNS about it — leaving the shared group listing stale and the operator
-      // with no way to know whether the thing they asked for happened. This screen used to own the
-      // request and did cancel it, and that was the defect: one copy of the outcome in the component
-      // and another in the store, free to disagree about whether a group exists.
       expect(call.cancelled).withContext('the creation is not thrown away').toBeFalse();
 
       // The answer is adopted by the store, which re-reads the group listing on success so the group
@@ -1433,9 +1185,9 @@ describe('RoleGroupFormComponent', () => {
       refresh.flush(envelope([roleGroup()]));
 
       // ⚠ AND NOTHING IS ANNOUNCED OR NAVIGATED. The completion bridge is an effect created in this
-      // component's own injection context, so it dies with the component: a success reaching a
-      // destroyed screen cannot queue a notice nobody asked for, and cannot navigate a person who has
-      // already navigated somewhere else.
+      // component's own injection context, so it dies with the component: a success reaching a destroyed
+      // screen cannot queue a notice nobody asked for, and cannot navigate a person who has already
+      // navigated somewhere else.
       expect(notifications()).withContext('nothing is announced').toHaveSize(0);
       expect(navigateSpy).withContext('and nobody is moved').not.toHaveBeenCalled();
 
@@ -1458,11 +1210,6 @@ describe('RoleGroupFormComponent', () => {
     it('offers EXACTLY TWO commands — Update and Cancel — and no Delete or Manage', () => {
       create();
 
-      // ⚠ TWO, AND THE COUNT IS THE ASSERTION. The legacy declared THREE link buttons
-      // (`EditGroups.ascx:L23`, `:L25`, `:L27`) but its code-behind hid the third outright in create
-      // mode — `EditGroups.ascx.vb:L84` is the whole of the create branch and does just that — and
-      // `role-groups/new` is the only address that reaches this component, so the third had no reachable
-      // state here. The role editor's FOURTH action (`cmdManage`) never existed on this screen at all.
       const commands: readonly HTMLButtonElement[] = actions();
 
       expect(commands).withContext('two commands, no more').toHaveSize(2);
@@ -1476,9 +1223,6 @@ describe('RoleGroupFormComponent', () => {
       expect(screenText()).withContext('no delete anywhere').not.toContain('Delete');
       expect(screenText()).withContext('no manage anywhere').not.toContain('Manage');
 
-      // ⚠ AND THE COUNT IS SCOPED HONESTLY. The document holds more buttons than this screen commands:
-      // the shared field contributes one help disclosure per field that carries guidance. They are
-      // accounted for here rather than ignored, so the scoping above cannot hide a stray command.
       const everyButton: readonly HTMLButtonElement[] = queryAll<HTMLButtonElement>('button');
       const disclosures: readonly HTMLButtonElement[] =
         queryAll<HTMLButtonElement>('.form-field__help-toggle');
@@ -1490,11 +1234,6 @@ describe('RoleGroupFormComponent', () => {
     });
 
     it('declares the on-push change detection strategy the migration plan mandates', () => {
-      // Read off the COMPILED definition rather than off the decorator source, because that is the fact
-      // the framework acts on: Angular records `onPush: true` exactly when the component declares
-      // `ChangeDetectionStrategy.OnPush`. A screen bound to signals and rendered under the default
-      // strategy would still appear to work while checking on every tick, so this is asserted rather
-      // than assumed from the presence of signals.
       const definition = (
         RoleGroupFormComponent as Type<RoleGroupFormComponent> & {
           readonly ɵcmp?: { readonly onPush?: boolean; readonly standalone?: boolean };
@@ -1512,30 +1251,23 @@ describe('RoleGroupFormComponent', () => {
     it('renders no table at all, the legacy layout tables having become a grid', () => {
       create();
 
-      // MIGRATION: the legacy laid this screen out as TWO nested layout tables — `EditGroups.ascx:L4`
-      // and `:L7` — and the outer one carried a table-description reading "Edit Roles Design Table",
-      // wording copy-pasted from a DIFFERENT screen. Neither is reproduced: the fields are a block the
-      // paired stylesheet arranges, and the inaccurate description goes with them. Tabular elements are
-      // asserted absent as a family, because a table used for layout misrepresents the content to a
-      // screen reader as a data relationship that does not exist.
+      // The legacy laid this screen out as TWO nested layout tables — `EditGroups.ascx:L4` and `:L7` — and
+      // the outer one carried a table-description reading "Edit Roles Design Table", wording copy-pasted
+      // from a DIFFERENT screen.
       expect(queryAll('table, thead, tbody, tr, th, td')).toHaveSize(0);
     });
 
     it('carries no collapsible section, the legacy registration having gone unused', () => {
       create();
 
-      // MIGRATION: `EditGroups.ascx:L1` registers a collapsible section-head control and the body then
-      // never places one, so there is NO disclosure of the legacy kind here.
-      //
       // ⚠ ASSERTED PRECISELY RATHER THAN AS A BLANKET ZERO. The document does contain `aria-expanded`,
       // because the shared field's help disclosure legitimately carries it — that is a per-field
-      // affordance, not the legacy section. So the honest statement is that every expandable thing on
-      // this screen IS a help disclosure, which is what proves the unused registration was not honoured.
+      // affordance, not the legacy section.
       const expandable: readonly Element[] = queryAll('[aria-expanded]');
 
       // Sized FIRST, so the per-element assertion below cannot pass by iterating nothing. A `forEach` over
-      // an empty list registers no expectation at all and reports success, which would make this case
-      // agree with a screen that had lost both disclosures.
+      // an empty list registers no expectation at all and reports success, which would make this case agree
+      // with a screen that had lost both disclosures.
       expect(expandable).withContext('exactly the two help disclosures').toHaveSize(2);
 
       expandable.forEach((element) => {

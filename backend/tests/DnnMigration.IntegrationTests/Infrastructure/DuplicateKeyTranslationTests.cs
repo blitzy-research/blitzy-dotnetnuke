@@ -13,49 +13,17 @@ namespace DnnMigration.IntegrationTests.Infrastructure;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: SEC-F6. The defect these facts guard against was measured on a live installation, not
-/// theorised. Ten simultaneous identical role creations produced one 201, seven 409 and <em>two 500s</em>,
-/// with exactly one row stored; eight simultaneous identical alias creations produced one 201, four 409 and
-/// three 500s, again with one row stored. In every 500 the store had behaved perfectly - it kept one record
-/// and refused the rest - and the caller was told the server had failed. The sequential pre-check each of
-/// those paths performs cannot close that window, because both racers read "not taken" before either
-/// inserts, so the unique index is what settles it and the index's refusal has to be translated into the
-/// same answer the pre-check would have given.
+/// The defect these facts guard against was measured on a live installation, not theorised. Ten
+/// simultaneous identical role creations produced one 201, seven 409 and <em>two 500s</em>, with exactly
+/// one row stored; eight simultaneous identical alias creations produced one 201, four 409 and three 500s,
+/// again with one row stored.
 /// </para>
 /// <para>
-/// <strong>Why the recognition is tested here rather than only against a real race.</strong> This is the one
-/// piece of the translation that depends on provider error numbers and on the shape of provider text, and a
-/// race is a poor instrument for either: it cannot be made to produce error 547 on demand to prove the
-/// translator declines it, it cannot produce a message with no quoted name to prove the name is optional, and
-/// it cannot bury the fault three wrappers deep to prove the whole chain is walked. Each of those is
-/// asserted below on a fabricated failure.
-/// </para>
-/// <para>
-/// The complementary half is proven end to end against a live SQL Server by the contest facts in the API
-/// suites - <c>CreateRole_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault</c> and its
-/// counterparts for role groups, portal aliases, accounts and profile declarations - which fire a dozen
-/// identical creations at once and assert one creation, conflicts for the rest, no 5xx and exactly one stored
-/// row. Those exercise the real pipeline with nothing substituted, so between them and these facts both
-/// halves are covered and neither is a substitute for the other. The integration project deliberately cannot
-/// reach the persistence seam directly - the context and the unit of work are <c>internal</c> to the
-/// Infrastructure assembly by design and that project declares no <c>InternalsVisibleTo</c> - which is why
-/// the seam is measured here and its effect is measured there.
-/// </para>
-/// <para>
-/// <strong>The fabrication uses private provider members, deliberately and visibly.</strong> A
-/// <see cref="SqlException"/> cannot be constructed by a consumer - every constructor and factory is
-/// non-public - so the only way to present the translator with a chosen error number is reflection over the
-/// pinned client. That is a real cost and it is accepted knowingly: the alternative is to leave the
-/// discrimination between "duplicate" and "every other store fault" untested, and mistaking a deadlock or a
-/// foreign-key violation for a duplicate would answer 409 for a failure the caller cannot fix by changing a
-/// value. The helpers below fail with an explicit message naming the member they could not find, so if the
-/// pinned client version ever changes shape this reads as "the fabrication needs updating" rather than as a
-/// mysterious null.
-/// </para>
-/// <para>
-/// The translator is <c>internal</c> to the Infrastructure assembly and is reached here through the
-/// <c>InternalsVisibleTo</c> that assembly already declares for this one. No type is made public for a
-/// test's benefit.
+/// <strong>Why the recognition is tested here rather than only against a real race.</strong> This is the
+/// one piece of the translation that depends on provider error numbers and on the shape of provider text,
+/// and a race is a poor instrument for either: it cannot be made to produce error 547 on demand to prove
+/// the translator declines it, it cannot produce a message with no quoted name to prove the name is
+/// optional, and it cannot bury the fault three wrappers deep to prove the whole chain is walked.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -68,19 +36,12 @@ public sealed class DuplicateKeyTranslationTests
     private const int UniqueIndexViolation = 2601;
 
     /// <summary>
-    /// Both numbers a duplicated unique value is reported under are recognised, and the constraint the store
-    /// named is reported with them.
+    /// Both numbers a duplicated unique value is reported under are recognised, and the constraint the
+    /// store named is reported with them.
     /// </summary>
     /// <param name="number">The error number the store raised.</param>
     /// <param name="message">The wording the store raised it with.</param>
     /// <param name="expectedName">The constraint name the caller of the translator must receive.</param>
-    /// <remarks>
-    /// Both numbers must be matched rather than whichever one a particular table happens to produce. The
-    /// terminal legacy schema carries both kinds: <c>PK_Roles</c> is a constraint and raises 2627, while
-    /// <c>IX_RoleName</c> over <c>(PortalID, RoleName)</c> is a <c>CREATE UNIQUE INDEX</c> and raises 2601.
-    /// A translator that matched only one would answer 409 for a collision on one table and 500 for the
-    /// same collision on the next.
-    /// </remarks>
     [Theory]
     [InlineData(
         UniqueConstraintViolation,
@@ -119,10 +80,9 @@ public sealed class DuplicateKeyTranslationTests
     /// <param name="description">What that number means, for the failure message.</param>
     /// <remarks>
     /// This is the half of the translation that protects the caller from a wrong answer rather than from a
-    /// wrong status. A deadlock victim, a foreign-key violation, a timeout and a check-constraint refusal are
-    /// all failures the caller cannot resolve by submitting a different value, so answering 409 - "your
-    /// values conflict with an existing record" - would send it into a retry loop or a pointless edit. Only
-    /// the two duplicate numbers may be claimed.
+    /// wrong status. A deadlock victim, a foreign-key violation, a timeout and a check-constraint refusal
+    /// are all failures the caller cannot resolve by submitting a different value, so answering 409 - "your
+    /// values conflict with an existing record" - would send it into a retry loop or a pointless edit.
     /// </remarks>
     [Theory]
     [InlineData(547, "a foreign key violation")]
@@ -149,12 +109,9 @@ public sealed class DuplicateKeyTranslationTests
     /// to have wrapped it.
     /// </summary>
     /// <remarks>
-    /// The depth is not constant in practice. The mapper wraps a provider fault in a
-    /// <see cref="DbUpdateException"/>, and an execution strategy, a retrying strategy or an ambient
-    /// transaction scope adds further wrappers on some code paths and not others. A translator that inspected
-    /// only the immediate inner exception would therefore classify one and the same race correctly on one
-    /// path and report it as a server fault on the next - a defect that reproduces intermittently and looks
-    /// like flakiness rather than like a missing case.
+    /// The depth is not constant in practice. The mapper wraps a provider fault in a <see
+    /// cref="DbUpdateException"/>, and an execution strategy, a retrying strategy or an ambient transaction
+    /// scope adds further wrappers on some code paths and not others.
     /// </remarks>
     [Fact]
     public void Describes_FindsTheRefusalHoweverDeeplyItIsWrapped()
@@ -182,11 +139,6 @@ public sealed class DuplicateKeyTranslationTests
     /// <summary>
     /// Every error the batch reported is examined, not only the one the exception presents as its own.
     /// </summary>
-    /// <remarks>
-    /// A flush stages every pending change and can report more than one error, and the duplicate need not be
-    /// the first. The exception's own <see cref="SqlException.Number"/> surfaces only the leading error, so a
-    /// translator reading that alone would miss a duplicate reported behind an earlier, unrelated one.
-    /// </remarks>
     [Fact]
     public void Describes_ExaminesEveryErrorTheBatchReportedAndNotOnlyTheLeadingOne()
     {
@@ -206,13 +158,7 @@ public sealed class DuplicateKeyTranslationTests
         constraintName.Should().Be("IX_Users");
     }
 
-    /// <summary>
-    /// A failure with no store error anywhere in it is not claimed.
-    /// </summary>
-    /// <remarks>
-    /// The flush can fail for reasons that never reached the store at all - a broken value conversion, a
-    /// disposed context, a cancelled operation. None is a duplicate and none may be answered as one.
-    /// </remarks>
+    /// <summary>A failure with no store error anywhere in it is not claimed.</summary>
     [Fact]
     public void Describes_DeclinesAFailureThatNeverReachedTheStore()
     {
@@ -232,10 +178,10 @@ public sealed class DuplicateKeyTranslationTests
     /// </summary>
     /// <param name="message">A message the name cannot be read out of.</param>
     /// <remarks>
-    /// The name is best effort by construction: it is read out of provider text, which is localised, version
-    /// dependent and authored by nobody in this solution. A translation that required a legible name would
-    /// turn a message change - or a server running in another language - into a 500 for a collision the
-    /// number had already identified beyond doubt.
+    /// The name is best effort by construction: it is read out of provider text, which is localised,
+    /// version dependent and authored by nobody in this solution. A translation that required a legible
+    /// name would turn a message change - or a server running in another language - into a 500 for a
+    /// collision the number had already identified beyond doubt.
     /// </remarks>
     [Theory]
     [InlineData("Cannot insert duplicate key row.")]
@@ -254,9 +200,7 @@ public sealed class DuplicateKeyTranslationTests
         constraintName.Should().BeNull("nothing legible was disclosed, and the answer does not depend on it");
     }
 
-    /// <summary>
-    /// A null failure is a programming error in the caller rather than something to classify.
-    /// </summary>
+    /// <summary>A null failure is a programming error in the caller rather than something to classify.</summary>
     [Fact]
     public void Describes_RefusesANullFailure()
     {
@@ -266,17 +210,9 @@ public sealed class DuplicateKeyTranslationTests
             "a translator that silently answered false for a missing failure would hide the caller's defect");
     }
 
-    /// <summary>
-    /// Builds a <see cref="SqlException"/> carrying the given errors, in order.
-    /// </summary>
+    /// <summary>Builds a <see cref="SqlException"/> carrying the given errors, in order.</summary>
     /// <param name="errors">The error numbers and messages the store reported, leading error first.</param>
     /// <returns>An exception shaped as the pinned client shapes one.</returns>
-    /// <remarks>
-    /// Every construction path on the provider's error types is non-public, so this reaches them by
-    /// reflection over the pinned <c>Microsoft.Data.SqlClient</c>. Each lookup asserts what it was looking
-    /// for, so a client whose shape has changed reports that plainly instead of failing somewhere further
-    /// down as a null reference.
-    /// </remarks>
     private static SqlException FabricateSqlException(params (int Number, string Message)[] errors)
     {
         ConstructorInfo? collectionConstructor = typeof(SqlErrorCollection)

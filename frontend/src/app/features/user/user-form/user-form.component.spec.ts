@@ -33,36 +33,8 @@ import {
 } from './user-form.component';
 
 /**
- * Specification for the account editor.
- *
- * One screen, two modes, and SEVEN write paths that reach four different endpoints — which is
- * why the cases below are grouped by path rather than by member. Six invariants are named up
- * front because each one, got wrong, produces a screen that looks right and is not:
- *
- *   - ⚠ ACCOUNT ZERO IS NOT "NO ACCOUNT". The route input arrives as a STRING and is parsed
- *     with an explicit presence test, never a truthiness test, because `'0'` parses to a
- *     legitimate identifier. Every identifier-shaped case here is driven through the input as
- *     text so the real transform runs.
- *   - ⚠ THE UPDATE CONTRACT IS FOUR MEMBERS, AND A PRISTINE FORM SENDS NOTHING. The sign-in
- *     name is read-only because there is no rename path; the authorisation flag, the lockout
- *     flag and the credential each have their own endpoint. That separation is what stops a
- *     routine details edit from silently carrying an authorisation change.
- *   - ⚠ SUCCESS IS THE HTTP STATUS, NEVER A NUMERIC OUTCOME. Creation succeeds at 201 and an
- *     update at 200. No contract on this boundary carries a legacy outcome ordinal, and the
- *     three legacy vocabularies disagree about which value means success — creation at
- *     THIRTEEN, sign-in at one, password at zero — so an assumption that zero means success
- *     would be wrong two times in three.
- *   - ⚠ SIX OF THE SEVEN ACTIONS MUST NOT VALIDATE. Only the submit command carried
- *     `causesvalidation="True"`; the removal and all four membership transitions carried
- *     `causesvalidation="False"`. Authorising an account has nothing to do with whether its
- *     display name is filled in.
- *   - ⚠ EVERY WRITE IS FOLLOWED BY A READ THE STORE OWNS. Create, update, delete and the two
- *     approval-shaped transitions all re-read the listing; the three membership transitions
- *     also re-read the account. A case answering only its write leaves requests outstanding
- *     and `verify` reports them.
- *   - ⚠ NO CREDENTIAL IS EVER RENDERED, ANNOUNCED OR LOGGED. The password inputs exist only
- *     in create mode, are typed `password`, and no value typed into them appears in the
- *     document text or in any notification.
+ * Specification for the account editor. One screen, two modes, and SEVEN write paths that reach four
+ * different endpoints — which is why the cases below are grouped by path rather than by member.
  */
 describe('UserFormComponent', () => {
   let fixture: ComponentFixture<UserFormComponent>;
@@ -117,32 +89,16 @@ describe('UserFormComponent', () => {
   const USER_UNAUTHORIZED_MESSAGE = 'User successfully Un-Authorized';
 
   /**
-   * ⚠ AUTHORED BECAUSE IT WAS ABSENT — NOT measured wording, and it must not be presented as
-   * such.
-   *
-   * `ManageUsers.ascx.vb` L749 raises the resource key `"UserUnLocked"` on a successful release,
-   * but **that key is defined in NO resource file**: it appears in neither
-   * `Website/admin/Users/App_LocalResources/*.resx` nor `Website/App_GlobalResources/*.resx`. The
-   * only unlock-related entry anywhere is `cmdUnLock.Text` = `Unlock Account` in
-   * `Membership.ascx.resx`, which is the BUTTON LABEL and not a success sentence. So the legacy
-   * screen asked for a string that did not exist and DotNetNuke's localisation fell back to
-   * emitting the raw key.
-   *
-   * This sentence is therefore authored to match the wording of its two measured siblings above,
-   * and the gap is recorded rather than dressed up as a measurement. Claiming measured wording
-   * that does not exist would be the worse error.
+   * ⚠ AUTHORED BECAUSE IT WAS ABSENT — NOT measured wording, and it must not be presented as such.
+   * `ManageUsers.ascx.vb` L749 raises the resource key `"UserUnLocked"` on a successful release, but
+   * **that key is defined in NO resource file**: it appears in neither
+   * `Website/admin/Users/App_LocalResources/*.resx` nor `Website/App_GlobalResources/*.resx`.
    */
   const USER_UNLOCKED_MESSAGE = 'User successfully Unlocked';
   const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their password at next login';
   const USER_UPDATED_MESSAGE = 'User account updated';
 
-  /**
-   * The creation confirmation, with the placeholder the component substitutes.
-   *
-   * Restated here rather than imported for the reason every other sentence in this block is: the wording is
-   * the subject of the assertion, so a case must fail when the component's copy changes rather than follow
-   * it silently.
-   */
+  /** The creation confirmation, with the placeholder the component substitutes. */
   const USER_CREATED_MESSAGE = 'User account {name} created';
   const NO_USER_MESSAGE = "This account doesn't exist";
   const NOT_AUTHORIZED_MESSAGE = 'You are not authorized to edit this user.';
@@ -168,10 +124,9 @@ describe('UserFormComponent', () => {
   });
 
   /**
-   * The reason phrase the API publishes as a problem `title`, keyed by status.
-   *
-   * ⚠ NOT FREE TEXT. Every refusal reaches the wire through one shared problem factory that
-   * fills the title from this status-keyed vocabulary.
+   * The reason phrase the API publishes as a problem `title`, keyed by status. ⚠ NOT FREE TEXT. Every
+   * refusal reaches the wire through one shared problem factory that fills the title from this
+   * status-keyed vocabulary.
    */
   const PROBLEM_TITLE: Readonly<Record<number, string>> = Object.freeze({
     400: 'Bad Request',
@@ -184,12 +139,7 @@ describe('UserFormComponent', () => {
     503: 'Service Unavailable',
   });
 
-    /**
-   * The correlation identifier every refusal fixture below carries.
-   *
-   * Named rather than left inline, so an assertion about the reference an operator is handed can state
-   * the identifier it expects instead of repeating the literal and hoping the two stay equal.
-   */
+    /** The correlation identifier every refusal fixture below carries. */
   const FIXTURE_CORRELATION_ID = 'f0e7d1b2-3c45-4a6b-8c9d-0e1f2a3b4c5d';
 
   /** A live problem document, complete in every member the API emits. */
@@ -216,11 +166,9 @@ describe('UserFormComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * One account as the server reports it.
-   *
-   * ⚠ THE DEFAULT IDENTIFIER IS ZERO. `Users.UserID` seeds at one in the legacy schema, but the
-   * screen must not depend on that: the input is parsed rather than inspected, and zero is the
-   * value that proves it.
+   * One account as the server reports it. ⚠ THE DEFAULT IDENTIFIER IS ZERO. `Users.UserID` seeds at one
+   * in the legacy schema, but the screen must not depend on that: the input is parsed rather than
+   * inspected, and zero is the value that proves it.
    */
   function account(userId = 0, overrides: Partial<UserDetail> = {}): UserDetail {
     return {
@@ -253,10 +201,8 @@ describe('UserFormComponent', () => {
   }
 
   /**
-   * A page of accounts.
-   *
-   * ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data` — a fixture spelling it
-   * otherwise flushes successfully and unwraps to no rows at all.
+   * A page of accounts. ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data` — a fixture
+   * spelling it otherwise flushes successfully and unwraps to no rows at all.
    */
   function emptyPage(): PagedResponse<UserListItem> {
     return { items: [], meta: { totalCount: 0, pageIndex: 0, pageSize: 10, totalPages: 0 } };
@@ -294,11 +240,8 @@ describe('UserFormComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * Mounts the screen.
-   *
-   * ⚠ THE IDENTIFIER IS DELIVERED AS TEXT, because the router binds a route parameter as a
-   * string. Passing a number would bypass the parse this screen performs and would leave the
-   * `'0'` case untested.
+   * Mounts the screen. ⚠ THE IDENTIFIER IS DELIVERED AS TEXT, because the router binds a route parameter
+   * as a string.
    */
   function create(userId?: string): void {
     fixture = TestBed.createComponent(UserFormComponent);
@@ -325,12 +268,9 @@ describe('UserFormComponent', () => {
 
   /**
    * Seats the signed-in operator, which is what decides whether this screen is editing its own subject.
-   *
    * The identity is READ FROM THE STORED SESSION rather than fetched, so seating it is the whole of the
    * first half of the measured gate at `Membership.ascx.vb` L135 — `UserInfo.UserID = User.UserID`, over
-   * the signed-in operator (`PortalModuleBase.vb` L319-L323) and the account under edit
-   * (`UserModuleBase.vb` L439-L449). The expiry is a FIXED literal: reading the clock in a specification
-   * would make it depend on when the specification runs.
+   * the signed-in operator and the account under edit.
    *
    * @param userId The account the operator is signed in as.
    */
@@ -365,14 +305,11 @@ describe('UserFormComponent', () => {
   }
 
   /**
-   * Asserts that a write provoked NO listing request.
-   *
-   * ⚠ THE LISTING RE-READ IS CONDITIONAL ON A SEARCH HAVING BEEN CHOSEN. Every write command on
-   * the account store ends by re-reading the listing, but that read declines to issue anything
-   * while the search state is the opening no-query state - reproducing the legacy screen's
-   * fall-through, which left its grid unbound rather than listing every account in the tenant.
-   * This screen never chooses a search, so a write from here provokes no listing request at all.
-   * A case that expected one would wait for a request that is never made.
+   * Asserts that a write provoked NO listing request. ⚠ THE LISTING RE-READ IS CONDITIONAL ON A SEARCH
+   * HAVING BEEN CHOSEN. Every write command on the account store ends by re-reading the listing, but that
+   * read declines to issue anything while the search state is the opening no-query state - reproducing
+   * the legacy screen's fall-through, which left its grid unbound rather than listing every account in
+   * the tenant.
    */
   function expectNoListingReRead(): void {
     expect(
@@ -444,12 +381,10 @@ describe('UserFormComponent', () => {
   }
 
   /**
-   * Presses a button of the OPEN CONFIRMATION, scoped to the dialogue.
-   *
-   * ⚠ THE ROW COMMAND AND THE DIALOGUE COMMAND SHARE ONE WORDING — both read "Delete" — and the
-   * row command comes first in document order, so an unscoped lookup re-opens the question
-   * instead of answering it. The danger button additionally prefixes a warning glyph, so the
-   * wording is matched with `includes`.
+   * Presses a button of the OPEN CONFIRMATION, scoped to the dialogue. ⚠ THE ROW COMMAND AND THE DIALOGUE
+   * COMMAND SHARE ONE WORDING — both read "Delete" — and the row command comes first in document order,
+   * so an unscoped lookup re-opens the question instead of answering it. The danger button additionally
+   * prefixes a warning glyph, so the wording is matched with `includes`.
    */
   function pressDialogue(label: string): void {
     const control: HTMLButtonElement | undefined = queryAll<HTMLButtonElement>(
@@ -536,21 +471,6 @@ describe('UserFormComponent', () => {
     });
 
     it('titles an unusable parameter as an edit address, not as a creation', () => {
-      /*
-       * ⚠ THIS CASE USED TO REQUIRE `CREATE_MODE_TITLE` HERE, which put `Add New User` at the top of
-       * a screen whose body says the account does not exist — and disagreed with the route's own
-       * document title, `Edit User Accounts`. A real browser measured three labels on that one
-       * screen. The heading's question is whether the address NAMES an account, not whether one
-       * could be read from it.
-       *
-       * It also makes `/users/abc` and `/users/0` agree: unreadable and readable-but-absent both
-       * name an account, neither can produce one, and both now carry this heading over the same
-       * measured sentence. `ManageUsers.ascx.vb` L207/L221 is the authority — a missing account kept
-       * the edit screen's title and paired the warning with `DisableForm()`.
-       *
-       * The withdrawal of the FORM is asserted separately, by "offers no form at all when the
-       * parameter is not an identifier"; this case is only about the wording at the top.
-       */
       create('not-a-number');
 
       expect(httpMock.match(() => true)).withContext('nothing is read').toHaveSize(0);
@@ -601,11 +521,6 @@ describe('UserFormComponent', () => {
       expect(links).toContain('/users/7/profile');
       expect(links).toContain('/users/7/password');
 
-      // ⚠ THE ROLE ACTION MUST CARRY THE ACCOUNT. This assertion used to read `/roles`, which
-      // encoded the defect rather than the requirement: an action captioned "Manage Roles for this
-      // User" landed on the unfiltered listing of every role in the tenant. The account-keyed
-      // address was available all along — the sibling account LISTING already links `/roles` with
-      // `queryParams {userId}` — so the caption was promising something the link did not do.
       expect(links).toContain('/roles?userId=7');
 
       // And nothing still points at the bare listing, so the corrected address cannot sit beside a
@@ -616,12 +531,6 @@ describe('UserFormComponent', () => {
     it('says so and offers no form when the read is refused as not-found', () => {
       create('7');
 
-      // MIGRATION: this case used to flush a `200` carrying nothing, on the reading that the
-      //   account transport could report absence inside the envelope. It cannot: the API answers
-      //   a not-found problem document as soon as a value-bearing outcome carries no value, so
-      //   the state the legacy worded as `NoUser` arrives as a `404` and is asserted as one here.
-      //   The wording, the hidden form and the single announcement are unchanged, which is the
-      //   point — the presentation the operator sees is the measured one either way.
       expectRequest('GET', userUrl(7)).flush(
         problem('resource.not_found', 404, 'The requested resource does not exist.'),
         { status: 404, statusText: 'Not Found' },
@@ -631,10 +540,6 @@ describe('UserFormComponent', () => {
       expect(host().textContent ?? '').toContain(NO_USER_MESSAGE);
       expect(query('form.user-form')).withContext('no form for an account that does not exist').toBeNull();
 
-      // ANNOUNCED EXACTLY ONCE, by the shared refusal announcer, at the warning severity the
-      // measured vocabulary gives a lookup outcome. The dedicated effect that used to announce
-      // this state a second time is gone with the successful-null contract that produced it, so
-      // the shared live region carries one sentence rather than two.
       expect(notifySpy.calls.allArgs().map((args) => [String(args[0]), String(args[1])])).toEqual([
         ['warning', 'The requested resource does not exist.'],
       ]);
@@ -742,12 +647,9 @@ describe('UserFormComponent', () => {
       expect(httpMock.match(() => true)).toHaveSize(0);
     });
 
-    // ⚠ THE NEXT TWO GUARD A FOCUS MOVE NO OTHER MECHANISM CAN MAKE. The password rule is a GROUP
-    // rule: it marks the form invalid and leaves both boxes individually valid, so neither carries
-    // Angular's invalid class and the shared first-invalid directive correctly declines. Without the
-    // component supplying the move, a submit refused only by this rule left focus on the submit
-    // button — which on this screen was measured 388 units BELOW the fold at a 1280x900 viewport, so
-    // the message appeared off-screen above somebody who had scrolled down to press it.
+    // ⚠ THE NEXT TWO GUARD A FOCUS MOVE NO OTHER MECHANISM CAN MAKE. The password rule is a GROUP rule: it
+    // marks the form invalid and leaves both boxes individually valid, so neither carries Angular's invalid
+    // class and the shared first-invalid directive correctly declines.
     it('moves focus to the password box when the rule is the only reason a submit was refused', () => {
       create();
 
@@ -763,13 +665,8 @@ describe('UserFormComponent', () => {
       expect(httpMock.match(() => true)).toHaveSize(0);
     });
 
-    // ⚠ THIS IS THE CASE THAT REGRESSED, AND IT REGRESSED SILENTLY. The first implementation deferred
-    // the focus move to a resolved promise, on the assumption that a microtask settles after change
-    // detection. It does not — a microtask queued inside the event handler runs BEFORE the scheduled
-    // render, so the callback looked the box up, found it absent because the disclosure had not been
-    // rendered open yet, and returned. Measured in a real browser across two trials, 30 polls over
-    // 3007ms and 25 over 2500ms: the section DID open and the box DID exist, and focus never moved at
-    // all. Nothing in this suite caught it, because no specification exercised the collapsed path.
+    // ⚠ THIS IS THE CASE THAT REGRESSED, AND IT REGRESSED SILENTLY. The first implementation deferred the
+    // focus move to a resolved promise, on the assumption that a microtask settles after change detection.
     it('opens the collapsed password disclosure and still lands focus inside it', () => {
       create();
 
@@ -891,11 +788,7 @@ describe('UserFormComponent', () => {
       // ⚠ THE MEASURED DEFECT, SHARED WITH THE SIBLING ROLE FORM AND FIXED THE SAME WAY ON BOTH. The write
       // bridges here are effects in this component's injection context, so they die WITH the component: an
       // operator who submits and then immediately clicks somewhere else destroys the only party that was
-      // going to tell them what happened. A browser audit measured it on the role form - `201`, never
-      // aborted, record created, no confirmation anywhere - and this screen has the identical shape, so
-      // fixing one and not the other would be a trap for whoever met the second.
-      //
-      // The hand-over announces and deliberately does NOT navigate: the operator chose to be elsewhere.
+      // going to tell them what happened.
       create();
       fillCreationForm();
       press(CREATE_SUBMIT_LABEL);
@@ -915,9 +808,6 @@ describe('UserFormComponent', () => {
     });
 
     it('says NOTHING when a creation that outlived the screen was refused', () => {
-      // The other half, and deliberately silent: a refusal is a document whose home is the banner ON this
-      // screen, and this screen is gone. There is no field for a field message to sit beside and no form to
-      // correct. The store still holds the failure, so returning here presents it in full.
       create();
       fillCreationForm();
       press(CREATE_SUBMIT_LABEL);
@@ -1013,17 +903,10 @@ describe('UserFormComponent', () => {
       create();
       fillCreationForm();
 
-      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
-      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
-      // this is asserted through the very call the guard makes.
       expect(tracker.isDirty())
         .withContext('a dirty form with no write in flight is what the guard exists to catch')
         .toBeTrue();
 
-      // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS, because it is the navigation the
-      // creation itself triggers that the guard would have refused - and refusing was worse than the prompt:
-      // the operator would have been left on a creation form for an account the server had already stored,
-      // and re-submitting it would have been answered with a conflict.
       let dirtyAtNavigation: boolean | null = null;
       navigateSpy.and.callFake(() => {
         dirtyAtNavigation = tracker.isDirty();
@@ -1046,15 +929,6 @@ describe('UserFormComponent', () => {
     });
 
     // ⚠ MAJOR (CWE-316 cleartext storage) — WHAT HAPPENS TO THE TYPED CREDENTIAL AFTER THE ACCOUNT EXISTS.
-    //
-    // The password and its confirmation are the only secrets this form holds. Once the server has stored the
-    // account this copy has no further purpose, yet settling the form does not remove it: the controls keep
-    // their values and the two password inputs keep those values in the live document.
-    //
-    // This screen has TWO ways for a departure to fail to dispose of them, not one. The ordinary branch's
-    // navigation can be refused by a guard, resolve `false`, or reject when a lazy chunk fails; and the
-    // generated-credential branch does not navigate AT ALL - it deliberately stays here for as long as the
-    // operator takes to write the generated password down. The cases below pin the clearing in each.
 
     describe('discarding the typed credential once the account exists', () => {
       it('empties both credential controls and both boxes before navigating away', () => {
@@ -1073,9 +947,6 @@ describe('UserFormComponent', () => {
         fixture.detectChanges();
         expectNoListingReRead();
 
-        // The navigation completed here, so the screen is gone from the router's point of view - but the
-        // component is still mounted in this fixture, which is exactly the state a refused navigation leaves
-        // a real operator in, and the controls are empty in both.
         expect(query<HTMLInputElement>(`#${CONTROL_ID.password}`)?.value ?? '').toBe('');
         expect(query<HTMLInputElement>(`#${CONTROL_ID.confirmPassword}`)?.value ?? '').toBe('');
         expect(host().outerHTML)
@@ -1148,9 +1019,7 @@ describe('UserFormComponent', () => {
 
       it('shows no complaint about the credential it has just discarded', () => {
         // Cleared with `reset`, not with a value assignment, so each control returns to pristine and
-        // untouched along with its value. Otherwise the group's password rules would fire against the very
-        // credential the screen deliberately removed, and the operator would be told to supply a password
-        // for an account that already exists.
+        // untouched along with its value.
         navigateSpy.and.resolveTo(false);
 
         create();
@@ -1172,9 +1041,7 @@ describe('UserFormComponent', () => {
         // ⚠ THE WORST CASE OF THE THREE, AND THE ONE NO NAVIGATION COULD EVER HAVE COVERED. When the screen
         // generates the credential it holds the account open so the operator can write the value down, and
         // there is no field for a typed credential in that state - but a person who TYPES a password and
-        // then chooses generation still leaves the typed value in the control behind the panel. The panel
-        // stays until dismissed, so before this the typed credential sat there for as long as the operator
-        // took, with no navigation pending to remove it.
+        // then chooses generation still leaves the typed value in the control behind the panel.
         create();
 
         type(CONTROL_ID.username, 'grace.hopper');
@@ -1245,28 +1112,12 @@ describe('UserFormComponent', () => {
     it('states the notification gap BESIDE the box, while there is still a decision to make', () => {
       create();
 
-      // MIGRATION: the notify box has NO member on the creation contract, so its value cannot be
-      // transmitted. The control is retained because it is part of the agreed member contract — but it
-      // is rendered UNTICKED AND DISABLED, departing from the measured `checked="True"` at
-      // `User.ascx:L25` deliberately, because a ticked box that does nothing is a false statement about
-      // what will happen.
       const box = query<HTMLInputElement>(`#${CONTROL_ID.notify}`);
 
       expect(box).withContext('the control is still rendered').not.toBeNull();
       expect((box as HTMLInputElement).checked).withContext('unticked').toBeFalse();
       expect((box as HTMLInputElement).disabled).withContext('and not offered').toBeTrue();
 
-      // ⚠ THE SENTENCE IS AVAILABLE BEFORE THE SUBMISSION, NOT AFTER IT, AND THAT IS THE WHOLE
-      // REMEDIATION. The earlier arrangement kept the box ticked and raised a warning once the account
-      // had ALREADY been created: the operator asked for a notification, was told the request
-      // succeeded, and only then learned that nothing had been sent. A control that cannot act must say
-      // so while the decision is still open.
-      //
-      // ⚠ IT IS REACHED THROUGH THE FIELD'S HELP AFFORDANCE RATHER THAN PRINTED INLINE, which is the
-      // shared field's arrangement and not this screen's: it reproduces the legacy help BUTTON at
-      // `Website/controls/helpbuttoncontrol.ascx`, which revealed its text on demand. Asserting the
-      // sentence were present on arrival would be asserting a different design — so the affordance is
-      // found beside THIS control and operated, exactly as an operator would.
       const notifyField: HTMLElement | null =
         (box as HTMLInputElement).closest('.form-field') ?? null;
 
@@ -1319,9 +1170,9 @@ describe('UserFormComponent', () => {
       const write = expectRequest('POST', USERS_URL);
       const generated: string = (write.request.body as CreateUserRequest).password;
 
-      // ⚠ THE ADVISORY MUST NOT CARRY THE CREDENTIAL. Generation moved to the browser because
-      // the contract has no field with which to request it, which makes the operator responsible
-      // for conveying it — but the announcement channel is not where it may be conveyed.
+      // ⚠ THE ADVISORY MUST NOT CARRY THE CREDENTIAL. Generation moved to the browser because the contract
+      // has no field with which to request it, which makes the operator responsible for conveying it — but
+      // the announcement channel is not where it may be conveyed.
       expect(warningSpy.calls.allArgs().map((args) => String(args[0])).join(' ')).not.toContain(
         generated,
       );
@@ -1356,13 +1207,6 @@ describe('UserFormComponent', () => {
       expect(query('.error-banner__severity')?.textContent?.trim()).toBe('Error');
       expect(errorSpy).withContext('the banner carries it, not a transient').not.toHaveBeenCalled();
 
-      // ⚠ THE MEASURED CREATION VOCABULARY IS NOT REACHED ON THIS PATH, and the reason is
-      // structural rather than accidental: the code-specific sentence is selected only where a
-      // failure is worded for the transient channel, which happens for a warning-severity
-      // refusal or for a failure that arrived without a document. A conflict is neither. The
-      // measured sentence for a duplicate sign-in name is therefore recorded as UNREACHABLE for
-      // a 409 rather than asserted as shown - asserting it would certify behaviour the screen
-      // does not have, and inventing it here would put the wording in two places.
       expect(host().textContent ?? '').not.toContain(USER_NAME_EXISTS);
 
       expect(navigateSpy).withContext('the operator stays put').not.toHaveBeenCalled();
@@ -1446,9 +1290,9 @@ describe('UserFormComponent', () => {
       const write = expectRequest('PUT', userUrl(7), 'the update');
       const body = write.request.body as UpdateUserRequest;
 
-      // ⚠ FOUR MEMBERS AND NO MORE. No sign-in name, because there is no rename path; no
-      // authorisation flag, no lockout flag and no credential, because each has its own
-      // endpoint — which is what stops a details edit from carrying an authorisation change.
+      // ⚠ FOUR MEMBERS AND NO MORE. No sign-in name, because there is no rename path; no authorisation
+      // flag, no lockout flag and no credential, because each has its own endpoint — which is what stops a
+      // details edit from carrying an authorisation change.
       expect(Object.keys(body as unknown as Record<string, unknown>).sort()).toEqual([
         'displayName',
         'email',
@@ -1501,8 +1345,6 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
       expectNoListingReRead();
 
-      // No redirect: the legacy raised two completion events and the container handled neither,
-      // so the legacy screen stayed exactly where it was.
       expect(successSpy).toHaveBeenCalledWith(USER_UPDATED_MESSAGE);
       expect(navigateSpy).withContext('the operator stays put').not.toHaveBeenCalled();
     });
@@ -1532,11 +1374,6 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ THE FORM IS NOT WITHHELD FOR A CONFLICT, and the refusal paragraph is rendered only
-      // while it is - the withholding rule names the permission and not-found statuses alone.
-      // A conflict therefore reaches the operator through the banner, in the server's own words,
-      // and the measured address-conflict sentence is recorded as UNREACHABLE for a 409 rather
-      // than asserted as shown.
       expect(host().textContent ?? '').not.toContain(EMAIL_CONFLICT_MESSAGE);
       expect(query('app-error-banner')?.textContent ?? '').toContain(
         'The request conflicts with the current state of the resource.',
@@ -1560,21 +1397,15 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // MIGRATION — A DELIBERATE DIVERGENCE: the legacy routine named for disabling actually
-      // HID all six panels. The form is kept visible and disabled so the operator can see what
-      // the refusal refers to; withholding the context along with the affordance makes a refusal
-      // unreadable.
+      // MIGRATION — A DELIBERATE DIVERGENCE: the legacy routine named for disabling actually HID all six
+      // panels. The form is kept visible and disabled so the operator can see what the refusal refers to;
+      // withholding the context along with the affordance makes a refusal unreadable.
       expect(host().textContent ?? '').toContain(NOT_AUTHORIZED_MESSAGE);
       expect(field<HTMLInputElement>(CONTROL_ID.firstName).disabled).withContext('withheld').toBeTrue();
       expect(button(UPDATE_SUBMIT_LABEL)?.disabled).toBeTrue();
     });
 
     it('QUOTES the support reference when a refusal is announced', () => {
-      // ⚠ THE CHANNEL THAT CARRIES REFUSALS IS THE ONE THAT WAS DROPPING THE IDENTIFIER. The shared
-      // classifier resolves 401, 403, 404 and 429 to WARNING, so every server refusal this screen reports
-      // travels the warning channel - and the banner deliberately keeps only ERROR-severity failures, to
-      // avoid saying the same thing twice. That makes this announcement the WHOLE report for a refusal, and
-      // it was handing the operator a refused save with no quotable identifier anywhere on the screen.
       arriveEditing(account(7));
 
       type(CONTROL_ID.firstName, 'Augusta');
@@ -1598,17 +1429,10 @@ describe('UserFormComponent', () => {
     });
 
     it('quotes NO reference when the refusal carried none to quote', () => {
-      // The other half of the rule: the identifier is quoted because the answer HAD one, never as
-      // decoration. Without this case the one above could be satisfied by inventing an identifier, which
-      // would hand support a reference it cannot find.
-      //
-      // ⚠ A REFUSAL DOCUMENT WITHOUT A CORRELATION MEMBER, NOT A TRANSPORT FAILURE. Written first as
-      // a dropped connection, which does not exercise this screen at all: a transport failure is announced
-      // by the shared HTTP failure interceptor, not by this component, so the case measured zero
-      // announcements and failed for a reason that had nothing to do with references. The refusal is
-      // therefore expressed the way the rule is actually reached - a genuine `403` this screen announces
-      // itself, whose document simply carries no identifier to pass on. The fixture builder always supplies
-      // one, so the document is written out here rather than borrowed from it.
+      // ⚠ A REFUSAL DOCUMENT WITHOUT A CORRELATION MEMBER, NOT A TRANSPORT FAILURE. Written first as a
+      // dropped connection, which does not exercise this screen at all: a transport failure is announced by
+      // the shared HTTP failure interceptor, not by this component, so the case measured zero announcements
+      // and failed for a reason that had nothing to do with references.
       arriveEditing(account(7));
 
       type(CONTROL_ID.firstName, 'Augusta');
@@ -1662,9 +1486,6 @@ describe('UserFormComponent', () => {
 
       const write = expectRequest('PUT', `${userUrl(7)}/approval`, 'the approval');
 
-      // ⚠ ONE ENDPOINT CARRYING THE DESIRED STATE, not a pair of verb-shaped routes. Setting a
-      // state an account already holds is reported as a conflict, an answer that is only
-      // meaningful if the caller said which state it meant.
       expect(write.request.params.get('isApproved')).toBe('true');
       expect(write.request.body).withContext('the state travels in the query').toBeNull();
 
@@ -1707,10 +1528,7 @@ describe('UserFormComponent', () => {
 
       press(AUTHORIZE_LABEL);
 
-      // ⚠ NOTHING IS ANNOUNCED BEFORE THE SERVER HAS AGREED, and the ordering is the assertion. An
-      // advisory raised at the moment of pressing would be a statement about an authorisation that had
-      // not happened yet: a refusal one moment later would leave the operator told that an account was
-      // authorised without mail when in fact it was not authorised at all.
+      // ⚠ NOTHING IS ANNOUNCED BEFORE THE SERVER HAS AGREED, and the ordering is the assertion.
       expect(warningSpy).withContext('not before the server has answered').not.toHaveBeenCalled();
 
       expectRequest('PUT', `${userUrl(7)}/approval`).flush(null, {
@@ -1721,11 +1539,6 @@ describe('UserFormComponent', () => {
       expectRequest('GET', userUrl(7)).flush(envelope(account(7, { isApproved: true })));
       fixture.detectChanges();
 
-      // MIGRATION: the legacy handler ALSO sent registration mail here —
-      // `ManageUsers.ascx.vb:L708` called `Mail.SendMail(User, MessageType.UserRegistrationPublic,
-      // PortalSettings)`. There is no mail endpoint, so that half is a documented functional reduction
-      // and it is STATED rather than silently absent: an operator who authorises an account has every
-      // reason to believe a welcome message went out, and would otherwise never learn that none did.
       expect(warningSpy).withContext('the operator is told, once it has actually happened')
         .toHaveBeenCalledOnceWith(AUTHORIZE_MAIL_ADVISORY);
 
@@ -1745,12 +1558,6 @@ describe('UserFormComponent', () => {
       expectRequest('GET', userUrl(7)).flush(envelope(account(7, { isApproved: false })));
       fixture.detectChanges();
 
-      // Asserted AFTER the transition has settled, which is the only place it means anything: the
-      // advisory channel for the sibling is driven from exactly this point, so checking before the
-      // answer arrived would pass for a screen that advised on every transition alike. Its two
-      // siblings sent no mail — withdrawing authorisation at `ManageUsers.ascx.vb:L728-L730` and
-      // releasing a lockout at L747-L751 both end at `BindMembership()` with no notification — so
-      // there is nothing to reduce and nothing to say.
       expect(warningSpy).withContext('nothing to reduce').not.toHaveBeenCalled();
 
       expectNoListingReRead();
@@ -1798,12 +1605,6 @@ describe('UserFormComponent', () => {
     });
 
     it('validates nothing for any of the four, so an incomplete form cannot block one', () => {
-      // ⚠ THE FIXTURE MUST BE AN ACCOUNT THE RELEASE IS ACTUALLY OFFERED FOR. Each of the four is
-      // rendered only when its own precondition holds — `cmdUnLock.Visible = Membership.LockedOut`
-      // at `Membership.ascx.vb` L141 — and the default fixture is UNLOCKED, so pressing the release
-      // against it would be pressing a control the measured screen does not show either. The point
-      // this case makes is about VALIDATION, not about the gate, so it states the gate's precondition
-      // explicitly and leaves the assertion below untouched.
       arriveEditing(account(7, { isLockedOut: true }));
 
       // Empty a required field. All four transitions carried `causesvalidation="False"`, so
@@ -1823,11 +1624,9 @@ describe('UserFormComponent', () => {
     });
 
     it('withholds every offered transition while a refusal has withheld the form', () => {
-      // ⚠ "ALL FOUR AT ONCE" IS UNREACHABLE BY CONSTRUCTION, which is why this case no longer claims
-      // it. Authorize is offered for an account that may NOT sign in and UnAuthorize for one that may
-      // (`Membership.ascx.vb` L142-L143), so the two are complements of a single fact and exactly one
-      // of them is ever present. THREE is the most that can be offered together, and this fixture
-      // reaches it: unapproved, locked out, and not yet obliged to change its password.
+      // ⚠ "ALL FOUR AT ONCE" IS UNREACHABLE BY CONSTRUCTION, which is why this case no longer claims it.
+      // Authorize is offered for an account that may NOT sign in and UnAuthorize for one that may, so the
+      // two are complements of a single fact and exactly one of them is ever present.
       arriveEditing(
         account(7, { isApproved: false, isLockedOut: true, mustChangePassword: false }),
       );
@@ -1840,9 +1639,9 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // Each offered control is present AND disabled. `?.disabled` is deliberately not used here: on
-      // an absent control it yields `undefined`, which no longer distinguishes "withheld by the
-      // refusal" from "never offered at all" — and telling those two apart is the whole point.
+      // Each offered control is present AND disabled. `?.disabled` is deliberately not used here: on an
+      // absent control it yields `undefined`, which no longer distinguishes "withheld by the refusal" from
+      // "never offered at all" — and telling those two apart is the whole point.
       for (const label of [AUTHORIZE_LABEL, UNLOCK_LABEL, FORCE_PASSWORD_LABEL]) {
         const control = button(label);
 
@@ -1856,14 +1655,6 @@ describe('UserFormComponent', () => {
         .withContext('the complement of Authorize is not offered alongside it')
         .toBeUndefined();
     });
-
-    // The four gates themselves.
-    //
-    //  ⚠ THESE COVER THE DEFECT DIRECTLY: all four transitions were offered unconditionally, so an
-    //  approved and unlocked account was invited to be authorised and unlocked. `Membership.ascx`
-    //  L13-L28 declares all four with no condition, which is why a reading confined to the markup
-    //  produced that behaviour — but `Membership.ascx.vb` L135-L145 assigns every one of their
-    //  `Visible` properties on each data-bind, and those assignments are the contract.
 
     it('offers UnAuthorize and not Authorize for an account that may sign in', () => {
       arriveEditing(account(7, { isApproved: true }));
@@ -1902,8 +1693,6 @@ describe('UserFormComponent', () => {
     });
 
     it('offers none of the four to an operator editing their own account', () => {
-      // `Membership.ascx.vb` L135-L139: when the signed-in operator IS the subject, all four are
-      // withheld whatever the membership facts say. This fixture would otherwise offer three.
       signedInAs(7);
       arriveEditing(
         account(7, { isApproved: false, isLockedOut: true, mustChangePassword: false }),
@@ -2051,28 +1840,14 @@ describe('UserFormComponent', () => {
 
     it('withholds the removal from an installation superuser', () => {
       // ⚠ THE CAPABILITY IS THE SERVER'S AND THE FIXTURE STATES IT AS THE SERVER WOULD. The removal
-      // operation refuses a super user, so the contract reports `canDelete: false` for one - which is
-      // why this fixture sets both. It is no longer this screen's business to infer the second value
-      // from the first.
+      // operation refuses a super user, so the contract reports `canDelete: false` for one - which is why
+      // this fixture sets both.
       arriveEditing(account(7, { isSuperUser: true, canDelete: false }));
 
       expect(button(DELETE_LABEL)).withContext('withheld').toBeUndefined();
     });
 
     it('withholds the removal from the tenant\u2019s designated administrator', () => {
-      /*
-       * ⚠ THE CASE THAT WAS THE DEFECT, AND IT IS NOT COVERED BY THE ONE ABOVE. The removal operation
-       * refuses TWO kinds of account: a super user, and the account named by the tenant's
-       * `Portals.AdministratorId`. This screen used to derive the affordance from `!isSuperUser`
-       * alone, which is only the first clause - so for the tenant's own administrator, who is NOT a
-       * super user, the account listing correctly withheld the removal while this screen offered it.
-       * Two surfaces disagreeing about one permission, and the offered action's only possible outcome
-       * was a refusal.
-       *
-       * The administrator is unknowable from anything else in this contract, which is precisely why
-       * the capability is published rather than computed here. The fixture therefore states exactly
-       * what such an account looks like on the wire: not a super user, and not removable.
-       */
       arriveEditing(account(7, { isSuperUser: false, canDelete: false }));
 
       expect(button(DELETE_LABEL))
@@ -2282,12 +2057,6 @@ describe('UserFormComponent', () => {
     it('keeps the announcing region mounted with nothing to announce', () => {
       arriveEditing(account(7));
 
-      // ⚠ THIS CASE NOW ASSERTS WHAT ITS NAME ALWAYS CLAIMED. It used to require the banner
-      // element to be ABSENT, which is the opposite of a mounted region: the screen guarded the
-      // element with `@if (problem())`, so the assertive live region and its first message entered
-      // the document in the same change - and that first message is the outcome of a save the
-      // operator just asked for. The banner emits nothing at all when there is no problem, so the
-      // screen binds it unconditionally and lets its CONTENTS disappear rather than the region.
       expect(query('.error-banner__title')).toBeNull();
       expect(query('app-error-banner'))
         .withContext('the region is in the document before anything fails')
@@ -2307,28 +2076,14 @@ describe('UserFormComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 8 — THE MEASURED PASSWORD POLICY, PINNED TO ITS EXACT BOUNDARY
-  // ---------------------------------------------------------------------------------------------------
-  //
-  // ⚠⚠ THIS POLICY IS PRESERVED VERBATIM AND MUST NEVER BE TIGHTENED. Measured at
-  // `Website/release.config` L242 `minRequiredPasswordLength="7"` and L243
-  // `minRequiredNonalphanumericCharacters="0"`. Raising either figure during a migration
-  // locks out every existing account whose password satisfied the old rule, which turns a
-  // technology change into an outage. The cases below therefore pin the BOUNDARY rather
-  // than a comfortable interior value: six characters must fail and seven must pass, and a
-  // password with no punctuation at all must pass because ZERO punctuation is required.
-  //
-  // The figures are read from the component's own exported constants rather than repeated
-  // as literals, so a change to the policy cannot pass this suite silently.
+  // ⚠⚠ THIS POLICY IS PRESERVED VERBATIM AND MUST NEVER BE TIGHTENED. Measured at `Website/release.config`
+  // L242 `minRequiredPasswordLength="7"` and L243 `minRequiredNonalphanumericCharacters="0"`.
 
   describe('the measured password policy', () => {
     /**
-     * Reads one group-level validator message without widening anything to `any`.
-     *
-     * `ValidationErrors` is an index signature over `any`, so the value is taken through
-     * `unknown` and narrowed explicitly. `noPropertyAccessFromIndexSignature` additionally
-     * requires the bracket form.
+     * Reads one group-level validator message without widening anything to `any`. `ValidationErrors` is
+     * an index signature over `any`, so the value is taken through `unknown` and narrowed explicitly.
      */
     function groupMessage(errors: ValidationErrors | null, key: string): string | null {
       if (errors === null) {
@@ -2354,9 +2109,6 @@ describe('UserFormComponent', () => {
     }
 
     it('publishes the two measured figures as SEVEN and ZERO', () => {
-      // The exact values from `Website/release.config` L242 and L243. Asserted against the
-      // component's exported constants, which is what every rule and every rendered sentence
-      // on this screen is derived from.
       expect(PASSWORD_MIN_LENGTH).withContext('minRequiredPasswordLength').toBe(7);
       expect(PASSWORD_MIN_NON_ALPHANUMERIC)
         .withContext('minRequiredNonalphanumericCharacters')
@@ -2393,11 +2145,6 @@ describe('UserFormComponent', () => {
     });
 
     it('reports the mismatch, NOT the policy, when a credential fails both', () => {
-      // ⚠ MEASURED PRECEDENCE, NOT AN IMPLEMENTATION DETAIL. `User.ascx.vb` L152 sets
-      // `PasswordMismatch`, and L156's policy check is GUARDED by
-      // `If createStatus = UserCreateStatus.AddUser` — so once the mismatch has moved the
-      // status off the zero sentinel the policy check cannot run. A value that is both too
-      // short AND mismatched reported the MISMATCH.
       const errors = passwordRulesValidator(() => true)(credentialGroup('abc', 'abcd'));
 
       expect(groupMessage(errors, 'passwordMismatch')).toBe(PASSWORD_MISMATCH_MESSAGE);
@@ -2407,27 +2154,17 @@ describe('UserFormComponent', () => {
     });
 
     it('applies neither rule once generation is chosen', () => {
-      // `User.ascx.vb` L150 `If Not chkRandom.Checked Then` — generation SKIPS both rules
-      // entirely, because L164 supplied the value instead of the operator. A mismatched,
-      // far-too-short pair is therefore valid.
       expect(passwordRulesValidator(() => true)(credentialGroup('a', 'zz', true))).toBeNull();
     });
 
     it('applies no credential rule at all while editing', () => {
-      // `User.ascx.vb` L148 `If AddUser And ShowPassword Then` — the whole block is
-      // CREATE-ONLY, so in edit mode it cannot gate submission.
       expect(passwordRulesValidator(() => false)(credentialGroup('a', 'zz'))).toBeNull();
     });
 
     it('interpolates both measured figures into the sentence and leaves no raw token behind', () => {
-      // The legacy sentence carried `[PasswordLength]` and `[NoneAlphabet]`, replaced at run
-      // time by a plain `String.Replace` from the membership provider's configuration
-      // (`Library/Components/Users/UserController.vb` L608-L609).
-      //
-      // MIGRATION: the TokenReplace subsystem is OUT OF SCOPE, so the two measured configured
-      // values are interpolated directly from the policy constants. That is precisely what the
-      // legacy substitution produced at run time, and it keeps the sentence honest if either
-      // constant ever changes.
+      // The TokenReplace subsystem is OUT OF SCOPE, so the two measured configured values are interpolated
+      // directly from the policy constants. That is precisely what the legacy substitution produced at run
+      // time, and it keeps the sentence honest if either constant ever changes.
       expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain(`least ${String(PASSWORD_MIN_LENGTH)} characters`);
       expect(COMPONENT_INVALID_PASSWORD_MESSAGE).toContain(
         `least ${String(PASSWORD_MIN_NON_ALPHANUMERIC)} non-alphanumeric`,
@@ -2457,19 +2194,7 @@ describe('UserFormComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 9 — THE CREATION-OUTCOME VOCABULARY
-  // ---------------------------------------------------------------------------------------------------
-  //
-  // ⚠⚠ SUCCESS IS THIRTEEN AND ZERO IS NEVER SUCCESS. Verified at
-  // `Library/Components/Users/Membership/UserCreateStatus.vb` L24-L41: eighteen members with
-  // EXPLICIT ordinals nought to seventeen, in which `AddUser = 0` is the "nothing recorded
-  // yet" sentinel and `Success = 13`. The legacy detected failure at `User.ascx.vb` L185 by
-  // testing for any value OTHER than the zero sentinel, never by testing for zero.
-  //
-  // Across the three legacy vocabularies `UserValidStatus.VALID = 0`,
-  // `UserLoginStatus.LOGIN_SUCCESS = 1` and `UserCreateStatus.Success = 13`, so an assumption
-  // that zero means success is wrong two times in three. Every case here uses a NAMED member.
 
   describe('the creation-outcome vocabulary', () => {
     it('numbers all eighteen members exactly as measured', () => {
@@ -2510,11 +2235,6 @@ describe('UserFormComponent', () => {
     });
 
     it('keeps the three name-collision members distinct despite sharing one message', () => {
-      // ⚠ THREE MEMBERS, ONE SENTENCE. `UserController.GetUserCreateStatus`
-      // (Library/Components/Users/UserController.vb L598-L626) combined
-      // `UsernameAlreadyExists`, `UserAlreadyRegistered` and `DuplicateUserName` into a single
-      // `Case` arm resolving to the `UserNameExists` wording. Sharing a message is NOT being
-      // the same outcome: merging or aliasing them would lose which one the server reported.
       const collisions: readonly UserCreateStatus[] = [
         UserCreateStatus.UsernameAlreadyExists,
         UserCreateStatus.DuplicateUserName,
@@ -2536,9 +2256,6 @@ describe('UserFormComponent', () => {
     });
 
     it('collapses all four provider-fault members onto one registration sentence', () => {
-      // `ProviderError` (12), `UnexpectedError` (14), `DuplicateProviderUserKey` (4) and
-      // `InvalidProviderUserKey` (9) all reached the same `Case` arm, and the API reports them
-      // under one code for that reason.
       const shipped = USER_CREATE_MESSAGE['user.create.provider_error'];
 
       expect(shipped).toBe(USER_CREATE_MESSAGE['user.create.portal_assignment_failed']);
@@ -2551,19 +2268,6 @@ describe('UserFormComponent', () => {
         .withContext('four distinct members behind one sentence')
         .toBe(4);
 
-      // ⚠ MIGRATION — DEFECT PRESERVED, AND THIS IS THE ASSERTION THAT KEEPS IT PRESERVED.
-      // The measured value of `RegError.Text` in
-      // `Website/App_GlobalResources/SharedResources.resx` line 301 misspells "Further" as
-      // "Futher". The Minimal Change Clause requires a discovered defect to be ANNOTATED
-      // rather than corrected, and requires error messages to be EQUIVALENT to the legacy
-      // ones — so the shipped sentence must be this one, character for character.
-      //
-      // The measured value is written out in full rather than derived from the shipped
-      // constant by substitution. A comparison that spelled the repair — asserting that the
-      // shipped text differs from the measurement by exactly one word — would BLESS the
-      // divergence instead of detecting it, and would keep passing however far the wording
-      // drifted from the resource file so long as that one word still differed. Written out
-      // in full, any edit to the shipped sentence fails here.
       const measuredRegError =
         'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
         'Administrator For Futher Information.';
@@ -2583,9 +2287,6 @@ describe('UserFormComponent', () => {
 
       const write = expectRequest('POST', USERS_URL);
 
-      // ⚠ NO ORDINAL CROSSES THIS BOUNDARY IN EITHER DIRECTION. The request carries the eight
-      // declared members and no status of any kind, so there is nothing for the screen to
-      // misread as a zero-means-success signal.
       const sent: unknown = write.request.body;
 
       expect(sent).withContext('a body was sent').not.toBeNull();
@@ -2624,30 +2325,18 @@ describe('UserFormComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 10 — COMPONENT IDENTITY AND THE SENTINEL DISCIPLINE
-  // ---------------------------------------------------------------------------------------------------
-  //
-  // These are cheap and they catch a class of bug that produces no compilation error and no
-  // run-time exception — only a screen that quietly does the wrong thing.
 
   describe('the component identity that other files depend on', () => {
     /**
-     * The compiled declaration, read through the framework's own reflection API.
-     *
-     * ⚠ `fixture.nativeElement` is NOT the answer here, and measurement proved it: the testing
-     * harness mounts a component under a generic `div` host of its own making, so the host tag
-     * reports `div` no matter what the component declares. The selector must therefore be read
-     * from the declaration, which is exactly what `reflectComponentType` is published for.
+     * The compiled declaration, read through the framework's own reflection API. ⚠
+     * `fixture.nativeElement` is NOT the answer here, and measurement proved it: the testing harness
+     * mounts a component under a generic `div` host of its own making, so the host tag reports `div` no
+     * matter what the component declares.
      */
     const mirror = reflectComponentType(UserFormComponent);
 
     it('is named and selected exactly as the route file imports it', () => {
-      // ⚠ BOTH ARE EXTERNALLY FIXED. `features/user/user.routes.ts` maps BOTH `{ path: 'new' }`
-      // and `{ path: ':userId' }` to
-      // `import('./user-form/user-form.component').then((m) => m.UserFormComponent)`, so a
-      // renamed export takes out the whole `/users/new` plus `/users/:userId` subtree with a
-      // 404 and no other symptom.
       expect(UserFormComponent.name).toBe('UserFormComponent');
 
       expect(mirror).withContext('the class really is a component').not.toBeNull();
@@ -2656,10 +2345,6 @@ describe('UserFormComponent', () => {
     });
 
     it('declares the input as exactly `userId`, which the router binds by name', () => {
-      // ⚠ `app.config.ts` enables `withComponentInputBinding()`, which matches a route
-      // parameter to an input OF THE SAME NAME. Renaming this to `id` or `userID` breaks the
-      // binding SILENTLY: no compilation error, no exception, just an input that stays
-      // undefined so every visit looks like a create.
       const bound = (mirror?.inputs ?? []).map((entry) => entry.templateName);
 
       expect(bound).withContext('the name the router will look for').toContain('userId');
@@ -2693,11 +2378,6 @@ describe('UserFormComponent', () => {
     });
 
     it('declares the checked-change strategy the requirements mandate', () => {
-      // The compiled definition records the declared strategy as one boolean, computed by the
-      // framework as `changeDetection === ChangeDetectionStrategy.OnPush`. Reading it asserts
-      // the DECLARATION, which is what the requirement is about — a behavioural probe cannot
-      // distinguish the two strategies on a view whose every binding is signal-driven, because
-      // a signal read marks the view dirty under either one.
       const definition: unknown = (UserFormComponent as unknown as Record<string, unknown>)['ɵcmp'];
 
       expect(typeof definition).withContext('the class was compiled as a component').toBe('object');
@@ -2709,22 +2389,10 @@ describe('UserFormComponent', () => {
   });
 
   describe('identifiers, tested for presence and never for truth', () => {
-    // ⚠⚠ MEASURED SEEDS, AND THEY COLLIDE WITH THE NULL MARKER.
-    // `Users.UserID IDENTITY (1, 1)` · `Portals.PortalID IDENTITY (-1, 1)` ·
-    // `Roles.RoleID`/`Tabs.TabID`/`Modules.ModuleID IDENTITY (0, 1)`
-    // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77, L98,
-    // L115) while `Library/Components/Shared/Null.vb` defines `NullInteger` with a body that is
-    // literally `Return -1`. So `-1` names BOTH the first portal ever created AND "no integer",
-    // and `0` is a legitimate identifier in three of the five tables.
-    //
-    // Consequently no identifier anywhere — not in the component, not in these helpers — is
-    // subjected to a truthiness test, a positive-value test, a comparison against the sentinel
-    // or a coalescing default.
+    // Consequently no identifier anywhere — not in the component, not in these helpers — is subjected to a
+    // truthiness test, a positive-value test, a comparison against the sentinel or a coalescing default.
 
     it('treats MINUS ONE as a real account rather than as an absence', () => {
-      // The null marker's own value, arriving as a route parameter. The screen must read it as
-      // an identifier, because a screen that treated it as "absent" would silently offer to
-      // CREATE an account while the operator believed they were editing one.
       create('-1');
 
       expectRequest('GET', userUrl(-1), 'minus one is an address, not an absence').flush(
@@ -2738,10 +2406,8 @@ describe('UserFormComponent', () => {
     });
 
     it('treats ZERO as a real account, which is the defensive half of the rule', () => {
-      // ⚠ ZERO IS NOT NATURALLY OCCURRING FOR THIS TABLE. `Users.UserID` seeds at ONE, so no
-      // real account carries nought and this is a DEFENSIVE test of the discipline rather than
-      // a live scenario. It is implemented anyway, because the sibling tables DO seed at nought
-      // and the screen must not encode an assumption that happens to hold only here.
+      // ⚠ ZERO IS NOT NATURALLY OCCURRING FOR THIS TABLE. `Users.UserID` seeds at ONE, so no real account
+      // carries nought and this is a DEFENSIVE test of the discipline rather than a live scenario.
       create('0');
 
       expectRequest('GET', userUrl(0), 'zero is an address, not an absence').flush(
@@ -2754,23 +2420,6 @@ describe('UserFormComponent', () => {
     });
 
     it('offers no form at all when the parameter is not an identifier', () => {
-      /*
-       * ⚠ THE OPTION STRICT ASYMMETRY MADE EXPLICIT. The legacy admin code-behinds compiled with
-       * `<compilation debug="false" strict="false">` (`Website/release.config` L125) — that is Option
-       * Strict OFF — so a late-bound narrowing of a non-numeric string to an integer would have
-       * yielded ZERO without complaint, and the page would have read a real row. Here the coercion is
-       * explicit and no identifier is invented, which is the half of this rule that always held.
-       *
-       * ⚠ THIS CASE USED TO ASSERT THE OTHER HALF WRONGLY. It required the CREATE submit to be
-       * present and called that "failing closed". It is the opposite: an address naming nothing was
-       * answered with the live add-account form, nine of its ten controls enabled and Authorize
-       * already ticked, so the operator was invited to create an account by a URL that looked like a
-       * request to edit one. Reading nothing is necessary but not sufficient — it is precisely what
-       * made the fall-through silent, since the server never got the chance to disagree.
-       *
-       * Absence of a parameter still selects creation; that is `/users/new` and is covered elsewhere.
-       * This case is about a parameter that is present and unusable, which is a third state.
-       */
       create('not-a-number');
 
       expect(button(CREATE_SUBMIT_LABEL))
@@ -2802,11 +2451,6 @@ describe('UserFormComponent', () => {
         .withContext('authorise opens checked, as measured')
         .toBeTrue();
 
-      // ⚠ DEFECT, ANNOTATED AND NOT REPAIRED. The markup declares `chkRandom checked="True"` at
-      // `User.ascx` L35 and the code-behind then assigns `chkRandom.Checked = False` on every
-      // non-postback at `User.ascx.vb` L261. The two contradict each other and the code-behind
-      // wins at run time, so the OBSERVABLE opening state is UNCHECKED. The behaviour is
-      // reproduced; the contradiction is recorded rather than resolved in the markup's favour.
       expect(field<HTMLInputElement>(CONTROL_ID.randomPassword).checked)
         .withContext('generation opens UNCHECKED, matching the code-behind and not the markup')
         .toBeFalse();
@@ -2818,19 +2462,12 @@ describe('UserFormComponent', () => {
       const notify = field<HTMLInputElement>(CONTROL_ID.notify);
 
       // MIGRATION — DIVERGENCE FROM THE MEASURED MARKUP, WITH ITS CAUSE. `chkNotify` carried
-      // `checked="True"` at `User.ascx` L25, but `CreateUserRequest` declares exactly EIGHT
-      // members — username, firstName, lastName, displayName, email, password, confirmPassword,
-      // authorize — and `notify` is NOT one of them. There is no field on the wire to carry the
-      // choice, so a ticked box would be a false statement about what will happen. The control
-      // is retained and rendered DISABLED and unticked instead.
+      // `checked="True"` at `User.ascx` L25, but `CreateUserRequest` declares exactly EIGHT members —
+      // username, firstName, lastName, displayName, email, password, confirmPassword, authorize — and
+      // `notify` is NOT one of them.
       expect(notify.disabled).withContext('no wire field exists to carry the choice').toBeTrue();
       expect(notify.checked).toBeFalse();
 
-      // ⚠ THE REASON IS NOT PRINTED INLINE, and measurement is what settled that: the shared
-      // field reveals help on demand, reproducing the legacy help BUTTON at
-      // `Website/controls/helpbuttoncontrol.ascx`. So the sentence is absent until the
-      // affordance is operated, and the case that operates it lives with the creation cases
-      // rather than being duplicated here.
       expect(host().textContent ?? '')
         .withContext('help is revealed on demand, exactly like every other field')
         .not.toContain(NOTIFY_UNAVAILABLE_ADVISORY);
@@ -2840,11 +2477,6 @@ describe('UserFormComponent', () => {
     });
 
     it('returns every control to its initial value on a reset, never to null', () => {
-      // ⚠ THIS IS THE `nonNullable` PROOF, AND IT IS DRIVEN THROUGH THE PUBLIC INPUT. A control
-      // built WITHOUT `nonNullable` resets to `null`; a checkbox bound to `null` renders
-      // UNCHECKED. The component resets the form when the resolved identifier becomes
-      // undefined, so withdrawing the input performs a real reset and the switches must come
-      // back at TRUE and FALSE respectively rather than both at null-shaped unchecked.
       arriveEditing(account(7));
 
       // Dirty the form so the reset has something to undo.
@@ -2881,16 +2513,8 @@ describe('UserFormComponent', () => {
         expect(Number(bound)).toBeGreaterThan(0);
       }
 
-      // ⚠⚠ AND IT IS NOT A VALIDATOR. The legacy declared no maximum-length VALIDATOR at all —
-      // `Website/admin/Users` contains zero `asp:RequiredFieldValidator` and zero
-      // `asp:RegularExpressionValidator`, and the only validator in this folder is the single
-      // `asp:CustomValidator valPassword` at `User.ascx` L59-L61, declared with NO
-      // `ControlToValidate` and NO `ErrorMessage`. The browser silently TRUNCATED over-long
-      // input rather than reporting an error, so turning the ceiling into a validator would
-      // convert a silent truncation into a visible rejection.
-      //
-      // Proven by behaviour: a credential far longer than the attribute allows still submits,
-      // because nothing validates its length on this side.
+      // Proven by behaviour: a credential far longer than the attribute allows still submits, because
+      // nothing validates its length on this side.
       const overlong = 'A1'.repeat(400);
 
       fillCreationForm();
@@ -2923,9 +2547,6 @@ describe('UserFormComponent', () => {
     });
 
     it('projects the selection as a signal a view cannot write to', () => {
-      // The screen reads the account from the store's published selection. That signal is
-      // exposed through `asReadonly()`, so a template or a child cannot write the selection
-      // back — which is what stops a view from becoming a second source of truth.
       const store = TestBed.inject(UserStore);
 
       expect('set' in store.selectedUser).withContext('no set on a published signal').toBeFalse();
@@ -2948,10 +2569,6 @@ describe('UserFormComponent', () => {
     }
 
     it('renders every sentinel date as an empty cell, never as a first-century date', () => {
-      // ⚠ THE SENTINEL SURVIVES ON THE WIRE. `Library/Components/Shared/Null.vb` defines
-      // `NullDate` as `DateTime.MinValue` and `NullString` as the EMPTY STRING rather than as
-      // null, and the API serialises with its ignore condition set to never — so these members
-      // arrive PRESENT AND EMPTY rather than omitted.
       const sentinel = '0001-01-01T00:00:00';
 
       arriveEditing(
@@ -2968,9 +2585,9 @@ describe('UserFormComponent', () => {
 
       expect(rendered.length).withContext('the panel is painted').toBeGreaterThanOrEqual(5);
 
-      // ⚠ PARITY, NOT AN IMPROVEMENT. The legacy `DisplayDate` already returned the empty string
-      // for the sentinel, so an empty cell is what an operator saw. `01/01/0001` would be a
-      // REGRESSION — a date nobody entered, presented as though somebody had.
+      // ⚠ PARITY, NOT AN IMPROVEMENT. The legacy `DisplayDate` already returned the empty string for the
+      // sentinel, so an empty cell is what an operator saw. `01/01/0001` would be a REGRESSION — a date
+      // nobody entered, presented as though somebody had.
       for (const value of rendered) {
         expect(value).not.toContain('0001');
         expect(value).not.toContain('01/01/0001');
@@ -2992,13 +2609,10 @@ describe('UserFormComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 13 — WHAT THIS SCREEN MUST NOT DO
-  // ---------------------------------------------------------------------------------------------------
-  //
-  // Negative assertions, each tied to a measured reason. Several record that a legacy
-  // affordance was BEHAVIOUR-PRESERVINGLY dropped rather than reduced, which is a different
-  // claim from "we left it out" and the distinction is the point.
+  // Negative assertions, each tied to a measured reason. Several record that a legacy affordance was
+  // BEHAVIOUR-PRESERVINGLY dropped rather than reduced, which is a different claim from "we left it out"
+  // and the distinction is the point.
 
   describe('what this screen must not do', () => {
     /** Every attribute value that could name a control, across the whole rendered document. */
@@ -3013,21 +2627,9 @@ describe('UserFormComponent', () => {
     it('offers no security-code affordance', () => {
       create();
 
-      // The legacy declared `dnn:captchacontrol ctlCaptcha` inside the password table at
-      // `User.ascx` L67. The control is one of the 102 excluded `Library/Controls` files, so
-      // there is nothing to render and no field to post.
-      //
-      // ⚠ AND THE PROTECTION IS NOT SIMPLY GONE. The compensating control lives on the server
-      // and it covers THIS form's own write: the global limiter classifies a request as
-      // credential-bearing from the `[CredentialEndpoint]` marker on the action, and
-      // `UsersController.CreateAsync` carries it, so account creation draws the credential
-      // budget per calling address and is answered 429 once the allowance is spent.
-      //
-      // MIGRATION — DEFECT 8, ANNOTATED. The legacy label for that row read
-      // `text="Password:"` at `User.ascx` L64, which was MASKED at run time because
-      // `plCaptcha.Text` in the local resources reads `Security Code:` and a `dnn:label` with no
-      // explicit resource key falls back on its own control identifier. The mislabelling was
-      // therefore invisible in the running application. It is recorded, not carried.
+      // The legacy declared `dnn:captchacontrol ctlCaptcha` inside the password table at `User.ascx` L67.
+      // The control is one of the 102 excluded `Library/Controls` files, so there is nothing to render and
+      // no field to post.
       const text = (host().textContent ?? '').toLowerCase();
 
       expect(text).not.toContain('captcha');
@@ -3039,13 +2641,6 @@ describe('UserFormComponent', () => {
     it('offers no password question and no password answer', () => {
       create();
 
-      // ⚠ THIS IS BEHAVIOUR-PRESERVING, NOT A REDUCTION, AND THE DISTINCTION IS MEASURED. Both
-      // rows carried `visible="false"` at `User.ascx` L52 and L56 and were revealed only when
-      // `MembershipProviderConfig.RequiresQuestionAndAnswer` was true — and
-      // `Website/release.config` L241 sets `requiresQuestionAndAnswer="false"`. The rows
-      // therefore NEVER RENDERED in the measured installation, and the legacy branch that read
-      // them (`User.ascx.vb` L168) was unreachable. Omitting unreachable code changes nothing an
-      // operator could observe. No endpoint carries either value either.
       const text = (host().textContent ?? '').toLowerCase();
 
       expect(text).not.toContain('password question');
@@ -3060,13 +2655,9 @@ describe('UserFormComponent', () => {
     it('offers no way to retrieve an existing password', () => {
       arriveEditing(account(7));
 
-      // The legacy membership provider was registered with `enablePasswordRetrieval="true"` and
-      // a reversible password format, which made every stored credential recoverable. The
-      // successor stores a one-way hash, so retrieval is not withheld — it is IMPOSSIBLE.
-      //
-      // ⚠ RESET IS NOT RETRIEVAL and the two must not be conflated: `enablePasswordReset="true"`
-      // IS carried forward, on the sibling credential screen. What is gone is reading a
-      // credential back out.
+      // The legacy membership provider was registered with `enablePasswordRetrieval="true"` and a
+      // reversible password format, which made every stored credential recoverable. The successor stores a
+      // one-way hash, so retrieval is not withheld — it is IMPOSSIBLE.
       const text = (host().textContent ?? '').toLowerCase();
 
       expect(text).not.toContain('retrieve');
@@ -3082,9 +2673,6 @@ describe('UserFormComponent', () => {
     it('shows no presence indicator and no membership-services tab', () => {
       arriveEditing(account(7, { isOnline: true }));
 
-      // The users-online subsystem is out of scope and no endpoint reports it, so the member
-      // arrives on the contract and is deliberately not painted. Asserted with the flag SET, so
-      // the case would fail if an indicator were added later.
       const text = (host().textContent ?? '').toLowerCase();
 
       expect(text).not.toContain('online');
@@ -3099,11 +2687,8 @@ describe('UserFormComponent', () => {
     it('decides nothing from a permission key, and leaves the refusal to the server', () => {
       arriveEditing(account(7));
 
-      // ⚠ TWO CLOSED VOCABULARIES THAT MUST NOT BE CONFLATED: the authorisation POLICY names and
-      // the persisted PERMISSION KEYS. Neither appears here. The route is already gated, that
-      // gate is ADVISORY, and the server's 403 is authoritative — which is exactly why the
-      // refusal cases route a 403 through the notification channel rather than deciding
-      // anything locally.
+      // ⚠ TWO CLOSED VOCABULARIES THAT MUST NOT BE CONFLATED: the authorisation POLICY names and the
+      // persisted PERMISSION KEYS. Neither appears here.
       const markup = host().innerHTML;
 
       expect(markup).not.toContain('hasPermission');
@@ -3116,10 +2701,9 @@ describe('UserFormComponent', () => {
     });
 
     it('renders no bare zero for an account allowance', () => {
-      // ⚠ ZERO MEANS UNLIMITED AND MINUS ONE MEANS NOT SET for the tenant's account allowance,
-      // so printing either as a number would tell an operator the opposite of the truth. This
-      // screen states the allowance only as the measured refusal sentence, which carries no
-      // figure at all.
+      // ⚠ ZERO MEANS UNLIMITED AND MINUS ONE MEANS NOT SET for the tenant's account allowance, so printing
+      // either as a number would tell an operator the opposite of the truth. This screen states the
+      // allowance only as the measured refusal sentence, which carries no figure at all.
       create();
       fillCreationForm();
       press(CREATE_SUBMIT_LABEL);
@@ -3132,9 +2716,6 @@ describe('UserFormComponent', () => {
 
       const text = host().textContent ?? '';
 
-      // The measured sentence is `ExceededUserQuota.Text` from
-      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx`, which capitalises the
-      // word; the comparison is case-insensitive so it cannot pass on the wrong casing either.
       expect(text.toLowerCase()).toContain(EXCEEDED_USER_QUOTA_MESSAGE_FRAGMENT.toLowerCase());
       expect(text).toContain('User Quota');
 
@@ -3147,10 +2728,9 @@ describe('UserFormComponent', () => {
     it('lays the screen out without a single table element', () => {
       arriveEditing(account(7));
 
-      // The legacy `tblAddUser`, `tblPassword` and the `pnlUser` design table were all LAYOUT
-      // tables rather than data grids — `tblPassword` even carried
-      // `summary="Password Management"`, which is a layout summary and not a caption. Layout
-      // tables are replaced by grid styling; a real data grid would still be a table.
+      // The legacy `tblAddUser`, `tblPassword` and the `pnlUser` design table were all LAYOUT tables rather
+      // than data grids — `tblPassword` even carried `summary="Password Management"`, which is a layout
+      // summary and not a caption.
       expect(queryAll('table')).withContext('no layout table survives').toHaveSize(0);
       expect(queryAll('td')).toHaveSize(0);
       expect(queryAll('tr')).toHaveSize(0);
@@ -3187,9 +2767,9 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ THE REGION BELONGS TO THE SHARED BANNER, AND THIS SUITE ASSERTS ITS PRESENCE RATHER
-      // THAN ADDING A COMPETING ONE. Two live regions announcing the same text is worse than
-      // one, because a screen reader reads both.
+      // ⚠ THE REGION BELONGS TO THE SHARED BANNER, AND THIS SUITE ASSERTS ITS PRESENCE RATHER THAN ADDING A
+      // COMPETING ONE. Two live regions announcing the same text is worse than one, because a screen reader
+      // reads both.
       const live = query<HTMLElement>('[aria-live]');
 
       expect(live).withContext('the banner mounted with a live region').not.toBeNull();
@@ -3200,11 +2780,6 @@ describe('UserFormComponent', () => {
     });
 
     it('strips the legacy break prefix and announces plain text', () => {
-      // ⚠ MEASURED DEFECT. `User.ascx.vb` L187 built its message as
-      // `"<br/>" + UserController.GetUserCreateStatus(createStatus)`, prepending markup to what
-      // was otherwise a sentence. The prefix is inconsistent across the legacy tree and exists
-      // in both spellings, so the stripping is total rather than keyed to one form. It is owned
-      // by `core/utils/form-errors.util.ts`; this case asserts the OUTCOME.
       expect(stripLegacyBreakTags('<br/>A sentence.')).toBe('A sentence.');
       expect(stripLegacyBreakTags('<br>A sentence.')).toBe('A sentence.');
 
@@ -3227,10 +2802,6 @@ describe('UserFormComponent', () => {
     });
 
     it('escapes hostile wording arriving in a server message', () => {
-      // ⚠ RESOURCE AND SERVER TEXT IS UNTRUSTED MARKUP BY MEASUREMENT — 76 values across the
-      // in-scope resource files contain a raw HTML tag, including a script tag four times. A
-      // message is text and is bound as text; nothing here is bound as trusted markup and no
-      // sanitiser is involved, because the framework's default interpolation already escapes.
       create();
       fillCreationForm();
       press(CREATE_SUBMIT_LABEL);
@@ -3256,10 +2827,8 @@ describe('UserFormComponent', () => {
 
     it('preserves the measured double space in the address-conflict sentence', () => {
       // ⚠ THE DOUBLE SPACE IS IN THE MEASURED VALUE. `EmailError.Text` in
-      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx` reads
-      // "...unique Email Address.  The Email Address you entered..." with TWO spaces after the
-      // full stop, and it is asserted verbatim. Collapsing it would be an unrequested edit to
-      // wording an operator recognises.
+      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx` reads "...unique Email Address. The
+      // Email Address you entered..." with TWO spaces after the full stop, and it is asserted verbatim.
       expect(EMAIL_CONFLICT_MESSAGE).toContain('Email Address.  The Email Address');
       expect(EMAIL_CONFLICT_MESSAGE).not.toContain('Email Address. The Email Address');
       expect(EMAIL_CONFLICT_MESSAGE).toBe(
@@ -3271,10 +2840,6 @@ describe('UserFormComponent', () => {
     it('enforces no address uniqueness of its own and lets the server refuse', () => {
       arriveEditing(account(7));
 
-      // ⚠ `requiresUniqueEmail="false"` at `Website/release.config` L244 — the legacy did NOT
-      // enforce uniqueness, so authoring a client-side rule here would be a NEW rule rather
-      // than parity. An address already in use therefore submits cleanly and is refused by the
-      // server, which is the only authority on it.
       type(CONTROL_ID.email, 'taken@example.test');
 
       expect(fieldErrors().join(' ')).withContext('nothing was refused locally').not.toContain('already');
@@ -3289,12 +2854,6 @@ describe('UserFormComponent', () => {
       });
       fixture.detectChanges();
 
-      // ⚠ AND THE MEASURED SENTENCE IS NOT WHAT REACHES THE OPERATOR ON THIS PATH. The refusal
-      // paragraph that carries it is rendered only while the form is WITHHELD, and the
-      // withholding rule names the permission and not-found statuses alone — so a conflict is
-      // reported by the banner in the server's own words and the form stays usable, which is
-      // the right answer because a duplicate address is corrected right here. The measured
-      // sentence is recorded as UNREACHABLE for a 409 rather than asserted as shown.
       expect(query('app-error-banner')?.textContent ?? '').toContain(
         'That address is already in use.',
       );

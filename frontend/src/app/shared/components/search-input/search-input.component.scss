@@ -3,13 +3,6 @@
 :host {
   display: block;
 
-  // The cap exists because a filter field stretched across a wide desktop is
-  // harder to use, not easier. Its width comes from the shared breakpoint helper,
-  // so no length literal is written here and the value cannot drift away from the
-  // breakpoint scale; the query itself is obtained by including a mixin, because a
-  // breakpoint restated inside a component silently diverges from every other
-  // declaration of it. Below the step the block simply fills its container and
-  // needs no rule of its own.
   @include mx.respond-above('md') {
     max-inline-size: mx.breakpoint('sm');
   }
@@ -31,30 +24,17 @@
   gap: var(--space-2);
 }
 
-// The field's base chrome - family, size, border, padding and background - comes
-// from the global form layer, which reaches this markup because emulated
-// encapsulation scopes component styles without shielding elements from global
-// element selectors. Restating any of it here would duplicate that layer and
-// diverge from it silently the first time either side changed.
+// The field's base chrome - family, size, border, padding and background - comes from the global form
+// layer, which reaches this markup because emulated encapsulation scopes component styles without shielding
+// elements from global element selectors.
 .search-input__field {
-  // Take the free space in the row and — the load-bearing half of this pair —
-  // permit shrinking below the intrinsic width of the value being typed. The
-  // from-zero basis is what buys the second half: a basis of `auto` would keep the
-  // field at least as wide as the value it holds, letting a long value push the
-  // submit control out of the row instead of scrolling inside the field. The two
-  // growth behaviours are named in the shared vocabulary precisely because they
-  // look almost identical and behave differently.
+  // Take the free space in the row and — the load-bearing half of this pair — permit shrinking below the
+  // intrinsic width of the value being typed.
   flex: var(--flex-fill-from-zero);
   min-inline-size: 0;
 
-  // Deliberately NOT `appearance: none`. A native search field paints its own
-  // clear affordance, and this component intercepts the event that affordance
-  // raises, which makes it a supported part of the control's behaviour;
-  // flattening the appearance would remove it.
-
-  // The shared mixin draws the indicator on `:focus-visible` only, and as an
-  // outline rather than a border or a shadow, so a pointer user sees no change
-  // and the indicator cannot reflow the field it marks.
+  // The shared mixin draws the indicator on `:focus-visible` only, and as an outline rather than a border
+  // or a shadow, so a pointer user sees no change and the indicator cannot reflow the field it marks.
   @include mx.focus-ring;
 }
 
@@ -77,44 +57,13 @@
 
   cursor: pointer;
 
-  // MIGRATION: the hover colour change is INSTANTANEOUS, and deliberately so.
-  // The legacy stylesheet's transition, animation and transform counts are all
-  // zero, so there is no legacy motion to preserve; the shared mixin surface
-  // exports no motion member and no reduced-motion guard, and this file may not
-  // author a media query of its own. Rather than impose unguarded movement on a
-  // reader who has asked their system for less, the state change is immediate —
-  // which is also exactly what the legacy portal did. Recorded rather than
-  // absorbed.
-
-  // MIGRATION: the hover colour diverges. The legacy hover for an admin link
-  // button resolved to the value the token set now carries under the danger role,
-  // so reusing it for a benign search would signal a destructive action; the token
-  // whose role is the hover companion to the brand colour is used instead.
-  //
-  // Guarded on `:enabled` rather than left bare, and the guard is load-bearing
-  // rather than defensive. This control is a real `<button>` carrying a
-  // `[disabled]` binding, and a bare `&:hover` weighs (0,2,0) against the global
-  // `button:disabled` rule's (0,1,1) — one class outranks one type selector, so
-  // the component hover would win and paint the INTERACTIVE brand-hover ink onto
-  // an unavailable control the moment a pointer crossed it. `:enabled` cannot
-  // match a disabled button at all, so the boundary is structural and needs no
-  // ordering convention to hold it.
+  // The hover colour diverges. The legacy hover for an admin link button resolved to the value the token
+  // set now carries under the danger role, so reusing it for a benign search would signal a destructive
+  // action; the token whose role is the hover companion to the brand colour is used instead.
   &:enabled:hover {
     color: var(--color-primary-hover);
   }
 
-  // The press state the global button vocabulary declares, restated here for the
-  // same specificity reason as the hover above: this file strips the control's
-  // fill to `transparent`, and that declaration weighs (0,1,0) against the global
-  // `button:active` rule's (0,1,1), so the global press tint is suppressed by this
-  // component and has to be reinstated inside it. The tint is the vocabulary's own
-  // press signal, not a new one, and the radius the global button rule sets is not
-  // overridden here, so the tint arrives already contained by it.
-  //
-  // Press is a genuinely distinct third state rather than a repeat of hover: hover
-  // changes only the ink and leaves the fill transparent, press changes only the
-  // fill and leaves the hover ink standing, so the two compose visibly instead of
-  // one masking the other.
   &:enabled:active {
     background-color: var(--color-selected);
   }
@@ -128,9 +77,9 @@
   block-size: var(--space-4);
 }
 
-// Colour is never the sole indicator of this state: the native `disabled`
-// attribute always accompanies it, so assistive technology and keyboard users are
-// served independently of the contrast the token resolves to.
+// Colour is never the sole indicator of this state: the native `disabled` attribute always accompanies it,
+// so assistive technology and keyboard users are served independently of the contrast the token resolves
+// to.
 .search-input__field:disabled,
 .search-input__submit:disabled {
   // MIGRATION: the muted-text token, where the legacy disabled style measured the

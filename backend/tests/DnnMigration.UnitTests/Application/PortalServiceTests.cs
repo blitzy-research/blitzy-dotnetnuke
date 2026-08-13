@@ -27,53 +27,27 @@ namespace DnnMigration.UnitTests.Application;
 /// WHAT THIS SUITE IS FOR, AND WHAT IT DELIBERATELY LEAVES ALONE. A sibling suite already exercises the
 /// tenant WORKFLOW - the provisioning transaction and its enclosure, the host-only field guard, the
 /// last-remaining-tenant refusal, and the alias surface. Repeating any of that here would buy nothing and
-/// would leave two suites free to disagree about the same rule. This suite asserts the things that are
-/// invisible to a workflow test because they are properties of the TRANSLATION rather than of the
-/// behaviour: that argument 11 of a twenty-seven-argument procedure still reaches column 11, that a clamp
-/// written as a two-armed function still floors at the same value, that a grand total still travels with
-/// the records it counts, and that a number the legacy code used as an "absent" marker is still read as the
-/// real row identifier it also is. A transposition between two same-typed neighbours is the specific fault
-/// this file exists to catch, because no compiler and no workflow test can see one.
+/// would leave two suites free to disagree about the same rule.
 /// </para>
 /// <para>
 /// Mocked collaborators only, and only the domain and application abstractions. Nothing here reaches a
 /// database context, a query root or SQL text; the persistence context is internal to the infrastructure
-/// project precisely so that a unit test cannot acquire one. Every write assertion names an explicit call
-/// count, and the single transactional commit point is verified on both the success and the refusal path.
-/// </para>
-/// <para>
-/// Reflection-only assertions are declared <see langword="void"/> rather than asynchronous. That is not an
-/// inconsistency: an asynchronous method with nothing to await raises a compiler warning, and this project
-/// builds warnings as errors, so a contract-shape assertion that touches no collaborator must be
-/// synchronous. Every assertion that does invoke the service is asynchronous and passes its cancellation
-/// token explicitly rather than relying on the parameter's default.
+/// project precisely so that a unit test cannot acquire one.
 /// </para>
 /// </remarks>
 public class PortalServiceApplicationTests
 {
-    /// <summary>
-    /// The tenant these assertions address, which is deliberately the identity seed.
-    /// </summary>
-    /// <remarks>
-    /// <c>Portals.PortalID</c> is declared <c>IDENTITY (-1, 1)</c>, so -1 is the first identifier the column
-    /// issues AND the value the legacy null contract used to mean "absent"
-    /// (<c>Library/Components/Shared/Null.vb</c>, <c>NullInteger</c>). Addressing it by default is what
-    /// keeps the collision under test on every path rather than only on the one test that names it.
-    /// </remarks>
+    /// <summary>The tenant these assertions address, which is deliberately the identity seed.</summary>
     private const int SeedPortalId = -1;
 
-    /// <summary>
-    /// The shipped default tenant, which occupies the value immediately after the seed.
-    /// </summary>
+    /// <summary>The shipped default tenant, which occupies the value immediately after the seed.</summary>
     private const int DefaultPortalId = 0;
 
-    /// <summary>
-    /// The installation-wide host account used by write-path tests.
-    /// </summary>
+    /// <summary>The installation-wide host account used by write-path tests.</summary>
     /// <remarks>
-    /// SEC-011: host authority is re-read from the account store. This identifier is deliberately distinct
-    /// from every portal administrator used by the fixture so a host-only exemption cannot be satisfied by
-    /// an unrelated tenant-scoped account lookup.
+    /// host authority is re-read from the account store. This identifier is deliberately distinct from
+    /// every portal administrator used by the fixture so a host-only exemption cannot be satisfied by an
+    /// unrelated tenant-scoped account lookup.
     /// </remarks>
     private const int HostCallerUserId = 9_901;
 
@@ -85,13 +59,11 @@ public class PortalServiceApplicationTests
 
     /// <summary>
     /// The legacy per-entity portal cache timeout in minutes, which the installation-wide performance
-    /// multiplier scales (<c>PortalController.vb:L1232</c>).
+    /// multiplier scales.
     /// </summary>
     private const int LegacyPortalCacheTimeOutMinutes = 20;
 
-    /// <summary>
-    /// The host name the tenant under test is reached by.
-    /// </summary>
+    /// <summary>The host name the tenant under test is reached by.</summary>
     private const string HostAlias = "tenant.example.test";
 
     /// <summary>
@@ -100,15 +72,12 @@ public class PortalServiceApplicationTests
     /// </summary>
     private const string FakePasswordHash = "REDACTED_PASSWORD_HASH";
 
-    /// <summary>
-    /// A deliberately fake stand-in for a submitted password.
-    /// </summary>
+    /// <summary>A deliberately fake stand-in for a submitted password.</summary>
     private const string FakeSubmittedPassword = "not-a-real-password-value";
 
     /// <summary>
-    /// The twenty-seven arguments of <c>PortalController.UpdatePortalInfo</c>
-    /// (<c>PortalController.vb:L1568</c>), transcribed from the signature in the order they are declared
-    /// there and forwarded at <c>:L1570</c>.
+    /// The twenty-seven arguments of <c>PortalController.UpdatePortalInfo</c>, transcribed from the
+    /// signature in the order they are declared there and forwarded at <c>:L1570</c>.
     /// </summary>
     /// <remarks>
     /// This sequence is the whole point of the file. It is transcribed once, in legacy order, so that a
@@ -148,8 +117,8 @@ public class PortalServiceApplicationTests
     ];
 
     /// <summary>
-    /// The fifteen arguments of <c>PortalController.CreatePortal</c>
-    /// (<c>PortalController.vb:L980</c>), transcribed from the signature in declaration order.
+    /// The fifteen arguments of <c>PortalController.CreatePortal</c>, transcribed from the signature in
+    /// declaration order.
     /// </summary>
     private static readonly string[] LegacyCreateArguments =
     [
@@ -175,13 +144,6 @@ public class PortalServiceApplicationTests
     /// places where swapping two values produces code that still compiles and still runs.
     /// </summary>
     /// <returns>The property-name pairs to probe.</returns>
-    /// <remarks>
-    /// Every pair below was read off the legacy signature at <c>PortalController.vb:L1568</c>: the hosting
-    /// charge and the disc allowance were both <c>Double</c>; the page and member quotas were both
-    /// <c>Integer</c>; the processor account and its secret were both <c>String</c>; the description and the
-    /// keywords were both <c>String</c>; and the four page references were all <c>Integer</c>. A swap inside
-    /// any one of them is invisible to the compiler on both sides of the migration.
-    /// </remarks>
     public static TheoryData<string, string> SameTypedNeighbours() => new()
     {
         { "HostFee", "HostSpace" },
@@ -197,11 +159,6 @@ public class PortalServiceApplicationTests
     /// Every collaborator of <see cref="PortalService"/>, stood up as a mock, together with the recordings
     /// the assertions read back.
     /// </summary>
-    /// <remarks>
-    /// Nested inside the test class on purpose. A shared fixture file would couple this suite to its
-    /// siblings, and the whole value of these assertions is that they pin one aggregate's translation
-    /// independently of anything else in the project.
-    /// </remarks>
     private sealed class Subject
     {
         private Subject()
@@ -318,8 +275,8 @@ public class PortalServiceApplicationTests
         public int DiscardedHostCount { get; private set; }
 
         /// <summary>
-        /// Builds a subject whose every collaborator answers plausibly, so that a test need only override the
-        /// one fact it is about.
+        /// Builds a subject whose every collaborator answers plausibly, so that a test need only override
+        /// the one fact it is about.
         /// </summary>
         /// <returns>A ready subject.</returns>
         public static Subject Ready()
@@ -475,10 +432,6 @@ public class PortalServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success());
 
-            // MIGRATION: SEC-F1. The home page's grants are resolved by SCOPE CODE, so that is the read the
-            // harness answers. The page-scoped-by-TAB read stays stubbed to nothing, which is what production
-            // answers while the page is still uncommitted and therefore has no identifier of its own - and
-            // creation must nevertheless complete with its three grants.
             subject.Permissions
                 .Setup(permissions => permissions.GetByTabIdAsync(
                     It.IsAny<int>(),
@@ -558,12 +511,6 @@ public class PortalServiceApplicationTests
     /// numeric value equals its own legacy argument position.
     /// </summary>
     /// <returns>The request.</returns>
-    /// <remarks>
-    /// The numbering is the technique. Because argument 11 carries the value 11 and argument 12 carries the
-    /// value 12, a swap between two same-typed neighbours does not merely fail an assertion - it fails one
-    /// that names the position it landed in, so the diagnosis is immediate. Strings carry the same number in
-    /// their text for the same reason.
-    /// </remarks>
     private static UpdatePortalRequest SentinelUpdateRequest() => new()
     {
         PortalId = SeedPortalId,
@@ -618,7 +565,8 @@ public class PortalServiceApplicationTests
 
     /// <summary>
     /// Reduces a value to a form two differently-typed properties can be compared in, so that a nullable
-    /// term on a request and a non-nullable column on an entity compare equal when they hold the same value.
+    /// term on a request and a non-nullable column on an entity compare equal when they hold the same
+    /// value.
     /// </summary>
     /// <param name="value">The value to reduce.</param>
     /// <returns>A decimal for any numeric value, the value itself otherwise.</returns>
@@ -638,27 +586,11 @@ public class PortalServiceApplicationTests
     /// member that follows them is the optimistic-concurrency token.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the cheapest defence available against the fault this file exists to catch. The legacy
-    /// procedure at <c>PortalController.vb:L1568</c> took its values POSITIONALLY, so a reviewer checking a
-    /// call site had to count arguments; the request object names them, but only stays checkable against the
-    /// original while it presents the same members in the same sequence. Asserting the sequence - rather
-    /// than only the set - is what lets the next reader lay the two signatures side by side.
-    /// </para>
-    /// <para>
     /// ONE MEMBER HAS BEEN ADDED SINCE, DELIBERATELY, AND THIS ASSERTION PINS BOTH ITS IDENTITY AND ITS
     /// POSITION. <c>ConcurrencyToken</c> describes no portal attribute - it states WHICH revision of the
     /// record the caller read, so a stale whole-record replace is refused with
-    /// <c>portal.concurrency_conflict</c> instead of silently destroying another operator's committed edit to
-    /// a field neither operator had opened. It is asserted as a TAIL member rather than folded into the
-    /// legacy list precisely so the legacy twenty-seven stay readable as a contiguous, ordered block: a
-    /// reviewer laying this contract beside the legacy signature still reads twenty-seven names in
-    /// twenty-seven positions. A second addition, or this one moving into the middle of the run, fails here.
-    /// </para>
-    /// <para>
-    /// Declaration order is read through the metadata token, because the reflection API documents no
-    /// ordering guarantee of its own.
-    /// </para>
+    /// <c>portal.concurrency_conflict</c> instead of silently destroying another operator's committed edit
+    /// to a field neither operator had opened.
     /// </remarks>
     [Fact]
     public void UpdateRequest_PresentsTheTwentySevenLegacyArgumentsInTheirLegacyOrderThenTheConcurrencyToken()
@@ -686,12 +618,6 @@ public class PortalServiceApplicationTests
     /// lands on none.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The single most valuable assertion in this file. Twenty-six one-for-one assignments run between the
-    /// request and the stored row, five pairs of them between neighbours the compiler cannot tell apart, and
-    /// a transposition anywhere in that sequence produces working, wrong software. Asserting all twenty-six
-    /// against numbered sentinels is the only way to see one.
-    /// </remarks>
     [Fact]
     public async Task UpdatePortal_LandsEachLegacyArgumentOnItsOwnColumn()
     {
@@ -743,9 +669,7 @@ public class PortalServiceApplicationTests
             Times.Once);
     }
 
-    /// <summary>
-    /// Neither member of any same-typed neighbouring pair takes the other's value.
-    /// </summary>
+    /// <summary>Neither member of any same-typed neighbouring pair takes the other's value.</summary>
     /// <param name="first">The earlier argument of the pair.</param>
     /// <param name="second">The later argument of the pair.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -795,8 +719,9 @@ public class PortalServiceApplicationTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The counterpart to the commit assertion above, and the reason both belong in one file: a guard that
-    /// throws after the row has already been altered in memory is only safe while nothing commits behind it.
-    /// The refusal is an expected request failure with a stable code, so the API can return a bounded 400.
+    /// throws after the row has already been altered in memory is only safe while nothing commits behind
+    /// it. The refusal is an expected request failure with a stable code, so the API can return a bounded
+    /// 400.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_CommitsNothingWhenItRefusesToClearTheAdministrator()
@@ -942,19 +867,6 @@ public class PortalServiceApplicationTests
     /// The creation contract carries every legacy argument that survives the migration, under its new name,
     /// and carries none of the three that do not.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The fifteen positional arguments of <c>CreatePortal</c> (<c>PortalController.vb:L980</c>) do not map
-    /// one-for-one, so the mapping is transcribed here rather than inferred. Five of them named the
-    /// administrator being created and are renamed to say so. Three of them were file-system locations -
-    /// the template directory, the physical server path and the child directory - and file management is
-    /// beyond the migrated scope, so they are carried by nothing.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the three absent arguments are the observable trace of that omission. Asserting their
-    /// absence is what stops a later agent reintroducing a path argument on the assumption it was overlooked.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void CreateRequest_RenamesTheFiveAdministratorArgumentsAndDropsTheThreePathArguments()
     {
@@ -1009,23 +921,15 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// Every table the legacy creation sequence wrote is staged before anything is flushed, and the whole of
-    /// it is enclosed by a single transaction.
+    /// Every table the legacy creation sequence wrote is staged before anything is flushed, and the whole
+    /// of it is enclosed by a single transaction.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The legacy sequence wrote the tenant, its host name, its roles, its pages and its modules through
-    /// separate statements that shared no transaction, so a failure part-way through left a half-built tenant
-    /// behind - which is why the legacy body accumulated a message string as it went rather than reporting
-    /// success or failure outright.
-    /// </para>
-    /// <para>
-    /// Note what is asserted and what is not. Creation FLUSHES more than once, because three columns on the
-    /// tenant row need keys the store assigns during the first flush and the administrator's credential
-    /// lives in a store no entity maps. Claiming a single flush here would be false. What is single is the
-    /// TRANSACTION, and that is the property that makes the sequence atomic.
-    /// </para>
+    /// separate statements that shared no transaction, so a failure part-way through left a half-built
+    /// tenant behind - which is why the legacy body accumulated a message string as it went rather than
+    /// reporting success or failure outright.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_StagesEveryTableBeforeItFlushesAndEnclosesItInOneTransaction()
@@ -1055,14 +959,12 @@ public class PortalServiceApplicationTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A creation refused before any work is staged opens no transaction and flushes nothing.
-    /// </summary>
+    /// <summary>A creation refused before any work is staged opens no transaction and flushes nothing.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The duplicate-host-name check runs before the transaction opens, which is deliberate: refusing a
-    /// request should not cost a transaction. Asserting the absence of both the flush and the transaction is
-    /// what pins that ordering, since a later refactor could satisfy the refusal while moving the check
+    /// request should not cost a transaction. Asserting the absence of both the flush and the transaction
+    /// is what pins that ordering, since a later refactor could satisfy the refusal while moving the check
     /// inside a transaction nobody noticed was being opened.
     /// </remarks>
     [Fact]
@@ -1119,22 +1021,10 @@ public class PortalServiceApplicationTests
     /// The clamp that replaced the legacy two-armed conditional floors a fee at nothing and is exactly
     /// equivalent to the idiomatic replacement.
     /// </summary>
-    /// <param name="supplied">The submitted fee, as invariant text because a decimal cannot be an attribute constant.</param>
+    /// <param name="supplied">
+    /// The submitted fee, as invariant text because a decimal cannot be an attribute constant.
+    /// </param>
     /// <param name="expected">The fee that must be stored.</param>
-    /// <remarks>
-    /// <para>
-    /// The legacy source floors two fees, at <c>PortalController.vb:L395</c> and <c>:L398</c>, each written
-    /// <c>CType(IIf(fee &lt; 0, 0, fee), Single)</c>. Those are the ONLY two such guards in the whole of the
-    /// migrated surface, which is why they are pinned rather than left to a general mapper assertion.
-    /// </para>
-    /// <para>
-    /// The equivalence is the point of this theory, not merely the flooring. The legacy construct is a
-    /// FUNCTION and therefore evaluates BOTH of its arms, whereas the modern conditional short-circuits, so
-    /// the substitution is only safe because both arms here are side-effect-free. Asserting agreement with
-    /// <see cref="Math.Max(decimal, decimal)"/> - the replacement the migration plan names - proves the
-    /// substitution rather than assuming it, at the boundary and on either side of it.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData("-79228162514264337593543950335", "0")]
     [InlineData("-1000000", "0")]
@@ -1164,20 +1054,9 @@ public class PortalServiceApplicationTests
     /// <param name="expectedServiceFee">The subscription fee that must be stored.</param>
     /// <param name="expectedTrialFee">The trial fee that must be stored.</param>
     /// <remarks>
-    /// <para>
-    /// The legacy helper clamped TWO fees, not one: <c>serviceFee</c> was argument 4 of <c>CreateRole</c> and
-    /// <c>trialFee</c> was argument 7, both typed the same, and each was floored by its own guard at
-    /// <c>PortalController.vb:L395</c> and <c>:L398</c>. Two same-typed arguments each passing through an
-    /// identical guard is the ideal conditions for a transposition that nothing notices, because the two
-    /// clamps are textually almost the same line.
-    /// </para>
-    /// <para>
     /// The ASYMMETRIC rows below are the ones that carry the weight. When only one of the two fees is
     /// negative, a clamp fed from the wrong argument floors the wrong column and stores the other one
-    /// unchanged - and those two rows fail while the symmetric rows would still pass. Covering each fee at a
-    /// negative value, at the boundary and at a positive value is what makes the pairing checkable rather
-    /// than merely plausible.
-    /// </para>
+    /// unchanged - and those two rows fail while the symmetric rows would still pass.
     /// </remarks>
     [Theory]
     [InlineData("-19.99", "-1.99", "0", "0")]
@@ -1210,24 +1089,14 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// Both fee columns are floored on every stock role a new tenant receives, and the legacy absent-integer
-    /// marker on the role group becomes genuine absence.
+    /// Both fee columns are floored on every stock role a new tenant receives, and the legacy
+    /// absent-integer marker on the role group becomes genuine absence.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy role-creation step set the two fees at <c>PortalController.vb:L395</c> and <c>:L398</c> and
-    /// the role group at <c>:L393</c>. Each of the three roles is asserted individually rather than
-    /// collectively, because the two fees are ADJACENT SAME-TYPED arguments of the legacy signature -
-    /// arguments 4 and 7 of <c>CreateRole</c> - and a collective assertion that both are nothing cannot tell
-    /// a swap between them from a correct assignment.
-    /// </para>
-    /// <para>
     /// MIGRATION: the role group is where a sentinel becomes absence. The legacy line assigned it the
-    /// absent-integer marker, which in this schema is -1 - and -1 is also a legitimate role-group key, so the
-    /// legacy value could not distinguish "no group" from "group -1". The domain column is a nullable
-    /// integer and carries nothing at all, which can.
-    /// </para>
+    /// absent-integer marker, which in this schema is -1 - and -1 is also a legitimate role-group key, so
+    /// the legacy value could not distinguish "no group" from "group -1".
     /// </remarks>
     [Fact]
     public async Task CreatePortal_FloorsBothFeesOnEveryStockRoleAndLeavesTheRoleGroupAbsent()
@@ -1260,20 +1129,9 @@ public class PortalServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy step guarded itself: <c>PortalController.vb:L386</c> looked the role up by name and
-    /// <c>:L388</c> created it only when the lookup found nothing, reusing the existing key at <c>:L405</c>
-    /// otherwise. BOTH arms are accounted for here, and the accounting is what justifies the omission.
-    /// </para>
-    /// <para>
-    /// The reuse arm is UNREACHABLE for a tenant being created. A role is owned by a portal, and this portal
-    /// does not exist until this transaction commits, so no role can already be bound to it and the lookup
-    /// can only ever answer "nothing". The legacy guard was needed because the same private helper also ran
-    /// while a template was being applied to an existing tenant - a path this migration does not carry - and
-    /// performing a lookup that cannot succeed would be a round trip per role for no answer. Asserting that
-    /// the lookup is never made pins the reasoning rather than leaving it as a comment, and asserting one
-    /// insertion per role name pins the create arm.
-    /// </para>
+    /// The reuse arm is UNREACHABLE for a tenant being created. A role is owned by a portal, and this
+    /// portal does not exist until this transaction commits, so no role can already be bound to it and the
+    /// lookup can only ever answer "nothing".
     /// </remarks>
     [Fact]
     public async Task CreatePortal_CreatesEachStockRoleOnceWithoutTheLegacyExistenceLookup()
@@ -1298,20 +1156,6 @@ public class PortalServiceApplicationTests
     /// reproduces the legacy reader that returned everything.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// Two legacy readers collapse into this one member. <c>GetPortals</c>
-    /// (<c>PortalController.vb:L1263</c>) returned the non-generic collection type of the era - it declared
-    /// no element type and no total, so a caller learned the element type only by casting and learned the
-    /// total only by counting. <c>GetPortalsByName</c> (<c>:L262</c>) returned the same untyped collection
-    /// and passed its grand total back through a by-reference argument, so one call produced two answers that
-    /// no type tied together and that nothing obliged a caller to read consistently.
-    /// </para>
-    /// <para>
-    /// Both defects close in the same assertion: the records and the total arrive on a single typed value, so
-    /// neither can be read without the other, and the element type is declared rather than discovered.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListPortals_CarriesTheRecordsAndTheGrandTotalOnOneTypedValue()
     {
@@ -1356,16 +1200,8 @@ public class PortalServiceApplicationTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A listing that matches nothing is an empty page and a success, not a failure.
-    /// </summary>
+    /// <summary>A listing that matches nothing is an empty page and a success, not a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy untyped reader expressed "nothing matched" and "the read failed" identically, as a
-    /// collection with no elements, because a failure produced one too. Separating them is a behavioural
-    /// improvement that costs no caller anything, and it is asserted so the distinction cannot quietly
-    /// collapse back.
-    /// </remarks>
     [Fact]
     public async Task ListPortals_ReportsAnEmptyPageAsASuccess()
     {
@@ -1394,11 +1230,6 @@ public class PortalServiceApplicationTests
     /// Nothing on the listing payload is an untyped collection, and the element type of every sequence is
     /// declared.
     /// </summary>
-    /// <remarks>
-    /// The legacy readers' return type was the era's non-generic collection, whose element type existed only
-    /// in a documentation comment. This assertion walks the payload and requires every sequence-shaped member
-    /// to be a closed generic, which is the property that makes the wire contract self-describing.
-    /// </remarks>
     [Fact]
     public void ListingPayload_DeclaresTheElementTypeOfEverySequence()
     {
@@ -1421,32 +1252,12 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// The contract measures no disc consumption, while the three stored allowances it used to be measured
-    /// against survive.
+    /// The contract measures no disc consumption, while the three stored allowances such a measurement
+    /// would be compared against survive.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: four legacy members measured a tenant's files on disc and none is ported, because file
-    /// management is beyond the migrated scope: <c>GetPortalSpaceUsed</c>
-    /// (<c>PortalController.vb:L1596</c>), <c>GetPortalSpaceUsedBytes</c> (<c>:L1278</c> and <c>:L1296</c>)
-    /// and <c>HasSpaceAvailable</c> (<c>:L1323</c>). The first was additionally marked obsolete IN THE LEGACY
-    /// SOURCE, superseded there by the byte-counting member, so omission rather than translation is the
-    /// faithful treatment of it.
-    /// </para>
-    /// <para>
-    /// MIGRATION: one consequence is worth stating plainly, because it is the only place this suite cannot
-    /// assert a legacy behaviour. <c>GetPortalSpaceUsed</c> wrapped its work in a handler that returned
-    /// <c>Integer.MaxValue</c> on ANY failure - it neither returned nothing nor let the fault surface - and
-    /// that behaviour has no target to exercise it, since the member does not exist. It is recorded here and
-    /// in <c>MIGRATION_NOTES.md</c> rather than reproduced, and no substitute member is invented to give the
-    /// assertion something to run against.
-    /// </para>
-    /// <para>
     /// What is asserted instead is the boundary of the omission. The measurement is dropped; the stored
-    /// ALLOWANCES are not. The disc allowance and the page and member quotas were arguments 11, 12 and 13 of
-    /// the twenty-seven-argument update and remain writable and readable, so an operator can still set a
-    /// limit even though nothing now measures a file system against it.
-    /// </para>
+    /// ALLOWANCES are not.
     /// </remarks>
     [Fact]
     public void PortalContract_MeasuresNoDiscConsumptionButKeepsTheStoredAllowances()
@@ -1480,21 +1291,13 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// Every member of the contract is asynchronous and takes neither an output nor a by-reference argument.
+    /// Every member of the contract is asynchronous and takes neither an output nor a by-reference
+    /// argument.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The legacy surface reported a secondary answer by mutating an argument the caller passed in - the
     /// tenant listing returned its grand total that way, and thirty such signatures were counted across the
-    /// migrated trees. That idiom is replaced entirely by outcome and page types, and this assertion is what
-    /// keeps it replaced: a single reintroduced argument of that kind would restore a contract a caller can
-    /// use without noticing there is a second answer to read.
-    /// </para>
-    /// <para>
-    /// Asynchrony is asserted in the same place because the two properties are enforced by the same
-    /// discipline. Every member is bound by input or output, so every member returns a task, and a
-    /// synchronous member would be a path on which cancellation could not be honoured.
-    /// </para>
+    /// migrated trees.
     /// </remarks>
     [Fact]
     public void PortalContract_IsAsynchronousThroughoutAndMutatesNoArgument()
@@ -1536,19 +1339,6 @@ public class PortalServiceApplicationTests
     /// <param name="multiplier">The configured installation-wide multiplier.</param>
     /// <param name="expectedMinutes">The lifetime that arithmetic must yield.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The legacy expression is <c>DataCache.PortalCacheTimeOut * Convert.ToInt32(Globals.PerformanceSetting)</c>
-    /// at <c>PortalController.vb:L1232</c>, with a twenty-minute base for this entity and a multiplier whose
-    /// measured default is 3. Pinning the arithmetic across several multipliers, rather than pinning one
-    /// lifetime at the default, is what proves the base and the multiplier are both still in play: a
-    /// hard-coded sixty minutes would satisfy a single-value assertion and fail every row below.
-    /// </para>
-    /// <para>
-    /// The key shape is asserted alongside because the two travel together. Keeping the legacy key name means
-    /// an operator can still correlate a cache entry with the legacy behaviour it reproduces.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(1, 20)]
     [InlineData(2, 40)]
@@ -1583,14 +1373,6 @@ public class PortalServiceApplicationTests
     /// </summary>
     /// <param name="multiplier">The configured multiplier.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy code guarded its own store with <c>If timeOut &gt; 0 Then</c> - visible at
-    /// <c>PortalController.vb:L1222</c> and again at <c>:L1245</c> - which is how an installation turned
-    /// caching off, and an operator diagnosing a stale read still relies on it. A negative multiplier is
-    /// invalid configuration rather than an off switch, but the same guard must absorb it: what must never
-    /// happen is a negative lifetime reaching the cache, whose handling would then be the cache's business
-    /// rather than something this service can state.
-    /// </remarks>
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -1616,19 +1398,8 @@ public class PortalServiceApplicationTests
     /// <param name="portalId">The identifier to address.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// <c>Portals.PortalID</c> is declared <c>IDENTITY (-1, 1)</c>, so -1 is the FIRST identifier the column
-    /// issues and 0 is the shipped default tenant. The legacy null contract, at
-    /// <c>Library/Components/Shared/Null.vb</c>, defined its absent-integer marker as -1, so the two meanings
-    /// were indistinguishable: code that tested for -1 to mean "nothing was supplied" was also testing for a
-    /// real, addressable row.
-    /// </para>
-    /// <para>
-    /// The rule this pins is therefore narrow and absolute: no value is special. Every integer is forwarded,
-    /// none is coerced to absence, and none short-circuits the read. The unfiltered case, where one genuinely
-    /// is wanted, is expressed as a nullable argument elsewhere on the contract precisely so it cannot
-    /// collide with a real key.
-    /// </para>
+    /// The rule this pins is therefore narrow and absolute: no value is special. Every integer is
+    /// forwarded, none is coerced to absence, and none short-circuits the read.
     /// </remarks>
     [Theory]
     [InlineData(SeedPortalId)]
@@ -1662,17 +1433,9 @@ public class PortalServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy null contract defined its absent-string marker as the EMPTY STRING rather than as nothing,
-    /// so a database null and an empty string were indistinguishable once read through the legacy path. The
-    /// domain model uses nullable types, which is the honest representation - but the translation must not
-    /// change what a caller observes: a caller that submits an empty string has cleared a value, and turning
-    /// that into absence would alter the stored row on a column where the two are distinguishable.
-    /// </para>
-    /// <para>
-    /// The reverse coercion is asserted too, on the one column where the legacy schema forbids a null: an
-    /// omitted name is stored as an empty string, because the column rejects a database null.
-    /// </para>
+    /// The legacy null contract defined its absent-string marker as the EMPTY STRING rather than as
+    /// nothing, so a database null and an empty string were indistinguishable once read through the legacy
+    /// path.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_KeepsAnEmptyStringRatherThanTurningItIntoAbsence()
@@ -1696,22 +1459,13 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// The tenant-installed record is written after the change is committed, under the legacy event name and
-    /// naming the tenant it describes.
+    /// The tenant-installed record is written after the change is committed, under the legacy event name
+    /// and naming the tenant it describes.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy trail is real and had to survive. <c>PortalController.vb:L1157</c> wrote an entry carrying
-    /// fourteen named properties, and the storage subsystem behind it is beyond the migrated scope, so the
-    /// entry becomes a structured event under a stable name instead. What is asserted is that the INTENT
-    /// survives - an event is emitted, it is named as the legacy type was, and it identifies the tenant - and
-    /// not that any particular table was written, because none is.
-    /// </para>
-    /// <para>
-    /// The ordering matters as much as the content: the record is written after the commit, so no record can
-    /// describe a write that was rolled back.
-    /// </para>
+    /// The ordering matters as much as the content: the record is written after the commit, so no record
+    /// can describe a write that was rolled back.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_RecordsTheInstallationAfterItCommits()
@@ -1721,9 +1475,8 @@ public class PortalServiceApplicationTests
         await subject.Service.CreatePortalAsync(SentinelCreateRequest(), CancellationToken.None);
 
         // TWO records for one installation, deliberately. The enumeration's accurate member and the coarser
-        // type the legacy installation actually raised (PortalController.vb:L1140-L1141) are both emitted, so
-        // neither an operator's existing HOST_ALERT alert nor a reader looking for the tenant itself is
-        // silently dropped. They are built from the same facts, so they cannot describe different events.
+        // type the legacy installation actually raised are both emitted, so neither an operator's existing
+        // HOST_ALERT alert nor a reader looking for the tenant itself is silently dropped.
         subject.AuditEvents.Select(candidate => candidate.EventName)
             .Should()
             .BeEquivalentTo([AuditEventNames.PortalCreated, AuditEventNames.HostAlert]);
@@ -1746,27 +1499,14 @@ public class PortalServiceApplicationTests
     }
 
     /// <summary>
-    /// A failure to write the audit record is NOT discarded, which is a deliberate divergence from the legacy
-    /// behaviour.
+    /// A failure to write the audit record is NOT discarded, which is a deliberate divergence from the
+    /// legacy behaviour.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: DELIBERATE DIVERGENCE, and the only one this suite asserts as a change rather than as a
-    /// preservation. The legacy audit write sat inside a handler whose body was EMPTY, at
-    /// <c>PortalController.vb:L1158-L1160</c>, so a logging failure was thrown away: the one record proving a
-    /// tenant had been installed could go missing while the caller was told the installation had succeeded.
-    /// That handler is not reproduced. A failure to record surfaces instead, and the divergence is written up
-    /// in <c>MIGRATION_NOTES.md</c> under the note that none of the legacy empty handlers is reproduced.
-    /// </para>
-    /// <para>
     /// MIGRATION: the divergence is bounded, and the boundary is what makes it safe. The record is written
     /// AFTER the transaction has committed, so a fault here cannot undo the tenant - the tenant exists, and
-    /// the caller learns that the trail did not. Losing the record silently is the worse of the two
-    /// outcomes for a trail whose whole purpose is to be complete. The alternative - restoring the empty
-    /// handler - was rejected because the migration is held to an engineering baseline that forbids
-    /// discarding failures, and reproducing it would have to be justified as fidelity to a defect.
-    /// </para>
+    /// the caller learns that the trail did not.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_DoesNotDiscardAFailureToRecordTheInstallation()
@@ -1785,18 +1525,8 @@ public class PortalServiceApplicationTests
             Times.Once);
     }
 
-    /// <summary>
-    /// Modifying a tenant records no audit event, because the legacy modification wrote none.
-    /// </summary>
+    /// <summary>Modifying a tenant records no audit event, because the legacy modification wrote none.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The mirror image of the assertion two above, and it is the one that keeps the trail HONEST rather than
-    /// merely present. The legacy <c>UpdatePortalInfo</c> (<c>PortalController.vb:L1568</c>) forwarded its
-    /// twenty-seven arguments and cleared the cache, and did nothing else: there is no audit entry on that
-    /// path to port. Emitting one would be an invented behaviour, and an invented audit event is worse than a
-    /// missing one, because a reader of the trail cannot tell which entries reflect the original system. The
-    /// migrated audit surface is the two tenant-lifecycle events the legacy source actually wrote.
-    /// </remarks>
     [Fact]
     public async Task UpdatePortal_InventsNoAuditEventBecauseTheLegacyModificationWroteNone()
     {
@@ -1820,9 +1550,7 @@ public class PortalServiceApplicationTests
     /// <remarks>
     /// The legacy source read the machine clock directly - in the server's LOCAL zone - which made every
     /// time-dependent branch untestable and every stored timestamp uninterpretable without knowing which
-    /// machine wrote it. The injected clock exists to close both problems, and this assertion pins the first:
-    /// a creation that stamps a date must take it from the clock, so that substituting the clock is
-    /// sufficient to make the path deterministic.
+    /// machine wrote it.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_TakesEveryInstantFromTheInjectedClock()
@@ -1843,16 +1571,6 @@ public class PortalServiceApplicationTests
                 It.IsAny<CancellationToken>()),
             Times.Once);
     }
-
-    // =============================================================================================
-    //  THE ADMINISTRATOR SELECTOR'S CANDIDATES
-    //
-    //  Reproduces Website/admin/Portal/SiteSettings.ascx.vb:L329-L339, which filled cboAdministratorId
-    //  from the members of the portal's own administrator role. The affordance was previously absent
-    //  altogether: the settings screen displayed the stored administrator and could not offer a
-    //  replacement, because every role read resolves its tenant from the CALLER's context rather than
-    //  from a path segment and so cannot enumerate another portal's administrators.
-    // =============================================================================================
 
     /// <summary>
     /// The stored administrator role's key, distinct from the seed so a zero cannot pass by accident.
@@ -1913,10 +1631,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_ReadsTheMembersOfThePortalsOwnAdministratorRole()
     {
-        // ⚠ THE ROLE NAME IS RESOLVED FROM THE STORED KEY, NEVER WRITTEN AS A LITERAL. The legacy screen
-        // passed objPortal.AdministratorRoleName, a value the terminal read view supplies through a join
-        // precisely because a tenant may rename the role - so the arrangement above names the role
-        // "Renamed Administrators" and this case fails if anything hardcodes "Administrators".
         Subject subject = Subject.Ready();
         ArrangeAdministratorRole(
             subject,
@@ -1948,9 +1662,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_ReportsAnAbsentPortalAsAbsentRatherThanAsEmpty()
     {
-        // The two answers reach the caller as different HTTP statuses - a null value becomes 404 and an
-        // empty list becomes 200 - so conflating them would tell the screen a portal exists with no
-        // eligible administrators when in fact no such portal exists.
         Subject subject = Subject.Ready();
         subject.StoredPortal = null;
 
@@ -1965,9 +1676,8 @@ public class PortalServiceApplicationTests
     public async Task ListAdministratorCandidates_TreatsRoleZeroAsARealRoleRatherThanAsAbsence()
     {
         // ⚠ THE SENTINEL BOUNDARY. Roles.RoleID is IDENTITY (0, 1) (01.00.00.SqlDataProvider:L114), so the
-        // FIRST role a tenant ever gets is numbered zero - and on the shipped installation that role is
-        // the Administrators role. A truthiness or greater-than-zero test on AdministratorRoleId would
-        // therefore report the one portal that matters as having no administrator role at all.
+        // FIRST role a tenant ever gets is numbered zero - and on the shipped installation that role is the
+        // Administrators role.
         Subject subject = Subject.Ready();
         ArrangeAdministratorRole(
             subject,
@@ -1986,9 +1696,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_AnswersEmptyWhenThePortalDesignatesNoAdministratorRole()
     {
-        // An empty answer rather than a failure: the write path's own guard is what refuses a designation,
-        // and it permits any account belonging to the portal, so a portal with no administrator role has
-        // nothing to OFFER without thereby being broken.
         Subject subject = Subject.Ready();
         subject.StoredPortal!.AdministratorRoleId = null;
 
@@ -2011,11 +1718,7 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_OffersEachAccountOnceAndOrdersThemAsTheyAreDisplayed()
     {
-        // Two facts in one case because they concern the same list. DUPLICATES: the relation permits one
-        // account to hold one role more than once - UserRoles.UserRoleID is the surrogate and no unique
-        // constraint spans the account and role pair - and the legacy loop added one entry per assignment,
-        // so it could show the same person twice. ORDER: the membership read orders by role and then by
-        // assignment key, which is right for a membership grid and wrong for a name picker.
+        // Two facts in one case because they concern the same list.
         Subject subject = Subject.Ready();
         ArrangeAdministratorRole(
             subject,
@@ -2034,9 +1737,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_BreaksADisplayNameTieByTheLoginName()
     {
-        // Why the login name is published at all. The display name is the ONE account field a tenant may
-        // compose from a format string, which makes a collision likelier rather than merely possible, and
-        // a selector offering two identical entries cannot be used to choose between them.
         Subject subject = Subject.Ready();
         ArrangeAdministratorRole(
             subject,
@@ -2054,9 +1754,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public async Task ListAdministratorCandidates_IsNotServedFromTheCache()
     {
-        // The same reasoning as the settings read it sits beside: this backs an editing form, so a stale
-        // list would either hide an administrator promoted a moment ago or offer one just removed from the
-        // role - and the operator would save the stale choice back over their own change.
         Subject subject = Subject.Ready();
         ArrangeAdministratorRole(
             subject,
@@ -2076,9 +1773,6 @@ public class PortalServiceApplicationTests
     [Fact]
     public void AdministratorCandidateMapping_RefusesAnAssignmentWhoseAccountDidNotMaterialise()
     {
-        // A nameless entry is worse than a loud failure: it would render as an empty option the operator
-        // could select, designating an administrator they could not read the name of. The membership read
-        // includes the account, so an absent one is a broken read rather than a case to tolerate.
         var orphan = new UserRole { UserRoleId = 77, UserId = 1_001, RoleId = AdministratorRoleId };
 
         Action projecting = () => PortalMappings.ToAdministratorCandidate(orphan);

@@ -13,68 +13,14 @@ namespace DnnMigration.Infrastructure.Security;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: legacy <c>FormsAuthentication</c> sign-out had no server-side session record at all - the
-/// ticket was a self-contained cookie and revoking one was impossible. The target keeps refresh state in
-/// this singleton for the lifetime of the process while access-token sign-out remains expiry plus
-/// client-side discard. Only SHA-256 token digests and minimal identity/lifecycle fields are held; raw
-/// refresh tokens are returned once and retained nowhere.
+/// Legacy <c>FormsAuthentication</c> sign-out had no server-side session record at all - the ticket was a
+/// self-contained cookie and revoking one was impossible. The target keeps refresh state in this singleton
+/// for the lifetime of the process while access-token sign-out remains expiry plus client-side discard.
 /// </para>
 /// <para>
-/// <strong>NO DATABASE OBJECT IS READ, WRITTEN OR REQUIRED BY THIS TYPE, AND THAT IS THE POINT.</strong>
-/// An earlier revision persisted refresh families into a target-owned <c>[DnnMigration].[RefreshTokens]</c>
-/// table, provisioned by a data-definition script an operator had to run first. That violated AAP rule T4 -
-/// the existing DotNetNuke schema is immutable and no <c>CREATE</c>, <c>ALTER</c> or <c>DROP</c> may reach a
-/// production database from this work - and it had a worse consequence than the rule breach: every
-/// successful credential verification called <see cref="IssueAsync"/> before returning tokens, so against
-/// the unaltered database the API was mandated to run on, login answered "token store unavailable" and
-/// authentication could not complete at all. AAP section 0.4.3 registers the token service as a
-/// <em>singleton</em>, which is only coherent for a store that holds its own state; this type is that store.
-/// </para>
-/// <para>
-/// <strong>The operational consequence is stated rather than hidden.</strong> Refresh state does not survive
-/// a process restart and is not shared between replicas, so a restart or a load-balanced second instance
-/// forces callers to sign in again rather than refresh. That is a bounded availability cost - the access
-/// token a caller already holds stays valid until its stamped expiry - and it is the cost of leaving the
-/// existing schema untouched. It is recorded in <c>MIGRATION_NOTES.md</c> so a deployment that needs
-/// cross-process refresh continuity knows it must supply a shared store of its own behind this same
-/// contract rather than discovering the limitation in production.
-/// </para>
-/// <para>
-/// <strong>The consequence is also DECLARED, ENFORCED AND OBSERVABLE, not only documented.</strong> Three
-/// mechanisms exist so that a deployment cannot hold a mistaken belief about its own refresh state.
-/// <c>RefreshTokenStore:Provider</c> makes the choice of store an explicit configuration value, so running
-/// this process-local store is a recorded decision rather than a default nobody chose. The Infrastructure
-/// composition root's <c>ValidateRefreshTokenStoreTopology</c> compares that declaration against the
-/// <c>IRefreshTokenStore</c> the container actually resolves and refuses to start when the two disagree in
-/// either direction - a deployment that declares an external store but registered none, and a deployment
-/// that silently overrode this one while still declaring <c>InProcess</c>, are both start-up failures. And
-/// <c>HealthChecks/RefreshTokenStoreHealth</c> reports which store is active, whether it is replica-safe, and
-/// how full this one is, so saturation is visible before it starts signing callers out.
-/// </para>
-/// <para>
-/// <strong>Substituting a shared store requires no change to this file or to this layer.</strong>
-/// <c>IRefreshTokenStore</c> is a public Domain contract, both consumers - the token service and the
-/// authentication service - depend on the contract rather than on this type, and the container resolves the
-/// LAST registration of a service. A deployment therefore registers its own implementation after
-/// <c>AddInfrastructure</c> and sets <c>RefreshTokenStore:Provider</c> to <c>External</c>; the topology check
-/// then verifies the substitution took effect. That seam is covered by a test, so it is a verified property
-/// rather than an assurance.
-/// </para>
-/// <para>
-/// <strong>What this type deliberately does NOT do is become the shared store itself.</strong> The three
-/// routes to cross-process refresh state are each closed by the plan this work implements: a target-owned
-/// SQL table is forbidden by AAP rule T4, a distributed-cache client is absent from the frozen dependency
-/// inventory in AAP section 0.6, and a third container to host one would break the two-service topology AAP
-/// section 0.9.3 reproduces verbatim. The divergence from a shared-store resolution is recorded, with those
-/// citations, in <c>MIGRATION_NOTES.md</c>.
-/// </para>
-/// <para>
-/// <strong>Every state transition is serialised on one lock.</strong> The SQL implementation this replaces
-/// held a <c>SERIALIZABLE</c> transaction with <c>UPDLOCK, HOLDLOCK</c> around each read-modify-write, so
-/// two exchanges racing on one token produced exactly one successor. A single monitor over the whole
-/// dictionary reproduces that guarantee exactly, and it is affordable because every operation is a handful
-/// of dictionary lookups with no I/O inside the region. No <c>await</c> occurs while the lock is held, so
-/// the lock can never be taken on one thread and released on another.
+/// <strong>The operational consequence is stated rather than hidden.</strong> Refresh state does not
+/// survive a process restart and is not shared between replicas, so a restart or a load-balanced second
+/// instance forces callers to sign in again rather than refresh.
 /// </para>
 /// </remarks>
 internal sealed class RefreshTokenStore : IRefreshTokenStore
@@ -90,12 +36,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <summary>
     /// Live and consumed generations, keyed by the SHA-256 digest of the token that addresses them.
     /// </summary>
-    /// <remarks>
-    /// A consumed generation is deliberately RETAINED rather than removed: its digest is the theft signal
-    /// that lets a replay be recognised, and it stays until the family's absolute ceiling passes. The
-    /// comparer is the fixed-length digest comparer below, so lookup is by value rather than by array
-    /// reference.
-    /// </remarks>
     private readonly Dictionary<byte[], StoredToken> _tokens = new(DigestComparer.Instance);
 
     private readonly IClock _clock;
@@ -107,51 +47,23 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <c>RefreshTokenStore:MaximumTrackedTokens</c>.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// A bound is mandatory rather than defensive. The SQL implementation this replaces was bounded by disk
     /// and pruned in batches; an unbounded in-process dictionary is a memory-exhaustion vector, because a
     /// caller holding valid credentials adds one entry per sign-in and two per rotation and nothing expires
-    /// for the whole family lifetime. The credential rate limiter bounds how fast that can happen; this
-    /// bounds how far it can go.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this was a compiled constant of 100,000 until the QA remediation of the container
-    /// checkpoint, which required the store's shape to be deployment configuration rather than a decision
-    /// baked into the image. The default is unchanged, so a deployment that configures nothing is bounded
-    /// exactly as it was; what changed is that an operator can now raise it, that the value is validated at
-    /// start-up against the bounds declared on <see cref="RefreshTokenStoreOptions"/>, and that
-    /// <c>RefreshTokenStoreHealth</c> reports how much of it is in use.
-    /// </para>
-    /// <para>
-    /// When the ceiling is reached the families closest to their absolute ceiling are evicted first, so the
-    /// cost of the bound is that the OLDEST refresh families stop refreshing and their holders sign in again
-    /// - a bounded availability cost, never a failure to serve.
-    /// </para>
+    /// for the whole family lifetime.
     /// </remarks>
     private readonly int _maximumTrackedTokens;
 
     /// <summary>
-    /// Window in which the same client may present an already-spent generation without it being treated as a
-    /// replay, from <c>RefreshTokenStore:ConcurrentUseGraceSeconds</c>.
+    /// Window in which the same client may present an already-spent generation without it being treated as
+    /// a replay, from <c>RefreshTokenStore:ConcurrentUseGraceSeconds</c>.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: also a compiled constant - five seconds - until the same remediation. The default is
-    /// unchanged; zero is now expressible and disables the grace entirely, which is the strictest setting
-    /// and treats every reuse as theft.
-    /// </remarks>
     private readonly TimeSpan _concurrentUseGrace;
 
     /// <summary>
     /// How long a REVOKED generation is retained before reclamation erases it, from
     /// <c>RefreshTokenStore:RevokedRecordRetentionHours</c>.
     /// </summary>
-    /// <remarks>
-    /// PRIV-02. Reclamation used to be expiry-only, so a revoked generation stayed in the dictionary until its
-    /// family's absolute ceiling elapsed - up to the whole refresh lifetime - carrying the account, the tenant
-    /// and the token digest of a session that had already ended. The window is what the record is kept FOR: a
-    /// revoked digest is the signal that makes a replay of that family recognisable rather than an unknown
-    /// value. Once it has elapsed the signal is worthless and the record is only personal data, so it goes.
-    /// </remarks>
     private readonly TimeSpan _revokedRetention;
 
     /// <summary>Initialises a new instance of the <see cref="RefreshTokenStore"/> class.</summary>
@@ -162,28 +74,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <exception cref="OptionsValidationException">
     /// The token lifetimes or the store settings are invalid.
     /// </exception>
-    /// <remarks>
-    /// <para>
-    /// Every dependency is itself a singleton, so this type may be one: it captures no request-scoped
-    /// service and holds no database context. The database context the SQL implementation took - solely to
-    /// read a connection string off it - is gone with the SQL, which is what removes the captive-dependency
-    /// problem that forced the scoped registrations AAP section 0.4.3 forbids.
-    /// </para>
-    /// <para>
-    /// BOTH options objects are validated HERE as well as by the Api layer's start-up validators, and the
-    /// duplication is deliberate for the reason the options classes themselves record: a host that composed
-    /// this layer without those validators - a test, a console utility, a future host - would otherwise
-    /// construct a store on values nothing had judged. Validating at the point of use is what makes the rule
-    /// true for every composition rather than for one.
-    /// </para>
-    /// <para>
-    /// The provider NAME is deliberately not inspected here. Whether the declared provider matches the store
-    /// the container resolves is a question about the container, not about this instance, so it is settled by
-    /// <c>DependencyInjection.ValidateRefreshTokenStoreTopology</c> once the graph is built. This type would
-    /// have to refuse to be constructed at all under an external declaration, which is wrong: a deployment
-    /// may legitimately leave it registered and unused.
-    /// </para>
-    /// </remarks>
     public RefreshTokenStore(
         IClock clock,
         IOptions<JwtOptions> jwtOptions,
@@ -223,20 +113,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// Reports how much of this store's tracked-generation capacity is in use, for the health probe.
     /// </summary>
     /// <returns>The tracked count and the ceiling it is measured against.</returns>
-    /// <remarks>
-    /// <para>
-    /// Internal rather than part of <see cref="IRefreshTokenStore"/>, and deliberately so: capacity is a
-    /// property of THIS implementation, not of the contract. Adding it to the contract would oblige every
-    /// deployment-supplied store to answer a question that may be meaningless for it - a shared store's
-    /// capacity is its own operational concern - and would make the substitution seam harder to satisfy for
-    /// no benefit. The health probe reaches it by pattern-matching the active store against this type, which
-    /// is also how it reports honestly that it can say nothing about a replacement.
-    /// </para>
-    /// <para>
-    /// Taken under the same monitor as every other read, so the count cannot be observed midway through a
-    /// rotation's two writes.
-    /// </para>
-    /// </remarks>
     internal CapacitySnapshot DescribeCapacity()
     {
         lock (_gate)
@@ -247,11 +123,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
     /// <inheritdoc />
     /// <inheritdoc />
-    /// <remarks>
-    /// <see langword="false"/>, and stated rather than implied: this store's families live in one process,
-    /// so a family it does not hold may still be held - and honoured - by another instance. Callers
-    /// therefore report an unmatched revocation as unconfirmed instead of as a completed sign-out.
-    /// </remarks>
     public bool IsAuthoritativeAcrossReplicas => false;
 
     public Task<RefreshTokenIssueResult> IssueAsync(
@@ -271,11 +142,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             PruneExpired(now);
 
             // Room is made for the generation about to be inserted, rather than the bound being applied to
-            // what is already there. Two things follow, and both matter now that the ceiling is a
-            // deployment-configurable number rather than a compiled constant: the tracked set never exceeds
-            // the ceiling an operator configured, and the generation being issued can never be the one
-            // evicted - which, at capacity and with several families sharing one ceiling instant, would
-            // otherwise return a refresh token that was already unknown to the store that issued it.
+            // what is already there.
             EnforceCapacity(headroom: 1);
 
             _tokens[token.Digest] = new StoredToken(
@@ -397,24 +264,12 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
                     now.Add(_slidingLifetime),
                     stored.FamilyExpiresAtUtc);
 
-                // Reclaimed and bounded BEFORE the two writes below, for the reason given on the issue path:
-                // reserving the places first is what keeps the configured ceiling exact and keeps the
-                // replacement out of the eviction candidates. The family being rotated cannot be PRUNED here,
-                // because classification has already established that its absolute ceiling is still ahead.
-                //
-                // TWO places, not one, and the second is not slack. A rotation ordinarily adds one net
-                // generation - the consumed entry replaces an existing key and the replacement is new - but
-                // eviction is free to reclaim the presented generation itself when it is among the oldest, and
-                // then BOTH writes below are additions rather than one. Reserving one place would leave the
-                // tracked set a single entry above the ceiling in exactly that case. The cost of reserving the
-                // second is that one further old family is retired during a rotation performed at capacity,
-                // which is a path an ordinary deployment never reaches at all.
+                // Reclaimed and bounded BEFORE the two writes below, for the reason given on the issue
+                // path: reserving the places first is what keeps the configured ceiling exact and keeps the
+                // replacement out of the eviction candidates.
                 PruneExpired(now);
                 EnforceCapacity(headroom: 2);
 
-                // The presented generation is marked consumed and KEPT. Its digest, paired with the client
-                // fingerprint that spent it, is what distinguishes a near-simultaneous same-client retry
-                // from a replay arriving from somewhere else.
                 _tokens[digest] = stored with
                 {
                     ConsumedAtUtc = now,
@@ -514,17 +369,8 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// PRIV-02. Removes the entries outright rather than stamping them, which is the distinction this member
-    /// exists for: a sign-out revokes, a deletion erases. Every removed key is zeroised as it goes, for the
-    /// same reason the digest of a presented token is - the array is the only copy of a value derived from a
-    /// credential, and leaving it to the collector leaves it legible in the heap until then.
-    /// </para>
-    /// <para>
-    /// It cannot report <see cref="RefreshTokenOutcome.StoreUnavailable"/>: the state is a dictionary in this
-    /// process, so there is no store to be unavailable. An implementation reached over a network can and
-    /// does.
-    /// </para>
+    /// PRIV-02. Removes the entries outright rather than stamping them, which is the distinction this
+    /// member exists for: a sign-out revokes, a deletion erases.
     /// </remarks>
     public Task<RefreshTokenPurgeResult> PurgeSubjectAsync(
         RefreshTokenPurgeScope scope,
@@ -564,13 +410,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// PRIV-02. The operation-independent entry point into the same reclamation that issuing and rotating
-    /// already perform. It exists because those two were the ONLY callers: an installation with no sign-in
-    /// traffic reclaimed nothing at all, so every expired family and every revoked record it had ever written
-    /// stayed in memory for the life of the process. Driven on a schedule by
-    /// <c>RefreshTokenRetentionService</c>.
-    /// </remarks>
     public Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -591,12 +430,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// Window in which the same client may re-present a spent generation without it counting as a replay.
     /// </param>
     /// <returns>The outcome the caller must act on.</returns>
-    /// <remarks>
-    /// Static, and the grace arrives as a parameter rather than being read from the instance, so this decision
-    /// is a pure function of the four values named above. That is what lets it run outside the dictionary
-    /// write while remaining reproducible - and it stayed static when the grace became configuration, because
-    /// a rule that reads mutable instance state is a rule two callers can disagree about.
-    /// </remarks>
     private static RefreshTokenOutcome Classify(
         StoredToken stored,
         ReadOnlySpan<byte> clientDigest,
@@ -626,9 +459,9 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
                 return RefreshTokenOutcome.ConcurrentUse;
             }
 
-            // A consumed fingerprint remains a replay signal until the family's absolute ceiling,
-            // even after that generation's own sliding expiry. Checking the per-generation expiry
-            // first would recreate the detection gap SEC-039 removed.
+            // A consumed fingerprint remains a replay signal until the family's absolute ceiling, even
+            // after that generation's own sliding expiry. Checking the per-generation expiry first would
+            // recreate the detection gap removed.
             return RefreshTokenOutcome.AlreadyUsed;
         }
 
@@ -641,7 +474,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <param name="familyId">The family to revoke.</param>
     /// <param name="now">The revocation instant.</param>
     /// <returns>How many generations this call changed.</returns>
-    /// <remarks>Callers must already hold <see cref="_gate"/>.</remarks>
     private int RevokeFamilyCore(Guid familyId, DateTime now) =>
         RevokeWhere(stored => stored.FamilyId == familyId, now);
 
@@ -649,7 +481,6 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <param name="userId">The account whose families are revoked.</param>
     /// <param name="now">The revocation instant.</param>
     /// <returns>How many generations this call changed.</returns>
-    /// <remarks>Callers must already hold <see cref="_gate"/>.</remarks>
     private int RevokeAllForUserCore(int userId, DateTime now) =>
         RevokeWhere(stored => stored.UserId == userId, now);
 
@@ -693,22 +524,9 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <param name="now">The instant to prune against.</param>
     /// <returns>How many generations were discarded.</returns>
     /// <remarks>
-    /// <para>
     /// Bounded by the family lifetime rather than by a batch size: a family past its ceiling can never be
     /// redeemed and is no longer a theft signal, so keeping it would only grow the dictionary. Callers must
     /// already hold <see cref="_gate"/>.
-    /// </para>
-    /// <para>
-    /// PRIV-02: it reclaims on TWO grounds now, not one. The second - a revoked generation past
-    /// <see cref="_revokedRetention"/> - is what makes retention here a bounded period rather than "until the
-    /// family would have expired anyway". See the note in the body.
-    /// </para>
-    /// <para>
-    /// Expiry ONLY. This method used to enforce the capacity ceiling as well, and the two were separated
-    /// because the order they need differs: reclamation must run before a mutation, so that dead state is
-    /// counted out first, whereas the ceiling must be applied with a place reserved for what is about to be
-    /// written. Each caller now performs both explicitly and in that order.
-    /// </para>
     /// </remarks>
     private int PruneExpired(DateTime now)
     {
@@ -720,13 +538,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         {
             bool familyOver = entry.Value.FamilyExpiresAtUtc <= now;
 
-            // PRIV-02. THE SECOND CONDITION IS THE NEW ONE, AND IT IS THE WHOLE OF THE RETENTION POLICY IN
-            // THIS STORE. Before it, the only thing that reclaimed a revoked generation was its family's
-            // absolute ceiling, so an ordinary sign-out left a record naming the account, the tenant and the
-            // token digest for the remainder of the refresh lifetime. A revoked record is retained because a
-            // presentation of that family afterwards is recognisable as a replay; once the configured window
-            // has elapsed nobody is going to read that signal, and what remains is personal data about a
-            // session that ended.
+            // PRIV-02.
             bool retentionElapsed = entry.Value.RevokedAtUtc is { } revokedAt && revokedAt <= revokedBefore;
 
             if (familyOver || retentionElapsed)
@@ -749,39 +561,14 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     }
 
     /// <summary>
-    /// Evicts the generations nearest their family ceiling until the tracked set fits the configured ceiling,
-    /// with room left for the generations the caller is about to write.
+    /// Evicts the generations nearest their family ceiling until the tracked set fits the configured
+    /// ceiling, with room left for the generations the caller is about to write.
     /// </summary>
-    /// <param name="headroom">
-    /// How many generations the caller will add immediately after this call. Reserving them here is what makes
-    /// the configured ceiling exact and keeps a generation being written out of the eviction candidates.
-    /// </param>
+    /// <param name="headroom">How many generations the caller will add immediately after this call.</param>
     /// <remarks>
-    /// <para>
-    /// Runs only once expiry-based pruning has already reclaimed everything it can, so an ordinary deployment
-    /// never reaches it. THE UNIT OF EVICTION IS THE FAMILY, not the generation, and that is a security
-    /// property rather than a tidiness one.
-    /// </para>
-    /// <para>
-    /// MIGRATION: an earlier revision ordered the individual generations by family ceiling and then by
-    /// generation, took exactly the excess, and claimed in this very remark that doing so "keeps a family's
-    /// generations together". It does not: the cut lands wherever the excess count happens to fall, so
-    /// whenever that boundary fell inside a family's run of generations, the family was left HALF-TRACKED.
-    /// That is precisely the state in which theft detection stops working while the family goes on being
-    /// redeemable. Reuse of a superseded generation is what identifies a stolen token, and this store answers
-    /// it by revoking the whole family; a generation that has been evicted is indistinguishable from one that
-    /// never existed, so presenting a stolen older generation reads as an unknown token - refused, but with no
-    /// family revocation - and the thief's live generation survives. Evicting whole families instead means the
-    /// worst outcome under memory pressure is that a family must sign in again, which is the outcome eviction
-    /// is FOR.
-    /// </para>
-    /// <para>
-    /// Families are retired nearest-ceiling first, tie-broken on the family identifier so the choice is
-    /// deterministic rather than dependent on dictionary ordering. Eviction continues until the tracked set
-    /// fits, which can leave the set slightly further under the ceiling than the excess required - removing a
-    /// family entire is the point, and stopping mid-family to hit an exact count would reintroduce the fault.
-    /// Callers must already hold <see cref="_gate"/>.
-    /// </para>
+    /// Runs only once expiry-based pruning has already reclaimed everything it can, so an ordinary
+    /// deployment never reaches it. THE UNIT OF EVICTION IS THE FAMILY, not the generation, and that is a
+    /// security property rather than a tidiness one.
     /// </remarks>
     private void EnforceCapacity(int headroom = 0)
     {
@@ -811,25 +598,16 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// rotation families rather than individual generations.
     /// </summary>
     /// <typeparam name="TKey">The type identifying one tracked generation.</typeparam>
-    /// <param name="tracked">Every tracked generation, with the family it belongs to and that family's ceiling.</param>
+    /// <param name="tracked">
+    /// Every tracked generation, with the family it belongs to and that family's ceiling.
+    /// </param>
     /// <param name="maximumTracked">The number of generations the set may hold.</param>
-    /// <returns>
-    /// The keys to discard, which may be empty. Never a partial family: the result contains either every
-    /// generation of a family or none of them.
-    /// </returns>
+    /// <returns>The keys to discard, which may be empty.</returns>
     /// <remarks>
-    /// <para>
-    /// Separated from <see cref="EnforceCapacity"/> and made pure so the policy can be exercised directly. The
-    /// ceiling this store enforces is a hundred thousand generations, so a behavioural test of the eviction
-    /// path would have to issue that many tokens through a store that rescans its whole dictionary on every
-    /// issue - quadratic work for a policy that is three ordering decisions. Extracting the decision is what
-    /// lets those three decisions be asserted with a handful of synthetic families instead, in the same way
-    /// <c>DuplicateKeyTranslator</c> and <c>LostUpdateTranslator</c> are asserted.
-    /// </para>
-    /// <para>
-    /// The parameter is a projection rather than the stored records, so this method needs nothing of the
-    /// private token shape and cannot come to depend on it.
-    /// </para>
+    /// Separated from <see cref="EnforceCapacity"/> and made pure so the policy can be exercised directly.
+    /// The ceiling this store enforces is a hundred thousand generations, so a behavioural test of the
+    /// eviction path would have to issue that many tokens through a store that rescans its whole dictionary
+    /// on every issue - quadratic work for a policy that is three ordering decisions.
     /// </remarks>
     internal static IReadOnlyList<TKey> SelectCapacityEvictions<TKey>(
         IEnumerable<(TKey Key, Guid FamilyId, DateTime FamilyExpiresAtUtc)> tracked,
@@ -847,11 +625,9 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
             return [];
         }
 
-        // Grouped FIRST, so the ordering sorts families rather than generations. A family's ceiling is shared
-        // by all of its generations, but it is taken as the minimum rather than assumed, which keeps the
-        // ordering total even if a future revision ever shortens a ceiling for part of a family. The family
-        // identifier is the tie-break, so the choice is deterministic rather than dependent on the order a
-        // dictionary happened to enumerate in.
+        // Grouped FIRST, so the ordering sorts families rather than generations. A family's ceiling is
+        // shared by all of its generations, but it is taken as the minimum rather than assumed, which keeps
+        // the ordering total even if a future revision ever shortens a ceiling for part of a family.
         var families = entries
             .GroupBy(entry => entry.FamilyId)
             .Select(family => new
@@ -918,16 +694,13 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     private readonly record struct TokenMaterial(string RawToken, byte[] Digest);
 
     /// <summary>How much of this store's tracked-generation capacity is in use.</summary>
-    /// <param name="TrackedGenerations">
-    /// Live and spent generations currently held. A spent generation counts, because it is retained as the
-    /// signal that makes a replay recognisable and it occupies capacity until its family's ceiling passes.
-    /// </param>
+    /// <param name="TrackedGenerations">Live and spent generations currently held.</param>
     /// <param name="Ceiling">The configured maximum, above which the oldest families are retired early.</param>
     /// <remarks>
     /// A value type carrying two integers, returned by <see cref="DescribeCapacity"/> under the store's own
-    /// monitor. It deliberately carries no token, no digest, no account and no tenant: the health probe that
-    /// consumes it renders its description into a log, and a probe that could name an account would put
-    /// identity into an operational diagnostic.
+    /// monitor. It deliberately carries no token, no digest, no account and no tenant: the health probe
+    /// that consumes it renders its description into a log, and a probe that could name an account would
+    /// put identity into an operational diagnostic.
     /// </remarks>
     internal readonly record struct CapacitySnapshot(int TrackedGenerations, int Ceiling);
 
@@ -940,15 +713,10 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// <param name="FamilyExpiresAtUtc">The family's absolute ceiling, shared by every generation.</param>
     /// <param name="ConsumedAtUtc">When this generation was spent, or <see langword="null"/> while live.</param>
     /// <param name="ConsumedClientDigest">
-    /// The bounded client fingerprint that spent it, present exactly when
-    /// <paramref name="ConsumedAtUtc"/> is.
+    /// The bounded client fingerprint that spent it, present exactly when <paramref name="ConsumedAtUtc"/>
+    /// is.
     /// </param>
     /// <param name="RevokedAtUtc">When this generation was revoked, or <see langword="null"/>.</param>
-    /// <remarks>
-    /// A record so that a transition is expressed as a replacement rather than as a mutation: an entry a
-    /// caller is holding cannot be changed underneath it, which is what lets classification run outside the
-    /// dictionary write.
-    /// </remarks>
     private sealed record StoredToken(
         Guid FamilyId,
         int Generation,

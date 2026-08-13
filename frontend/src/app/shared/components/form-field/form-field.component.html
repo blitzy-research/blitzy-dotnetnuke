@@ -1,79 +1,18 @@
 <!--
-  THE LABELLED-FIELD WRAPPER. The structure is derived line by line from
-  `Website/controls/labelcontrol.ascx`, whose 11 content lines are the whole of the
-  legacy control this replaces: a label, a help affordance, a block that the
-  affordance reveals, and nothing else. No wording, no styling and no control of its
-  own live here - every string arrives through an input and every value is a token in
-  the paired stylesheet.
-
-  MIGRATION: EVERY STRING THIS TEMPLATE DISPLAYS IS INTERPOLATED PLAIN TEXT, AND THAT
-  IS A SECURITY BOUNDARY RATHER THAN A STYLISTIC PREFERENCE. Measured across the 37
-  in-scope `App_LocalResources` resource files: of 1111 entries, 76 carry an HTML tag
-  and 29 open with break markup. The decisive entry is `Advertising.Text` in
-  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx`, which holds a LIVE
-  Google AdSense script block with a REMOTE SOURCE; and this folder's own
-  `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx` holds
-  `valRoleName.Text` opening with break markup, as do all nine of its validator
-  entries. The tags are stored XML-escaped, so a naive search returns nothing and
-  would wrongly clear the risk.
-
-  Every legacy value is therefore treated as UNTRUSTED MARKUP. Label, help and message
-  text are rendered with interpolation ONLY, so the framework escapes them and a
-  resource value carrying a script is shown as characters and never executed. No
-  trusted-markup binding, no sanitiser bypass and no pre-escaped member appears here
-  or is even reachable - the component deliberately exposes none. The legacy
-  application reached the same conclusion by hand:
-  `Website/admin/Security/AccessDenied.ascx.vb:L43` encodes its untrusted
-  query-string message before displaying it.
-
-  Interior break markup carried inside a legacy value is resolved to newline
-  characters by the component before it reaches this template, so no reader ever sees
-  those characters as text. That cleaning is the workspace's single shared normaliser
-  and is deliberately NOT repeated here: a function called from a binding would re-run
-  on every change-detection pass and could drift from the canonical rule.
+  EVERY STRING THIS TEMPLATE DISPLAYS IS INTERPOLATED PLAIN TEXT, AND THAT IS A SECURITY BOUNDARY RATHER
+  THAN A STYLISTIC PREFERENCE. Measured across the 37 in-scope `App_LocalResources` resource files: of
+  1111 entries, 76 carry an HTML tag and 29 open with break markup.
 -->
 <div class="form-field">
-  <!--
-    The label and the help affordance share one row so that the affordance sits
-    beside the label text, where the legacy control put it.
-
-    MIGRATION: the affordance is a SIBLING of the `label`, not a child of it. The
-    legacy control nested it inside the element - `labelcontrol.ascx` L3-L5 sit
-    between the opening tag on L2 and the closing tag on L7 - which is invalid,
-    because a button may only be a label's descendant when it IS the labelled
-    control, and ambiguous, because a click anywhere inside a label is forwarded to
-    the control the label names. The un-nested arrangement is not invented here:
-    the legacy codebase already ships it in `Website/controls/helpbuttoncontrol.ascx`,
-    which is `labelcontrol.ascx` L3-L11 with the `<label>` wrapper removed.
-  -->
   <div class="form-field__label-row">
-    <!--
-      THE CAPTION, IN ONE PLACE, RENDERED INTO ONE OF TWO ELEMENTS.
-
-      Declared as a template and stamped by the two branches below so the caption
-      text and the required marker exist ONCE. Duplicating them into two branches
-      would be the more obvious spelling and is deliberately not used: the marker is
-      three nested elements carrying two accessibility decisions, and two copies of
-      it would be two things to keep in step. An `ng-template` emits a comment node
-      rather than an element, so it is not a flex item and the row's layout is
-      untouched.
-    -->
+    <!-- THE CAPTION, IN ONE PLACE, RENDERED INTO ONE OF TWO ELEMENTS. -->
     <ng-template #captionContent>
       {{ labelText() }}
       @if (required) {
         <!--
-          MIGRATION: a net addition. The legacy screens expressed requiredness only
-          through a validator that rendered nothing until a postback failed, so
-          there is no legacy marker convention to carry across. The marker is
-          rendered twice over: a glyph for sighted readers, hidden from assistive
-          technology so it is not announced as punctuation, and a word for everyone
-          else, hidden visually so it does not disturb the label. Neither the glyph
-          nor its colour carries the meaning alone.
-
-          It stays inside the `label`, so the word joins the field's accessible
-          name and travels with both the projection group and any control using the
-          component's direct fallback reference. The caller still sets `required`
-          on the control itself; this marker cannot and does not.
+          MIGRATION: a net addition. The legacy screens expressed requiredness only through a validator
+          that rendered nothing until a postback failed, so there is no legacy marker convention to
+          carry across.
         -->
         <span class="form-field__required">
           <span aria-hidden="true">{{ requiredMarker }}</span>
@@ -82,53 +21,6 @@
       }
     </ng-template>
 
-    <!--
-      A REAL `label` WHEN THERE IS A CONTROL TO NAME, AND A `span` WHEN THERE IS NOT.
-
-      The `label` branch is `labelcontrol.ascx:L2` carried across: clicking the text
-      focuses the named control and assistive technology names that control from it.
-      It covers 112 of the 118 fields in the application.
-
-      `for` is bound through `attr.` because the DOM property is `htmlFor` rather than
-      `for`, so a property binding would not compile under strict template checking.
-
-      ⚠ MIGRATION - A LEGACY MARKUP DEFECT REVERSED, NOT REPRODUCED. The legacy control
-      rendered a `label` element unconditionally and attached `for` only when it had a
-      control to point at: `LabelControl.vb:L292-L295` guards the assignment with
-      `If Not String.IsNullOrEmpty(ControlName)`, so the 5 of 186 legacy labels that
-      declare no association rendered as `label` elements captioning nothing. An earlier
-      revision here was faithful to that and omitted the attribute, which is how the
-      application came to raise a form-label diagnostic - its ONLY one - on six fields:
-      the portal type radio group on the create form, the banner and user-registration
-      radio groups on portal settings, the module visibility radio group, and the two
-      read-only values on the password screen, which have no control at all rather than
-      merely no single one.
-
-      The `span` branch is not invented for this migration either - `module-settings`
-      already captions its own visibility radio group with a `span` carrying an id that
-      a `role="radiogroup"` references, so this is the pattern the codebase had already
-      settled on, applied to the shared component so all six fields get it.
-
-      WHY THIS IS PERMITTED WHERE FAITHFULNESS USUALLY WINS. The same argument the help
-      affordance makes a few lines below: accessibility outranks visual continuity in the
-      precedence order, and here the two do not conflict. `.form-field__label` restates
-      every property the global `label` rule sets - display, margin, colour, size, weight,
-      line height - so exactly ONE computed property changes on the six affected fields,
-      `cursor`, from `pointer` to the default. Losing it is itself a correction: a pointer
-      cursor on a caption that focuses nothing promises an interaction that does not exist.
-
-      WHAT WAS REJECTED. Rendering a `span` for every field would have been one branch
-      instead of two, and would have discarded native click-to-focus on all 112 fields
-      that legitimately have it - a real loss to pay for a tidier template. Pointing `for`
-      at the first control of a group was also rejected: it would name one radio as though
-      it were the whole question, which is worse than naming nothing.
-
-      The `id` is bound on BOTH branches because the projection group and every otherwise
-      unnamed projected control reference this visible text by id, and that wiring is what
-      actually carries the accessible name for a group. ARIA naming is not inherited from
-      a group, so the component applies the control references directly after projected
-      content is checked. Nothing about either name changes with the tag.
-    -->
     @if (labelFor() !== null) {
       <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
         <ng-container [ngTemplateOutlet]="captionContent" />
@@ -141,46 +33,8 @@
 
     @if (hasHelp()) {
       <!--
-        MIGRATION: a keyboard-reachable button, which reverses a legacy defect rather
-        than reproducing it. `labelcontrol.ascx` withdraws the affordance from the tab
-        order with a NEGATIVE TAB INDEX twice over - on the link button at L3 and again
-        on the image nested inside it at L4 - so the legacy help was operable by
-        pointer only and unreachable by keyboard. The same defect repeats at
-        `helpbuttoncontrol.ascx` L2 and L3 and at `sectionheadcontrol.ascx` L3, five
-        declarations in all; the fifth spells the attribute with a capital I, so a
-        case-sensitive search undercounts them to four. Here the affordance is a real
-        `button`: reachable by Tab and activated by both Enter and Space with no
-        scripting at all, and `type="button"` is stated explicitly so it can never
-        submit an ancestor form, which is the faithful translation of the legacy
-        `CausesValidation="False"` on L3. Reversing this costs nothing visually, which
-        is why the precedence order permits it - accessibility outranks visual
-        continuity, and here the two do not even conflict.
-
-        Its name is composed by reference from its own text plus the field's label,
-        so a screen reader announces "Help, Role Name" rather than the twentieth
-        undifferentiated "Help" on a long form, and no wording is invented to
-        achieve it.
-
-        THE `aria-controls` DECISION, stated explicitly because there are two valid
-        answers and only one is used here. The revealed block is REMOVED FROM THE DOM
-        when collapsed rather than kept and hidden, so `aria-controls` is DROPPED while
-        there is nothing to control - the component resolves it to null and an
-        attribute binding omits the attribute entirely. The alternative, keeping the
-        block in the document and hiding it accessibly, was rejected: a collapsed help
-        block is not content a reader should be able to reach, and leaving it present
-        would put text in the accessibility tree that is not on the screen. Both this
-        attribute and the block itself are governed by the SAME condition, so the
-        reference exists exactly when its target does and can never dangle in either
-        direction. `aria-expanded` carries the state in both cases, which is what makes
-        the control reference optional for a disclosure to begin with.
-
-        MIGRATION: `~/images/help.gif` is not carried across - it is a 344-byte
-        raster and the only static binary in scope is the favicon - so the glyph is
-        an inline vector authored here. It declares no width or height, so the
-        stylesheet scales it with the button's typography; it is stroked and filled
-        in `currentColor`, so no colour is hardcoded in markup; and it is hidden
-        from the accessibility tree and made unfocusable so it can neither name the
-        button nor become a stray tab stop.
+        THE `aria-controls` DECISION, stated explicitly because there are two valid answers and only one
+        is used here.
       -->
       <button
         class="form-field__help-toggle"
@@ -211,43 +65,6 @@
     }
   </div>
 
-  <!--
-    The control slot. Unnamed and unconstrained, because a field routinely holds
-    SEVERAL controls rather than one: `editroles.ascx` L98-L115 puts a text box, a
-    drop-down list and two compare validators under the single `plBillingPeriod` label,
-    and its own resource entry states the intent - 'These two fields are used in
-    conjunction to enter a Billing Period'; L130-L147 repeats the shape for the trial
-    period. `roles.ascx` L5-L16 puts a drop-down list, an edit link and a delete image
-    button under one label, and `editroles.ascx` L28 adds a hidden read-only twin
-    beside a text box. Nothing here wraps, counts, selects or reorders the projected
-    children.
-
-    MIGRATION: the legacy inter-control spacing was expressed as CONTENT - a pair of
-    non-breaking-space entities sits between the text box and the drop-down list at
-    `editroles.ascx` L105, and there are 70 such literal entities across the in-scope
-    admin markup. None is reproduced: spacing is the stylesheet's token-based `gap`,
-    which is adjustable and cannot be collapsed by the template compiler the way a
-    run of literal whitespace can.
-
-    MIGRATION: rich-text editing is a documented functional reduction rather than an
-    oversight. The legacy editor provider is out of scope, so a field that legacy
-    rendered through it is a plain `textarea` PROJECTED BY THE CALLER - this component
-    renders no control of its own and varies in no way by control type. That affects
-    the 19 `TextMode="MultiLine"` declarations in the in-scope screens.
-
-    MIGRATION: the named `role="group"` preserves the composite field context, but
-    that name is not inherited by descendant controls. The legacy `ControlName`
-    reached exactly one control, so the component also applies this label's id
-    directly to every otherwise unnamed projected control. Consumer-supplied
-    native or ARIA names take precedence. The wiring changes no layout, no colour
-    and no spacing.
-
-    The description points only at regions that are actually rendered, so a
-    reference never resolves to nothing. Projected content keeps the scoping of the
-    component that declares it, so the appearance of the controls themselves belongs
-    to the global form stylesheet - no descendant piercing and no disabled
-    encapsulation is used to reach into them from here.
-  -->
   <div
     class="form-field__control"
     role="group"
@@ -259,105 +76,22 @@
 
   @if (helpExpanded()) {
     <!--
-      Revealed as a BLOCK in normal document flow, which is what the legacy control
-      did. Two independent proofs: `labelcontrol.ascx:L8` places a literal break
-      element between the label and the panel, and `default.css:L424-L439` styles
-      `.Help` with a one-pixel solid border on all four sides over a filled
-      background - a BOX. So this is a disclosure, and never a tool tip, a pop-up or
-      anything absolutely positioned.
-
-      MIGRATION: that break element is NOT reproduced. It was vertical spacing
-      expressed as content, and spacing here is the stylesheet's spacing scale
-      instead; this template emits no break element anywhere.
-
-      The text is interpolated, so a resource value carrying markup is shown as
-      characters rather than executed - see the governing note at the top of this
-      file. The component resolves any interior break markup before it reaches here,
-      so no reader is ever shown those characters as text.
+      MIGRATION: that break element is NOT reproduced. It was vertical spacing expressed as content, and
+      spacing here is the stylesheet's spacing scale instead; this template emits no break element
+      anywhere.
     -->
     <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
   }
 
   @if (hasError()) {
     <!--
-      `role="alert"` rather than `aria-live="polite"`, and never both on one element:
-      a validation failure is the direct result of the person's own action and must
-      be discoverable without moving focus, which is precisely what an assertive
-      live region is for. It sits on the REGION rather than on each message, so two
-      messages arriving together are announced as one interruption instead of two.
-
-      The region is removed when the field becomes valid rather than emptied or
-      hidden, so it neither occupies space nor lingers in the accessibility tree.
-
-      ⚠ AND IT IS INSERTED WITH ITS MESSAGE ON PURPOSE, WHICH IS THE OPPOSITE OF THE
-      RULE THE SHARED BANNER AND THE NOTIFICATION SURFACE FOLLOW. Those two keep an
-      empty region mounted at all times because a POLITE live region has to be observed
-      before it is updated. `role="alert"` is the one live-region role defined the other
-      way round: adding a node that carries it IS the announcement trigger, so the
-      region and its text may arrive together. Keeping one mounted per field instead
-      would leave an empty alert region in the accessibility tree for every field on
-      every form - ten of them on the account-creation form alone - for no gain. Do not
-      "make this consistent" with the banner; the inconsistency is the correct reading of
-      two different roles.
-
-      ⚠ SPACE FOR THE MESSAGE IS DELIBERATELY *NOT* RESERVED, and that is a measured
-      decision rather than an omission. Reserving one line costs `--font-size-lg` x
-      `--line-height-base` = 1.125rem = 18px per error-bearing field, which on the
-      account-creation form's seven such fields is 126px of PERMANENT blank space -
-      almost exactly the 124px transient growth it would be spent to avoid, and paid on
-      every visit instead of only after a refused submission. It would not even succeed:
-      individual fields there were measured growing 87px and 110px, because a message
-      can wrap and a field can carry several, so no fixed reservation can absorb them.
-      What addresses the real harm - the command moving out from under the pointer that
-      just pressed it - is moving focus to the first invalid control, which
-      `FocusFirstInvalidDirective` does for every `form[formGroup]` in the application:
-      the operator is carried to the message rather than left looking at where the
-      button was.
-
-      SEVERAL messages, not one. `editroles.ascx` places two `CompareValidator`s on a
-      single control four separate times, and there is not one
-      `<asp:ValidationSummary>` anywhere in the 39 in-scope screens - so this region
-      is the only error surface the ported administration UI has, and a message
-      dropped here is a message nobody sees.
-
-      Tracked BY INDEX deliberately. The component neither reorders nor deduplicates
-      the messages, and identical messages are genuinely reachable, so tracking by
-      value would raise a duplicated-key error exactly when the server reported the
-      same failure twice.
-
-      MIGRATION: error state is carried by MORE THAN COLOUR. The legacy `.NormalRed`
-      class conveyed failure through red text alone, so three non-colour affordances
-      are layered here instead. The message is TEXT and says what is wrong in words,
-      so the information itself never depends on hue. `role="alert"` surfaces it to a
-      reader who perceives no colour at all. And the stylesheet gives the message bold
-      weight, which is what distinguishes it from the help text sitting directly above
-      it without introducing a second colour.
-
-      No word is authored here to prefix the message. This template holds no
-      user-facing wording of its own beyond the two accessibility strings the component
-      supplies as constants - the required marker's hidden word and the help button's
-      name - and inventing a third would put untranslatable wording in a template at a
-      point where localisation is out of scope, for a distinction the three affordances
-      above already carry.
+      The region is removed when the field becomes valid rather than emptied or hidden, so it neither
+      occupies space nor lingers in the accessibility tree.
     -->
     <!--
-      MIGRATION: EVERY MESSAGE CARRIES ITS OWN IDENTIFIER, and the reason is a measured
-      accessibility defect rather than tidiness. The description reference used to name only
-      this container, and only on the non-focusable group wrapper around the control — never
-      on the control itself. The consequence was precise: because the region is an assertive
-      live region, a failure WAS announced the moment it appeared, so the defect was invisible
-      to a first-pass test; but an operator who tabbed BACK to the field afterwards heard only
-      that it was invalid, with no statement of what was wrong, because nothing the control
-      pointed at held the reason. The component now applies the description to the projected
-      control directly — see `ensureProjectedControlsAreDescribed` — and each message is
-      addressable in its own right so a caller, a specification or an assistive technology can
-      name one message rather than the whole block.
-
-      `aria-errormessage` is deliberately NOT added alongside the description. It would name
-      the same region a second time, and the two mechanisms together make several screen
-      readers announce the reason twice; the description is the one with dependable support.
-      Requiredness and invalidity remain the caller's to state on the control, as they always
-      were, because this component cannot make a field either.
+      `aria-errormessage` is deliberately NOT added alongside the description. It would name the same
+      region a second time, and the two mechanisms together make several screen readers announce the
+      reason twice; the description is the one with dependable support.
     -->
     <div class="form-field__errors" [id]="errorId()" role="alert">
       @for (message of errorMessages(); track $index) {

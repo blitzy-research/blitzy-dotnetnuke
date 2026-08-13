@@ -1,34 +1,5 @@
-// MIGRATION: this suite exists for one property, and it is the property the review found missing: a
-// listing must never accept a sort field that the collection it addresses then ignores. Before the
-// repair, one shared request type meant one resolved validator, which meant the UNION of every
-// collection's sortable names was the only bound anything applied - so the portal listing accepted
-// "TrialFrequency", the role listing accepted "HostSpace", and each silently discarded the other's
-// names while answering 200. The per-collection sets existed but had no consumer at all.
-//
-// MIGRATION: the expected vocabularies below are stated as literals rather than read from the
-// production constant, deliberately. SortableFields is internal and no InternalsVisibleTo is declared,
-// but the more important reason is that a test which asserted "the validator accepts whatever the
-// constant lists" would pass no matter what the constant said. Restating the names here makes this file
-// an independent pin on the contract, so widening a set is a change a reviewer has to make in two
-// places and see.
-//
-// MIGRATION: a FIFTH collection was added after the review found the inverse defect. The role-membership
-// listing did not have a request type of its own - it BORROWED UserPagedRequest - so
-// UserPagedRequestValidator resolved for it and applied the account collection's seven names while
-// RoleService.ListRoleUsersAsync enforces ten. Sharing one type across collections made a listing accept a
-// name it discarded; borrowing another collection's type made this one REFUSE a name it honoured. Both are
-// the same underlying mistake, and the pair of facts below - the account listing refuses CreatedDate,
-// LastLoginDate and IsApproved while the role-membership listing admits all three - is where the difference
-// between the two vocabularies is pinned, together with the reason it is legitimate.
-//
-// MIGRATION: each vocabulary is also required to be exactly the set of fields the corresponding
-// listing HONOURS end to end, which is the half of the finding a boundary test cannot prove on its own.
-// The ordering arms live in PortalRepository.ApplyOrder, UserRepository.ApplyOrder,
-// RoleService.ApplyOrder and ModuleService.ApplyOrder, and each of those methods carries the inventory
-// as an annotation beside its switch. Three names are deliberately absent from the user vocabulary -
-// CreatedDate, LastLoginDate and IsApproved - because they are filled after the page has been cut and
-// so could never be ordered by; two are absent from the module vocabulary - ModuleOrder, a per-pane
-// placement position carrying an append sentinel, and DisplayTitle, derived after ordering has run.
+// This suite exists for one property: a listing must never accept a sort field that the collection it
+// addresses then ignores.
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Validation;
 using FluentAssertions;
@@ -39,21 +10,9 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Proves that each listed collection admits exactly its own sortable vocabulary and refuses every
-/// other collection's, and that the shared paging bounds are inherited unchanged by all four.
+/// Proves that each listed collection admits exactly its own sortable vocabulary and refuses every other
+/// collection's, and that the shared paging bounds are inherited unchanged by all four.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The refusals are asserted per collection rather than in aggregate, because the defect was
-/// per collection: a single suite that only checked "some name is refused somewhere" would have passed
-/// against the union bound that caused the finding.
-/// </para>
-/// <para>
-/// Every refusal also asserts that the message enumerates the accepted names for that collection
-/// specifically. That wording is what tells a caller which field to send instead, so a message naming
-/// the union would leave a caller guessing across four vocabularies.
-/// </para>
-/// </remarks>
 public class PagedRequestValidatorTests
 {
     /// <summary>Sortable vocabulary of the portal listing, honoured by <c>PortalRepository</c>.</summary>
@@ -83,9 +42,7 @@ public class PagedRequestValidatorTests
     /// Ten names, three more than the account listing's. The extra three are legitimate rather than
     /// accidental: this listing composes each assignment row with its account and pages IN MEMORY, so the
     /// values the external membership store supplies are present on every row before any page is cut,
-    /// whereas the account listing pages in the STORE and cannot reach them until afterwards. The two
-    /// assignment dates the projection carries are deliberately NOT here, because the legacy grid offered no
-    /// ordering by them.
+    /// whereas the account listing pages in the STORE and cannot reach them until afterwards.
     /// </remarks>
     private static readonly string[] RoleUserFields =
     [
@@ -234,13 +191,13 @@ public class PagedRequestValidatorTests
     // ------------------------------------------------------------------------
 
     /// <summary>
-    /// The refusal message enumerates exactly the collection's own vocabulary, in a stable ordinal
-    /// order, so the accepted set is observable by a caller and pinned by this test.
+    /// The refusal message enumerates exactly the collection's own vocabulary, in a stable ordinal order,
+    /// so the accepted set is observable by a caller and pinned by this test.
     /// </summary>
     /// <remarks>
-    /// This is the assertion that makes the four vocabularies EXACT rather than merely sufficient.
-    /// Adding a name to a set without adding an ordering arm for it would change this message and fail
-    /// here, which is the point: the sets and the ordering switches have to move together.
+    /// This is the assertion that makes the four vocabularies EXACT rather than merely sufficient. Adding a
+    /// name to a set without adding an ordering arm for it would change this message and fail here, which
+    /// is the point: the sets and the ordering switches have to move together.
     /// </remarks>
     [Fact]
     public void EachListing_NamesExactlyItsOwnVocabularyWhenRefusing()
@@ -262,14 +219,6 @@ public class PagedRequestValidatorTests
     /// projected member of the listing's representation.
     /// </summary>
     /// <param name="sortBy">The field the caller named.</param>
-    /// <remarks>
-    /// Their absence looks like an oversight and is not, which is exactly why it is pinned here. The
-    /// first two have no column on the entity in this model and the third lives in the external
-    /// membership store, so all three are filled after the page has been skipped and taken. Admitting
-    /// any of them would order one arbitrary page rather than the collection - the precise failure this
-    /// work removed - so closing the gap would mean moving the values into the query, never relaxing
-    /// this rule.
-    /// </remarks>
     [Theory]
     [InlineData("CreatedDate")]
     [InlineData("LastLoginDate")]
@@ -283,22 +232,10 @@ public class PagedRequestValidatorTests
     /// </summary>
     /// <param name="sortBy">The field the caller named.</param>
     /// <remarks>
-    /// <para>
-    /// ⚠ SEC-F11. THIS TEST ASSERTED THE OPPOSITE, AND THE JUSTIFICATION IT CARRIED WAS FACTUALLY WRONG. It
-    /// claimed the role-membership listing materialises the assignment rows and pages them IN MEMORY, so
-    /// that the three values the external <c>aspnet_*</c> membership objects supply are present on every row
-    /// before a page is cut. The implementation does no such thing: the filter, the ordering, the count and
-    /// the window all travel to the store, and the repository's ordering arm for these three names fell
-    /// through to the assignment key. A caller naming one of them received <c>200</c> with rows ordered by
-    /// something else - and since the membership projection publishes none of the three, the wrong order was
-    /// not even observable in the response.
-    /// </para>
-    /// <para>
-    /// The two listings therefore agree now, and for the same reason: both page in the store, and neither
-    /// can order by a value the store does not hold. Restoring the capability would mean joining the
-    /// membership objects into the query and publishing the values on the projection - which is a change to
-    /// the read, not a relaxation of this rule.
-    /// </para>
+    /// ⚠ THIS TEST ASSERTED THE OPPOSITE, AND THE JUSTIFICATION IT CARRIED WAS FACTUALLY WRONG. It claimed
+    /// the role-membership listing materialises the assignment rows and pages them IN MEMORY, so that the
+    /// three values the external <c>aspnet_*</c> membership objects supply are present on every row before
+    /// a page is cut.
     /// </remarks>
     [Theory]
     [InlineData("CreatedDate")]
@@ -311,15 +248,13 @@ public class PagedRequestValidatorTests
             sortBy,
             RoleUserFields);
 
-    /// <summary>
-    /// The two module fields that cannot be ordered are refused, even though both are projected.
-    /// </summary>
+    /// <summary>The two module fields that cannot be ordered are refused, even though both are projected.</summary>
     /// <param name="sortBy">The field the caller named.</param>
     /// <remarks>
-    /// The placement position is a column of a different table, is meaningful only within one pane of
-    /// one page, and carries an append sentinel - so ordering a cross-page listing by it would sort
-    /// unrelated positions against each other. The display title is derived at projection time and so
-    /// does not exist until after the ordering has run.
+    /// The placement position is a column of a different table, is meaningful only within one pane of one
+    /// page, and carries an append sentinel - so ordering a cross-page listing by it would sort unrelated
+    /// positions against each other. The display title is derived at projection time and so does not exist
+    /// until after the ordering has run.
     /// </remarks>
     [Theory]
     [InlineData("ModuleOrder")]
@@ -328,8 +263,8 @@ public class PagedRequestValidatorTests
         => ShouldRefuseSort(new ModulePagedRequestValidator(), new ModulePagedRequest(), sortBy, ModuleFields);
 
     /// <summary>
-    /// A name no collection declares is refused by every collection, which is the case that already
-    /// worked and must keep working.
+    /// A name no collection declares is refused by every collection, which is the case that already worked
+    /// and must keep working.
     /// </summary>
     /// <param name="sortBy">The invented field the caller named.</param>
     [Theory]
@@ -359,9 +294,9 @@ public class PagedRequestValidatorTests
     /// </summary>
     /// <param name="sortBy">A field drawn from each of the four vocabularies in turn.</param>
     /// <remarks>
-    /// The union is the correct bound for a request that names no collection: it still guarantees that
-    /// what reaches an ordering clause is a name this assembly declared, while leaving the narrower
-    /// question to the derived validators. No registered endpoint binds this type any longer.
+    /// The union is the correct bound for a request that names no collection: it still guarantees that what
+    /// reaches an ordering clause is a name this assembly declared, while leaving the narrower question to
+    /// the derived validators. No registered endpoint binds this type any longer.
     /// </remarks>
     [Theory]
     [InlineData("HostSpace")]
@@ -379,12 +314,6 @@ public class PagedRequestValidatorTests
     /// Each derived request type declares no member of its own, so the four collections share one wire
     /// contract and differ only in which vocabulary their validator applies.
     /// </summary>
-    /// <remarks>
-    /// The derivations exist solely so that the dependency container can resolve one validator per
-    /// collection; a member declared on one of them would be a wire-contract difference between
-    /// listings that a caller would have to discover. Asserting emptiness by reflection keeps that
-    /// discipline enforceable rather than merely documented.
-    /// </remarks>
     [Fact]
     public void EachDerivedRequestType_DeclaresNoMemberOfItsOwn()
     {
@@ -418,10 +347,6 @@ public class PagedRequestValidatorTests
     /// Every derived validator inherits the page-size ceiling, so narrowing the sort vocabulary did not
     /// disturb the paging bounds.
     /// </summary>
-    /// <remarks>
-    /// Asserted for all four rather than for one, because each is a separate type and a future revision
-    /// could override a rule on one of them without any other test noticing.
-    /// </remarks>
     [Fact]
     public void EveryDerivedValidator_InheritsThePagingBounds()
     {

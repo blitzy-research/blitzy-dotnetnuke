@@ -1,32 +1,11 @@
-<!--
-  THE FALLBACK VIEW.
-
-  Two shared components, composed. Neither is restyled and neither is modified: the page header
-  contributes the `<h1>` that a routed view owes the document outline, and the empty state
-  contributes the explanation and the slot the recovery link fills. The long reasoning for the
-  composition - and for why it adds no eleventh shared component - lives in the paired class.
-
-  The header carries NO action of its own. Its actions slot is left unfilled deliberately: one
-  dead end deserves exactly one way out, and offering the same link twice on a view whose whole
-  content is a single sentence would give a keyboard reader two stops to the same address.
--->
+<!-- THE FALLBACK VIEW. -->
 <app-page-header [title]="title" />
 
 <app-empty-state [message]="message">
   <!--
-    The recovery affordance, projected into the empty state's own action slot - the slot that
-    was structurally empty while this component's job was done by loading the shared component
-    straight from the router, because a router-loaded component has no host template to project
-    into it.
-
-    A `routerLink` rather than an `href`, so the navigation stays inside the application: a bare
-    `href` would reload the document, and the access token is held in memory only, so reloading
-    would end the session and send the reader to the sign-in screen. Recovering from a mistyped
-    address must not cost the reader their session.
-
-    The root is the target, not a named screen. The root already resolves to a landing suited to
-    the caller's authority, so this one link is correct for a host, an administrator and a member
-    alike.
+    A `routerLink` rather than an `href`, so the navigation stays inside the application: a bare `href`
+    would reload the document, and the access token is held in memory only, so reloading would end the
+    session and send the reader to the sign-in screen.
   -->
   <a routerLink="/">{{ recoveryLabel }}</a>
 </app-empty-state>

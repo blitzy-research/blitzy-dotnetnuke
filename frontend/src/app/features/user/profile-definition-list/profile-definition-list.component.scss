@@ -1,196 +1,27 @@
-// Stylesheet for the /settings/profile-definitions screen, reached through `styleUrl` on its paired
-// component, so it ships inside this screen's lazy chunk and IS measured against the `anyComponentStyle`
-// budget that `angular.json` caps at 8 kB as an ERROR.
-//
-// Emulated view encapsulation rewrites every selector here with this component's own content attribute, so a
-// class name that drifts does not error - it silently matches nothing and the screen renders unstyled. The
-// reach of this file is exactly the elements written in profile-definition-list.component.html plus the
-// content this component PROJECTS into a shared component; projected nodes keep the consumer's content
-// attribute, which is why the row-action group below legitimately styles buttons rendered inside the shared
-// data table's cells. The grid's own chrome is therefore not this file's business: the shared table renders
-// the table, head, body and rows, and the alternating row background is declared once, globally, in
-// src/styles/_tables.scss. No encapsulation-piercing combinator appears below.
-//
-// The template emits exactly eleven classes, plus one attribute:
-//
-//    .profile-definitions__help
-//    .profile-definitions__bulk
-//    .profile-definitions__bulk-item
-//    .profile-definitions__code
-//    .profile-definitions__grid-actions
-//    .profile-definitions__row-action
-//    .profile-definitions__form
-//    .profile-definitions__form-legend
-//    .profile-definitions__form-grid
-//    .profile-definitions__form-actions
-//    .profile-definitions__form-hint
-//    [data-visually-hidden]          (attribute, not a class - see section 7)
-//
-//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
-//  encapsulation with the component's own content attribute, so a class name
-//  that drifts does not error — it silently matches nothing and the screen
-//  renders unstyled. The template emits exactly this vocabulary, and every
-//  entry below was re-checked against the template rather than assumed:
-//
-//      .profile-definitions__help
-//      .profile-definitions__bulk
-//      .profile-definitions__bulk-item
-//      .profile-definitions__grid-actions
-//      .profile-definitions__row-action
-//      .profile-definitions__code
-//      .profile-definitions__form
-//      .profile-definitions__form-legend
-//      .profile-definitions__form-grid
-//      .profile-definitions__form-actions
-//      .profile-definitions__form-hint
-//      [data-visually-hidden]          (attribute, not a class — see section 7)
-//
-//  TWO ENTRIES HAVE BEEN REMOVED FROM THIS LIST AND THEIR RULES DELETED, because
-//  the template rewrite stopped emitting them and the silence described above is
-//  what let them survive it: `.profile-definitions__row-actions`, a wrapper for the
-//  row commands that are now each projected separately, and
-//  `.profile-definitions__form-toggle`, a control the screen does not have. Sections
-//  4 and 6 record why neither is reinstated. A selector matching nothing costs no
-//  render, but it does cost a reader — it is read as evidence of markup that is not
-//  there.
-//
-//  WHAT THE SCREEN CONSUMES. The workspace carries nine shared components — page
-//  header, data table, pagination, form field, search input, confirm dialog,
-//  error banner, loading spinner and empty state — plus the `hasPermission`
-//  directive, `core/config/api-endpoints.ts` and the wire models under
-//  `core/models/`.
-//
-//  CORRECTED PREMISE. An earlier revision of this header asserted that the
-//  workspace "carries no user.service.ts and no signal store, so this component
-//  performs no HTTP: its data arrives through inputs and its intent leaves
-//  through outputs". That premise is STALE and the conclusion drawn from it was
-//  wrong. Both `core/services/user.service.ts` and `core/state/user.store.ts`
-//  exist and are declared dependencies of this screen. The component this styles
-//  is the one the router mounts directly, so nothing upstream could ever have
-//  supplied those inputs: the presentational shape guaranteed a permanently
-//  empty grid with every affordance a silent no-op. The component now injects
-//  `UserStore`, loads its own catalogue and owns its own staged edits. The
-//  paired specification exercises it through the HTTP testing controller
-//  accordingly.
-// =============================================================================
-//  profile-definition-list.component.scss
-//  Profile property definitions — the administration screen that replaces the
-//  legacy admin pair Website/admin/Users/ProfileDefinitions.ascx (the grid) and
-//  Website/admin/Users/EditProfileDefinition.ascx (the multi-step editor, which
-//  collapses into the inline create/edit form below).
-// =============================================================================
-//
-//  SCOPE — WHAT THIS FILE MAY STYLE, AND WHY THE LIST IS SHORT
-//  ----------------------------------------------------------
-//  Angular's default emulated view encapsulation rewrites every selector here
-//  with this component's own content attribute, so the reach of this file is
-//  exactly: the elements written in profile-definition-list.component.html, plus
-//  the content this component PROJECTS into a shared component. Projected nodes
-//  keep the consumer's content attribute rather than the host's, which is why the
-//  row-action group below legitimately styles buttons that render inside the
-//  shared data table's cells.
-//
-//  It follows that the grid's own chrome is NOT this file's business. The shared
-//  data table renders the table, head, body and rows itself, and the alternating
-//  row background is declared once, globally, in src/styles/_tables.scss — an
-//  unscoped element selector on the even body rows, which reaches inside every
-//  component regardless of encapsulation. No encapsulation-piercing combinator of
-//  any kind appears below — none is used, and none is needed.
-//
-//  Six surfaces are owned here and nothing else:
-//    1. the help paragraph that opens the screen;
-//    2. the bulk "apply to every row" toggle region;
-//    3. the grid-level action row;
-//    4. the projected four-button row-action group;
-//    5. the inline create/edit form;
-//    6. the monospaced presentation of a validation expression or default value.
-//
-//  WHY THE `@use` BELOW CLIMBS FOUR LEVELS
-//  ---------------------------------------
-//  core/, shared/, features/ and layout/ all live INSIDE src/app/, whereas
-//  styles/ is a SIBLING of app/ inside src/. A Sass path therefore always reaches
-//  exactly one level further out than the TypeScript path for the same file:
-//  `..` -> features/user/, `../..` -> features/, `../../..` -> app/,
-//  `../../../..` -> src/. Three levels resolves to the non-existent
-//  src/app/styles/mixins and fails the build with "Can't find stylesheet to
-//  import." The path table in the header of src/styles/_mixins.scss publishes the
-//  same four-level form for a feature screen. Sass modules are per-file and never
-//  ambient, so this file must load the partial itself even though the global
-//  stylesheet also loads it.
-// =============================================================================
-
 @use '../../../../styles/mixins' as mx;
 
-// Root.
-//
-// A custom element is inline by default and would not contain its block-level children correctly, so
-// the host is given a box-generating flow of its own. It is the single source of vertical rhythm between the
-// six regions: each region below therefore declares no outer margin, and the two that inherit a user-agent
-// paragraph margin neutralise it explicitly.
-//
-//  Typography is deliberately NOT restated. src/styles/_reset.scss already sets the base family, size and
-//  line height on the document body and every region here inherits them, so repeating the tokens would
-//  create a second definition site free to drift from the first.
 :host {
   display: grid;
 
-  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
-  // `portal-list.component.scss` for the measured failure. An implicit single-column track takes
-  // an automatic `min-content` minimum, so the shared grid's `min-inline-size: 40rem` sized the
-  // track and stretched every sibling region to it, which put this screen's document at
-  // `scrollWidth` 843 against a 320px viewport - the worst of the four affected screens, because
-  // the navigation rail beside it is content-sized and the active label here is the longest in
-  // the application. All four Required/Visible row checkboxes went off screen at 320 and 375, two
-  // were still out at 768, and the primary "Add New Profile Property" action was BISECTED by the
-  // 768px edge, so `elementFromPoint` at its centre returned null and it could not be clicked.
-  //
-  // The token's zero floor lets the track yield completely, which returns the overflow to the
-  // table container whose `overflow-x: auto` exists to absorb it.
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in `portal-list.component.scss` for the
+  // measured failure.
   grid-template-columns: var(--grid-track-fluid);
 
   gap: var(--space-4);
 }
 
-// 1. Help paragraph.
-//
-// MIGRATION: the legacy screen carried its alignment in an inline style attribute on the
-//   wrapping element. No inline style survives the migration: the alignment is a token-free logical keyword
-//   in a scoped class, and `start` rather than `left` keeps the paragraph correct under a right-to-left
-//   writing mode.
-//
-// No colour is declared. The legacy text class that carried this paragraph declares family, size and weight
-// and no colour at all, so its rendered ink was the user agent's default; the colour vocabulary is closed
-// and deliberately holds no base text entry, so inheriting reproduces the measured legacy rendering
-// exactly. Size is inherited for the same reason — the base step is the eleven pixels the legacy class
-// measured.
 .profile-definitions__help {
   margin-block: 0;
   text-align: start;
 
   // A measure cap, so an explanatory paragraph does not run the full width of a wide monitor. The token
   // vocabulary declares no width or measure token, and the breakpoint function is exported for exactly this
-  // raw-width use — what is barred is hand-writing a media query, not reading a step. The medium step is
-  // chosen on two counts at once: it is the more readable measure, and it sits inside the width the legacy
-  // module pane actually gave this paragraph, so it is closer to the measured legacy rendering than a wider
-  // cap would be. It is also the cap the form below uses, so the screen has one text measure rather than
-  // two. Because the paragraph is now a constrained container, a long unbroken run inside a localised string
-  // breaks rather than overflowing it.
+  // raw-width use — what is barred is hand-writing a media query, not reading a step.
   max-inline-size: mx.breakpoint('md');
   overflow-wrap: break-word;
 }
 
-// 2. BULK TOGGLE REGION MIGRATION: a relocated affordance, not a new one. The legacy grid put a select-all
-//   checkbox in the header cell of each of its two boolean columns, and binding computed whether every row
-//   was already set in order to seed them; the checked-changed handler then wrote the header's value to
-//   every row at once. The shared data table exposes no header-cell template and its input surface is
-//   closed, so the two controls cannot live in a header cell here. They sit outside the table instead, in
-//   their own labelled region, which preserves the capability while changing where it is reached from. The
-//   relocation is recorded rather than absorbed.
-//
-// The panel treatment is what ties the region back to the grid it drives: a secondary surface with the same
-// hairline and radius the global fieldset uses, so it reads as chrome belonging to the table rather than as
-// free-floating controls. Wrapping is intrinsic — on a narrow viewport the second toggle drops to its own
-// line rather than overflowing, and the row gap then supplies the spacing between the two lines.
+// 2. BULK TOGGLE REGION a relocated affordance, not a new one.
 .profile-definitions__bulk {
   display: flex;
   flex-wrap: wrap;
@@ -204,22 +35,13 @@
   border-radius: var(--radius-sm);
 }
 
-// A label that wraps its own checkbox is already laid out as one inline row by src/styles/_forms.scss, which
-// detects the shape structurally and supplies the flow, the alignment, the gap, the body weight and the
-// inherited ink. None of that is restated. What remains is the trailing block margin the global label rule
-// gives every label: inside this flex row it is unbalanced space that the container's gap already provides,
-// so it is withdrawn here.
+// A label that wraps its own checkbox is already laid out as one inline row by src/styles/_forms.scss,
+// which detects the shape structurally and supplies the flow, the alignment, the gap, the body weight and
+// the inherited ink. None of that is restated.
 .profile-definitions__bulk-item {
   margin-block-end: 0;
 }
 
-//  3. GRID ACTION ROW MIGRATION: the legacy row separated its two command buttons with a literal
-//    non-breaking space. A real gap replaces it, so the separation survives white-space collapsing and is
-//    declared once instead of being carried by content. The margin reset neutralises the user-agent
-//    paragraph margin, keeping the host grid the only source of vertical rhythm whichever element the
-//    template uses for this row.
-//
-// The buttons themselves are left entirely to the global button treatment.
 .profile-definitions__grid-actions {
   display: flex;
   flex-wrap: wrap;
@@ -229,79 +51,19 @@
   margin-block: 0;
 }
 
-// -----------------------------------------------------------------------------
-//  4. PROJECTED ROW ACTION
-// -----------------------------------------------------------------------------
-//  Four actions per row — edit, delete, move down, move up — each projected into
-//  the shared data table's action cell as its own template. They are real buttons
-//  rather than bare images, which is the substantive change from the legacy
-//  image-command columns: an image inside an anchor is announced as a link and
-//  needs its own alternative text, whereas a button announces its role natively
-//  and is operable from the keyboard without any further attribute.
-//
-//  ⚠ THERE IS NO GROUP ELEMENT, AND SO THERE IS NO GROUP SELECTOR. The template
-//  projects each action separately and the shared table's own action cell is what
-//  lays them out; a `.profile-definitions__row-actions` rule existed here and
-//  matched nothing at all, which under emulated encapsulation is silent — the
-//  declarations simply never applied. It has been removed rather than paired with
-//  a wrapper the ported screen does not need.
-//
-//  The measured reasoning that decided against a wrapping group is kept, because
-//  it is why no group is introduced now. A wrapping flex container reports the
-//  width of its widest single item as its minimum content size, so the table's
-//  column algorithm would size the action column at one button; all four would
-//  stack vertically and every data row would grow to roughly four times its
-//  height, against a legacy row of about twenty-four pixels. The legacy screen
-//  laid these four actions out horizontally in four separate image-command
-//  columns, so a single line is the faithful arrangement — and the width that line
-//  needs is already absorbed by src/styles/_tables.scss, which provides an opt-in
-//  horizontal scroll region and states that below the tablet step a column should
-//  take the width its content needs so the region scrolls "instead of crushing
-//  every column into an unreadable sliver". A one-button-wide action column
-//  holding a vertical stack is precisely the crushed outcome that region exists to
-//  prevent. Nothing is given up: the action set is fixed at four by the screen
-//  being ported, so there is no unbounded list a wrap would have to guard.
+// Four actions per row — edit, delete, move down, move up — each projected into the shared data table's
+// action cell as its own template.
 
-//  The global button rule supplies colour, surface, border, radius and weight. Only what an icon-sized
-//  control in a table cell needs is added: a centred inline flow, a tighter inline padding than the default
-//  text button, a collapsed line box so the glyph does not inflate the control, and a floor on both axes so
-//  the hit area is comfortable however small the label is.
-//
-//  The inline-level flow is deliberate even though a reader inspecting this button
-//  in a browser may see `display: flex` rather than `inline-flex`. That is not a
-//  discrepancy: an inline-level display on a flex OR grid item is blockified, so
-//  wherever the shared table's action cell is itself a flex or grid container the
-//  two values compute the same. Declaring the inline form is the more robust of
-//  two equivalents, because it is also the correct one under a block-level cell,
-//  where the block form would take the full width of that cell.
-//
-//  Migration - documented divergence: the hit-area floor is the eighth spacing step, which resolves to forty
-//  pixels, short of the forty-four the WCAG 2.5.5 target-size criterion recommends. The shortfall follows
-//  from two binding constraints rather than an oversight. The reference design is smaller still - the legacy
-//  affordance was a sixteen-pixel image inside a cell padded by four, roughly twenty-four pixels square -
-//  and the design source governs the rendered size. Reaching the recommendation would need either a literal,
-//  which is barred because every value must resolve to a token, or a new custom property, which cannot be
-//  declared here because src/styles/_tokens.scss owns the workspace's only document-root block. The spacing
-//  scale tops out at --space-8, so this is the largest compliant value available and it still enlarges the
-//  legacy target by around two thirds. The complete fix is a target-size token added to the shared
-//  vocabulary.
 .profile-definitions__row-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-1);
 
-  // ⚠ THE TARGET FLOOR, AND IT MUST COME FROM THE TARGET FAMILY. This pair read
-  //    `var(--space-8)` — a SPACING token that happens to evaluate to 2.5rem — so every one
-  //    of this grid's forty-six row actions measured exactly 40.00 x 40.00 under runtime
-  //    measurement, uniformly 4.00px short on both axes of the 2.75rem the token vocabulary
-  //    names for row actions. The value was close enough to look deliberate and to survive
-  //    review, which is exactly why the wrong family is worth naming: a spacing step and a
-  //    target floor are free to diverge on any future change to either scale, and a control
-  //    sized from the spacing scale would then drift silently. These actions are the densest
-  //    in the application — four per row on ten of twelve rows — and they still clear the
-  //    floor, so no exception is needed and the compact step stays reserved for the alphabet
-  //    strip it was defined for.
+  // ⚠ THE TARGET FLOOR, AND IT MUST COME FROM THE TARGET FAMILY. This pair read `var(--space-8)` — a
+  // SPACING token that happens to evaluate to 2.5rem — so every one of this grid's forty-six row actions
+  // measured exactly 40.00 x 40.00 under runtime measurement, uniformly 4.00px short on both axes of the
+  // 2.75rem the token vocabulary names for row actions.
   min-inline-size: var(--target-size-min);
   min-block-size: var(--target-size-min);
 
@@ -311,63 +73,17 @@
   line-height: var(--line-height-none);
 }
 
-//  5. MONOSPACED VALUE A validation expression is a regular expression and a default value is arbitrary
-//    configured text; both are read character by character, which is what the monospaced family is for, and
-//    both arrive as a single unbroken run with no space in it.
-//
 // `anywhere` rather than `break-word` is the load-bearing choice. Both break inside a word to avoid
-//    overflow, but only `anywhere` also lets the break count towards the element's minimum content size —
-//    and it is that contribution the table's column algorithm reads. With `break-word` a long expression
-//    still reports its full unbroken width as a minimum and widens the column; with `anywhere` the cell
-//    keeps the width the column gives it.
-//
-//  Measured consequence at a narrow viewport, recorded here because it reads as a defect and is not. Below
-//  the tablet step the global table layer lets a column take the width its content needs, and because
-//  `anywhere` reports a single character as this element's minimum, the two value columns collapse and a
-//  long expression wraps across many short lines, which makes those rows taller. That is still the right
-//  trade. The other keyword would report the whole unbroken value as the column minimum and widen the grid
-//  far enough to push the identifying columns out of the scroll region: the reader would gain shorter rows
-//  and lose the ability to tell which property a row describes. A floor on this element's own inline size
-//  would be a third option and is unavailable — it needs an inline-block box and a measure step, and the
-//  vocabulary has no measure step, which is recorded as a gap in the ledger below. Above the tablet step
-//  every value fits on one line and the question does not arise.
-//
-//  No background tint, deliberately: alternate body rows are already painted with the secondary surface
-//  globally, so a tinted span would be invisible on every second row and inconsistent on the rest. The step
-//  down in size matches the ten pixels the legacy grid cells measured and offsets the larger apparent size
-//  of a monospaced face.
+// overflow, but only `anywhere` also lets the break count towards the element's minimum content size — and
+// it is that contribution the table's column algorithm reads.
 .profile-definitions__code {
   font-family: var(--font-family-mono);
   font-size: var(--font-size-sm);
   overflow-wrap: anywhere;
 }
 
-// 6. INLINE CREATE / EDIT FORM MIGRATION: the legacy editor was a separate multi-step page whose first step
-//   held the property fields, second step the list entries and third step the localised wording. Only the
-//   first is carried forward, as an inline form on this screen: list entries belong to the excluded lists
-//   administration, and the localised wording step belongs to the localisation mechanism this migration
-//   does not port. Both omissions are deliberate.
-//
-//  ⚠ THERE IS NO SEPARATE FORM TOGGLE, AND SO THERE IS NO TOGGLE SELECTOR. A
-//  `.profile-definitions__form-toggle` rule existed here for a button the template
-//  does not emit. The form is opened by the create command in the shared page
-//  header's action slot and closed by the form's own cancel command — both plain
-//  buttons taking the global button treatment, and neither of them a toggle: the
-//  form is not a region this screen shows and hides in place, it is created and
-//  dismissed. Under emulated view encapsulation the orphaned rule matched nothing
-//  and failed silently, which is exactly why it survived a template rewrite. It is
-//  removed rather than kept against a control that might one day exist.
-//
-//  The global fieldset rule already supplies the grouping border, its radius, the
-//  inner padding and a trailing margin. Only the trailing margin is overridden —
-//  the host grid's gap is the single source of spacing between regions, and
-//  keeping both would add them together. Everything else is inherited.
-//
-// The measure is the medium breakpoint step, and the arithmetic is the reason: the legacy editor sized its
-// property block at three hundred and fifty pixels, from a one-hundred-and-eighty-pixel label column beside
-// a one-hundred-and-seventy-pixel control column. Two columns inside this cap, less the column gap and the
-// fieldset's own padding, leave about three hundred and sixty-four pixels each — the same field pair, held
-// to the declared scale instead of to a pixel measurement. A snap, recorded as such.
+// 6. INLINE CREATE / EDIT FORM the legacy editor was a separate multi-step page whose first step held the
+// property fields, second step the list entries and third step the localised wording.
 .profile-definitions__form {
   display: grid;
   gap: var(--space-3);
@@ -376,21 +92,13 @@
   max-inline-size: mx.breakpoint('md');
 }
 
-// One step up from the global legend size so the group title reads above the body copy around it, which is
-// the register the legacy editor's own heading occupied. Weight, colour, inline padding and line height all
-// stay global. A legend carries generated wording of unpredictable length, so it wraps.
 .profile-definitions__form-legend {
   font-size: var(--font-size-lg);
   overflow-wrap: break-word;
 }
 
 // Nine fields. Mobile-first: one column unconditionally, two from the medium step upward, through the
-// shared breakpoint mixin — never a hand-written media query. `minmax(0, 1fr)` rather than `1fr` is what
-// stops a long unbreakable value inside a field from forcing the column past its share of the row.
-//
-// The row gap is the nearest scale step to the five-pixel cell spacing the legacy editor declared; the
-// wider column gap separates the two field columns clearly enough that a label in the second column is
-// never mistaken for part of the first.
+// shared breakpoint mixin — never a hand-written media query.
 .profile-definitions__form-grid {
   display: grid;
   grid-template-columns: var(--grid-track-fluid);
@@ -410,17 +118,8 @@
   gap: var(--space-2);
 }
 
-// MIGRATION: the per-field hint reproduces the legacy shared label control, which rendered its explanatory
-// text as a block below the label rather than as a tooltip. Two differences are deliberate. The legacy
-// panel was boxed with a black border on all four sides; nine boxed panels down one form would compete with
-// the fields themselves, so this variant is unboxed and the boxed treatment remains available globally for
-// the occasional standalone note. And the legacy control put a negative tab index on both its help trigger
-// and the trigger's image, removing them from the tab order outright — that defect is not reproduced,
-// because the hint is plain text that needs no trigger at all.
-//
-// The weight is declared rather than inherited: a hint rendered inside a label element would otherwise pick
-// up the global label's bold. The muted ink is the vocabulary's de-emphasis entry and measures 5.49:1
-// against the page background, clear of the 4.5:1 threshold for body text.
+// The per-field hint reproduces the legacy shared label control, which rendered its explanatory text as a
+// block below the label rather than as a tooltip. Two differences are deliberate.
 .profile-definitions__form-hint {
   display: block;
   margin-block-start: var(--space-1);
@@ -433,67 +132,13 @@
   overflow-wrap: break-word;
 }
 
-// Divergences from the legacy screen, recorded rather than absorbed.
-//
 // Focus indication is deliberately not declared here. Every control this screen renders receives the shared
 // focus ring from two unscoped global sites - src/styles/_reset.scss and src/styles/_forms.scss - both of
-// which reach this component and its projected nodes. The design system owns focus indication; a feature
-// screen consumes it. The constraint that actually binds is that nothing in this file suppresses an outline.
-//
-// MIGRATION: the legacy alternating-row rule recoloured every second row's TEXT with the hue reserved for
-// error messages and left both row backgrounds identical. That is a defect in the legacy stylesheet rather
-// than a business rule, so it is not reproduced: striping is carried globally by a background change alone.
-//
-// MIGRATION: every measured legacy length resolves to a token and none is written as a literal. Column
-// widths and per-column alignment are not expressed here at all - column sizing belongs to the shared data
-// table, and alignment is carried by the column descriptors the component class passes to it.
-//
-// MIGRATION: the four row actions occupied four SEPARATE image-command columns in the legacy screen and are
-// carried here as one column holding a four-button group. A column per action multiplies the header cells a
-// screen reader must announce before reaching any data and leaves four columns with no accessible name. The
-// horizontal arrangement and the reading order are preserved exactly; only the column count changes.
-//
-// GAP - motion and hover capability. No transition is declared on any state change, so colour changes are
-// instantaneous. The token vocabulary declares no duration or easing value, the shared mixin surface exports
-// no reduced-motion or hover-capability guard, and a hand-written media query is barred outside that partial,
-// so neither preference query can be expressed from a component at all. Reported rather than worked around -
-// and it is also the faithful behaviour, since the legacy stylesheets declare no transition or animation.
-//
-// GAP - token vocabulary. Three values this screen would otherwise have used have no token: a target-size
-// step for the row-action hit area (flagged inline above), a measure or width step for the help paragraph and
-// the form (the breakpoint function stands in, which is a sanctioned raw-width read), and a base text colour
-// (inheriting the user agent default reproduces the legacy rendering exactly). No custom property is declared
-// here to fill any of them.
+// which reach this component and its projected nodes.
 
-// 7. PROJECTED VISUALLY-HIDDEN LABEL DEFECT FIXED — FOUND BY RUNTIME MEASUREMENT, NOT BY REVIEW. Six spans
-//   in the paired template carry `data-visually-hidden`: the four row-command labels and the two check-box
-//   labels in the Required and Visible cells. Each names the row as well as the action, because "Edit" or
-//   "Required" alone, repeated down a grid of twenty-three rows, does not say WHICH property it acts on —
-//   the announced text is the only thing distinguishing one row's button from the next.
-//
 // The attribute alone does nothing. The workspace's only rule for it is `caption[data-visually-hidden]` in
 // src/styles/_tables.scss, which is qualified by element type and therefore cannot match a span;
-// src/styles.scss mentions the attribute in prose only. So every one of those six labels PAINTED. A browser
-// measured the consequence: the Required and Visible cells rendered the property name beside the Yes/No
-// word, and on a row with a long name the text overflowed its cell and collided with the next column at a
-// 1440px viewport.
-//
-// That is a double failure. It breaks UI3 — text present for assistive technology must carry ZERO visual
-// cost — and it breaks parity with the ported screen, whose Required and Visible cells rendered a check box
-// and nothing else.
-//
-// The fix is the mixin, reached through an attribute selector for two reasons. It matches the workspace's
-// own established shape for this hook, the `caption[data-visually-hidden]` rule above being the precedent,
-// so the template keeps one vocabulary for "hidden from sight, present in the reading order" rather than
-// gaining a parallel BEM class that means the same thing. And it is unqualified here on purpose: the hook
-// has to work on whichever element a cell template needs it on, which is what the element-qualified global
-// rule could not do. The mixin clips rather than removing, so the text keeps a box, keeps its place in the
-// reading order and stays available to a screen reader.
-//
-// Why a component-scoped rule reaches into the shared table. These spans sit inside `<ng-template>` blocks
-// that the shared data table instantiates in its own cells. Emulated encapsulation stamps the content
-// attribute from the template's DECLARING component, not from wherever it is rendered, so this rule matches
-// them there. The shared component is not touched, and nothing outside this screen is affected.
+// src/styles.scss mentions the attribute in prose only.
 [data-visually-hidden] {
   @include mx.visually-hidden;
 }

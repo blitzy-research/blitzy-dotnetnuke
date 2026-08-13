@@ -1,41 +1,7 @@
 /**
  * Specification for `features/module/module-import/module-import.component.ts` and its paired template.
- *
- * THIS SCREEN CARRIES UNTRUSTED CONTENT ACROSS THE WIRE, and that is what makes it worth testing at
- * this depth. The operator chooses a document from their own machine, the screen reads it AS TEXT and
- * posts that text, and three properties of the transfer are load-bearing:
- *
- * 1. THE TEXT IS TRANSMITTED VERBATIM AND IS NEVER PARSED OR RENDERED. `Import.ascx.vb:L188-L200`
- *    constructed a document, read its declared type attribute, compared it against the module's own
- *    names, and handed the ROOT ELEMENT'S INNER MARKUP to the module's portability contract. Every one
- *    of those steps is now server-side. A browser that parsed the document, unwrapped a root element,
- *    or put any of it into the page would be re-deriving a server decision AND opening a rendering
- *    surface for content nobody vetted.
- * 2. A DOCUMENT THAT CANNOT BE READ SENDS NOTHING. The read is asynchronous and can genuinely fail -
- *    the file may have been moved, renamed or made unreadable between being chosen and being
- *    submitted - and the only correct outcome is to say so and send nothing at all.
- * 3. THE AWAIT IS A WINDOW. The read is the one awaited step, so it is the one moment at which the
- *    screen can have been destroyed, or the operator can have chosen something else, before the
- *    request would be issued.
- *
- * ## Provenance
- *
- * `Website/admin/Modules/import.ascx` and its code-behind are the legacy screen. Supporting sources
- * are `Library/Components/Modules/ModuleInfo.vb` for the portability flag that this screen
- * deliberately does not compute, `Library/Components/Shared/Null.vb` for the absent-string marker, and
- * `Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` for the identity seed
- * that makes module ZERO real. The legacy tree contains no automated test of any kind.
- *
- * ## What is real and what is doubled
- *
- * The COMPONENT is imported as the standalone unit it is; the STORE is genuine and pinned to this
- * injector; the TRANSPORT is the testing backend and `verify()` fails any case that left a request
- * unconsumed or issued one nobody expected. Only the NAVIGATION and the NOTIFICATION QUEUE are spied.
- *
- * THE CHOSEN DOCUMENT IS A REAL `File`, constructed in the browser, so `file.text()` is the genuine
- * asynchronous read rather than a stub - which is the only way the verbatim-transmission claim can be
- * made honestly. The one case that needs a failing read supplies a `File` whose `text()` rejects,
- * because no real file can be made unreadable from inside a browser.
+ * THIS SCREEN CARRIES UNTRUSTED CONTENT ACROSS THE WIRE, and that is what makes it worth testing at this
+ * depth.
  */
 
 import { provideHttpClient } from '@angular/common/http';
@@ -72,36 +38,15 @@ import type {
 /** The module listing, read on arrival to fill the picker. */
 const MODULES_URL = '/api/v1/modules';
 
-/** The transfer endpoint. Its route carries NO identifier - the target travels in the body. */
+/** The transfer endpoint. */
 const IMPORT_URL = '/api/v1/modules/import';
 
 /** Where both the completion and the abandonment go. */
 const MODULE_LIST_ROUTE = '/modules';
 
-/**
- * The most event-loop turns any wait in this suite will yield for.
- *
- * A CEILING AND NOT A MEASUREMENT. It exists so that a condition which never becomes true fails as an
- * assertion in the caller rather than hanging the whole suite; it is deliberately far above anything a
- * document read needs, because a turn costs a `whenStable()` and a posted message and nothing else. What
- * actually decides when a wait ends is the predicate the caller supplies - see the note on `settle`, and
- * the flake that a count relied upon as a synchronisation primitive produced twice.
- */
+/** The most event-loop turns any wait in this suite will yield for. */
 const SETTLE_TURN_CEILING = 256;
 
-/**
- * How long a wait that is still pending is given in real time once the cheap turns are spent.
- *
- * ⚠ THE SECOND HALF OF A CEILING THAT USED TO BE EXPRESSED IN THE WRONG UNIT. See {@link settle} for the
- * full account: 256 posted-message turns are spent in one or two milliseconds, while the read being
- * waited for is a native `Blob` promise the browser resolves on its own schedule. This is the duration
- * that makes the failure bound a bound on TIME, which is the quantity that actually varies.
- *
- * Sized as roughly two orders of magnitude more than a small read has ever needed, and paid ONLY by a
- * wait that never resolves — a submit the screen refuses, which dispatches nothing on purpose. Those
- * cases are a minority of the thirty-three, so the suite pays well under a second in total for it, and a
- * wait that resolves promptly pays nothing at all because the predicate ends the loop first.
- */
 const SETTLE_WALL_CLOCK_FLOOR_MS = 250;
 
 /** The widest page the picker asks for, so its reach is not silently limited to the default page. */
@@ -124,34 +69,19 @@ const STATUS_TITLE: Readonly<Record<number, string>> = {
 const TRACE_ID = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 const CORRELATION_ID = 'f41c7a92-0b6d-4e58-8a37-1d9c5b2e6f04';
 
-// =====================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
-//
-// Restated rather than imported: the component exports none of these, and a specification that read
-// them from the component could not detect a change to them.
-// =====================================================================================================
 
 const IMPORT_TITLE = 'Import Module';
 
-/**
- * The supporting sentence, re-authored from the paragraph inside `ModuleHelp.Text`.
- *
- * MIGRATION: THE STORED RESOURCE VALUE IS MARKUP AND ONLY ITS SENTENCE SURVIVES. `ModuleHelp.Text`
- *   holds a top-level heading element followed by a paragraph element; the heading duplicated the screen
- *   title exactly, so it is dropped and the sentence is carried across as PLAIN TEXT. Nothing binds a
- *   resource value as markup, which is what the untrusted-markup group below proves at runtime.
- */
+/** The supporting sentence, re-authored from the paragraph inside `ModuleHelp.Text`. */
 const IMPORT_SUBTITLE = 'Administrators can import content for the specified module.';
 
 /** The document field's label. `plFile.Text`, with the legacy `suffix=":"` colon not reproduced. */
 const FILE_FIELD_LABEL = 'File';
 
 /**
- * `plFile.Help` verbatim, and asserted as a PREFIX.
- *
- * The screen appends the published byte limit to it, so the measured resource wording is the beginning
- * of the rendered guidance rather than the whole of it. Asserting equality would either fail against a
- * screen that is behaving correctly or force the limit to be restated here, where it would drift.
+ * `plFile.Help` verbatim, and asserted as a PREFIX. The screen appends the published byte limit to it, so
+ * the measured resource wording is the beginning of the rendered guidance rather than the whole of it.
  */
 const FILE_FIELD_HELP = 'Select the import file';
 
@@ -159,11 +89,9 @@ const FILE_FIELD_HELP = 'Select the import file';
 const MODULE_FIELD_LABEL = 'Module';
 
 /**
- * The opening sentence of the module field's guidance.
- *
- * The measured prefix rather than the whole string: the screen appends the transfer constraint the server
- * enforces, and asserting equality would oblige this file to restate a sentence the contract owns. The
- * constraint itself is asserted by substring in the case that covers it.
+ * The opening sentence of the module field's guidance. The measured prefix rather than the whole string:
+ * the screen appends the transfer constraint the server enforces, and asserting equality would oblige
+ * this file to restate a sentence the contract owns.
  */
 const MODULE_FIELD_HELP = 'Select the module to import content into';
 
@@ -180,40 +108,25 @@ const FILE_REQUIRED_MESSAGE = 'Please specify the file to import';
 const MODULE_REQUIRED_MESSAGE = 'Please specify the module to import into';
 const FILE_UNREADABLE_MESSAGE = 'The selected file could not be read. Choose the file again.';
 /**
- * The screen's own wording for a document that reads as empty or whitespace-only, kept distinct from
- * the unreadable-document wording above because the two are resolved differently by the operator.
+ * The screen's own wording for a document that reads as empty or whitespace-only, kept distinct from the
+ * unreadable-document wording above because the two are resolved differently by the operator.
  */
 const FILE_EMPTY_MESSAGE = 'The submitted document is empty.';
 
 const IMPORT_SUCCEEDED_MESSAGE = 'Content was imported into the module.';
 const NO_MODULES_MESSAGE = 'There are no modules available to import content into.';
 
-// =====================================================================================================
 // THE THREE MEASURED REFUSAL SENTENCES
-//
 // ⚠ CHARACTER FOR CHARACTER, from the twelve entries of
 // `Website/admin/Modules/App_LocalResources/Import.ascx.resx`, and held by
 // `core/utils/form-errors.util.ts:L1656-L1659` so that ONE place owns the parity claim.
-//
-// MIGRATION: THE "SELECTED" AND "SPECIFIED" ASYMMETRY IS MEASURED AND IS DELIBERATELY NOT TIDIED. The
-//   import screen's own two sentences say "selected" while its sibling transfer screen says
-//   "specified" — and `NotCorrectType` mixes the two, saying "The import file SPECIFIED". Normalising
-//   any of it would be an unrequested wording change dressed up as consistency, so all three are
-//   reproduced exactly as measured, including that inconsistency.
-//
-// MIGRATION: THE LEGACY RESOURCE KEYS THEMSELVES DO NOT TRAVEL. `Import.ascx.vb` selected its wording
-//   with the keys `NotValidXml` (L192), `NotCorrectType` (L204, L217) and `ImportNotSupported` (L208,
-//   L214). The API publishes its OWN vocabulary in the problem document's `type` member, so a table
-//   keyed on the legacy names could match nothing taken off the wire. The WORDING is what survives.
-// =====================================================================================================
 
-/** Legacy `NotValidXml`. Raised where `Import.ascx.vb:L190-L193` failed to load the document. */
 const NOT_VALID_XML_MESSAGE = 'The file you selected does not contain a valid XML structure';
 
-/** Legacy `NotCorrectType`. Raised where `L176` or `L196-L197` rejected the declared type. */
+/** Legacy `NotCorrectType`. */
 const NOT_CORRECT_TYPE_MESSAGE = 'The import file specified is not the correct type for this module';
 
-/** Legacy `ImportNotSupported`. Raised where `L208` or `L214` found the module could not receive. */
+/** Legacy `ImportNotSupported`. */
 const IMPORT_NOT_SUPPORTED_MESSAGE = 'The module selected does not support the importing of content';
 
 /** The refusal codes the API publishes for those three sentences, in the same order. */
@@ -221,71 +134,44 @@ const CONTENT_INVALID_CODE = 'module.content_invalid';
 const CONTENT_TYPE_MISMATCH_CODE = 'module.content_type_mismatch';
 const NOT_PORTABLE_CODE = 'module.not_portable';
 
-/**
- * The sentence the route gate presents when it refuses a navigation.
- *
- * Restated rather than imported for the same reason every other sentence here is: the gate does not
- * export it, and a specification that read it from the gate could not detect a change to it. Its
- * provenance is `AccessDenied.ascx.resx` → `AccessDenied.Text`, second clause only.
- */
+/** The sentence the route gate presents when it refuses a navigation. */
 const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
 
 /**
- * The one policy this screen's own address declares.
- *
- * ⚠ MEASURED FROM `../module.routes.ts`, NOT ASSUMED. See the delegated route group at the foot of this
- * file for why it is the TENANT-WIDE policy and emphatically not the module-scoped one.
+ * The one policy this screen's own address declares. ⚠ MEASURED FROM `../module.routes.ts`, NOT ASSUMED.
+ * See the delegated route group at the foot of this file for why it is the TENANT-WIDE policy and
+ * emphatically not the module-scoped one.
  */
 const IMPORT_ROUTE_POLICY = 'PortalAdministrator';
 
 /** The module-scoped policy, which the parameterised sibling declares and this screen's address must not. */
 const MODULE_SCOPED_POLICY = 'ModuleEdit';
 
-// =====================================================================================================
 // DOCUMENT FIXTURES
-//
-// ⚠ EVERY ONE OF THESE IS HOSTILE ON PURPOSE. A migration that carried content between systems is
-// exactly where a payload arrives that nobody wrote, and the claim under test is that this screen
-// treats all of it as opaque text.
-// =====================================================================================================
+// ⚠ EVERY ONE OF THESE IS HOSTILE ON PURPOSE. A migration that carried content between systems is exactly
+// where a payload arrives that nobody wrote, and the claim under test is that this screen treats all of it
+// as opaque text.
 
 /** An ordinary portable-content document, in the shape the legacy exporter produced. */
 const BENIGN_DOCUMENT = '<announcements><announcement><title>Notice</title></announcement></announcements>';
 
-/**
- * A document carrying an executable script element.
- *
- * If any part of this screen rendered the content, this would be the payload that proved it - and it
- * would prove it by executing.
- */
+/** A document carrying an executable script element. */
 const SCRIPT_BEARING_DOCUMENT =
   '<announcements><announcement><title>'
   + '<script>window.__imported = true;</script>'
   + '</title></announcement></announcements>';
 
+/** A document that is not well-formed XML at all. A browser XML parser rejects it. */
 /**
- * A document that is not well-formed XML at all.
- *
- * A browser XML parser rejects it. If this screen parsed before sending, this document could never
- * reach the server - and the server is the only thing entitled to refuse it, because the structure
- * rule lives there.
- */
-/**
- * A second, DISTINGUISHABLE document, for the cases that replace one choice with another mid-read.
- *
- * Its content differs from {@link BENIGN_DOCUMENT} so that a body assertion can say WHICH document was
- * sent rather than merely that something was. A fixture that reused the same content could not tell a
- * correct dispatch of the second from a stale dispatch of the first.
+ * A second, DISTINGUISHABLE document, for the cases that replace one choice with another mid-read. Its
+ * content differs from {@link BENIGN_DOCUMENT} so that a body assertion can say WHICH document was sent
+ * rather than merely that something was.
  */
 const SECOND_DOCUMENT = '<documents><document><title>Handbook</title></document></documents>';
 
 const MALFORMED_DOCUMENT = '<announcements><announcement><title>unclosed';
 
-/**
- * A document declaring an external entity.
- *
- * The classic entity-expansion vector. It is sent verbatim precisely because it is never parsed here.
- */
+/** A document declaring an external entity. */
 const ENTITY_BEARING_DOCUMENT =
   '<?xml version="1.0"?><!DOCTYPE root [<!ENTITY external SYSTEM "file:///etc/passwd">]><root>&external;</root>';
 
@@ -295,47 +181,20 @@ const EMPTY_DOCUMENT = '';
 /** A file name carrying path traversal and markup, neither of which this screen resolves or renders. */
 const HOSTILE_FILE_NAME = '../../<img src=x onerror="window.__named=true">.xml';
 
-// =====================================================================================================
 // HOSTILE SERVER WORDING
-//
-// ⚠ THE SERVER'S OWN SENTENCES ARE TREATED AS UNTRUSTED TOO, AND THAT IS NOT PARANOIA — IT CLOSES A
-// MEASURED VULNERABILITY. `Library/Components/Skins/ModuleMessage.vb:L150` assigned its message
-// straight onto a label with no encoding of any kind, and legacy resource values are demonstrably not
-// inert: across the in-scope resource files a substantial minority carry an HTML tag and at least one -
-// `SiteSettings.ascx.resx` → `Advertising.Text` - holds a live advertising SCRIPT block with a REMOTE
-// source, stored HTML-escaped so a naive search for it comes back clean. A problem document is composed
-// from stored state and from request values, so a sentence arriving off the wire can carry any of that.
-//
-// The property under test is therefore the same one the document fixtures above test, applied to the
-// other direction of travel: every sentence is bound as TEXT, so hostile wording becomes visible
-// characters and NO ELEMENT is ever constructed from it.
-// =====================================================================================================
 
 /** Bold markup: the cheapest possible proof that an element was or was not constructed. */
 const HOSTILE_BOLD = '<b>x</b>';
 
-/** An executable script element. If any sentence were bound as markup, this would prove it by running. */
+/** An executable script element. */
 const HOSTILE_SCRIPT = '<script>window.__wording = true;</script>';
 
-/**
- * A sentence carrying a leading legacy break element, both spellings, plus hostile markup.
- *
- * MIGRATION: THE LEGACY ACCUMULATED BREAK ELEMENTS INSIDE ITS MESSAGES. `Website/admin/Users/User.ascx.vb:L187`
- *   used the self-closing spelling, `Website/admin/Portal/Signup.ascx.vb:L193` and L214/L221/L323 used
- *   the bare one, and L191-L196 appended ONE PER INVALID CHARACTER inside a loop; `editroles.ascx`
- *   carries them inside validator message attributes at L31/L67/L92/L95/L110/L113 and beyond, so they
- *   arrive in the per-field map's VALUES as well as in the sentence. The shared problem-document utility
- *   strips them, and the two spellings are both included here so neither survives by being overlooked.
- */
 const BREAK_PREFIXED_DETAIL = `<br><br/>The submitted content could not be read. ${HOSTILE_BOLD}`;
 
 /**
- * A validation problem document, in the exact shape the API emits for a rejected request.
- *
- * ⚠ `errors` IS REQUIRED ON THIS TYPE, which is the whole reason the contract publishes a distinct one:
- * a function that needs the map should not have to test whether it is there. The keys are the server's
- * .NET model-state keys reproduced byte for byte — PASCAL-CASED, because they name model members rather
- * than JSON members and the camel-case body policy does not reach dictionary keys.
+ * A validation problem document, in the exact shape the API emits for a rejected request. ⚠ `errors` IS
+ * REQUIRED ON THIS TYPE, which is the whole reason the contract publishes a distinct one: a function that
+ * needs the map should not have to test whether it is there.
  *
  * @param status The status the refusal arrives with.
  * @param errors The per-field map, keyed exactly as the server writes it.
@@ -363,15 +222,11 @@ function validationProblem(
 // =====================================================================================================
 
 /**
- * Wraps rows in the shared paged envelope.
- *
- * ⚠ THE PAYLOAD MEMBER IS `items`, NOT `data`, AND THE DISTINCTION IS LOAD-BEARING. Every
- * single-resource route answers `{ data, meta }`, but a paged collection's body IS the page envelope
- * itself, whose records live under `items` - `paged-result.model.ts:L493-L505` reads `response.items`
- * and substitutes an EMPTY ARRAY when it is absent. A fixture spelling it `data` therefore flushes
- * successfully, unwraps to no records at all, and every assertion about the picker then fails against
- * an empty listing rather than against the screen. The declared type is the contract's own, so this
- * cannot drift from it silently.
+ * Wraps rows in the shared paged envelope. ⚠ THE PAYLOAD MEMBER IS `items`, NOT `data`, AND THE
+ * DISTINCTION IS LOAD-BEARING. Every single-resource route answers `{ data, meta }`, but a paged
+ * collection's body IS the page envelope itself, whose records live under `items` -
+ * `paged-result.model.ts:L493-L505` reads `response.items` and substitutes an EMPTY ARRAY when it is
+ * absent.
  */
 function pagedBody(items: readonly ModuleListItem[]): PagedResponse<ModuleListItem> {
   return {
@@ -381,11 +236,9 @@ function pagedBody(items: readonly ModuleListItem[]): PagedResponse<ModuleListIt
 }
 
 /**
- * One listing row.
- *
- * ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so module zero is the
- * first module of an installation: a truthiness test on the chosen identifier would silently refuse
- * to import into it, and so would a comparison against zero or a positivity test.
+ * One listing row. ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so
+ * module zero is the first module of an installation: a truthiness test on the chosen identifier would
+ * silently refuse to import into it, and so would a comparison against zero or a positivity test.
  */
 function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
   return {
@@ -411,10 +264,8 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
 }
 
 /**
- * A problem document in the exact shape the API emits.
- *
- * ⚠ NO `instance` MEMBER, and `type` ALWAYS PRESENT - both are properties of the real factory rather
- * than of this fixture.
+ * A problem document in the exact shape the API emits. ⚠ NO `instance` MEMBER, and `type` ALWAYS PRESENT
+ * - both are properties of the real factory rather than of this fixture.
  */
 function problem(code: string, status: number, detailText: string): ProblemDetails {
   return {
@@ -433,15 +284,9 @@ function documentFile(content: string, name = 'announcements.xml'): File {
 }
 
 /**
- * Yields one turn of the event loop's TASK queue, with no timer and no clock.
- *
- * ⚠ WHY NOT A ZERO-DELAY TIMER. A document read resolves off a task rather than a microtask, so
- * awaiting resolved promises alone never reaches it; a real task has to run. The obvious way to queue
- * one introduces WALL-CLOCK TIME, and time is the one input a specification cannot hold still - under
- * load a zero-delay timer fires whenever the machine gets to it, which makes the number of turns a
- * property of the hardware rather than of the code. A message posted to a private channel is queued by
- * the event loop directly: it is a genuine task, it is ordered, and no duration is expressible in it.
- * Nothing in this file therefore depends on a clock, a timer, a random value or the current date.
+ * Yields one turn of the event loop's TASK queue, with no timer and no clock. ⚠ WHY NOT A ZERO-DELAY
+ * TIMER. A document read resolves off a task rather than a microtask, so awaiting resolved promises alone
+ * never reaches it; a real task has to run.
  *
  * @returns A promise settling once one task has run.
  */
@@ -460,19 +305,9 @@ function yieldMacrotask(): Promise<void> {
 }
 
 /**
- * Yields one macrotask that costs REAL TIME, for the tail of a wait that has outrun its cheap turns.
- *
- * ⚠ DELIBERATELY A TIMER AND NOT A POSTED MESSAGE, which is the whole reason it exists alongside
- * {@link yieldMacrotask}. A `MessageChannel` message is serviced in microseconds and is exempt from the
- * nesting clamp browsers apply to timers, so burning turns on one advances the event loop without
- * advancing the clock — excellent for letting Angular settle, useless as a budget for a native promise
- * the browser resolves on its own schedule. `setTimeout` is clamped upwards once nested, which is exactly
- * the property wanted here: each turn costs a few milliseconds of the wall-clock floor.
- *
- * ⚠ THIS IS NOT A SYNCHRONISER AND MUST NEVER BECOME ONE. Nothing waits a fixed number of these and then
- * asserts; {@link settle}'s predicate still decides when a wait is over, and this only stretches the
- * bound at which an unmet predicate gives up. Zero is passed rather than a guessed interval so the
- * browser's own clamp sets the granularity instead of this file guessing at it.
+ * Yields one macrotask that costs REAL TIME, for the tail of a wait that has outrun its cheap turns. ⚠
+ * DELIBERATELY A TIMER AND NOT A POSTED MESSAGE, which is the whole reason it exists alongside {@link
+ * yieldMacrotask}.
  */
 function yieldTimerTurn(): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -481,13 +316,10 @@ function yieldTimerTurn(): Promise<void> {
 }
 
 /**
- * Narrows an outgoing request body to a plain object, by THROWING rather than by asserting.
- *
- * ⚠ THE BODY IS TYPED AS UNKNOWN AT THE TESTING BACKEND, AND THAT IS THE POINT. The transport cannot know
- * what a caller composed, so the only honest way to read a member is to establish that the body IS a plain
- * object first. A cast would assert what this narrowing proves, and would then read a member off something
- * that might be a form upload, a stream or nothing at all - which is precisely the mistake the multipart
- * assertions elsewhere in this file exist to rule out.
+ * Narrows an outgoing request body to a plain object, by THROWING rather than by asserting. ⚠ THE BODY IS
+ * TYPED AS UNKNOWN AT THE TESTING BACKEND, AND THAT IS THE POINT. The transport cannot know what a caller
+ * composed, so the only honest way to read a member is to establish that the body IS a plain object
+ * first.
  *
  * @param body The request body as the transport reports it.
  * @returns The body as a keyed record.
@@ -502,15 +334,11 @@ function asRecord(body: unknown): Record<string, unknown> {
 }
 
 /**
- * One member of an outgoing request body, read by BRACKET ACCESS.
- *
- * Bracket access is not a style choice: a record's keys are only ever known at runtime and
- * `noPropertyAccessFromIndexSignature` is enabled for this workspace, so dot access on one would not
- * compile.
- *
- * ⚠ RETURNS UNKNOWN RATHER THAN A GUESSED TYPE, so every call site compares against a literal and no
- * assertion smuggles in an assumption about what the member holds. That matters most for the members whose
- * whole point is that `0`, `-1` and `''` are real values.
+ * One member of an outgoing request body, read by BRACKET ACCESS. Bracket access is not a style choice: a
+ * record's keys are only ever known at runtime and `noPropertyAccessFromIndexSignature` is enabled for
+ * this workspace, so dot access on one would not compile. ⚠ RETURNS UNKNOWN RATHER THAN A GUESSED TYPE,
+ * so every call site compares against a literal and no assertion smuggles in an assumption about what the
+ * member holds.
  *
  * @param body The request body.
  * @param key The member to read.
@@ -521,14 +349,11 @@ function bodyMember(body: unknown, key: string): unknown {
 }
 
 /**
- * Narrows an element lookup by THROWING rather than by asserting.
- *
- * ⚠ THIS EXISTS SO THAT NO NON-NULL ASSERTION AND NO `any` APPEARS ANYWHERE IN THIS FILE. Element
- * lookups are typed as "the element or nothing", and the two usual ways of getting past that - a
- * non-null assertion or a cast - are claims the compiler cannot check: if the element is genuinely
- * absent, the failure surfaces later as an unreadable property access on nothing rather than as the
- * lookup that failed. Throwing narrows the type HONESTLY, and the message names the selector, so a
- * missing element fails the case at the exact line that looked for it.
+ * Narrows an element lookup by THROWING rather than by asserting. ⚠ THIS EXISTS SO THAT NO NON-NULL
+ * ASSERTION AND NO `any` APPEARS ANYWHERE IN THIS FILE. Element lookups are typed as "the element or
+ * nothing", and the two usual ways of getting past that - a non-null assertion or a cast - are claims the
+ * compiler cannot check: if the element is genuinely absent, the failure surfaces later as an unreadable
+ * property access on nothing rather than as the lookup that failed.
  *
  * @param root The subtree to search.
  * @param selector The selector to resolve.
@@ -546,12 +371,9 @@ function requireElement<T extends HTMLElement>(root: HTMLElement, selector: stri
 }
 
 /**
- * The trimmed visible text of an element, or the empty string when it has none.
- *
- * ⚠ TESTED AGAINST NULL EXPLICITLY, never for truthiness, because the empty string is a legitimate
- * value for a text node and the schema this migration reads treats `''` as data rather than as absence
- * (`Library/Components/Shared/Null.vb:L71-L75` returns the empty string as its absence marker, which is
- * exactly why nothing here may conflate the two).
+ * The trimmed visible text of an element, or the empty string when it has none. ⚠ TESTED AGAINST NULL
+ * EXPLICITLY, never for truthiness, because the empty string is a legitimate value for a text node and
+ * the schema this migration reads treats `''` as data rather than as absence.
  *
  * @param element The element to read.
  * @returns The trimmed text.
@@ -563,15 +385,10 @@ function visibleText(element: Element): string {
 }
 
 /**
- * An element's OWN text, excluding anything its child elements contribute.
- *
- * ⚠ THIS DISTINCTION IS NECESSARY RATHER THAN FASTIDIOUS. The shared field renders its requiredness
- * marker INSIDE the label element - deliberately, so the marker's word joins the accessible name and
- * travels with the control - so the label's full text is the wording followed by that marker. Asserting a
- * measured resource value against the full text would therefore fail against a field that is behaving
- * exactly as designed, and the only ways to make it pass would be to weaken the assertion to a substring
- * match or to change the shared component. Reading the direct text nodes compares the measured value
- * against the wording and nothing else, which is what the parity claim is actually about.
+ * An element's OWN text, excluding anything its child elements contribute. ⚠ THIS DISTINCTION IS
+ * NECESSARY RATHER THAN FASTIDIOUS. The shared field renders its requiredness marker INSIDE the label
+ * element - deliberately, so the marker's word joins the accessible name and travels with the control -
+ * so the label's full text is the wording followed by that marker.
  *
  * @param element The element to read.
  * @returns The trimmed concatenation of its direct text nodes.
@@ -589,11 +406,8 @@ function ownText(element: Element): string {
 }
 
 /**
- * A `File` whose text read rejects.
- *
- * No real file can be made unreadable from inside a browser, so the one behaviour that needs a
- * failing read gets a genuine `File` with its own `text` replaced. Everything else about it - its
- * name, its type, its identity as a `File` - is real, so the component's narrowing still holds.
+ * A `File` whose text read rejects. No real file can be made unreadable from inside a browser, so the one
+ * behaviour that needs a failing read gets a genuine `File` with its own `text` replaced.
  */
 function unreadableFile(name = 'gone.xml'): File {
   const file = documentFile('never read', name);
@@ -612,12 +426,7 @@ describe('ModuleImportComponent', () => {
   let notifySpy: jasmine.Spy;
   let navigateSpy: jasmine.Spy;
 
-  /**
-   * The transfer request the harness took from the backend while waiting for it, awaiting a case.
-   *
-   * Held outside any single case so `beforeEach` can clear it and `afterEach` can refuse one that was
-   * never asked for. See {@link transferOutstanding} for why it has to be taken rather than peeked at.
-   */
+  /** The transfer request the harness took from the backend while waiting for it, awaiting a case. */
   let capturedTransfer: TestRequest | null = null;
 
   beforeEach(async () => {
@@ -648,10 +457,10 @@ describe('ModuleImportComponent', () => {
       mounted = null;
     }
 
-    // A transfer taken from the backend by {@link transferOutstanding} is no longer visible to `verify`,
-    // so the guarantee `verify` gave for it is restored here: a request that was captured and then never
+    // A transfer taken from the backend by {@link transferOutstanding} is no longer visible to `verify`, so
+    // the guarantee `verify` gave for it is restored here: a request that was captured and then never
     // asserted on is a case that submitted and never checked what it sent, which is exactly what `verify`
-    // used to catch. A CANCELLED one is fine - destroying the fixture above releases an in-flight request.
+    // used to catch.
     const abandoned: TestRequest | null = capturedTransfer;
 
     capturedTransfer = null;
@@ -719,12 +528,7 @@ describe('ModuleImportComponent', () => {
     return Array.from(root().querySelectorAll<T>(selector));
   }
 
-  /**
-   * A control looked up by its identifier, narrowed by throwing rather than asserted.
-   *
-   * Delegates to {@link requireElement} so the whole file has ONE narrowing mechanism and no case
-   * reaches for a non-null assertion.
-   */
+  /** A control looked up by its identifier, narrowed by throwing rather than asserted. */
   function requiredControl<T extends HTMLElement>(controlId: string): T {
     return requireElement<T>(root(), `#${controlId}`);
   }
@@ -745,14 +549,7 @@ describe('ModuleImportComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Chooses a document.
-   *
-   * A file input's selection cannot be assigned from script, so the change handler is driven with a
-   * genuine `Event` whose target carries a real `FileList` built through `DataTransfer` - which is the
-   * one browser API that can produce one. The component narrows its event target with `instanceof`, so
-   * the target must be the real input element.
-   */
+  /** Chooses a document. */
   function chooseDocument(file: File): void {
     const input = requiredControl<HTMLInputElement>('module-import-file');
     const transfer = new DataTransfer();
@@ -764,71 +561,14 @@ describe('ModuleImportComponent', () => {
   }
 
   /**
-   * Lets a genuine document read complete.
-   *
-   * ⚠ THE READ IS REAL BROWSER I/O AND IS NOT A TASK THE FRAMEWORK CAN SEE. `File.text()` resolves off
-   * a blob read that zone tracking does not instrument, so `whenStable()` alone reports the fixture idle
-   * while the read is still outstanding - and a case asserting at that moment finds no request and then
-   * "proves" that nothing was sent, which is the exact opposite of the truth. Yielding the event loop a
-   * few times covers the read without a fake clock, which would defeat the point of reading a real file.
-   *
-   * ⚠ THE YIELD IS TIMER-FREE, AND THAT IS A CORRECTNESS PROPERTY RATHER THAN A STYLE PREFERENCE. A
-   * timer-based yield introduces WALL-CLOCK TIME into a specification, and time is the one input a test
-   * cannot control: a machine under load turns a zero-delay timer into an arbitrary one, so the number of
-   * turns needed becomes a property of the machine instead of a property of the code.
-   * {@link yieldMacrotask} posts a message to itself instead, which is a genuine task queued by the
-   * event loop with no clock involved at all - so this helper is deterministic, and every value it
-   * depends on is fixed.
-   *
-   * A rejected read needs none of this - a rejected promise is a microtask - so this is deliberately
-   * tolerant rather than exact: it settles as soon as the work is done and costs nothing when it already
-   * was.
-   *
-   * ⚠⚠ THE TURN COUNT IS A CEILING, NOT A MEASUREMENT, AND IT IS NOT WHAT SYNCHRONISES ANYTHING. A blob
-   * read completes in however many event-loop turns the browser needs, and that number is not a property
-   * of this screen - it rises with whatever else is contending for the loop. At four turns this helper
-   * passed in isolation and failed roughly once per full-suite run; at thirty-two it still failed once in
-   * six runs of the whole suite, with a case finding no request and thereby "proving" that nothing was
-   * sent - the exact opposite of the truth. A count tuned against any particular machine is not a
-   * synchronisation primitive, however generous it is, so the count is no longer relied upon to be one.
-   *
-   * WHAT SYNCHRONISES IS THE PREDICATE. A caller that knows what it is waiting for passes `until`, and
-   * the loop stops the instant that holds however many turns it took - so the wait is as long as the
-   * machine needs rather than as long as somebody guessed. The ceiling exists only so a predicate that
-   * never holds fails as an assertion in the caller instead of hanging the suite, and it is set far above
-   * anything a read needs. A caller with nothing to wait for - a REJECTED read, which settles as a
-   * microtask - passes no predicate and simply burns the turns, which costs a `whenStable()` and a posted
-   * message each and is measured in microseconds.
-   *
-   * Do NOT lower the ceiling, do not make the ceiling the mechanism again, and do not make a timer the
-   * synchroniser: the point of this suite is that it reads a REAL file, so the predicate stays the only
-   * thing that decides when the wait is over.
-   *
-   * ⚠⚠ BUT THE CEILING WAS NOT THE GENEROUS BUDGET THE PARAGRAPH ABOVE CLAIMED, AND THE SAME FAILURE
-   * CAME BACK BECAUSE OF IT. Observed once in a full-suite run, 2029 cases deep: a re-submitted transfer
-   * found no request and thereby "proved" nothing was sent — the very inversion described above, and the
-   * screen was innocent. The claim that 256 turns is "far above anything a read needs" compares two
-   * incommensurable units. {@link yieldMacrotask} posts on a `MessageChannel`, which the browser
-   * services in MICROSECONDS and, unlike a timer, without any nesting clamp — so the whole ceiling is
-   * spent in one or two milliseconds of wall-clock time. Meanwhile the thing being waited for is
-   * `Blob.prototype.text()`, a NATIVE PROMISE that Zone.js does not patch: `whenStable()` cannot see it,
-   * the browser resolves it off the main thread on its own schedule, and under load that schedule is
-   * measured in milliseconds. A ceiling of two milliseconds against a wait of ten is not generous, and no
-   * number of turns would have made it so.
-   *
-   * So the ceiling is now expressed in BOTH units, and the two have different jobs. Turns are burned
-   * first, on the same cheap posted messages as before — which is why a wait that resolves promptly, the
-   * overwhelming majority, costs exactly what it always did and no case got slower. Once the turns are
-   * exhausted the loop keeps yielding on REAL timers until {@link SETTLE_WALL_CLOCK_FLOOR_MS} has passed,
-   * so a predicate that has not yet held has been given a duration rather than a count. A predicate that
-   * never holds still fails in the caller, one wall-clock floor later instead of immediately.
-   *
-   * The timer is therefore the FAILURE BOUND and never the synchroniser, which is the distinction the
-   * warning above is really about: nothing here waits a fixed time and then asserts.
+   * Lets a genuine document read complete. ⚠ THE READ IS REAL BROWSER I/O AND IS NOT A TASK THE FRAMEWORK
+   * CAN SEE. `File.text()` resolves off a blob read that zone tracking does not instrument, so
+   * `whenStable()` alone reports the fixture idle while the read is still outstanding - and a case
+   * asserting at that moment finds no request and then "proves" that nothing was sent, which is the exact
+   * opposite of the truth.
    *
    * @param turns The most cheap turns to yield for before falling back to real timers.
-   * @param until Stops as soon as this holds. Omit when there is nothing to wait for, in which case the
-   * wall-clock floor does not apply and the cost is the turns alone.
+   * @param until Stops as soon as this holds.
    */
   async function settle(turns = SETTLE_TURN_CEILING, until?: () => boolean): Promise<void> {
     const floorEndsAt =
@@ -856,18 +596,10 @@ describe('ModuleImportComponent', () => {
   }
 
   /**
-   * Whether the screen has dispatched its transfer, TAKING it from the backend when it has.
-   *
-   * ⚠⚠ THERE IS NO NON-CONSUMING WAY TO ASK, SO THIS TAKES AND HOLDS INSTEAD OF PEEKING. Every
-   * inspection the testing backend offers is built on `match`, which REMOVES what it returns - including
-   * `expectNone`, whose implementation matches first and then throws on what it found. A probe written
-   * with either therefore takes the transfer out from under the case that is about to assert on it, which
-   * is worse than the flake it was meant to cure: the first attempt here used `expectNone` and turned one
-   * intermittent failure into thirty-six certain ones.
-   *
-   * So the request is captured, {@link expectImport} hands the captured one back, and `afterEach` refuses
-   * a capture nobody asked for - which is the one safety the backend's own `verify` can no longer provide
-   * for it.
+   * Whether the screen has dispatched its transfer, TAKING it from the backend when it has. ⚠⚠ THERE IS
+   * NO NON-CONSUMING WAY TO ASK, SO THIS TAKES AND HOLDS INSTEAD OF PEEKING. Every inspection the testing
+   * backend offers is built on `match`, which REMOVES what it returns - including `expectNone`, whose
+   * implementation matches first and then throws on what it found.
    */
   function transferOutstanding(): boolean {
     if (capturedTransfer !== null) {
@@ -887,13 +619,7 @@ describe('ModuleImportComponent', () => {
     return capturedTransfer !== null;
   }
 
-  /**
-   * The action bearing the given wording, narrowed by throwing.
-   *
-   * Both actions are looked up BY THEIR RENDERED WORDING rather than by a class or a position, which is
-   * what makes the label assertions and the interaction assertions the same assertion: a case that finds
-   * and presses the control labelled `Import` has already proved that wording is on screen.
-   */
+  /** The action bearing the given wording, narrowed by throwing. */
   function actionLabelled(label: string): HTMLButtonElement {
     const button = queryAll<HTMLButtonElement>('button').find(
       (candidate) => visibleText(candidate) === label,
@@ -910,11 +636,6 @@ describe('ModuleImportComponent', () => {
   async function submit(): Promise<void> {
     actionLabelled(IMPORT_ACTION_LABEL).click();
 
-    // ⚠ WAITS FOR THE TRANSFER RATHER THAN FOR A NUMBER OF TURNS. A submit that passes the screen's own
-    // checks reads the document and then dispatches, and how long that read takes is a property of the
-    // machine; see {@link settle} for the flake a fixed count produced. A submit the screen REFUSES
-    // dispatches nothing, so the predicate never holds and the ceiling is reached - which is the correct
-    // outcome for those cases and the same cost they already paid.
     await settle(SETTLE_TURN_CEILING, transferOutstanding);
   }
 
@@ -937,12 +658,8 @@ describe('ModuleImportComponent', () => {
   }
 
   /**
-   * Reveals the guidance the shared field keeps behind a disclosure.
-   *
-   * The field renders its help text only once its toggle is pressed, so a specification asserting the
-   * measured guidance has to press it. Locating the toggle through the WRAPPER that contains the named
-   * control is what keeps this correct on a screen carrying two fields: a bare selector would find the
-   * first toggle on the page rather than the one belonging to the field under assertion.
+   * Reveals the guidance the shared field keeps behind a disclosure. The field renders its help text only
+   * once its toggle is pressed, so a specification asserting the measured guidance has to press it.
    *
    * @param controlId The identifier of the control whose field should reveal its guidance.
    */
@@ -965,13 +682,7 @@ describe('ModuleImportComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Every sentence the SUMMARY surface is currently showing.
-   *
-   * Deliberately separate from {@link fieldMessages}, because the division of labour between the two
-   * surfaces is itself under test: the inline surface carries a requirement about ONE control, the
-   * summary surface carries the server's outcome, and no sentence may appear in both.
-   */
+  /** Every sentence the SUMMARY surface is currently showing. */
   function bannerMessages(): readonly string[] {
     return [
       ...queryAll('.error-banner__title'),
@@ -981,14 +692,10 @@ describe('ModuleImportComponent', () => {
   }
 
   /**
-   * Every severity the notification queue was asked to announce a given sentence at.
-   *
-   * ⚠ THIS EXISTS SO THAT SEVERITY CAN BE ASSERTED IN BOTH DIRECTIONS. Asserting only that a sentence WAS
-   * announced at one band leaves open that it was also announced at another, which is exactly the mistake
-   * worth catching for a refusal of authority: it must be a warning and it must NOT be an error. Reading
-   * the recorded arguments also makes the assertion insensitive to arity - the convenience methods pass two
-   * arguments and the failure method passes three - so a matcher spelling the wrong number of arguments
-   * cannot report a false absence.
+   * Every severity the notification queue was asked to announce a given sentence at. ⚠ THIS EXISTS SO
+   * THAT SEVERITY CAN BE ASSERTED IN BOTH DIRECTIONS. Asserting only that a sentence WAS announced at one
+   * band leaves open that it was also announced at another, which is exactly the mistake worth catching
+   * for a refusal of authority: it must be a warning and it must NOT be an error.
    *
    * @param message The sentence to look for.
    * @returns The severities it was announced at, in call order.
@@ -1001,24 +708,16 @@ describe('ModuleImportComponent', () => {
   }
 
   /**
-   * The announcing region the shared summary surface owns.
-   *
-   * ⚠ ASSERTED AS ALWAYS PRESENT, NEVER AS CONDITIONALLY CREATED. `module-import.component.html:125`
-   * mounts the surface unconditionally precisely so the region exists before it has anything to say:
-   * creating a live region and its content in one instant is the case assistive technology most often
-   * fails to announce.
+   * The announcing region the shared summary surface owns. ⚠ ASSERTED AS ALWAYS PRESENT, NEVER AS
+   * CONDITIONALLY CREATED. `module-import.component.html:125` mounts the surface unconditionally
+   * precisely so the region exists before it has anything to say: creating a live region and its content
+   * in one instant is the case assistive technology most often fails to announce.
    */
   function liveRegion(): HTMLElement {
     return requireElement<HTMLElement>(root(), '.error-banner-live');
   }
 
-  /**
-   * The one outstanding transfer request.
-   *
-   * Prefers the one {@link transferOutstanding} captured while waiting for it, and falls back to asking
-   * the backend for cases that reach here without having waited. Call sites are unchanged either way,
-   * which is the point: the synchronisation lives in the harness rather than in every case.
-   */
+  /** The one outstanding transfer request. */
   function expectImport(): TestRequest {
     const held: TestRequest | null = capturedTransfer;
 
@@ -1053,9 +752,6 @@ describe('ModuleImportComponent', () => {
     });
 
     it('offers every placement, following the pages rather than stopping at the first', () => {
-      // ⚠ THE M-1 REGRESSION AT THE SCREEN. The picker previously showed only the first page of
-      // placements, so a module beyond the hundredth could not be chosen and nothing said so. The
-      // store now walks every page; this case proves the screen actually receives the whole set.
       create();
 
       const first = expectRequest('GET', MODULES_URL, 'the first page of the picker listing');
@@ -1161,24 +857,12 @@ describe('ModuleImportComponent', () => {
       const select = requiredControl<HTMLSelectElement>('module-import-module');
       const options = Array.from(select.options);
 
-      // ⚠ THE OPENING OPTION IS THE LEGACY PROMPT, AND IT REPLACES A CONTROL THAT OPENED WITH NOTHING
-      // SELECTED. This case previously asserted that NO placeholder was offered, on two grounds: that the
-      // control's own requirement already prevents an empty submission, and that a placeholder would need
-      // a sentinel value liable to collide with module ZERO - which is a real identifier here, since
-      // `dbo.Modules.ModuleID` is `IDENTITY (0, 1)`. The first ground is intact and unchanged, and the
-      // second is answered rather than ignored: the option is bound with `[ngValue]` to a genuine `null`,
-      // not to a numeric or string sentinel, so it cannot collide with 0, with -1 or with any identifier
-      // the schema can produce. What the old arrangement cost was measured in the running application: the
-      // select reported `selectedIndex` -1, rendering blank, with no option a keyboard or screen-reader
-      // user could read back as the current state. `Import.ascx.vb:L72` seeded exactly this wording at
-      // index 0 of this same screen's own picker, so the prompt is carried across rather than invented.
       expect(options.map((option) => visibleText(option))).toEqual([
         MODULE_PLACEHOLDER_LABEL,
         'Announcements',
         'Links',
       ]);
 
-      // The state that used to be -1. An option is genuinely selected, and it is the prompt.
       expect(select.selectedIndex)
         .withContext('a select whose value matches no option reports -1 and renders unreadably blank')
         .toBe(0);
@@ -1209,15 +893,6 @@ describe('ModuleImportComponent', () => {
     });
 
     it('states the transfer constraint the server enforces, so a refusal is predictable', () => {
-      // ⚠ THE PICKER DELIBERATELY OFFERS MODULES THE SERVER WILL REFUSE, AND SAYS SO INSTEAD OF HIDING
-      // THEM. `Import.ascx.vb:L177` guarded the transfer on
-      // `objModule.BusinessControllerClass <> "" And objModule.IsPortable` and `L214` answered a target
-      // failing that guard with the `ImportNotSupported` wording - a refusal at submission, because the
-      // legacy screen had no module field to withhold anything from. The migrated endpoint reproduces it
-      // as `module.not_portable`. Withholding such modules here was refused: the definition catalogue
-      // publishes `isPortable` but NOT `businessControllerClass`, so a client-side test evaluates half
-      // the predicate and would either hide a usable destination silently - which this screen's own
-      // completeness contract forbids - or mislabel one. The constraint is stated instead.
       arrive([listRow()]);
 
       // The guidance is a disclosure on the shared field, so it has to be revealed to be read - the same
@@ -1247,9 +922,6 @@ describe('ModuleImportComponent', () => {
     it('accepts only XML documents at the picker, and says so in the attribute', () => {
       arrive();
 
-      // A hint to the file dialogue and nothing more: the attribute is advisory, the operator can
-      // always override it, and the server remains the authority on structure. That is why nothing on
-      // this screen refuses a document by its extension.
       expect(requiredControl<HTMLInputElement>('module-import-file').getAttribute('accept')).toBe(
         '.xml,text/xml,application/xml',
       );
@@ -1290,12 +962,7 @@ describe('ModuleImportComponent', () => {
       arrive();
 
       // ⚠ THE COMMAND IS DELIBERATELY NOT DISABLED BY AN UNSATISFIED REQUIREMENT, and asserting the
-      // opposite would encode a screen this application does not have. `canSubmit()` is
-      // `!busy() && hasModuleChoices() && !loadingModules()` - it consults the LISTING and the two
-      // waits, never the form - so an operator who has chosen nothing can still press it, and pressing
-      // is precisely what surfaces both requirements in the two cases above. That is the accessible
-      // arrangement as well: a disabled control announces nothing about why it cannot be used, whereas
-      // a press that answers with two field messages says exactly what is missing.
+      // opposite would encode a screen this application does not have.
       expect(submitControl()?.disabled).withContext('nothing chosen yet').toBeFalse();
 
       chooseModule('Announcements');
@@ -1308,8 +975,8 @@ describe('ModuleImportComponent', () => {
       create();
 
       // The listing read is outstanding: there is nothing to choose from yet, so there is nothing the
-      // command could act on. This is the one state in which it is genuinely unavailable before a
-      // transfer begins, and the indicator beside it is what says why.
+      // command could act on. This is the one state in which it is genuinely unavailable before a transfer
+      // begins, and the indicator beside it is what says why.
       expect(submitControl()?.disabled).withContext('the listing is in flight').toBeTrue();
       expect(query('app-loading-spinner')).withContext('the wait is shown').not.toBeNull();
 
@@ -1340,12 +1007,6 @@ describe('ModuleImportComponent', () => {
         .withContext('the target travels in the body, never in the query')
         .toBe(0);
 
-      // ⚠ THE WHOLE BODY, COMPARED AS A WHOLE, so a fifth member would fail here. The target module
-      // is ZERO - a real module - and it is transmitted as zero rather than being refused by a
-      // truthiness test. `folder` is `null` because the target has no server-side folder concept left
-      // to name: the legacy screen offered a folder dropdown reading the portal's own directory list,
-      // and the migrated API exposes no folder resource at all. `fileName` carries the chosen
-      // document's own name as the descriptive metadata the contract documents it to be.
       expect(call.request.body).toEqual({
         moduleId: 0,
         content: BENIGN_DOCUMENT,
@@ -1368,9 +1029,6 @@ describe('ModuleImportComponent', () => {
       const call = expectImport();
       const body = call.request.body as { content: string };
 
-      // ⚠ CHARACTER FOR CHARACTER. Not escaped, not sanitised, not re-serialised, not unwrapped. The
-      // legacy screen handed the ROOT ELEMENT'S INNER MARKUP to the portability contract
-      // (`Import.ascx.vb:L200`); doing that here would put one decision in two places.
       expect(body.content).toBe(SCRIPT_BEARING_DOCUMENT);
 
       // ⚠ AND NONE OF IT REACHED THE DOCUMENT. If any part of this screen rendered the content, this
@@ -1379,9 +1037,6 @@ describe('ModuleImportComponent', () => {
         .withContext('the content was never evaluated')
         .toBeUndefined();
 
-      // ⚠ THE ASSERTION IS ABOUT THE ELEMENT TREE. No script element was CONSTRUCTED from the content,
-      // which is the property that matters: a browser that had parsed this payload into the page would
-      // have created one whether or not it also executed.
       expect(query('script')).withContext('no script element was constructed').toBeNull();
       expect(visibleText(root())).not.toContain('window.__imported');
 
@@ -1399,10 +1054,6 @@ describe('ModuleImportComponent', () => {
 
       const call = expectImport();
 
-      // `Import.ascx.vb:L188-L193` built a document object and treated a load failure as the
-      // invalid-structure refusal. That judgement is now server-side, so this screen must not
-      // pre-empt it: a browser that parsed first would make the document unreachable and the server's
-      // own `module.content_invalid` refusal unobservable.
       expect((call.request.body as { content: string }).content).toBe(MALFORMED_DOCUMENT);
 
       call.flush(
@@ -1442,16 +1093,8 @@ describe('ModuleImportComponent', () => {
 
       await submit();
 
-      // A document that reads as empty or whitespace-only can only ever be refused, so it is refused
-      // HERE rather than spending a request and an upload of the whole file to be told so. The message
-      // is the screen's own and is deliberately distinct from the unreadable-document one, because the
-      // operator resolves the two differently.
       expect(notifySpy).toHaveBeenCalledWith('error', FILE_EMPTY_MESSAGE, null);
       httpMock.expectNone(() => true);
-
-      // ⚠ THIS DOES NOT WEAKEN THE RULE THAT AN EMPTY STRING IS DATA. Nothing on this screen rewrites
-      // an empty string into null on its way out; the point is that no empty content reaches a request
-      // at all, so there is no coercion of one to observe.
     });
 
     it('carries a hostile document name as metadata without resolving or rendering it', async () => {
@@ -1465,25 +1108,12 @@ describe('ModuleImportComponent', () => {
       const call = expectImport();
       const body = call.request.body as { fileName: string };
 
-      // ⚠ THE NAME COMES FROM THE OPERATOR'S FILESYSTEM AND IS UNTRUSTED INPUT. It is carried as
-      // descriptive metadata that no decision depends on: it is never resolved as a path - the target
-      // has no folder concept to resolve one against - and never rendered as markup.
-      //
-      // The browser may normalise a name at the point of construction, so the traversal is asserted
-      // as "whatever the browser produced, unaltered by this screen" rather than as a fixed string.
       expect(body.fileName).toBe(documentFile(BENIGN_DOCUMENT, HOSTILE_FILE_NAME).name);
 
       expect((window as unknown as Record<string, unknown>)['__named'])
         .withContext('the name was never evaluated')
         .toBeUndefined();
 
-      // ⚠ THE ASSERTION IS ABOUT THE ELEMENT TREE, NOT ABOUT THE TEXT OF THE MARKUP. Interpolation
-      // escapes the angle brackets, so the name's characters are all still on screen - `onerror=` among
-      // them, as ordinary text, and always will be. Asserting the absence of those CHARACTERS would
-      // therefore fail against a screen behaving perfectly, and would pass only if the wording were
-      // silently rewritten. What actually matters is that the name became a TEXT NODE and NO ELEMENT was
-      // constructed from it, which is what these assert: the tree gained no image element, no bold
-      // element and no script element, while the literal characters remain visible.
       expect(query('img')).withContext('no image element was constructed').toBeNull();
       expect(query('script')).withContext('no script element was constructed').toBeNull();
       expect(visibleText(root()))
@@ -1515,16 +1145,8 @@ describe('ModuleImportComponent', () => {
 
       await submit();
 
-      // ⚠ NOTHING IS SENT. A read can genuinely fail - the document may have been moved, renamed or
-      // made unreadable between being chosen and being submitted - and a request carrying no content,
-      // or carrying the string "undefined", would be worse than no request at all.
       httpMock.expectNone(() => true);
 
-      // ⚠ THE THIRD ARGUMENT IS THE ASSERTION, NOT AN ARTEFACT OF THE CALL. A failure is the one
-      // outcome that carries a support reference, so the queue accepts one — and this failure has
-      // NONE to carry, because the document could not be read in the browser and no request was ever
-      // made for a server to correlate. `null` is therefore the truthful value, and pinning it here
-      // is what stops a later change quoting a reference the operator could not use.
       expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
 
       // The choice is LEFT IN PLACE so the operator can re-pick rather than starting again.
@@ -1551,11 +1173,9 @@ describe('ModuleImportComponent', () => {
 
       expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
 
-      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. This screen announces and
-      // then leaves for the listing in the same task, and the shell retires notifications on a completed
-      // navigation - so the confirmation was queued and swept before it could be painted. An import that
-      // reports nothing at all is indistinguishable from an import that did nothing. The queue is real
-      // here, so the sweep is run rather than a method call asserted.
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. This screen announces and then
+      // leaves for the listing in the same task, and the shell retires notifications on a completed
+      // navigation - so the confirmation was queued and swept before it could be painted.
       const service = TestBed.inject(NotificationService);
       service.clearOnNavigation();
 
@@ -1593,25 +1213,7 @@ describe('ModuleImportComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 4b — THE AWAITED READ IS A SUSPENSION POINT, AND THE FORM STAYS LIVE ACROSS IT
-  //
-  // `submit` captures the document and the target module, then AWAITS the document's text. That await is a
-  // real suspension point at which the operator remains free to use the form, so by the time the
-  // continuation resumes the visible selection may name a different document, a different target, or both,
-  // while the captured locals still hold the old pair. The screen used to check only that it had not been
-  // destroyed and then dispatched the captured pair regardless.
-  //
-  // The result is a cross-record write executed with full authority: the request carries the OLD document's
-  // content under the OLD module's identifier, the form on screen says something else, and the success
-  // notification that follows appears to confirm the import the operator can actually see. Every individual
-  // request is well-formed, so nothing server-side catches it and the audit trail records a legitimate
-  // import into a module the operator never chose.
-  //
-  // Every case below therefore presses the action WITHOUT settling, mutates the form while the read is
-  // outstanding, and only then lets the read land — which is the one interleaving that can produce the
-  // defect and the reason `submit()` (which presses and settles together) is not used here.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('when the form changes mid-read', () => {
     /** Presses the action and returns WITHOUT settling, leaving the document read outstanding. */
@@ -1634,8 +1236,8 @@ describe('ModuleImportComponent', () => {
 
       await settle();
 
-      // ⚠ THE FIRST DOCUMENT MUST NOT BE SENT. Before the fix this dispatched `first.xml`'s content while
-      // the field displayed `second.xml`.
+      // ⚠ THE FIRST DOCUMENT MUST NOT BE SENT. A screen that retained the first choice would dispatch
+      // `first.xml`'s content while the field displayed `second.xml`.
       httpMock.expectNone(() => true);
 
       // Nothing is announced either: an abandoned attempt is not a failure, and the state the operator
@@ -1678,9 +1280,6 @@ describe('ModuleImportComponent', () => {
     });
 
     it('sends NOTHING when the TARGET MODULE is changed while the document is being read', async () => {
-      // ⚠ THE SHARPEST FORM OF THE DEFECT. The captured target becomes the request's `moduleId`, so an
-      // attempt allowed to complete here would load the document into the module the operator had just
-      // navigated AWAY from — a write to a record they did not choose, reported as a success.
       arrive([
         listRow({ moduleId: 0, tabModuleId: 1, moduleTitle: 'Announcements' }),
         listRow({ moduleId: 5, tabModuleId: 2, moduleTitle: 'Documents' }),
@@ -1700,11 +1299,7 @@ describe('ModuleImportComponent', () => {
     });
 
     it('sends NOTHING when the SAME document is re-picked mid-read, which only the ticket can catch', async () => {
-      // ⚠ THE CASE A VALUE COMPARISON CANNOT SEE, and the reason the guard is not a comparison alone. A
-      // re-pick is a NEWER INTENT even when it names the same path: each selection yields a distinct `File`
-      // handle, so reference identity does catch this one — but a comparison on name and size, which is the
-      // tempting simplification, would find the two identical and admit the stale attempt. The ticket
-      // refuses it on the grounds that actually matter: the operator acted again.
+      // ⚠ THE CASE A VALUE COMPARISON CANNOT SEE, and the reason the guard is not a comparison alone.
       arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
 
       chooseModule('Announcements');
@@ -1721,10 +1316,6 @@ describe('ModuleImportComponent', () => {
     });
 
     it('re-selecting the SAME module mid-read also abandons the attempt', async () => {
-      // The module's committed value is unchanged by this, so the value comparison cannot see it either.
-      // The change handler runs, the ticket is invalidated, and the attempt is abandoned — which is correct:
-      // the operator interacted with the target field while a transfer was being prepared, and the only
-      // safe reading of that is that the prepared attempt is stale.
       arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
 
       chooseModule('Announcements');
@@ -1736,9 +1327,9 @@ describe('ModuleImportComponent', () => {
 
       await settle();
 
-      // Counted rather than asserted by `expectNone`, which throws and therefore records no
-      // expectation: the emptiness of what `match` returns is the claim, and an abandoned
-      // attempt that nevertheless dispatched would fail it.
+      // Counted rather than asserted by `expectNone`, which throws and therefore records no expectation:
+      // the emptiness of what `match` returns is the claim, and an abandoned attempt that nevertheless
+      // dispatched would fail it.
       expect(httpMock.match(() => true))
         .withContext('the stale attempt was abandoned, not dispatched')
         .toEqual([]);
@@ -1750,17 +1341,6 @@ describe('ModuleImportComponent', () => {
       // ⚠ THE DISABLED BUTTON IS NOT THE GUARD. It is a rendered affordance, and this handler is reachable
       // without it — the form's submit event fires on the Enter key from within either field, and a
       // re-entrant call arriving before change detection has repainted the button finds it still enabled.
-      // Two concurrent attempts would each read the document and each dispatch, so the server would receive
-      // the same import twice and the second success would navigate away from a screen whose first request
-      // was still outstanding.
-      //
-      // ⚠ AND THIS IS THIS COMPONENT'S OWN RE-ENTRY GUARD, NOT THE SHARED DIRECTIVE'S. `submit()` refuses
-      // re-entry from its own busy state, which is what this case measures and what it must keep measuring:
-      // it passes with `SubmitGuardDirective` deleted, so it is NOT coverage of that directive and must not
-      // be counted as such. The directive is asserted against itself, on a host with no guard of its own, in
-      // `src/app/shared/directives/submit-guard.directive.spec.ts`. The two protections close different
-      // windows — this one covers every route into the handler, the directive covers two presses with no
-      // rendering frame between them — and neither is redundant.
       arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
 
       chooseModule('Announcements');
@@ -1845,13 +1425,7 @@ describe('ModuleImportComponent', () => {
       // ⚠ WHY THE BINDING IS `attr.disabled` AND NOT `disabled`, PROVED BY CONSEQUENCE RATHER THAN BY
       // INSPECTION. A reactive form treats a DISABLED control as absent — excluded from `form.value` and
       // from the group's validity — and the screen's own gate reads exactly that before deciding to
-      // dispatch. Locking through the form directive would therefore entangle an affordance with the
-      // validity decision, and Angular warns that the two mechanisms are being mixed. Setting the DOM
-      // attribute instead leaves the control's state untouched.
-      //
-      // Asserted through what an operator can actually observe: a failed transfer releases the lock, and
-      // pressing the action again re-sends THE SAME two choices with nothing re-picked. If the lock had
-      // disturbed the form, this second attempt would have had nothing to send.
+      // dispatch.
       arrive([listRow({ moduleId: 0, moduleTitle: 'Announcements' })]);
 
       chooseModule('Announcements');
@@ -1915,20 +1489,9 @@ describe('ModuleImportComponent', () => {
       expectImport().flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // MIGRATION: SUCCESS FEEDBACK IS ADDED. `Import.ascx.vb:L151` redirected on success and said nothing
-      //   at all, so an operator could not tell a completed import from a navigation that had simply lost
-      //   their input. The measured legacy message vocabulary is three-valued - 27 error, 21 warning and
-      //   12 success sites across the in-scope screens - so a completed import belongs at SUCCESS severity
-      //   rather than being announced as information.
-      //
-      // ⚠ ASSERTED IN BOTH DIRECTIONS, like the refusal above: it IS success, and it is announced at no
-      // other band.
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
       expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
 
-      // `Import.ascx.vb:L151` redirected on success, and again at L202 from inside its helper - a
-      // redirect issued mid-computation, which is why that helper's remaining branches could never be
-      // reached once it fired. The navigation here is that intent expressed once.
       expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
@@ -1942,18 +1505,8 @@ describe('ModuleImportComponent', () => {
       expectImport().flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // ⚠ THE OUTCOME IS THE TRANSPORT'S COMPLETION SIGNAL AND NOTHING ELSE. The endpoint answers no
-      // content, so there is no representation to adopt; a screen that composed one from the request it
-      // had just sent would be asserting the server's state from the client's intention. This screen
-      // leaves for the listing instead, and the listing reads for itself when it opens - which is why NO
-      // further request is issued from here.
       httpMock.expectNone(() => true);
 
-      // MIGRATION: THE EMPTY-STRING-MEANS-SUCCESS TEST IS CORRECTED. `L150` read `If strMessage = ""` as
-      //   proof of success - the absent-string marker of `Null.vb:L71-L75` pressed into service as a status
-      //   flag - so any path that failed to set a message was indistinguishable from one that succeeded.
-      //   Success is now the transport's own completion signal; no string is compared against the empty
-      //   string to decide an outcome anywhere on this screen.
       expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
     });
 
@@ -2029,10 +1582,6 @@ describe('ModuleImportComponent', () => {
         ),
       );
 
-      // ⚠ 400 AND NOT 409. `ModulesController` declares 200, 201, 204, 400, 401, 403, 404 and 500 on
-      // its content-transfer actions and NO 409 anywhere, and the status mapper sends this code to
-      // 400 by default because none of its conflict fragments matches. A fixture claiming 409 would
-      // describe a response this API cannot send.
       expect(query('.error-banner')).not.toBeNull();
       expect(navigateSpy).not.toHaveBeenCalled();
     });
@@ -2042,11 +1591,6 @@ describe('ModuleImportComponent', () => {
         problem('module.not_portable', 400, 'This module does not support content transfer.'),
       );
 
-      // The legacy gate at `Import.ascx.vb:L177` read `objModule.IsPortable`, which
-      // `ModuleInfo.vb:L608` derives by masking a bit out of a feature word. The listing contract this
-      // picker reads exposes NO resolved portability flag, so the attempt is always allowed and the
-      // server's refusal is what an operator sees - which is why this screen contains no bitwise
-      // expression of any kind.
       expect(fieldMessages().length)
         .withContext('the refusal is reported beside a field, not only in the banner')
         .toBeGreaterThan(0);
@@ -2061,31 +1605,12 @@ describe('ModuleImportComponent', () => {
         ),
       );
 
-      // MIGRATION: the legacy access-denied screen rendered BOTH of its branches at warning severity
-      // (`Website/admin/Security/AccessDenied.ascx.vb:L41-L47`) - and performed no permission check of
-      // its own at all - while the legacy message renderer gave warning the ordinary heading style and
-      // reserved the red one for errors (`Library/Components/Skins/ModuleMessage.vb:L115-L158`, whose
-      // `NormalRed` class sits under the comment "text style used for error messages"). Two independent
-      // proofs that the legacy application itself treated a refusal as distinct from a fault, and that
-      // distinction is preserved: the system is working exactly as configured and the operator simply may
-      // not do this.
       const refusal = 'The authenticated caller is not permitted to perform this operation.';
 
-      // ⚠ ASSERTED IN BOTH DIRECTIONS. It IS a warning, and it is NOT an error. The positive assertion
-      // alone would still pass if the sentence were ALSO announced as a fault, which is the misreport
-      // worth catching - so the recorded severities are read as a whole and compared exactly.
       expect(severitiesAnnouncedFor(refusal))
         .withContext('a refusal of authority is announced once, as a warning')
         .toEqual(['warning']);
       expect(severitiesAnnouncedFor(refusal)).not.toContain('error');
-      // ⚠ THIS ASSERTION USED TO REQUIRE THE REFERENCE TO BE ABSENT, AND IT WAS WRONG TO. It read
-      // `('warning', refusal, null, false)`, describing the `warning` convenience alias this screen used
-      // to call - an alias whose signature cannot carry a reference at all. That shape was mistaken for a
-      // rule, and the rule it stood for was the opposite one: a `403` IS a refusal the operator may need to
-      // escalate, its document carries a correlation identifier, and the shared classifier resolves it to
-      // WARNING precisely so it is not presented as a fault. The severity being warning is therefore no
-      // argument for withholding the identifier - which is the confusion that dropped it here.
-      //
       // Sharpened rather than relaxed: the reference is now required to be the document's own identifier,
       // and the trailing screen-lifetime opinion is still required to be absent, because this screen stays
       // put on a refusal and the warning must NOT outlive a change of screen.
@@ -2108,13 +1633,6 @@ describe('ModuleImportComponent', () => {
     it('reports a module that no longer exists at 404', async () => {
       await refuseWith(problem('module.not_found', 404, 'The requested resource does not exist.'));
 
-      // MIGRATION: THE SILENT NO-OP IS CORRECTED, AND THIS IS A DELIBERATE BEHAVIOURAL CHANGE RATHER THAN
-      //   AN INCIDENTAL ONE. `Import.ascx.vb:L148` opened its transfer with `If Not objModule Is Nothing
-      //   Then` and declared NO `Else` branch at all, so an import aimed at a module that had since been
-      //   deleted fell straight through: nothing was written, nothing was reported, and the screen then
-      //   redirected as though the transfer had succeeded. An operator had no way to tell the difference.
-      //   A module the server cannot find is now a not-found response and surfaces as a refusal like any
-      //   other - the summary surface says so, and the screen does NOT leave.
       expect(query('.error-banner')).withContext('a missing module is reported, not ignored').not.toBeNull();
       expect(visibleText(liveRegion())).toContain('The requested resource does not exist.');
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE))
@@ -2156,22 +1674,6 @@ describe('ModuleImportComponent', () => {
 
   describe('abandoning the screen', () => {
     it('registers an unsaved-entry probe, so a chosen document is not discarded in silence', () => {
-      /*
-       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
-       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
-       * `@angular/forms` reachable from the eager import graph of an application whose every form
-       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
-       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
-       * guard reads it as clean.
-       *
-       * ⚠ WHAT IS AT STAKE HERE IS LARGER THAN A FEW TYPED CHARACTERS. The chosen document is held in
-       * memory as a `File` and the server knows nothing about it, so an exit discards a selection the
-       * operator must make again from their own file system - a second search and, on a large export,
-       * a second read.
-       *
-       * The probe is read through `isDirty()`, which is the guard's own public surface, so this
-       * asserts through the very call the guard makes rather than through an internal.
-       */
       const tracker = TestBed.inject(UnsavedChangesTracker);
 
       arrive();
@@ -2191,9 +1693,6 @@ describe('ModuleImportComponent', () => {
 
       cancel();
 
-      // `import.ascx:L16` marks the abandon action `causesvalidation="False"` and its handler does
-      // nothing but redirect, so nothing is marked touched, no validator is re-evaluated and no
-      // message appears.
       expect(fieldMessages()).toEqual([]);
       expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
       httpMock.expectNone(() => true);
@@ -2212,17 +1711,8 @@ describe('ModuleImportComponent', () => {
     });
 
     it('releases the picker read it started, so the store stops reporting itself busy', () => {
-      /*
-       * ⚠ THE LEASE THIS SCREEN HOLDS ON A ROOT-SCOPED SLICE.
-       *
-       * The store is provided at the application root, so it OUTLIVES this component, and the
-       * picker-choice read is started by this screen and wanted by nothing else. Before the lease
-       * existed, destroying the screen left that read outstanding, with three consequences — none of
-       * them observable HERE, which is precisely why this case is needed: the store's busy projection
-       * stayed true, disabling affordances on whatever screen replaced this one; a late refusal
-       * landed in the failure slot addressed to a screen that had gone; and the request went on being
-       * paid for with nobody to receive it.
-       */
+      // The store is provided at the application root, so it OUTLIVES this component, and the picker-choice
+      // read is started by this screen and wanted by nothing else.
       const store = TestBed.inject(ModuleStore);
 
       // Created but NOT answered: `create()` mounts the screen, whose constructor issues the picker
@@ -2247,9 +1737,9 @@ describe('ModuleImportComponent', () => {
     });
 
     it('releases only the picker slice, leaving a sibling read alone', () => {
-      // The lease must be narrow. Releasing everything would abandon reads other screens are
-      // waiting on, which is why the component calls the slice-scoped command rather than the
-      // store-wide cancellation that belongs to session teardown.
+      // The lease must be narrow. Releasing everything would abandon reads other screens are waiting on,
+      // which is why the component calls the slice-scoped command rather than the store-wide cancellation
+      // that belongs to session teardown.
       const store = TestBed.inject(ModuleStore);
 
       arrive();
@@ -2269,13 +1759,7 @@ describe('ModuleImportComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 7 — THE MEASURED WORDING, AND THE MARKUP IT IS RENDERED IN
-  //
-  // Every sentence below is traced to a measured legacy value. None is invented, and none is imported
-  // from the component: the component exports none of them, so a specification reading them from it
-  // could not detect a change to them.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the measured wording', () => {
     it('titles the screen exactly as the control-title resource does, and heads it once', () => {
@@ -2285,9 +1769,6 @@ describe('ModuleImportComponent', () => {
       // different title per mode - so this is the import mode's own value rather than a shared one.
       expect(visibleText(requireElement(root(), 'h1'))).toBe(IMPORT_TITLE);
 
-      // MIGRATION: `ModuleHelp.Text` stored a top-level heading followed by a paragraph. Its heading
-      //   duplicated this title exactly, so ONLY its sentence is carried across - which is why exactly
-      //   one top-level heading is emitted rather than two.
       expect(queryAll('h1')).withContext('one top-level heading, not two').toHaveSize(1);
       expect(visibleText(root()))
         .withContext('the help resource sentence, re-authored as text')
@@ -2297,28 +1778,15 @@ describe('ModuleImportComponent', () => {
     it('labels the document field from its own resource values, without the legacy colon', () => {
       arrive();
 
-      // `plFile.Text` is 'File' and `plFile.Help` is 'Select the import file'.
-      //
-      // MIGRATION: `import.ascx:L6` and `L10` both appended a colon through the legacy label control's
-      //   suffix attribute. The wording carries none and the shared field normalises the punctuation, so
-      //   a colon is never authored twice and never doubled.
-      //
-      // Read as the label's OWN text, because the shared field renders its requiredness marker inside the
-      // label element on purpose - see {@link ownText}.
       const label = requireElement<HTMLLabelElement>(root(), 'label[for="module-import-file"]');
 
       expect(ownText(label)).withContext('the measured label, colon-free').toBe(FILE_FIELD_LABEL);
       expect(ownText(label)).not.toContain(':');
 
       // ⚠ THE GUIDANCE IS A DISCLOSURE RATHER THAN ALWAYS-VISIBLE TEXT, so it has to be revealed before it
-      // can be read. That is the shared field's own design - a keyboard-reachable button that reverses a
-      // legacy defect, since `labelcontrol.ascx` withdrew its help affordance from the tab order entirely -
-      // and this specification honours it rather than asserting against a field that does not exist.
+      // can be read.
       revealHelpFor('module-import-file');
 
-      // The guidance BEGINS with the measured value; the screen appends the published byte limit, because
-      // a limit an operator cannot see is one they can only meet by accident. Asserting equality would
-      // oblige this file to restate the limit, where it would drift from the contract that owns it.
       const help = queryAll('.form-field__help').map((node) => visibleText(node));
 
       expect(help.some((text) => text.startsWith(FILE_FIELD_HELP)))
@@ -2333,14 +1801,6 @@ describe('ModuleImportComponent', () => {
         .withContext('net-new field, net-new label')
         .toBe(MODULE_FIELD_LABEL);
 
-      // `cmdImport.Text` is 'Import' and is local to this screen's twelve entries.
-      //
-      // MIGRATION: A FIFTH RESOURCE-KEY CONVENTION. `import.ascx:L16` names the key `cmdCancel`, yet no
-      //   such entry exists among those twelve - it falls through to the shared global resource table,
-      //   where the value is 'Cancel'. A local key resolving against the global table is a convention
-      //   beyond the four previously catalogued, and it is reported rather than assumed.
-      //
-      // Both lookups THROW when the wording is absent, so finding the controls at all is the assertion.
       expect(actionLabelled(IMPORT_ACTION_LABEL).type).toBe('submit');
       expect(actionLabelled(CANCEL_ACTION_LABEL).type)
         .withContext('the faithful translation of causesvalidation="False"')
@@ -2356,12 +1816,6 @@ describe('ModuleImportComponent', () => {
     it('emits no tabular markup, because the legacy grid was never a data grid', () => {
       arrive();
 
-      // MIGRATION: `import.ascx:L4` opened a fixed-width positioning container carrying the summary
-      //   "Edit Links Design Table" - a description of a completely different screen, because the markup
-      //   was copied from one. Tabular markup used for positioning announces rows and cells that are not
-      //   data, and a summary describing another screen is worse than none. The measured in-scope ratio
-      //   is 68 positioning containers against 8 genuine record grids, so this is the ordinary case; the
-      //   shared record-grid component is deliberately NOT used here.
       expect(query('table')).withContext('no tabular container').toBeNull();
       expect(query('tr')).withContext('no row').toBeNull();
       expect(query('td')).withContext('no cell').toBeNull();
@@ -2379,19 +1833,13 @@ describe('ModuleImportComponent', () => {
     it('references no image asset of any kind', () => {
       arrive();
 
-      // MIGRATION: the legacy help affordance was a 344-byte image and the three message bands each had
-      //   their own; all four are a documented non-port. Icons here are text, inline vector or stylesheet
-      //   only, and the single asset that ships is the site icon.
       expect(query('img')).withContext('no raster icon').toBeNull();
       expect(query('picture')).toBeNull();
     });
 
-    it('introduces no eleventh shared component', () => {
+    it('composes only shared components that exist', () => {
       arrive();
 
-      // The shared library is CLOSED at ten members - nine of which are elements and one a structural
-      // directive - so a screen may compose them but may not grow the set. Every custom element in the
-      // rendered tree is therefore either this screen's own host or one of the nine.
       const permitted = new Set([
         'app-module-import',
         'app-confirm-dialog',
@@ -2410,7 +1858,7 @@ describe('ModuleImportComponent', () => {
         .filter((tag) => tag.startsWith('app-'));
 
       for (const tag of rendered) {
-        expect(permitted.has(tag)).withContext(`<${tag}> is a member of the closed set`).toBeTrue();
+        expect(permitted.has(tag)).withContext(`<${tag}> is a shared component`).toBeTrue();
       }
 
       // And the ones this screen actually composes are present, so the assertion above is not vacuous.
@@ -2422,11 +1870,6 @@ describe('ModuleImportComponent', () => {
     it('offers exactly one document control, wrapped and natively named', () => {
       arrive();
 
-      // MIGRATION: THIS NATIVE CONTROL IS THE SINGLE DOCUMENTED EXCEPTION to the rule that a feature
-      //   template uses a shared component wherever one covers the need. The closed set contains no
-      //   document picker, so the native control is used - WRAPPED in the shared field, never loose -
-      //   and no eleventh shared component was created for it. The two actions are the same exception
-      //   for the same reason: the set contains no button component either.
       const inputs = queryAll<HTMLInputElement>('input[type="file"]');
 
       expect(inputs).withContext('exactly one document control').toHaveSize(1);
@@ -2445,12 +1888,6 @@ describe('ModuleImportComponent', () => {
 
       expect(wrappers).withContext('the control is wrapped by the shared field').toHaveSize(1);
 
-      // ⚠ THE ACCESSIBLE NAME IS A REAL LABEL, ASSOCIATED TWO WAYS, AND IT IS NOT BLANK. The legacy
-      // control carried a name too - `import.ascx:L10` bound its label to `cboFiles` - so this is
-      // continuity rather than an addition; the legacy association was the framework's and this one is the
-      // platform's. The label element points AT the control by identifier, and the shared field
-      // additionally writes the reverse reference onto the projected control, so the name survives
-      // whichever direction a reader resolves it from.
       const label = requireElement<HTMLLabelElement>(root(), `label[for="${input.id}"]`);
 
       expect(input.id).withContext('the control carries an identifier to be named by').not.toBe('');
@@ -2474,22 +1911,11 @@ describe('ModuleImportComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 9 — THE THREE MEASURED REFUSAL SENTENCES
-  //
-  // ⚠ THESE THREE SENTENCES ARE THE PARITY CLAIM OF THE WHOLE SCREEN. Each is a value from the twelve
-  // entries of `Website/admin/Modules/App_LocalResources/Import.ascx.resx`, reproduced character for
-  // character, and each is asserted where the screen ACTUALLY renders it.
-  //
   // ⚠ A DIVERGENCE FROM THE STATED EXPECTATION, RECORDED RATHER THAN PAPERED OVER. These sentences render
   // BESIDE THE FIELD THEY CONCERN, not in the summary surface: `module-import.component.ts:L322-L350`
   // routes the two document codes to the document field and the portability code to the module field, and
-  // `L1148-L1156` resolves the wording through the shared conflict table. The summary surface carries the
-  // SERVER'S OWN sentence for the same refusal. Both are announced - the field region through its alert
-  // role, the summary region through the live region it owns - and the two are asserted separately below,
-  // because asserting the measured wording in the surface that does not carry it would be asserting a
-  // screen this application does not have.
-  // ---------------------------------------------------------------------------------------------------
+  // `L1148-L1156` resolves the wording through the shared conflict table.
 
   describe('the three measured refusal sentences', () => {
     /** Runs one refusal and returns the request that was refused. */
@@ -2510,15 +1936,10 @@ describe('ModuleImportComponent', () => {
     it('renders the invalid-structure sentence verbatim, beside the document field', async () => {
       await refuse(CONTENT_INVALID_CODE, 400, 'The submitted content could not be read.');
 
-      // Legacy key `NotValidXml`, assigned at `Import.ascx.vb:L192`. The legacy KEY does not travel - the
-      // API publishes its own vocabulary - but the WORDING does, exactly.
       expect(fieldMessages())
         .withContext('the measured sentence, character for character')
         .toContain(NOT_VALID_XML_MESSAGE);
 
-      // ⚠ "SELECTED", not "specified". The import screen's own two sentences say "selected" while its
-      // sibling transfer screen says "specified"; normalising either would be an unrequested wording
-      // change dressed up as consistency.
       expect(NOT_VALID_XML_MESSAGE).toContain('you selected');
     });
 
@@ -2540,19 +1961,14 @@ describe('ModuleImportComponent', () => {
     it('renders the not-portable sentence verbatim, beside the module field', async () => {
       await refuse(NOT_PORTABLE_CODE, 400, 'This module does not support content transfer.');
 
-      // Legacy key `ImportNotSupported`, which `L208` and `L214` both produced - L214 when the module
-      // carried no business controller or was not portable, L208 when the resolved controller turned out
-      // not to implement the portability contract. Both arrive as ONE code, which is correct: the
-      // distinction was about how the server discovered the module could not accept content, not about
-      // anything an operator can act on.
       expect(fieldMessages()).toContain(IMPORT_NOT_SUPPORTED_MESSAGE);
       expect(IMPORT_NOT_SUPPORTED_MESSAGE).toContain('module selected');
     });
 
     it('renders the wrong-type sentence at 422 as well as at 400', async () => {
       // The status mapper sends this code to 400 by default, and a validation-shaped refusal of the same
-      // request arrives at 422. The WORDING is chosen from the code and is therefore identical either
-      // way, which is the property worth pinning: a status change must not silently change a sentence.
+      // request arrives at 422. The WORDING is chosen from the code and is therefore identical either way,
+      // which is the property worth pinning: a status change must not silently change a sentence.
       await refuse(
         CONTENT_TYPE_MISMATCH_CODE,
         422,
@@ -2565,9 +1981,6 @@ describe('ModuleImportComponent', () => {
     it('announces the server sentence through the region the summary surface owns', async () => {
       await refuse(CONTENT_INVALID_CODE, 400, 'The submitted content could not be read.');
 
-      // ⚠ ONE LIVE REGION, AND THE FEATURE TEMPLATE DECLARES NONE OF ITS OWN. The shared surface owns the
-      // announcing semantics; this screen neither declares a second region nor a redundant alert role on
-      // the same node.
       const live = liveRegion();
 
       expect(live.getAttribute('aria-live')).toBe('assertive');
@@ -2582,19 +1995,13 @@ describe('ModuleImportComponent', () => {
       expect(visibleText(live)).toContain('The submitted content could not be read.');
 
       // MIGRATION: `aria-live` IS 100% NET-NEW. Measured over BOTH legacy trees it appears in zero files,
-      //   as does `role="alert"` and indeed any accessibility attribute at all. Nothing was carried
-      //   across here because there was nothing to carry.
+      // as does `role="alert"` and indeed any accessibility attribute at all. Nothing was carried across
+      // here because there was nothing to carry.
     });
 
     it('re-implements no local catch-all sentence, because the problem contract subsumes it', async () => {
       await refuse('module.import_failed', 500, 'The content could not be imported.');
 
-      // MIGRATION: `Import.ascx.vb` wrapped every handler in a catch-all funnelled through the framework's
-      //   exception reporter (L86, L131, L161), and the helper's own bare `Catch` at L210-L211 flattened
-      //   every remaining fault to the single sentence 'An error occurred during the import'. Neither is
-      //   reproduced. Faults now arrive as RFC 7807 documents from ONE server-side handler, and the shared
-      //   surface renders the server's own sentence, its per-field messages and the reference an operator
-      //   can quote - none of which the flattened sentence could carry.
       const everything = visibleText(root());
 
       expect(everything)
@@ -2615,21 +2022,10 @@ describe('ModuleImportComponent', () => {
       await submit();
 
       // MIGRATION: THE SUMMARY SURFACE HAS NO LEGACY ANCESTOR AT ALL, AND THE CITED ONE IS VACUOUS. The
-      //   measured `asp:ValidationSummary` count is ZERO across the 39 in-scope screens, zero across
-      //   `Website/admin/Modules/` in particular, and zero anywhere in either legacy tree - so this surface
-      //   is a net addition rather than a translation of anything. Its nearest real analogue is the message
-      //   renderer at `Library/Components/Skins/ModuleMessage.vb`, which sits in a tree the migration
-      //   excludes outright. The inline surface is equally net-new here: the measured validator census
-      //   under `Website/admin/Modules/` is zero required-field, zero regular-expression, zero custom and
-      //   zero range validators, and only four comparison validators - all four in the settings screen -
-      //   so `import.ascx`'s seventeen content lines carry no validator markup whatsoever. The single check
-      //   the legacy screen performed was the imperative test at `Import.ascx.vb:L145`, whose failure
-      //   branch rendered a hard-coded literal. Both surfaces below therefore carry a real declarative rule
-      //   where the legacy carried an `If`.
+      // measured `asp:ValidationSummary` count is ZERO across the 39 in-scope screens, zero across
+      // `Website/admin/Modules/` in particular, and zero anywhere in either legacy tree - so this surface
+      // is a net addition rather than a translation of anything.
 
-      // ⚠ THE DIVISION OF LABOUR. The requirement concerns ONE control, so it belongs beside that control
-      // and nowhere else. Nothing was sent, so the summary surface has no server outcome to carry and
-      // must show nothing at all.
       expect(fieldMessages()).toContain(FILE_REQUIRED_MESSAGE);
       expect(bannerMessages())
         .withContext('an unmet requirement never reaches the summary surface')
@@ -2672,9 +2068,9 @@ describe('ModuleImportComponent', () => {
       chooseDocument(documentFile(BENIGN_DOCUMENT));
       await submit();
 
-      // ⚠ THE KEYS ARE .NET MODEL-STATE KEYS AND ARE NOT CAMEL-CASED. `Content` carries the capital
-      // because it names a model member rather than a JSON member, and the camel-case body policy does not
-      // reach dictionary keys. One key carries TWO messages, because the server always writes an array.
+      // ⚠ THE KEYS ARE .NET MODEL-STATE KEYS AND ARE NOT CAMEL-CASED. `Content` carries the capital because
+      // it names a model member rather than a JSON member, and the camel-case body policy does not reach
+      // dictionary keys. One key carries TWO messages, because the server always writes an array.
       const document = validationProblem(
         400,
         {
@@ -2688,9 +2084,7 @@ describe('ModuleImportComponent', () => {
       fixture.detectChanges();
 
       // ⚠ BRACKET ACCESS, NEVER DOT ACCESS. The member is typed as an index signature and
-      // `noPropertyAccessFromIndexSignature` is enabled, so dot access would not compile at all. The rule
-      // earns its keep: a key is only ever known at runtime, and dot access would let a typo compile as a
-      // silent absence.
+      // `noPropertyAccessFromIndexSignature` is enabled, so dot access would not compile at all.
       const contentMessages = document.errors['Content'];
       const moduleMessages = document.errors['ModuleId'];
 
@@ -2718,12 +2112,6 @@ describe('ModuleImportComponent', () => {
       chooseDocument(documentFile(BENIGN_DOCUMENT));
       await submit();
 
-      // MIGRATION: THE LEGACY ACCUMULATED BREAK ELEMENTS INSIDE ITS MESSAGES, IN BOTH SPELLINGS.
-      //   `Website/admin/Users/User.ascx.vb:L187` used the self-closing form; `Signup.ascx.vb:L193` and
-      //   L214/L221/L323 used the bare one, and L191-L196 appended ONE PER INVALID CHARACTER inside a
-      //   loop; `editroles.ascx` carries them inside validator message attributes, so they arrive in the
-      //   per-field map's VALUES as well as in the sentence. Both spellings are stripped, by the shared
-      //   utility, in one place.
       expectImport().flush(
         validationProblem(
           400,
@@ -2749,17 +2137,7 @@ describe('ModuleImportComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 11 — SERVER WORDING IS UNTRUSTED INPUT TOO
-  //
-  // ⚠ THIS GROUP CLOSES A MEASURED VULNERABILITY RATHER THAN A HYPOTHETICAL ONE.
-  // `Library/Components/Skins/ModuleMessage.vb:L150` assigned its message straight onto a label with no
-  // encoding of any kind, and legacy resource values are demonstrably not inert: across the in-scope
-  // resource files a substantial minority carry an HTML tag and at least one - `SiteSettings.ascx.resx`
-  // → `Advertising.Text` - holds a live advertising SCRIPT block with a REMOTE source, stored escaped so
-  // a naive search for it comes back clean. A problem document is composed from stored state and from
-  // request values, so a sentence arriving off the wire can carry any of that.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('hostile server wording', () => {
     /** Refuses the transfer with the supplied document and returns nothing. */
@@ -2777,9 +2155,7 @@ describe('ModuleImportComponent', () => {
     /** Asserts that hostile wording became characters and not elements. */
     function expectRenderedAsText(...fragments: readonly string[]): void {
       // ⚠ NO ELEMENT WAS CONSTRUCTED. These two are the whole assertion: if any sentence were bound as
-      // markup, the tree would carry the elements and one of them would have executed. The lookups are
-      // spelled out against the rendered tree rather than routed through a helper, because they are the
-      // load-bearing claim of this entire group and are worth reading literally.
+      // markup, the tree would carry the elements and one of them would have executed.
       expect(root().querySelector('b')).withContext('no bold element was constructed').toBeNull();
       expect(root().querySelector('script'))
         .withContext('no script element was constructed')
@@ -2790,9 +2166,6 @@ describe('ModuleImportComponent', () => {
         .withContext('no injected script was evaluated')
         .toBeUndefined();
 
-      // ⚠ AND THE LITERAL CHARACTERS ARE VISIBLE, which is what proves it rendered as escaped plain text
-      // rather than having been silently discarded. An assertion that only checked for the absence of the
-      // elements would also pass against a screen that dropped the sentence entirely.
       const everything = visibleText(root());
 
       for (const fragment of fragments) {
@@ -2856,22 +2229,14 @@ describe('ModuleImportComponent', () => {
         ),
       );
 
-      // ⚠ THE UPLOADED DOCUMENT'S NAME IS THE OPERATOR'S OWN INPUT TRAVELLING OUT AND BACK. It is chosen
-      // on their machine, carried on the request as descriptive metadata, and may be echoed into a refusal
-      // - so it is untrusted in both directions and is bound as text in both.
       expectRenderedAsText(HOSTILE_BOLD, HOSTILE_SCRIPT);
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 12 — SENTINEL DISCIPLINE
-  //
-  // ⚠ THE SHARPEST RULE IN THIS MIGRATION, AND THE EASIEST TO BREAK SILENTLY. `dbo.Modules.ModuleID` is
-  // `IDENTITY(0, 1)`, so ZERO NAMES A REAL MODULE; the legacy absent-integer marker is MINUS ONE
-  // (`Library/Components/Shared/Null.vb:L41-L45`) and the legacy absent-string marker is the EMPTY STRING
-  // (`L71-L75`, whose body is literally a return of `""`). A truthiness test, a positivity test, or a
-  // coalesce to zero or to minus one would silently corrupt the payload in a way no type checker can see.
-  // ---------------------------------------------------------------------------------------------------
+  // ⚠ THE SHARPEST RULE IN THIS AND THE EASIEST TO BREAK SILENTLY. `dbo.Modules.ModuleID` is `IDENTITY(0,
+  // 1)`, so ZERO NAMES A REAL MODULE; the legacy absent-integer marker is MINUS ONE and the legacy
+  // absent-string marker is the EMPTY STRING (`L71-L75`, whose body is literally a return of `""`).
 
   describe('sentinel discipline', () => {
     it('transmits a module identifier of ZERO exactly as zero', async () => {
@@ -2904,9 +2269,8 @@ describe('ModuleImportComponent', () => {
 
     it('transmits a module identifier of MINUS ONE exactly as minus one', async () => {
       // ⚠ THE SINGLE MOST LIKELY PLACE A COALESCE SILENTLY CORRUPTS THE PAYLOAD. Minus one is the legacy
-      // absent-integer marker AND a legitimate identifier - `dbo.Portals.PortalID` is `IDENTITY(-1, 1)`,
-      // so the value is a real key elsewhere in the very same schema. Whatever the form holds is what
-      // travels.
+      // absent-integer marker AND a legitimate identifier - `dbo.Portals.PortalID` is `IDENTITY(-1, 1)`, so
+      // the value is a real key elsewhere in the very same schema. Whatever the form holds is what travels.
       arrive([listRow({ moduleId: -1, moduleTitle: 'A legacy placement' })]);
 
       chooseModule('A legacy placement');
@@ -2919,11 +2283,6 @@ describe('ModuleImportComponent', () => {
       expect(bodyMember(body, 'moduleId')).withContext('minus one travels verbatim').toBe(-1);
       expect(bodyMember(body, 'moduleId')).not.toBeNull();
 
-      // MIGRATION: AND MINUS ONE IS NEVER REINTRODUCED AS AN "UNSET" MARKER. `Import.ascx.vb:L51` declared
-      //   its target as `Private Shadows ModuleId As Integer = -1` - an identifier seeded with the absence
-      //   marker. Nothing on this screen initialises an identifier to minus one, tests one against it, or
-      //   coalesces one to it; the form opens holding NOTHING, which is what "nothing chosen yet" honestly
-      //   is, and the requirement is what reports it.
       expect(bodyMember(body, 'moduleId')).not.toBe(null);
 
       call.flush(null, { status: 204, statusText: 'No Content' });
@@ -2940,10 +2299,6 @@ describe('ModuleImportComponent', () => {
       const call = expectImport();
       const body: unknown = call.request.body;
 
-      // ⚠ THE EMPTY STRING IS DATA, NOT ABSENCE. The legacy absent-string marker IS the empty string, so a
-      // stored `''` and a stored null are indistinguishable through the legacy path and neither the domain
-      // model nor the wire is free to fold one into the other. The API serialises absent members as
-      // present-and-null rather than omitting them, so a member arriving as `''` means `''`.
       expect(bodyMember(body, 'fileName')).withContext("'' is transmitted as ''").toBe('');
       expect(bodyMember(body, 'fileName')).not.toBeNull();
       expect(bodyMember(body, 'fileName')).not.toBeUndefined();
@@ -2969,10 +2324,6 @@ describe('ModuleImportComponent', () => {
       chooseDocument(documentFile(BENIGN_DOCUMENT));
       await submit();
 
-      // ⚠ A BODY STATUS OF ZERO IS DATA. A proxy or a gateway between the browser and the API can compose
-      // an error body this application never produced, and zero is a value it can carry. The severity
-      // resolver tests for null and undefined EXPLICITLY and sends everything else - zero included - to
-      // its default band, so a truthiness test in its place would misreport zero as a missing status.
       expectImport().flush(
         {
           type: `${FAILURE_TYPE_PREFIX}${CONTENT_INVALID_CODE}`,
@@ -3006,10 +2357,6 @@ describe('ModuleImportComponent', () => {
     it('offers no folder picker, because no folder resource survives the migration', () => {
       arrive();
 
-      // `Import.ascx.vb:L166-L172` filled a folder dropdown from the portal's own directory list,
-      // labelling the root folder - whose stored path is the empty string, the absence marker of
-      // `Null.vb:L71-L75` - as `Root`. The migrated API exposes no folder listing, no file listing, no
-      // upload browse and no disk-space resource, so there is nothing for it to read.
       const text = visibleText(root());
 
       expect(text).not.toContain('Folder');
@@ -3037,31 +2384,10 @@ describe('ModuleImportComponent', () => {
   });
 });
 
-// =====================================================================================================
 // THE DELEGATED ROUTE-ORDERING REGRESSION PROOF
-//
-// ⚠⚠ THIS GROUP IS NOT ABOUT THIS COMPONENT. It guards the FEATURE'S HIGHEST-RISK DEFECT, and it lives
-// here because no specification of its own exists for `../module.routes.ts`.
-//
-// THE DEFECT IT GUARDS. The router matches in DECLARATION ORDER and `:moduleId` matches any single
-// segment, so `import` must be declared above it. Were the parameterised route declared first,
-// `/modules/import` would match IT, and the edit screen would be handed the string 'import' as the
-// record to load. That is a runtime failure with NO compile error, NO type error and NO build warning -
-// the route objects are all well-formed and the configuration is valid. `/modules/import` is the ONLY
-// address in this application whose literal segment sits at the same depth as a parameterised sibling,
-// which makes this barrel the strictest instance of the rule. The sort key is neither alphabetical nor
-// by length: it is literal segments before parameterised ones.
-//
-// ⚠⚠ THE ROUTE TABLE AND THE ROUTE GATE ARE READ, NEVER WRITTEN. Neither `../module.routes.ts` nor
-// `../../../core/guards/permission.guard.ts` is edited by this work - not to make an assertion pass and
-// not for any other reason. Where reality and expectation differed, reality is what is asserted and the
-// difference is recorded, which is what the D-MI-1 note below does.
-//
-// ⚠ THE UPWARD IMPORT IS DELIBERATE AND IS THE ONLY ONE IN THIS FILE. `MODULE_ROUTES` is imported from
-// one level up so that the assertions exercise the REAL route table rather than a hand-built copy of it -
-// a copy would agree with itself for ever while the real table drifted. It is not a cross-FEATURE import
-// and creates no dependency between sibling screens.
-// =====================================================================================================
+// THE DEFECT IT GUARDS. The router matches in DECLARATION ORDER and `:moduleId` matches any single segment,
+// so `import` must be declared above it. Were the parameterised route declared first, `/modules/import`
+// would match IT, and the edit screen would be handed the string 'import' as the record to load.
 
 describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
   /** The addresses whose relative order is load-bearing. */
@@ -3071,13 +2397,11 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
   const RECORD_PATH = ':moduleId';
 
   /**
-   * The position of a declared path, established to EXIST before its order is compared.
-   *
-   * ⚠ THE EXISTENCE CHECK IS THE WHOLE POINT OF THIS HELPER, AND OMITTING IT IS THE CLASSIC WAY THIS
-   * ASSERTION ROTS. A search that finds nothing answers minus one, and minus one is LESS THAN every real
-   * position - so a naive `expect(indexOf(a)).toBeLessThan(indexOf(b))` passes with flying colours after
-   * somebody DELETES route `a` entirely. The whole regression it was written to prevent then ships green.
-   * Throwing here makes a missing route fail at the line that looked for it.
+   * The position of a declared path, established to EXIST before its order is compared. ⚠ THE EXISTENCE
+   * CHECK IS THE WHOLE POINT OF THIS HELPER, AND OMITTING IT IS THE CLASSIC WAY THIS ASSERTION ROTS. A
+   * search that finds nothing answers minus one, and minus one is LESS THAN every real position - so a
+   * naive `expect(indexOf(a)).toBeLessThan(indexOf(b))` passes with flying colours after somebody DELETES
+   * route `a` entirely.
    *
    * @param path The declared path to locate.
    * @returns Its index in declaration order.
@@ -3107,11 +2431,6 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
   /**
    * The component a route lazily resolves to.
    *
-   * The loader is declared as a function returning either a promise of a component or the component
-   * itself, so both shapes are awaited; awaiting a non-promise is harmless and covers the eager form
-   * without a second branch. The result is narrowed by throwing rather than asserted, so an entry that
-   * declares no loader at all fails HERE rather than producing an unreadable comparison later.
-   *
    * @param route The route to resolve.
    * @returns The component class the route activates.
    */
@@ -3132,14 +2451,10 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
   }
 
   /**
-   * The policy a route declares, read WITHOUT reaching for `any`.
-   *
-   * ⚠ THE ROUTER TYPES ROUTE DATA AS AN INDEX SIGNATURE ONTO `any`, so the value arrives with every
-   * compile-time guarantee switched off: it could be absent on a route that forgot the key, or a number,
-   * or an object, and none of that would be caught. Widening to `unknown` discards that false confidence
-   * and forces the narrowing to be written out - which is also the only way to read it at all here, since
-   * `any` is not available. Bracket access is likewise required rather than preferred:
-   * `noPropertyAccessFromIndexSignature` is enabled, so reading the key as a property would not compile.
+   * The policy a route declares, read WITHOUT reaching for `any`. ⚠ THE ROUTER TYPES ROUTE DATA AS AN
+   * INDEX SIGNATURE ONTO `any`, so the value arrives with every compile-time guarantee switched off: it
+   * could be absent on a route that forgot the key, or a number, or an object, and none of that would be
+   * caught.
    *
    * @param route The route to read.
    * @returns The declared policy, or null when the route declares none.
@@ -3182,9 +2497,9 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
       // but it is asserted present, because the group would otherwise have no default address.
       expect(list).toBeGreaterThanOrEqual(0);
 
-      // ⚠ NOT ALPHABETICAL AND NOT BY LENGTH. 'import' sorts after ':moduleId' by code point and is
-      // shorter than ':moduleId/export', so either of those rules would produce an order that breaks the
-      // address. Stated as an assertion so the reason cannot be lost.
+      // ⚠ NOT ALPHABETICAL AND NOT BY LENGTH. 'import' sorts after ':moduleId' by code point and is shorter
+      // than ':moduleId/export', so either of those rules would produce an order that breaks the address.
+      // Stated as an assertion so the reason cannot be lost.
       expect(IMPORT_PATH > RECORD_PATH)
         .withContext('the correct order is the OPPOSITE of alphabetical here')
         .toBeTrue();
@@ -3195,8 +2510,8 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
       const recordComponent = await resolvedComponent(routeFor(RECORD_PATH));
 
       // ⚠ IDENTITY, NOT NAME. Comparing the resolved classes is what proves the two addresses are distinct
-      // destinations; comparing their names would pass against two different classes that happened to
-      // share one, which a minifier can arrange.
+      // destinations; comparing their names would pass against two different classes that happened to share
+      // one, which a minifier can arrange.
       expect(importComponent).toBe(ModuleImportComponent);
       expect(recordComponent).not.toBe(ModuleImportComponent);
 
@@ -3216,31 +2531,6 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
       }
     });
   });
-
-  // ---------------------------------------------------------------------------------------------------
-  // ASSERTION (a), CONTINUED — THE POLICY THE ADDRESS DECLARES
-  //
-  // ⚠⚠ D-MI-1, REPORTED AND RESOLVED IN THE ROUTE TABLE RATHER THAN BLOCKED.
-  //
-  // The hazard is real: `permission.guard.ts:L682-L689` resolves a SCOPE IDENTIFIER for the record-scoped
-  // policies and FAILS CLOSED when the route carries none - it announces a refusal and returns false. The
-  // module-scoped policies resolve from exactly ONE parameter name, `moduleId`, with NO fallback to a bare
-  // identifier (`L184-L205` records that an earlier revision listed such a fallback, that no such fallback
-  // exists server-side, and that accepting one would let the gate authorise a different record from the one
-  // the endpoint authorised). `/modules/import` carries NO route parameter at all.
-  //
-  // The consequence is therefore concrete: had this address declared the module-scoped policy, the screen
-  // would be unreachable to EVERY caller - including a host account - with the build green and the route
-  // object present in the configuration. `module.routes.ts:L39-L49` records exactly that reasoning, and the
-  // address declares the TENANT-WIDE policy instead, taken from the endpoint that actually serves it. The
-  // tenant-wide policy resolves no scope (`permission.guard.ts:L333-L334`), so the gate has an answerable
-  // question and the live proof below can pass.
-  //
-  // The assertions below therefore pin the RESOLUTION rather than the hazard: this address declares the
-  // tenant-wide policy, the parameterised sibling declares the module-scoped one, and no parameterless
-  // address declares a scoped policy. Asserting the module-scoped policy on THIS route - which an earlier
-  // reading of the brief expected - would have asserted a screen nobody can reach.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the policy each address declares', () => {
     it('gates this screen on the tenant-wide policy its own endpoint declares', () => {
@@ -3304,28 +2594,18 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // ASSERTION (b) — THE LIVE PROOF
-  //
   // The structural proof above establishes the ORDER. This one establishes the CONSEQUENCE: a genuine
   // navigation to the genuine address, through the genuine table, activating the genuine screen.
-  //
-  // ⚠ THE GATE IS NEUTRALISED THROUGH ITS INJECTED DEPENDENCIES AND NOTHING ELSE. The route table is used
-  // exactly as authored - no parameter is fabricated, no policy is overridden, no `:moduleId` is added to
-  // the import address, and the gate itself is not replaced. Only the identity the gate CONSULTS is
-  // doubled, which is the one substitution that leaves the behaviour under test intact.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('navigating to the address', () => {
     /** The mount point the application uses, so the address under test is the real one. */
     const MOUNT_PATH = 'modules';
 
     /**
-     * A host carrying nothing but an outlet.
-     *
-     * Declared locally rather than in a shared helper file: it is scaffolding for ONE proof, and a shared
-     * fixture would be a file this work is not authorised to create. Standalone, like every component in
-     * this workspace - there is no module declaration anywhere in the target.
+     * A host carrying nothing but an outlet. Declared locally rather than in a shared helper file: it is
+     * scaffolding for ONE proof, and a shared fixture would be a file this work is not authorised to
+     * create.
      */
     @Component({
       selector: 'app-route-host',
@@ -3356,13 +2636,7 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
     beforeEach(async () => {
       host = null;
 
-      /**
-       * A signal double that is CALLABLE, because that is what a signal is.
-       *
-       * A plain property would satisfy the type checker and then throw the moment the gate read it, since
-       * every member the gate consults is invoked. Returning a fixed value keeps the whole proof
-       * deterministic - no clock, no timer and no random value is involved anywhere.
-       */
+      /** A signal double that is CALLABLE, because that is what a signal is. */
       const fixedSignal = <T,>(value: T): Signal<T> => {
         const read = (): T => value;
 
@@ -3374,9 +2648,9 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
         currentUser: fixedSignal<CurrentUser | null>(administrator),
         isSuperUser: fixedSignal(true),
 
-        // The gate reads tenant administration through THIS projection — the server's own
-        // determination, combined with the host flag — and reads no role name at all. Mirrors
-        // the real store's computation over the identity above rather than restating a verdict.
+        // The gate reads tenant administration through THIS projection — the server's own determination,
+        // combined with the host flag — and reads no role name at all. Mirrors the real store's computation
+        // over the identity above rather than restating a verdict.
         administersCurrentPortal: fixedSignal(
           administrator.isSuperUser || administrator.isPortalAdministrator,
         ),
@@ -3403,9 +2677,6 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
 
       httpMock = TestBed.inject(HttpTestingController);
 
-      // The gate's OTHER dependency. Spied rather than replaced, because a refusal announced HERE is the
-      // observable signature of the fail-closed branch - so recording it is how these cases prove the
-      // branch was not taken.
       gateNotifySpy = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
     });
 
@@ -3419,13 +2690,10 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
     });
 
     /**
-     * Every refusal the gate announced.
-     *
-     * ⚠ THIS IS THE DIRECT OBSERVABLE OF THE FAIL-CLOSED BRANCH. All three of the gate's refusal paths -
-     * an unusable policy declaration, an unresolvable scope, and a caller the client can already see lacks
-     * the administration the policy requires - announce the SAME sentence at warning severity before
-     * returning false. An empty result therefore proves none of them was taken, which is a stronger claim
-     * than merely observing that a navigation returned true.
+     * Every refusal the gate announced. ⚠ THIS IS THE DIRECT OBSERVABLE OF THE FAIL-CLOSED BRANCH. All
+     * three of the gate's refusal paths - an unusable policy declaration, an unresolvable scope, and a
+     * caller the client can already see lacks the administration the policy requires - announce the SAME
+     * sentence at warning severity before returning false.
      *
      * @returns The refusal sentences announced, in call order.
      */
@@ -3437,15 +2705,10 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
     }
 
     /**
-     * The activated route chain, root first.
-     *
-     * ⚠ THE CHAIN IS WALKED DOWNWARDS FROM THE ROOT, AND THE OBVIOUS ALTERNATIVE IS A TRAP. Reading
-     * `pathFromRoot` off the ROOT snapshot answers an array containing only the root itself - it is that
-     * snapshot's own ancestry, not the tree beneath it - so every assertion made against it looks at a
-     * snapshot carrying no configuration and no parameters. Such an assertion does not fail loudly: it
-     * quietly finds nothing, and a case asserting the ABSENCE of a parameter then passes for the wrong
-     * reason. Descending through the first child of each level reaches the leaf the address actually
-     * activated.
+     * The activated route chain, root first. ⚠ THE CHAIN IS WALKED DOWNWARDS FROM THE ROOT, AND THE
+     * OBVIOUS ALTERNATIVE IS A TRAP. Reading `pathFromRoot` off the ROOT snapshot answers an array
+     * containing only the root itself - it is that snapshot's own ancestry, not the tree beneath it - so
+     * every assertion made against it looks at a snapshot carrying no configuration and no parameters.
      *
      * @returns Every activated snapshot from the root to the leaf.
      */
@@ -3480,9 +2743,7 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
 
       // ⚠⚠ THE NAVIGATION SUCCEEDED, AND THAT IS ITSELF THE D-MI-1 ASSERTION. A gate that failed closed
       // would have answered false here and no screen would have been activated at all - which is exactly
-      // what WOULD happen had this address declared a record-scoped policy it carries no scope for. The
-      // route table declares the tenant-wide policy instead, so the question is answerable and the address
-      // is reachable.
+      // what WOULD happen had this address declared a record-scoped policy it carries no scope for.
       expect(navigated).withContext('the gate admitted the navigation').toBeTrue();
       expect(notifiedRefusals())
         .withContext('the fail-closed branch was not taken')
@@ -3516,8 +2777,7 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
 
       // ⚠ AND NO PARAMETER NAMED THE TARGET ANYWHERE IN THE ACTIVATED CHAIN, which is precisely why the
       // endpoint carries the target in the BODY and why this address must not declare a record-scoped
-      // policy. The chain is walked from the root DOWNWARDS - see {@link activatedChain} for why the
-      // obvious alternative would make this assertion pass vacuously.
+      // policy.
       const chain = activatedChain();
 
       expect(chain.length).withContext('a leaf was activated, so the scan is not vacuous').toBeGreaterThan(1);
@@ -3543,13 +2803,6 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
       // correct if the PARAMETERISED address still works: a table that reached the import screen by
       // BREAKING `/modules/42` would satisfy every assertion above while being worse than the defect they
       // guard against.
-      //
-      // ⚠ DELIBERATELY NAVIGATED WITHOUT AN OUTLET, and the reason is scope rather than convenience. What
-      // this case has to establish is that the ROUTER resolves the address, that the GATE admits it, and
-      // that the identifier BINDS - all of which the router settles on its own. Mounting the destination
-      // would additionally instantiate a screen belonging to a sibling folder, drag in its own data reads
-      // and its own view of the session, and make this case fail whenever THAT screen changed. This file
-      // asserts the route table, not a neighbour's screen.
       const router = TestBed.inject(Router);
       const navigated = await router.navigateByUrl(`/${MOUNT_PATH}/42`);
 
@@ -3558,10 +2811,6 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
 
       // The address matched the PARAMETERISED route and not the literal one, which is the collision this
       // group exists to keep impossible - in the other direction.
-      //
-      // ⚠ THE LEAF, NOT THE FIRST NON-EMPTY PATH IN THE CHAIN. The chain begins with the router's own root
-      // and then the group's MOUNT path, so a search for the first non-empty entry answers `modules` and
-      // never reaches the child that actually matched.
       const chain = activatedChain();
       const leaf = chain[chain.length - 1];
 

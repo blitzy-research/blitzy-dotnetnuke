@@ -341,14 +341,14 @@ describe('appConfig', () => {
        * The identity assertion is the one the project plan requires: it fixes the router
        * configuration verbatim as `withPreloading(PreloadAllModules)`, so substituting a
        * bespoke strategy of the same shape is a specification change however well it behaves.
-       * An earlier revision did exactly that - a session-gated preloader, installed because
-       * `PreloadAllModules` begins fetching as soon as the FIRST navigation settles and for an
-       * anonymous visitor that navigation settles on the sign-in screen. The measurement behind
-       * it was real (163,918 bytes, 54.49% of the application's JavaScript, reachable by anyone
-       * who could reach that screen) and it is recorded in the migration notes, but a bundle
-       * name carries no authority: every route inside those bundles is refused by its own gate
-       * and re-authorised server-side. The plan stands; this case is what stops it drifting
-       * again, and it names the built-in so a substitute cannot pass by imitating it.
+       * A session-gated preloader is the tempting substitution, because `PreloadAllModules`
+       * begins fetching as soon as the FIRST navigation settles and for an anonymous visitor that
+       * navigation settles on the sign-in screen. The measurement behind that temptation is real
+       * (163,918 bytes, 54.49% of the application's JavaScript, reachable by anyone who could
+       * reach that screen) and it is recorded in the migration notes, but a bundle name carries no
+       * authority: every route inside those bundles is refused by its own gate and re-authorised
+       * server-side. The plan stands, and this case names the built-in so a substitute cannot pass
+       * by imitating it.
        *
        * The behavioural assertion is that preloading happens AT ALL and happens
        * UNCONDITIONALLY. The router's default is no strategy, which type-checks, builds and

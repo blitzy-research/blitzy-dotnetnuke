@@ -11,45 +11,21 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Api;
 
 /// <summary>
-/// Proves that the published contract carries exactly one success shape, and that no Domain type reaches it.
+/// Proves that the published contract carries exactly one success shape, and that no Domain type reaches
+/// it.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The defect this suite exists to prevent had two halves. The Application layer declared a success
-/// envelope, a paging projection and a metadata companion, all documented as the contract every controller
-/// returns - and not one of them had a single consumer anywhere in the solution. Meanwhile every collection
-/// endpoint serialised the Domain paging type directly, so a Domain type WAS the public contract: its
-/// members were the client's contract, and a change to the domain model would have been a breaking API
-/// change made without touching an API file.
-/// </para>
-/// <para>
-/// The generated OpenAPI document is the right subject for this, and the only one that can settle it. The
-/// response assertions elsewhere in this suite prove that a particular endpoint returns the envelope; only
-/// the document can prove that EVERY endpoint does, and that nothing else is even describable. That
-/// distinction is the whole point of adding a permanent fact rather than inspecting the document once by
-/// hand: the shape held at the moment of the repair either way, and only the fact keeps holding.
-/// </para>
-/// <para>
 /// The document is generated in process from the running host's own service provider rather than fetched
 /// over HTTP. The document endpoints are deliberately unmounted outside development and this host runs as
-/// <c>Testing</c>, so reaching them would mean altering the very configuration under test. The generator
-/// itself is registered unconditionally, so the document is available to a caller that asks for it directly
-/// in every environment - which is exactly the seam this suite needs and the pipeline does not open.
-/// </para>
-/// <para>
-/// Each fact generates the document once, because xUnit constructs the test class per fact. The document is
-/// derived entirely from metadata and reaches no database, so repeating it cannot change an outcome; it is
-/// paid for rather than cached because a static cache shared across facts is a worse thing to own than a
-/// few repeated reflections.
-/// </para>
+/// <c>Testing</c>, so reaching them would mean altering the very configuration under test.
 /// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class SuccessEnvelopeContractTests
 {
     /// <summary>
-    /// Suffix the generator appends when it names a schema for a closed generic, so the envelope closed over
-    /// a portal detail payload becomes <c>PortalDetailDtoApiResponse</c>.
+    /// Suffix the generator appends when it names a schema for a closed generic, so the envelope closed
+    /// over a portal detail payload becomes <c>PortalDetailDtoApiResponse</c>.
     /// </summary>
     private const string SingleEnvelopeSuffix = "ApiResponse";
 
@@ -60,24 +36,11 @@ public sealed class SuccessEnvelopeContractTests
     /// Route template of the one action whose success is a document rather than a payload, written as the
     /// document renders it with the version substituted into the path.
     /// </summary>
-    /// <remarks>
-    /// A module export answers with the module's own content document under an XML media type. There is no
-    /// payload to place in an envelope and no client that would benefit from one, so it is the single
-    /// documented exception to the uniform success shape - named here so that the exception is a decision a
-    /// reader can see and challenge, rather than a gap the assertion happens not to notice.
-    /// </remarks>
     private const string ExportPath = "/api/v1/modules/{moduleId}/export";
 
     private readonly OpenApiDocument _document;
 
-    /// <summary>
-    /// The composed host, held so that the live-wire fact can issue a real request.
-    /// </summary>
-    /// <remarks>
-    /// Every other fact in this suite reads the generated document, which settles what is DECLARED. Whether
-    /// a declared member is actually written, and in which form, is a serializer question only a response can
-    /// answer, so this suite needs both seams.
-    /// </remarks>
+    /// <summary>The composed host, held so that the live-wire fact can issue a real request.</summary>
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="SuccessEnvelopeContractTests"/> class.</summary>
@@ -91,9 +54,6 @@ public sealed class SuccessEnvelopeContractTests
 
         using IServiceScope scope = fixture.Services.CreateScope();
 
-        // The document name is read from the versioning explorer rather than written out here. A hard-coded
-        // name would keep passing while describing nothing the day a second version is introduced, because
-        // the generator would answer for the version this suite named and leave the new one unexamined.
         IApiVersionDescriptionProvider versions = scope.ServiceProvider
             .GetRequiredService<IApiVersionDescriptionProvider>();
 
@@ -144,13 +104,6 @@ public sealed class SuccessEnvelopeContractTests
     /// Every payload-bearing success in the document is one of the two envelopes, with a single documented
     /// exception.
     /// </summary>
-    /// <remarks>
-    /// This is the fact that makes the contract uniform rather than merely usually-uniform. One action
-    /// publishing a bare payload would be invisible to every other assertion in this suite and would force
-    /// every client to special-case it, which is the cost the envelope exists to remove. Inline schemas are
-    /// examined as well as references, so an action that describes a bare shape without naming it is caught
-    /// on the same terms as one that names it.
-    /// </remarks>
     [Fact]
     public void EveryPayloadBearingSuccess_IsOneOfTheTwoEnvelopes()
     {
@@ -197,13 +150,6 @@ public sealed class SuccessEnvelopeContractTests
     /// Every collection endpoint publishes the paging projection, and its shape is the records paired with
     /// the metadata companion.
     /// </summary>
-    /// <remarks>
-    /// The member names are asserted, not merely the schema's presence, because the member names are the
-    /// difference a client would get wrong. The paging facts used to be siblings of the records and are now
-    /// one level down under the companion; binding the old flat shape against the new body still yields the
-    /// records while reading every paging number as zero, so a pager shows one page of everything instead of
-    /// failing where a reader would notice.
-    /// </remarks>
     [Fact]
     public void EveryCollectionEndpoint_PublishesThePagingProjection()
     {
@@ -219,21 +165,9 @@ public sealed class SuccessEnvelopeContractTests
                 "PortalListItemDtoPagedResponse",
                 "RoleListItemDtoPagedResponse",
 
-                // The role-membership listing. It is paged for the reason the others are - a popular role
-                // holds more members than a screen can render - and it satisfies the condition this list
-                // exists to enforce: SortableFields declares a vocabulary of its own for it, and the listing
-                // composes the assignment rows with their accounts and orders by a name from that vocabulary
-                // before it takes the page window. So it is a contract WITH behaviour behind it, which is why
-                // it belongs here rather than being treated as an unbacked arrival.
+                // The role-membership listing.
                 "RoleMembershipDtoPagedResponse",
 
-                // The account PICKER. Paged for a reason the others share and one they do not: a tenant may
-                // hold more accounts than a drop-down should ever materialise, and the legacy control acted
-                // on exactly that - UserModuleBase.vb:L178-L186 read the tenant's account count and offered
-                // a name box instead of the drop-down above one thousand accounts. It satisfies this list's
-                // condition: SortableFields.UserChoices declares a vocabulary of its own for it - the two
-                // captions an option shows - and the read orders by a name from that vocabulary before it
-                // projects and before it takes the page window.
                 "UserChoiceDtoPagedResponse",
 
                 "UserListItemDtoPagedResponse",
@@ -256,8 +190,8 @@ public sealed class SuccessEnvelopeContractTests
     }
 
     /// <summary>
-    /// Every single-payload success publishes its payload under one member name, with the metadata companion
-    /// optional beside it.
+    /// Every single-payload success publishes its payload under one member name, with the metadata
+    /// companion optional beside it.
     /// </summary>
     /// <remarks>
     /// The companion appears on the schema without being required, which is the accurate description rather
@@ -288,14 +222,6 @@ public sealed class SuccessEnvelopeContractTests
     /// The payload-free envelope appears nowhere in the document, and no response that reports no content
     /// carries a body.
     /// </summary>
-    /// <remarks>
-    /// Asserted rather than left implicit, because the absence is the decision. The Application layer
-    /// declares a payload-free arity beside the generic form and it genuinely has no producer here: a command
-    /// that returns nothing answers <c>204</c>, HTTP forbids a body on a <c>204</c>, and the acceptance
-    /// criteria pin deletion to <c>204</c> for portals, modules and users. Attaching the envelope would mean
-    /// demoting those responses to <c>200</c> to satisfy a type's symmetry, which trades a stated criterion
-    /// for the tidiness of an unused declaration. This fact fails if a later revision makes that trade.
-    /// </remarks>
     [Fact]
     public void ThePayloadFreeEnvelope_AppearsNowhereAndNoContentCarriesNoBody()
     {
@@ -320,34 +246,8 @@ public sealed class SuccessEnvelopeContractTests
         bodied.Should().BeEmpty("HTTP forbids a body on a 204");
     }
 
-    /// <summary>
-    /// A single-payload success writes its metadata member PRESENT AND NULL, never omitted.
-    /// </summary>
+    /// <summary>A single-payload success writes its metadata member PRESENT AND NULL, never omitted.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// Every other fact in this suite reads the generated document, which can only say that the member is
-    /// DECLARED. Whether it is actually written, and in which of the two possible forms, is a serializer
-    /// question that only a live response can settle - and the two forms imply different client
-    /// declarations, so getting it wrong is a cross-layer contract break that no compiler on either side
-    /// notices.
-    /// </para>
-    /// <para>
-    /// The serializer is configured with <c>JsonIgnoreCondition.Never</c> precisely so that absence travels
-    /// as a null VALUE rather than as a missing key: the legacy null encoding makes <c>-1</c>, <c>0</c>,
-    /// <c>""</c> and <c>false</c> legitimate stored values, so a policy that dropped defaults or nulls would
-    /// erase real data. The consequence for this envelope is that a scalar response - which by definition has
-    /// no page to describe - writes <c>"meta": null</c>. <c>paged-result.model.ts</c> therefore declares
-    /// <c>meta: ApiMeta | null</c>, required and nullable; an earlier revision declared it optional and
-    /// non-null, the one shape this policy cannot produce, and this fact is what stops that recurring.
-    /// </para>
-    /// <para>
-    /// Read as raw JSON rather than deserialised, because deserialising into the envelope would materialise a
-    /// null companion whether or not the member was on the wire, and so could not tell the two forms apart.
-    /// A paged response is asserted alongside it, so the fact covers both arities of the one contract and
-    /// distinguishes "always null" from "null for a scalar and populated for a page".
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ASinglePayloadSuccess_WritesItsMetadataMemberAsNullRatherThanOmittingIt()
     {

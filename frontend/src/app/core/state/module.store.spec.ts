@@ -26,201 +26,19 @@ import type { ApiResponse, PagedResult } from '../models/paged-result.model';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
 import type { TabListItem } from '../models/tab.model';
 
-/**
- * Specification for {@link ModuleStore} - the module-administration state slice.
- *
- * The legacy tree contains NO automated test of any kind, so nothing in this file was ported. Every
- * assertion below was authored either from the destination contracts - read out of `module.store.ts`,
- * `module.model.ts`, `tab.model.ts`, `module.service.ts`, `tab.service.ts`, `paged-result.model.ts` and
- * `problem-details.model.ts` rather than from a summary of them - or from the measured legacy behaviour
- * cited inline, and every legacy line reference in this file was opened and read rather than copied
- * forward.
- *
- * No project rule document governs this work: the rules review returned the single line
- * `No user rules provided.` on every call, including calls whose range began past the first line, so
- * there is no document body left to page through. The enterprise baseline in the migration plan governs
- * instead, and it is what the boundary section below states.
- *
- * ---------------------------------------------------------------------------------------------------
- * WHAT THIS FILE IS FOR
- * ---------------------------------------------------------------------------------------------------
- * The store under test is the ONLY place in the application where four things happen, and each of them
- * admits defects that no compiler, linter or type check can see:
- *
- * 1. REQUESTS ARE SEQUENCED. The two transports it drives are each "one method, one endpoint, one
- *    request, no decision", so ordering two calls - pages before a listing, a re-read after a removal -
- *    is this file's subject. A missing follow-up read and an unasked-for extra request are both silent.
- * 2. THE PAGE HIERARCHY IS DERIVED. There is no tree endpoint and no tree type in the models layer, and
- *    `tab.service.ts` states in terms that folding a flat list into a hierarchy "belongs to a signal
- *    store or to the component that renders the indentation". This specification is the only proof that
- *    derivation is correct.
- * 3. SENTINEL VALUES SURVIVE. `0`, `-1`, `''` and `false` are all real data in this schema, and a
- *    truthiness test anywhere in the slice corrupts state behind a perfectly successful status code.
- * 4. STATE IS EXPOSED WITHOUT BEING WRITABLE. Every public projection is a readonly signal, which is a
- *    claim that is easy to make and easy to break by accident.
- *
- * Three mechanisms carry the weight, and each catches a different class of mistake:
- *
- * - `httpMock.verify()` runs after EVERY specification. It fails on any request no expectation consumed,
- *   which turns "the removal re-read the listing and nothing else happened" from a review comment into a
- *   test result. It is also how a stray page mutation or a duplicated read would be caught.
- * - PATHS ARE ASSERTED AS LITERAL STRINGS. Building an expected path from the same route helper the
- *   transport uses would assert nothing at all - the two sides would agree by construction and a wrong
- *   template would pass. The literals below are the independent statement of where each call goes.
- * - FIXTURES ARE TYPED AS THE REAL CONTRACTS. A partial fixture would let a required member be dropped
- *   without any specification noticing, and a misspelled member would resolve to `undefined` at runtime
- *   with no compile error.
- *
- * ---------------------------------------------------------------------------------------------------
- * PATHS ARE RELATIVE, AND THAT IS A PROPERTY OF THE TEST TARGET
- * ---------------------------------------------------------------------------------------------------
- * `angular.json` declares its `fileReplacements` in the direction opposite to the usual Angular
- * scaffold: the `production` configuration substitutes nothing and only `development` swaps the
- * environment module out, so `environment.ts` IS the production module and it carries a RELATIVE base
- * path because one reverse proxy serves the application and the API from a single origin. The `test`
- * target declares no substitution at all, so every specification here compiles against that relative
- * base. Asserting an absolute origin would be asserting against a bundle that is never built under
- * test: it would pass, and it would describe nothing.
- *
- * The environment module is deliberately NOT imported. Reading the base from it and concatenating the
- * rest would reproduce the failure the literal-path rule exists to prevent - the assertion would follow
- * the configuration wherever it went instead of pinning it.
- *
- * ---------------------------------------------------------------------------------------------------
- * THE HARNESS, AND WHY IT NEEDS NEITHER A SPY NOR A FAKE CLOCK
- * ---------------------------------------------------------------------------------------------------
- * Both transports run for real against the testing backend. That is a deliberate choice over spying on
- * them: it proves the verb, the exact path, which values became query parameters, which values stayed in
- * the body and how the response was folded into state, all in one pass. The request BODY matters
- * uniquely here - one specification exists to prove a body member of exactly minus one reaches the wire -
- * and a spy would have nothing to say about it.
- *
- * Everything the testing backend does is synchronous, so by the time a flush returns the signals are
- * already settled and no specification needs to be asynchronous. The store declares no `effect`, which
- * its own header states as a design decision, so nothing here needs to flush effects; request order is a
- * property of the command methods rather than of change detection. No real timer, no clock reading, no
- * randomness and no network access appears anywhere below.
- *
- * ---------------------------------------------------------------------------------------------------
- * MIGRATION CONTEXT - WHAT THE LEGACY DID, AND WHY THIS SLICE LOOKS NOTHING LIKE IT
- * ---------------------------------------------------------------------------------------------------
- * Each item was measured against the checkout rather than assumed, and each is asserted somewhere below.
- *
- * 1. VIEW STATE AND SESSION STATE ARE GONE, BUT THERE WAS NONE HERE TO BEGIN WITH.
- *    `grep -ro 'ViewState(' Website/admin/Modules/ | wc -l` returns ZERO, exactly as it does for the
- *    security and page administration trees, and `Session(` returns zero everywhere. What the legacy
- *    module screens did instead was declare `Private Shadows ModuleId As Integer = -1`
- *    (`Website/admin/Modules/Export.ascx.vb` line 49 and `Import.ascx.vb` line 51) and re-parse that
- *    identifier out of the request on every postback. This slice therefore replaces POSTBACK RE-BINDING,
- *    not state round-tripping: a signal holds the selection once, for as long as a screen needs it.
- * 2. THERE IS NO LEGACY MODULE-LIST SCREEN. `ls Website/admin/Modules` yields only the export, import
- *    and settings screens. Every paging, ordering and filtering assertion below therefore comes from
- *    `module.service.ts` and `paged-result.model.ts`, and none is borrowed from the portal or account
- *    screens, whose contracts are theirs. The listing IS paged, and the wire page index is ZERO-BASED.
- * 3. THE TWO CACHE PERIODS ARE TWO FACTS. `Library/Components/Modules/ModuleInfo.vb` line 731 seeds
- *    `_CacheTime = 0` while line 759 seeds `_DefaultCacheTime = -1`, in the SAME constructor, with the
- *    accessors at lines 203 and 482. Two adjacent members, two different markers, and they live on two
- *    different contracts in the target. Nothing may coalesce them.
- * 4. REMOVAL IS SOFT, SO THE LISTING IS RE-READ. The endpoint answers `204` and the row survives with
- *    its marker set, which is what the legacy recycle bin read. Whether such a row still appears is the
- *    LISTING endpoint's decision, expressed through its inclusion flag, so an optimistic local splice
- *    would wrongly hide a row the server would still return. There is no reversal endpoint at all.
- * 5. EXPORT RETURNS THE DOCUMENT IN THE `200` BODY. `Export.ascx.vb` line 157 obtained it through a
- *    double late-bound cast - legal only because the administration code-behinds were compiled with
- *    Option Strict OFF (`Website/release.config` line 125) - and lines 168 to 186 then wrote that string
- *    to a file beneath the portal's home directory map path. The target does neither: the string is
- *    returned, and this slice holds it as an OPAQUE value it never inspects.
- * 6. IMPORT CARRIES NO ROUTE IDENTIFIER, and a body target of minus one is legitimate transmitted data
- *    (`Import.ascx.vb` line 51, `Export.ascx.vb` line 49, against the integer absence marker at
- *    `Library/Components/Shared/Null.vb` lines 41 to 45).
- * 7. THE PAGE TREE IS DERIVED ON THE CLIENT because no tree endpoint exists and the page transport is
- *    closed at three flat, unpaged operations - read a portal's pages, read one page, replace one page.
- *    This slice consumes exactly ONE of the three.
- * 8. THE ROOT TEST IS AN EXACT EQUALITY, AND BOTH ENCODINGS ARE ADMITTED. `tab.model.ts` states that a
- *    root page arrives as `parentId: null` because the backend converts the legacy marker at the
- *    boundary; the legacy form is minus one, measured at `Library/Components/Tabs/TabInfo.vb` line 91
- *    and `TabController.vb` lines 1032 and 1074. Because `dbo.Tabs.TabID` is `IDENTITY (0, 1)`
- *    (`01.00.00.SqlDataProvider` line 140), a parent of ZERO is a REAL PARENT under both encodings, and
- *    only an exact comparison survives that.
- * 9. `dbo.Modules.ModuleID` IS `IDENTITY (0, 1)` (`01.00.00.SqlDataProvider` line 221), so module ZERO
- *    is the first module of an installation and a truthiness guard loses it silently.
- * 10. FOUR DISTINCT MEANINGS OF MINUS ONE ARE KEPT APART: a root page, an unset default cache period, a
- *    transfer target that has not been assigned, and the FIRST REAL PORTAL - `[PortalID]` is
- *    `IDENTITY (-1, 1)` (line 77). No generic "normalise a negative identifier" helper may exist.
- * 11. LATE-BOUND ACTIVATION OF A MODULE'S OWN CONTROLLER IS GONE. The legacy resolved a class name
- *    through reflection at `Library/Components/Modules/ModuleController.vb` lines 231 and 431 and in the
- *    event-message processor; the target resolves it server-side through dependency injection over a
- *    closed set. None of those sites was ever true component-object interop.
- * 12. HAND-ROLLED ROW HYDRATION IS GONE. `ModuleController.vb` line 54 built the object and lines 66 to
- *    72 assigned each column through a marker-substituting conversion, one statement per column. The
- *    server's object-relational materialiser replaced it, so nothing on this side reads a column.
- * 13. THE LEGACY CACHE LAYER IS NOT REPRODUCED CLIENT-SIDE. `ModuleController` was the largest single
- *    consumer of the legacy static cache, at twenty-one call sites with a scaled-expiry set and a coarse
- *    portal-wide clear. Caching in the target is server-side, behind an interface; this slice caches
- *    nothing, which is why every read below issues a request every time it is called.
- * 14. THE VISIBILITY ENUMERATION WAS RENAMED, AND ITS MEMBERS ARE ALL REAL. `Maximized` is `0` and
- *    `None` is `2`; neither is an absence marker.
- * 15. UNTYPED COLLECTION CONTRACTS BECAME TYPED ONES. The listing arrives as a paged envelope rather
- *    than through an out-parameter carrying a total alongside an untyped list.
- * 16. OPTIONAL PARAMETER TAILS BECAME REQUEST OBJECTS. The transfer operations take a request contract
- *    rather than a run of defaulted positional arguments.
- * 17. AUTHORISATION IS DECIDED SERVER-SIDE. A refusal arrives as `403`, is recorded as the problem
- *    document it is, and lands at WARNING severity - the legacy precedent is the access-denied page,
- *    which performs no permission check of its own and renders both of its branches as a yellow warning.
- *    This slice exposes no method that decides a permission. The rate-limit status does not arise on
- *    these endpoints at all: that policy is partitioned by address and applied to the authentication
- *    routes alone, so no specification below asserts one.
- * 18. LOCALISATION IS NOT PORTED. Three of the in-scope resource files belong to the module tree and
- *    they are read for wording only; no translation runtime exists in this workspace.
- * 19. EVERY IMPLICIT CONVERSION THE LEGACY GOT FOR FREE IS NOW EXPLICIT. Option Strict was off for the
- *    administration code-behinds, which is what made the double cast at `Export.ascx.vb` line 157 legal.
- *    Nothing in this file relies on an implicit conversion, and no suppression comment appears.
- *
- * ---------------------------------------------------------------------------------------------------
- * WHAT IS DELIBERATELY NOT ASSERTED, AND THE MEASURED REASONS
- * ---------------------------------------------------------------------------------------------------
- * - NO WORDING. Resolving a problem document into sentences belongs to the shared form-error helper
- *   under `core/utils/`, which is not a dependency of this specification. Severity is asserted because
- *   the store records it; the sentences it sits beside are not.
- * - NO PRIVATE MEMBER. Every assertion goes through a public readonly signal or a command method.
- * - NO PAGE MUTATION. The page transport publishes no create and no delete route, and this slice
- *   consumes only the portal-scoped read, so those are asserted as ABSENT rather than exercised.
- * - NO RATE-LIMIT CASE, for the reason in item 17.
- * - NO SUCCESS-SHAPED FAILURE. The server's result wrapper never crosses the wire, so there is no
- *   specification for a failure flag beside a successful status.
- */
-
-// =====================================================================================================
 // LITERALS COMPOSED AT RUNTIME
-// =====================================================================================================
-//
-// Two families of token must be PROVED ABSENT from the traffic this slice generates, and writing either
-// as a source literal would make the absence unprovable by inspection: a reviewer grepping this tree for
-// the token would find the assertion that forbids it and could not tell the two apart. Both are
-// therefore assembled from fragments at runtime, which keeps the source clean while the assertion still
-// runs against the real string. The same technique is used for the wildcard character below and in the
-// transport specification alongside this one.
+// Two families of token must be PROVED ABSENT from the traffic this slice generates, and writing either as
+// a source literal would make the absence unprovable by inspection: a reviewer grepping this tree for the
+// token would find the assertion that forbids it and could not tell the two apart.
 
-/**
- * The path fragments a reversal endpoint would carry, if one existed.
- *
- * It does not. The target publishes no bin endpoint and no reversal endpoint, and the page surface is
- * closed at read, read-one and replace, so no command on this slice can undo a removal. A removed module
- * can be made VISIBLE through the inclusion flag, which is a different thing from being brought back.
- */
+/** The path fragments a reversal endpoint would carry, if one existed. */
 const REVERSAL_FRAGMENTS: readonly string[] = [
   ['re', 'store'].join(''),
   ['recycle', 'bin'].join('-'),
   ['un', 'delete'].join(''),
 ];
 
-/**
- * The trailing-wildcard character, obtained by code point.
- *
- * The legacy readers decorated a filter pattern at the call site and matched from the START of a value;
- * the target moved that decoration behind the repository interfaces, where the server applies a
- * substring match of its own. A pattern arriving here already decorated would be decorated twice.
- */
+/** The trailing-wildcard character, obtained by code point. */
 const WILDCARD: string = String.fromCharCode(37);
 
 /** A date at the bottom of the calendar - the legacy absent-date marker, and real data on the wire. */
@@ -229,28 +47,14 @@ const MIN_DATE = '0001-01-01T00:00:00';
 /** The prefix the server puts in front of every application failure code inside a problem `type`. */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
-// =====================================================================================================
 // FIXTURES
-// =====================================================================================================
-//
-// Every fixture is produced by a FACTORY rather than held as a shared constant. The reason is specific to
-// this slice: the hierarchy derivation builds a nested structure out of the rows it is given and holds the
-// row objects themselves on the nodes, so a specification that mutated a shared row in place would change
-// what a later specification observed. A factory hands each specification its own objects and makes that
-// impossible.
-//
 // Each factory is typed as the REAL contract, so a member this file misspells is a compile error rather
-// than an `undefined` nobody notices. That matters more here than usual: camel-casing lower-cases only a
-// leading run of capitals, so the wire member is `moduleId` with one lower-case `d` and never `moduleID`,
-// and the same policy is why the definition key below is the ABBREVIATED `moduleDefId` while the route
-// parameter that addresses the same concept is spelled out in full. The two genuinely differ and the
-// contracts declare each separately; neither is unified here by guesswork.
+// than an `undefined` nobody notices.
 
 /**
- * One row of the module listing, keyed AT THE IDENTITY SEEDS.
- *
- * `moduleId` and `tabId` default to ZERO because a row at the seed is precisely the row a truthiness test
- * loses, and the listing is where such a loss would be least visible.
+ * One row of the module listing, keyed AT THE IDENTITY SEEDS. `moduleId` and `tabId` default to ZERO
+ * because a row at the seed is precisely the row a truthiness test loses, and the listing is where such a
+ * loss would be least visible.
  */
 function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
   return {
@@ -276,12 +80,9 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
 }
 
 /**
- * One module placement in full.
- *
- * `portalId` is MINUS ONE - the first portal the schema ever creates and simultaneously the legacy
- * absent-integer marker - and `cacheTime` is ZERO, which is a CHOSEN lifetime rather than an unset one.
- * The empty strings on the markup and icon members are the legacy absent-string marker, whose accessor
- * body is literally `Return ""`.
+ * One module placement in full. `portalId` is MINUS ONE - the first portal the schema ever creates and
+ * simultaneously the legacy absent-integer marker - and `cacheTime` is ZERO, which is a CHOSEN lifetime
+ * rather than an unset one.
  */
 function detail(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
   return {
@@ -312,13 +113,7 @@ function detail(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
   };
 }
 
-/**
- * One catalogue definition.
- *
- * `defaultCacheTime` defaults to MINUS ONE, which is the value the legacy constructor seeded it with -
- * against a `_CacheTime` of ZERO in the same constructor. The pairing is deliberate: a specification that
- * saw a zero where this minus one belongs would have caught the two facts being folded together.
- */
+/** One catalogue definition. */
 function definition(overrides: Partial<ModuleDefinition> = {}): ModuleDefinition {
   return {
     moduleDefId: 4,
@@ -336,11 +131,9 @@ function definition(overrides: Partial<ModuleDefinition> = {}): ModuleDefinition
 }
 
 /**
- * One page of the portal, at the identity seed and at the ROOT of the hierarchy.
- *
- * The default `parentId` is `null`, which is the form the wire uses: the backend converts the legacy
- * marker at the boundary because minus one is simultaneously a legitimate tenant identifier. Both
- * encodings are exercised below.
+ * One page of the portal, at the identity seed and at the ROOT of the hierarchy. The default `parentId`
+ * is `null`, which is the form the wire uses: the backend converts the legacy marker at the boundary
+ * because minus one is simultaneously a legitimate tenant identifier.
  */
 function tabRow(overrides: Partial<TabListItem> = {}): TabListItem {
   return {
@@ -362,13 +155,7 @@ function tabRow(overrides: Partial<TabListItem> = {}): TabListItem {
   };
 }
 
-/**
- * A creation request in which every optional-looking member is falsy.
- *
- * Four kinds of falsy value appear on purpose - the empty string, `false`, `null` and `0` - so that a
- * whole-body comparison fails if any single kind is ever filtered out. A fixture of plausible non-empty
- * values would pass against a truthiness filter and prove nothing.
- */
+/** A creation request in which every optional-looking member is falsy. */
 function createRequest(overrides: Partial<CreateModuleRequest> = {}): CreateModuleRequest {
   return {
     moduleDefId: 4,
@@ -389,15 +176,7 @@ function createRequest(overrides: Partial<CreateModuleRequest> = {}): CreateModu
   };
 }
 
-/**
- * A replacement request carrying the page it edits, exactly as the contract requires.
- *
- * The update endpoint takes NO placement selector in the URL: the page is named by the required `tabId`
- * member of the body itself, which the server uses to select the placement being edited. A relocation is a
- * SEPARATE member, `moveToTabId`, so that the key identifying the row and the page the row is moving to
- * cannot be confused for one another - naming a destination through the key selects a placement that does
- * not exist and the save is refused.
- */
+/** A replacement request carrying the page it edits, exactly as the contract requires. */
 function updateRequest(overrides: Partial<UpdateModuleRequest> = {}): UpdateModuleRequest {
   return {
     tabId: 0,
@@ -421,14 +200,7 @@ function updateRequest(overrides: Partial<UpdateModuleRequest> = {}): UpdateModu
   };
 }
 
-/**
- * Both settings maps, with cleared values in each.
- *
- * The most marker-sensitive payload in the feature. The absent-string marker IS the empty string, the maps
- * legitimately hold cleared values, and a truthiness filter applied before sending would DELETE every
- * setting an operator had cleared while the request still answered `204`. The empty-valued keys are what
- * would make that failure loud.
- */
+/** Both settings maps, with cleared values in each. The most marker-sensitive payload in the feature. */
 function settingsBag(overrides: Partial<ModuleSettingsBag> = {}): ModuleSettingsBag {
   return {
     moduleId: 0,
@@ -446,19 +218,11 @@ function settingsBag(overrides: Partial<ModuleSettingsBag> = {}): ModuleSettings
   };
 }
 
-/** The two members of the export request contract. The module is named by the route, not by the body. */
+/** The two members of the export request contract. */
 function exportRequest(overrides: Partial<ModuleExportRequest> = {}): ModuleExportRequest {
   return { fileName: 'Announcements', folder: '', ...overrides };
 }
 
-/**
- * The four members of the import request contract, whose target defaults to MINUS ONE.
- *
- * That default is the point of the fixture rather than a convenience: the legacy screen declared its
- * target field initialised to the integer absence marker, so minus one is a value a caller may genuinely
- * hold, and the member is nullable on the contract precisely so an omission can be told apart from a
- * caller naming module ZERO, which is a real module.
- */
 function importRequest(overrides: Partial<ModuleImportRequest> = {}): ModuleImportRequest {
   return {
     moduleId: -1,
@@ -487,12 +251,11 @@ function pagedBody(
 }
 
 /**
- * A page whose reported total is set INDEPENDENTLY of the rows it carries.
- *
- * {@link pagedBody} derives the total from the row count, which is right for a single-page answer and
- * useless for the walk: every interesting property of a walk is about the relationship between the rows
- * in hand and the total the server claims, and a helper that keeps the two equal by construction cannot
- * express a partial page at all.
+ * A page whose reported total is set INDEPENDENTLY of the rows it carries. {@link pagedBody} derives the
+ * total from the row count, which is right for a single-page answer and useless for the walk: every
+ * interesting property of a walk is about the relationship between the rows in hand and the total the
+ * server claims, and a helper that keeps the two equal by construction cannot express a partial page at
+ * all.
  *
  * @param items The rows this page carries.
  * @param totalCount What the server claims exists across every page.
@@ -517,9 +280,6 @@ function walkPage(
 /**
  * A full page of distinct rows, so a walk has a reason to ask for another.
  *
- * Every row carries its own placement identifier, because the picker de-duplicates on the module and a
- * page of identical rows would collapse to one choice and hide whether the walk gathered them all.
- *
  * @param count How many rows to build.
  * @param startingAt The first placement identifier to use.
  */
@@ -538,15 +298,7 @@ function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
 }
 
-/**
- * A problem document carrying the server's own failure code.
- *
- * The `type` member is where the code lives, behind the URN prefix the failure-code reader strips. The
- * codes are the SERVER's vocabulary rather than the legacy enumeration member names: the legacy
- * PascalCase names could never match a value taken off the wire, so every lookup keyed on them returned
- * nothing. `traceId` is present on every fixture because it is the only join key between what a person
- * saw in the browser and what the server logged.
- */
+/** A problem document carrying the server's own failure code. */
 function problem(code: string, status: number, detailText: string): ProblemDetails {
   return {
     type: `${FAILURE_TYPE_PREFIX}${code}`,
@@ -559,9 +311,8 @@ function problem(code: string, status: number, detailText: string): ProblemDetai
 }
 
 /**
- * A field-level refusal, whose per-field dictionary uses .NET model-state keys.
- *
- * Those keys are NOT camel-cased, and because the dictionary is an index signature under
+ * A field-level refusal, whose per-field dictionary uses .NET model-state keys. Those keys are NOT
+ * camel-cased, and because the dictionary is an index signature under
  * `noPropertyAccessFromIndexSignature`, every read of it below is an INDEX EXPRESSION. A property access
  * is a compile error here, by design.
  */
@@ -580,12 +331,8 @@ function validationProblem(status: number): ValidationProblemDetails {
 }
 
 /**
- * Narrows a request body to the import contract.
- *
- * The framework types a request body loosely, so it is narrowed through a predicate rather than widened
- * with a suppression or an escape-hatch annotation. The specification that uses it asserts the predicate
- * held BEFORE reading through it, so a body of the wrong shape fails loudly rather than skipping the
- * assertions inside the guard.
+ * Narrows a request body to the import contract. The framework types a request body loosely, so it is
+ * narrowed through a predicate rather than widened with a suppression or an escape-hatch annotation.
  */
 function isImportBody(value: unknown): value is ModuleImportRequest {
   if (typeof value !== 'object' || value === null) {
@@ -600,12 +347,9 @@ function isImportBody(value: unknown): value is ModuleImportRequest {
 }
 
 /**
- * Every page the derivation placed, flattened depth-first, paired with the depth it was placed at.
- *
- * Used to prove CONSERVATION: every row handed to the derivation must appear exactly once across the
- * placed nodes and the reported unplaceable rows together, so nothing can be silently dropped. Written
- * iteratively for the same reason the derivation itself is - a malformed input must not exhaust the stack
- * in the assertion helper either.
+ * Every page the derivation placed, flattened depth-first, paired with the depth it was placed at. Used
+ * to prove CONSERVATION: every row handed to the derivation must appear exactly once across the placed
+ * nodes and the reported unplaceable rows together, so nothing can be silently dropped.
  */
 function flattenTree(roots: readonly TabTreeNode[]): readonly TabTreeNode[] {
   const flattened: TabTreeNode[] = [];
@@ -627,7 +371,6 @@ function placedIds(hierarchy: TabHierarchy): readonly number[] {
   return flattenTree(hierarchy.roots).map((node) => node.tab.tabId);
 }
 
-
 describe('ModuleStore', () => {
   let store: ModuleStore;
   let httpMock: HttpTestingController;
@@ -638,12 +381,6 @@ describe('ModuleStore', () => {
       // `provideHttpClientTesting()` REPLACES the backend that `provideHttpClient()` installed, so
       // reversing the two would leave the real backend in place and every expectation below would find
       // nothing while the specification attempted live requests.
-      //
-      // The store is listed explicitly even though it declares itself at the application root, so that
-      // the instance under test is pinned to THIS injector and cannot be shared across specifications.
-      // No interceptor is registered: the correlation identifier and the bearer credential are attached
-      // by the two functional interceptors wired once at application configuration, and running that
-      // chain here would mean asserting several units at once.
       providers: [provideHttpClient(), provideHttpClientTesting(), ModuleStore],
     });
 
@@ -652,10 +389,8 @@ describe('ModuleStore', () => {
   });
 
   afterEach(() => {
-    // The single most valuable line in the file. It fails on any request no expectation consumed, which
-    // is what turns "the removal re-read the listing, and nothing else happened" into a test result. It
-    // is equally how a MISSING follow-up read is caught, because the expectation for it fails first, and
-    // how a page mutation this slice must never issue would surface.
+    // The single most valuable line in the file. It fails on any request no expectation consumed, which is
+    // what turns "the removal re-read the listing, and nothing else happened" into a test result.
     httpMock.verify();
   });
 
@@ -664,13 +399,7 @@ describe('ModuleStore', () => {
   // specification, and the backend is rebuilt for every one of them.
   // ---------------------------------------------------------------------------------------------------
 
-  /**
-   * Consumes exactly one pending request at a literal path.
-   *
-   * The predicate form is used rather than the string form so that the VERB is asserted alongside the
-   * path. This slice drives two transports through one backend, so a specification that matched on a path
-   * alone could consume the wrong request and still pass.
-   */
+  /** Consumes exactly one pending request at a literal path. */
   function expectRequest(method: string, url: string): TestRequest {
     return httpMock.expectOne(
       (candidate) => candidate.method === method && candidate.url === url,
@@ -683,18 +412,13 @@ describe('ModuleStore', () => {
     expectRequest('GET', '/api/v1/modules').flush(pagedBody(rows, pageIndex, pageSize));
   }
 
-  /**
-   * Reads a portal's pages and answers with the rows given, so the hierarchy can be inspected.
-   *
-   * The page listing answers inside the same single-item envelope every non-paged read uses, which is why
-   * the rows are wrapped rather than flushed bare.
-   */
+  /** Reads a portal's pages and answers with the rows given, so the hierarchy can be inspected. */
   function loadTabsWith(portalId: number, rows: readonly TabListItem[]): void {
     store.loadTabs(portalId);
     expectRequest('GET', `/api/v1/portals/${portalId}/tabs`).flush(envelope(rows));
   }
 
-  /** Asserts that no reversal endpoint was addressed. There is none to address. */
+  /** Asserts that no reversal endpoint was addressed. */
   function expectNoReversalRequest(): void {
     for (const fragment of REVERSAL_FRAGMENTS) {
       httpMock.expectNone((candidate) => candidate.url.includes(fragment));
@@ -711,16 +435,11 @@ describe('ModuleStore', () => {
     expect(store.failure()).toBeNull();
   });
 
-  // ===================================================================================================
   // PROOF 1 - IDENTIFIERS OF ZERO ARE REAL, ON BOTH THE MODULE SIDE AND THE PAGE SIDE
-  // ===================================================================================================
-  //
   // `01.00.00.SqlDataProvider` line 221 declares `[ModuleID] [int] IDENTITY (0, 1)` and line 140 declares
   // `[TabID] [int] IDENTITY (0, 1)`, so the first module and the first page of an installation are both
   // numbered ZERO. Line 77 declares `[PortalID] [int] IDENTITY (-1, 1)`, so minus one is the first portal
-  // and zero is the second. Every specification in this group would pass trivially against a store that
-  // guarded its identifiers with a truthiness test - EXCEPT that such a store would issue no request at
-  // all, which is what the paired expectation and the verification in `afterEach` turn into a failure.
+  // and zero is the second.
   describe('identifiers of zero and minus one', () => {
     it('issues GET /api/v1/modules/0 for module ZERO rather than skipping the read', () => {
       store.loadModule(0);
@@ -792,9 +511,6 @@ describe('ModuleStore', () => {
       store.selectTab(undefined);
       expect(store.selectedTabId()).toBeUndefined();
 
-      // NO PLACEMENT SELECTION EXISTS TO TEST. A placement is named on the call that addresses it, never
-      // held between calls, so there is no third slice here that could be confused with zero. Asserted
-      // with `in` so it walks the prototype too - a mutator would live there rather than on the instance.
       expect('selectPlacement' in store).toBeFalse();
     });
 
@@ -812,15 +528,7 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF 2 - THE TWO CACHE PERIODS ARE TWO FACTS, AND NOTHING FOLDS ONE ONTO THE OTHER
-  // ===================================================================================================
-  //
-  // `Library/Components/Modules/ModuleInfo.vb` initialises `_CacheTime = 0` at line 731 and
-  // `_DefaultCacheTime = -1` at line 759 - IN THE SAME CONSTRUCTOR - with the property accessors at
-  // lines 203 and 482. Two adjacent members, two different markers. The target puts the instance period
-  // on the module contracts and the default on the definition contract, so folding either into the other
-  // would change which modules expose a cache control and for how long the rest cache.
   describe('cacheTime and defaultCacheTime', () => {
     it('keeps an instance period of ZERO beside a definition default of MINUS ONE, both exactly', () => {
       store.loadModule(0);
@@ -851,10 +559,6 @@ describe('ModuleStore', () => {
     });
 
     it('exposes NO derived "effective" cache period that merges the two', () => {
-      // Asserted as an absence because a merged projection is the specific defect this pairing exists to
-      // prevent: a screen reading one value that was silently substituted for the other cannot tell that
-      // it happened. If any of these ever appears, it is a behavioural-equivalence violation to report
-      // rather than a member to test.
       expect('effectiveCacheTime' in store).toBeFalse();
       expect('resolvedCacheTime' in store).toBeFalse();
       expect('cacheTimeOrDefault' in store).toBeFalse();
@@ -862,9 +566,6 @@ describe('ModuleStore', () => {
     });
 
     it('does not invent a cache member on a listing row when a replacement is echoed back', () => {
-      // The listing projection deliberately omits the cache period: it lives on the module contracts and
-      // the default lives on the definition contract, and neither appears on a row. A projection that
-      // added one here would be manufacturing a fact the endpoint never sent.
       loadListWith([listRow({ moduleId: 0, tabModuleId: 5 })]);
 
       store.updateModule(0, updateRequest(), 5);
@@ -879,13 +580,7 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF 3 - REMOVAL IS SOFT, SO THE LISTING IS RE-READ AND NO ROW IS PRUNED LOCALLY
-  // ===================================================================================================
-  //
-  // The endpoint answers `204 No Content`, yet the row survives in the database with its marker set -
-  // which is exactly what the legacy recycle bin read. Whether such a row still appears is the LISTING
-  // endpoint's decision, expressed through its inclusion flag, and it is not this slice's to infer.
   describe('removal is soft and requires a re-read', () => {
     /**
      * Loads a settings bag into the store, which is the state a settings screen leaves behind.
@@ -906,13 +601,7 @@ describe('ModuleStore', () => {
 
     /**
      * ⚠ THE STATE-DEPENDENT CRITICAL DEFECT. This store is `providedIn: 'root'`, so a settings bag read
-     * for one screen outlives it. Measured: remove a placement, then reach `/modules/{id}` for the same
-     * identifier in the SAME session, and the editor rendered the DELETED module's data in a fully
-     * populated form with Update, Cancel and Delete all ENABLED, beneath an inline Not-Found alert
-     * saying the record could not be read — the only surface that permitted a second, doomed removal of
-     * something already gone. A COLD navigation to the same address correctly rendered no controls,
-     * which is what made the defect state-dependent: the request fails identically either way, and what
-     * differed was whether this signal still held an answer for the form to hydrate from.
+     * for one screen outlives it.
      */
     it('discards the cached record of the module it removed', () => {
       loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
@@ -1038,8 +727,8 @@ describe('ModuleStore', () => {
       expectRequest('GET', '/api/v1/modules').flush(pagedBody([]));
 
       // No bin endpoint, no reversal endpoint, and the page surface is closed at read, read-one and
-      // replace, so nothing on this slice can undo a removal. The fragments are composed at runtime so
-      // that the token being forbidden does not itself appear in this tree - see the note at the head.
+      // replace, so nothing on this slice can undo a removal. The fragments are composed at runtime so that
+      // the token being forbidden does not itself appear in this tree - see the note at the head.
       expectNoReversalRequest();
 
       for (const fragment of REVERSAL_FRAGMENTS) {
@@ -1066,17 +755,7 @@ describe('ModuleStore', () => {
     });
   });
 
-
-  // ===================================================================================================
   // PROOF 4 - THE EXPORTED DOCUMENT ARRIVES IN THE BODY AND IS HELD AS AN OPAQUE STRING
-  // ===================================================================================================
-  //
-  // `Website/admin/Modules/Export.ascx.vb` line 157 obtained the document through a double late-bound
-  // cast, legal only because the administration code-behinds were compiled with Option Strict OFF
-  // (`Website/release.config` line 125), and lines 168 to 186 then wrote that string to a file beneath the
-  // portal's home directory map path, registering it in the file table afterwards. The target does
-  // NEITHER: the endpoint answers `200` with the document in the response body, and this slice holds it
-  // verbatim. Presenting it or saving it is the export SCREEN's concern.
   describe('export holds the returned document opaquely', () => {
     it('posts to /api/v1/modules/0/export and retains the body as a plain string', () => {
       const request: ModuleExportRequest = exportRequest();
@@ -1090,9 +769,6 @@ describe('ModuleStore', () => {
 
       const call = expectRequest('POST', '/api/v1/modules/0/export');
 
-      // The request contract is transmitted WHOLE, both members, with the empty folder present rather
-      // than filtered out. The module is named by the ROUTE and never by the body, which is the one
-      // structural difference between this operation and its import counterpart.
       expect(call.request.body).toEqual(request);
       expect(call.request.responseType).toBe('text');
       expect(store.exporting()).toBeTrue();
@@ -1106,11 +782,8 @@ describe('ModuleStore', () => {
     });
 
     it('holds a document containing a script element INERT, as text and nothing else', () => {
-      // The exported content is module-authored, which makes it the most untrusted string this slice
-      // holds - a second, independent untrusted channel alongside the wording in a problem document. The
-      // in-scope legacy resource files carry seventy-six values containing markup, four of them a script
-      // element, so a slice that wrapped this value as trusted markup would be a live injection vector.
-      // It is stored as a string, and it is neither parsed nor marked safe anywhere.
+      // The exported content is module-authored, which makes it the most untrusted string this slice holds
+      // - a second, independent untrusted channel alongside the wording in a problem document.
       const hostile = '<content type="Announcements"><script>alert(1)</script></content>';
 
       store.exportModule(0, exportRequest());
@@ -1119,17 +792,10 @@ describe('ModuleStore', () => {
       const held: string | null = store.exportedContent();
       expect(typeof held).toBe('string');
       expect(held).toBe(hostile);
-      // Character-for-character, with the markup still escaped-free and un-neutralised: the value was
-      // not sanitised-and-trusted, because sanitising here would be this slice deciding a rendering
-      // question that belongs to the component that renders it.
       expect(held).toContain('<script>alert(1)</script>');
     });
 
     it('retains an EMPTY document as the empty string rather than normalising it to null', () => {
-      // `Export.ascx.vb` line 159 tested `Content <> ""`, so an empty export was a recognised answer
-      // rather than a fault, and the legacy absent-string marker IS the empty string. Here `null` means
-      // "nothing has been exported yet" and the empty string means "the export produced nothing", and the
-      // two must stay distinguishable.
       expect(store.exportedContent()).toBeNull();
 
       store.exportModule(0, exportRequest());
@@ -1154,9 +820,6 @@ describe('ModuleStore', () => {
     });
 
     it('recovers a refusal that arrived as TEXT, because this response is read as text', () => {
-      // The success response carries a markup media type, so the whole exchange is read as text - which
-      // means a problem document arrives as an unparsed string rather than as an object. The slice parses
-      // it once, in one place, and a body that is not a document at all falls back to the status.
       store.exportModule(0, exportRequest());
       expectRequest('POST', '/api/v1/modules/0/export').flush(
         JSON.stringify(problem('module.not_portable', 409, 'Not supported.')),
@@ -1185,25 +848,12 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
-  // PROOF 5 - IMPORT CARRIES NO ROUTE IDENTIFIER, AND A BODY TARGET OF MINUS ONE IS TRANSMITTED VERBATIM
-  // ===================================================================================================
-  //
-  // `Website/admin/Modules/Import.ascx.vb` line 51 declared `Private Shadows ModuleId As Integer = -1` -
-  // an identifier field seeded with the integer absence marker from
-  // `Library/Components/Shared/Null.vb` lines 41 to 45 - and lines 67 to 68 parsed the real target out of
-  // a request value into it. Minus one is therefore a value a caller may genuinely hold, and the member is
-  // nullable on the contract precisely so an omission can be told apart from a caller naming module ZERO.
   describe('import posts to a route with no identifier', () => {
     it('addresses exactly /api/v1/modules/import, with no identifier segment in either direction', () => {
       store.importModule(importRequest());
 
       const call = expectRequest('POST', '/api/v1/modules/import');
 
-      // Asserted twice, positively and negatively. The obvious mistake is to interpolate the target
-      // between the collection segment and the operation segment, the way every other module operation
-      // addresses its subject; that produces a plausible-looking `404`, or worse a successful import
-      // against the wrong module.
       expect(call.request.url).toBe('/api/v1/modules/import');
       expect(call.request.url).not.toMatch(/\/modules\/-?\d+\/import$/);
       expect(call.request.params.keys().length).toBe(0);
@@ -1260,10 +910,8 @@ describe('ModuleStore', () => {
 
     it('reports completion on success WITHOUT synthesising a row from the payload', () => {
       // MEASURED DIVERGENCE, ASSERTED AS THE SLICE ACTUALLY BEHAVES. An import replaces a module's CONTENT
-      // and changes no column the listing projects, so the command records completion and issues no
-      // further request; the verification in `afterEach` is what proves the absence. What matters for
-      // behavioural equivalence is the other half of the claim, and it holds: nothing is manufactured from
-      // the request, so no row appears that the server never returned.
+      // and changes no column the listing projects, so the command records completion and issues no further
+      // request; the verification in `afterEach` is what proves the absence.
       loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })]);
 
       store.importModule(importRequest({ moduleId: 4 }));
@@ -1336,14 +984,6 @@ describe('ModuleStore', () => {
     });
 
     it('reads no file and parses no document on this side', () => {
-      // `Import.ascx.vb` line 184 opened a stream against the portal's home directory map path joined to
-      // the operator's folder and name, lines 188 to 192 built a document and reported a parse failure,
-      // line 197 compared the declared type against the module's own name and line 200 handed the inner
-      // markup to the module's portability behaviour, passing an acting account explicitly. Every part of
-      // that is server behaviour now, and the acting account comes from the authenticated caller, because
-      // an identifier a request could choose for itself would let one account attribute an import to
-      // another. The document travels as TEXT inside a JSON body: no multipart form, no upload primitive
-      // and no server path appears anywhere in this operation.
       store.importModule(importRequest());
 
       const call = expectRequest('POST', '/api/v1/modules/import');
@@ -1354,35 +994,12 @@ describe('ModuleStore', () => {
     });
   });
 
-
-  // ===================================================================================================
   // PROOF 6 - THE PAGE HIERARCHY IS DERIVED HERE, AND THE ROOT TEST IS AN EXACT EQUALITY
-  // ===================================================================================================
-  //
-  // This is the highest-value group in the file, because the derivation exists nowhere else. The page
-  // transport is closed at three operations and states that folding a flat list into a hierarchy "belongs
-  // to a signal store or to the component that renders the indentation", and the models layer declares no
-  // tree type at all. So there is no server answer to compare against and no other specification covering
-  // it: these assertions are the whole proof.
-  //
-  // Two encodings of "root" are in play and BOTH are admitted, which is not hedging. `tab.model.ts` states
-  // that a root page arrives as `parentId: null` because the backend converts the legacy marker at the
-  // boundary, where minus one would otherwise be indistinguishable from a legitimate tenant identifier.
-  // The legacy encoding is minus one, measured at `Library/Components/Tabs/TabInfo.vb` line 91 and at
-  // `TabController.vb` lines 1032 and 1074, both of which assign the integer absence marker at the point
-  // where a page is being made root-level. Testing minus one ALONE against the current contract would put
-  // every root page into the unplaceable set and render an EMPTY tree behind a successful response;
-  // testing null alone would silently re-parent a root page if a legacy-shaped payload ever arrived.
-  //
-  // What neither test can be wrong about is the case that matters most: `dbo.Tabs.TabID` is
-  // `IDENTITY (0, 1)` (`01.00.00.SqlDataProvider` line 140), so a parent of ZERO is a REAL PARENT under
-  // both encodings, and only an exact equality survives that. A truthiness test, a comparison against a
-  // bound or a loose null comparison would each re-parent every child of page zero to the root.
+  // What neither test can be wrong about is the case that matters most: `dbo.Tabs.TabID` is `IDENTITY (0,
+  // 1)` (`01.00.00.SqlDataProvider` line 140), so a parent of ZERO is a REAL PARENT under both encodings,
+  // and only an exact equality survives that.
   describe('page hierarchy derivation', () => {
     it('nests a page whose parent is page ZERO under page zero, and does NOT re-parent it to the root', () => {
-      // The decisive specification. It fails against every defective root test at once - a truthiness
-      // negation, a comparison against zero or one, a loose null comparison and a double negation - because
-      // each of those classifies a parent of zero as "no parent".
       loadTabsWith(0, [
         tabRow({ tabId: 0, tabName: 'Home', parentId: -1, tabOrder: 1 }),
         tabRow({ tabId: 9, tabName: 'News', parentId: 0, tabOrder: 1, level: 1 }),
@@ -1404,10 +1021,6 @@ describe('ModuleStore', () => {
     it('treats the LEGACY encoding, where parentId === -1, as a root', () => {
       const legacyRoot: TabListItem = tabRow({ tabId: 3, tabName: 'Home', parentId: -1 });
 
-      // Stated explicitly, because minus one is the DOMAIN VALUE ITSELF here rather than a stand-in for
-      // absence - which is what makes this the one legitimate comparison against it in this file. The
-      // strict form is used deliberately: `parentId !== -1` for "has a parent" is equally legitimate,
-      // while a comparison against a bound or a truthiness test is not.
       expect(legacyRoot.parentId === -1).toBeTrue();
 
       loadTabsWith(0, [legacyRoot, tabRow({ tabId: 4, tabName: 'News', parentId: 3, level: 1 })]);
@@ -1484,11 +1097,6 @@ describe('ModuleStore', () => {
     });
 
     it('TERMINATES on a mutual parent cycle and reports both pages rather than looping', () => {
-      // A page names one parent, so a cycle can only form among pages unreachable from any root. The
-      // traversal expands only pages not yet placed, which bounds it on any input whatsoever - a mutual
-      // pair, a self-parenting page, or a long chain - without a separate cycle detector and without
-      // recursion that could exhaust the stack. This specification would hang or overflow against a naive
-      // recursive implementation, which is precisely why it is here.
       loadTabsWith(0, [
         tabRow({ tabId: 1, tabName: 'A', parentId: 2 }),
         tabRow({ tabId: 2, tabName: 'B', parentId: 1 }),
@@ -1510,9 +1118,6 @@ describe('ModuleStore', () => {
     });
 
     it('SURFACES a page whose parent is absent from the response rather than dropping it', () => {
-      // A caller can legitimately hold a list whose parents were filtered out, so this is an ordinary
-      // outcome rather than a fault - and it is reported rather than discarded, because a page that
-      // vanished from both the tree and the report would be invisible to the operator who owns it.
       loadTabsWith(0, [
         tabRow({ tabId: 0, tabName: 'Home', parentId: -1 }),
         tabRow({ tabId: 11, tabName: 'Detached', parentId: 99, level: 1 }),
@@ -1553,9 +1158,6 @@ describe('ModuleStore', () => {
 
       const node: TabTreeNode = store.tabTree()[0];
 
-      // Every member of the listing contract is reachable through the node, and the depth the traversal
-      // computed sits BESIDE the server's own value rather than overwriting it: the two can legitimately
-      // differ when the server computed its value against a parent chain this response does not contain.
       expect(node.tab.tabName).toBe('Home');
       expect(node.tab.tabPath).toBe('//Home');
       expect(node.tab.isVisible).toBeTrue();
@@ -1613,21 +1215,10 @@ describe('ModuleStore', () => {
     });
   });
 
-
-  // ===================================================================================================
   // PROOF 7 - EVERY LOOKUP IS UNPAGED, AND NO PAGING STATE IS KEPT FOR ONE
-  // ===================================================================================================
-  //
-  // Three collections are deliberately unpaged: a portal's pages, the definition catalogue, and the
-  // definitions of one deployed bundle. The page listing is unpaged for a stated reason - "a hierarchy is
-  // read whole because a partially fetched tree cannot be indented correctly" - and the catalogue is small,
-  // bounded reference data the upgrade scripts seed, whose endpoint accepts no query parameter at all.
   describe('the picker choice set is complete, or it is a refusal', () => {
     /**
      * A paged envelope whose total is stated independently of the page's length.
-     *
-     * Distinct from {@link pagedBody}, which derives the total FROM the rows and so can never
-     * describe a multi-page result. Every case below turns on exactly that distinction.
      *
      * @param items The page's rows.
      * @param totalCount The total across every page, as the server states it.
@@ -1680,9 +1271,9 @@ describe('ModuleStore', () => {
     });
 
     it('walks every page so no placement is silently left out of the picker', () => {
-      // ⚠ THE M-1 REGRESSION, PINNED. The previous implementation issued ONE request at the widest
-      // page size and published its rows as the choice set, so the hundred-and-first placement in a
-      // tenant simply could not be chosen and nothing said so.
+      // ⚠ THE M-1 REGRESSION, PINNED. The previous implementation issued ONE request at the widest page
+      // size and published its rows as the choice set, so the hundred-and-first placement in a tenant
+      // simply could not be chosen and nothing said so.
       const firstPage: readonly ModuleListItem[] = Array.from(
         { length: MAX_PAGE_SIZE },
         (_unused, index) => listRow({ moduleId: index }),
@@ -1782,10 +1373,9 @@ describe('ModuleStore', () => {
       expect(issued).toBe(MAXIMUM_CHOICE_PAGES);
       expect(store.choices()).toEqual([]);
       expect(store.choicesTotal()).toBe(0);
-      // ⚠ THE PICKER READ HAS ITS OWN FAILURE IDENTITY. It shares an endpoint with the grid read, so
-      // naming the route would make a picker refusal indistinguishable from any listing refusal
-      // anywhere in the application — and the transfer screens filter their refusal surface on exactly
-      // this name. `module-import.component.ts` names `loadChoices` in its own operation list.
+      // ⚠ THE PICKER READ HAS ITS OWN FAILURE IDENTITY. It shares an endpoint with the grid read, so naming
+      // the route would make a picker refusal indistinguishable from any listing refusal anywhere in the
+      // application — and the transfer screens filter their refusal surface on exactly this name.
       expect(store.failure()?.operation).toBe('loadChoices');
       expect(store.choicesLoading()).toBeFalse();
     });
@@ -1793,8 +1383,6 @@ describe('ModuleStore', () => {
     it('leaves the browsable listing entirely alone', () => {
       // The separation the choices slice exists for: opening a picker must not resize, re-order or
       // repaginate a listing a sibling screen is showing.
-      // The size is set FIRST: changing it deliberately returns to the first page, so the reverse
-      // order would leave the coordinate at zero and prove nothing.
       store.setPageSize(25);
       store.setPageIndex(3);
       loadListWith([listRow({ moduleId: 7 })], 3, 25);
@@ -1860,13 +1448,6 @@ describe('ModuleStore', () => {
     });
 
     it('addresses one definition by the ROUTE spelling while the response keeps its own member name', () => {
-      // NAMING, STATED EXPLICITLY BECAUSE THE TWO SPELLINGS GENUINELY DIFFER AND BOTH ARE CORRECT. The
-      // endpoint is declared `GET /module-definitions/{moduleDefinitionId}`, spelled out in full, and the
-      // command below names its argument that way; the RESPONSE contract abbreviates the same concept on
-      // its own member, which `module.model.ts` declares as `moduleDefId` on four separate shapes. Each
-      // spelling is taken from its own declaration and neither is unified here by guesswork, so the
-      // argument passed in is the route's and the member read back out is the response's. The bundle
-      // identifier has only one spelling, `desktopModuleId`, and it is used unchanged.
       store.loadDefinition(4);
       const call = expectRequest('GET', '/api/v1/module-definitions/4');
 
@@ -1916,16 +1497,7 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF 8 - THE MODULE LISTING IS PAGED, AND ITS WIRE PAGE INDEX IS ZERO-BASED
-  // ===================================================================================================
-  //
-  // There is no legacy module-list screen to inherit a contract from: `ls Website/admin/Modules` yields
-  // only the export, import and settings screens. Every member asserted here therefore comes from
-  // `module.service.ts` and `paged-result.model.ts`. The legacy sibling screens carried a ONE-based counter
-  // and subtracted one at the call site - `Website/admin/Users/Users.ascx.vb` line 265 and
-  // `Website/admin/Portal/Portals.ascx.vb` line 142 both pass `CurrentPage - 1` - and that subtraction
-  // survives only as a presentation concern. This slice holds the SERVER's coordinate.
   describe('the paged module listing', () => {
     it('requests the first page as index ZERO with the default size, performing no arithmetic', () => {
       store.loadModules();
@@ -2008,17 +1580,11 @@ describe('ModuleStore', () => {
       const call = expectRequest('GET', '/api/v1/modules');
 
       expect(call.request.params.get('query')).toBe('news');
-      // Composing a pattern is the server's business: the legacy readers decorated it at the call site and
-      // matched from the START of a value, and the target applies a substring match server-side. A pattern
-      // decorated here would be decorated twice.
       expect(call.request.params.get('query')).not.toContain(WILDCARD);
       call.flush(pagedBody([]));
     });
 
     it('transmits an EMPTY filter as an empty filter rather than as no filter', () => {
-      // The legacy absent-string marker IS the empty string, so the two are held apart here and neither is
-      // normalised into the other. Reinterpreting an explicit empty filter would be this slice deciding a
-      // question the server already answers.
       store.setQuery('');
 
       store.loadModules();
@@ -2066,9 +1632,7 @@ describe('ModuleStore', () => {
 
     it('sequences the portal scope: the pages FIRST, then the listing restricted to one of them', () => {
       // Ordering two requests is composition, so it lives here rather than in either transport - each of
-      // which is confined to one method, one endpoint, one request. The pages are needed before the listing
-      // can be restricted to one, because a screen that fired both at once could restrict the listing to a
-      // page that turned out not to exist.
+      // which is confined to one method, one endpoint, one request.
       store.loadPortalScope(-1, 0);
 
       const pages = expectRequest('GET', '/api/v1/portals/-1/tabs');
@@ -2110,16 +1674,7 @@ describe('ModuleStore', () => {
     });
   });
 
-
-  // ===================================================================================================
   // PROOF 9 - EVERY VISIBILITY CODE IS A REAL VALUE, INCLUDING ZERO AND TWO
-  // ===================================================================================================
-  //
-  // The enumeration was renamed on the way across and its numbers were written down explicitly rather than
-  // left to declaration order, because a member inserted in the middle of the legacy declaration would have
-  // silently remapped every stored row. `None` means "renders without container chrome" - a rendering
-  // instruction an operator CHOSE, offered as the third of three radio options on the legacy screen - and it
-  // is emphatically not "no visibility recorded".
   describe('visibility codes', () => {
     it('retains the code ZERO on a listing row rather than reading it as an absence', () => {
       loadListWith([listRow({ visibility: ModuleVisibility.Maximized })]);
@@ -2155,24 +1710,15 @@ describe('ModuleStore', () => {
     });
 
     it('uses the enumeration from the models layer and never re-declares the codes', () => {
-      // Imported as a value because it is an ordinary numeric enumeration rather than a constant one -
-      // `isolatedModules` is enabled, under which a constant enumeration is not a sound declaration. A
-      // second local declaration of these codes is exactly how two spellings of one fact start to drift.
       expect(ModuleVisibility.Maximized).toBe(0);
       expect(ModuleVisibility.Minimized).toBe(1);
       expect(ModuleVisibility.None).toBe(2);
     });
   });
 
-  // ===================================================================================================
   // PROOF 10 - THE PAGE SURFACE IS READ-ONLY FROM HERE, AND ONE OF ITS THREE READS IS UNUSED
-  // ===================================================================================================
-  //
   // The page transport publishes exactly three operations - read a portal's pages, read one page, replace
-  // one page - and there is NO create route and NO delete route on the server to call. This slice consumes
-  // only the first of the three: it needs a flat list to derive a hierarchy and a picker from, and it neither
-  // reads nor replaces an individual page. Both facts are asserted as ABSENCES, because an absence is what
-  // they are.
+  // one page - and there is NO create route and NO delete route on the server to call.
   describe('page mutation is never issued from this slice', () => {
     it('never posts to or deletes from the page collection', () => {
       loadTabsWith(0, [tabRow({ tabId: 0, parentId: -1 }), tabRow({ tabId: 1, parentId: 0 })]);
@@ -2180,13 +1726,6 @@ describe('ModuleStore', () => {
       store.selectTab(1);
       store.setTabFilter(1);
 
-      // No create route and no delete route exists, so addressing one would be addressing something the
-      // API does not serve.
-      //
-      // Counted rather than asserted through `expectNone`, which throws and so records no expectation at
-      // all - a spec that claims three absences would otherwise be reported as claiming nothing. Each
-      // predicate is scoped to one verb, so `match` removes only what that verb matched (nothing), and the
-      // `verify()` in the teardown still guards every other request this slice might have issued.
       expect(httpMock.match((candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/tabs'))
         .withContext('no page is created through this slice')
         .toEqual([]);
@@ -2228,21 +1767,12 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF 11 - SENTINEL FIDELITY, WHICH IS THE LARGEST SINGLE RISK IN THIS FEATURE
-  // ===================================================================================================
-  //
   // `Library/Components/Shared/Null.vb` defines a marker for every primitive: lines 36 to 45 give minus one
   // for a short and for an integer, line 48 gives 255 for a byte, lines 51 to 65 give the smallest value of
   // each floating type, lines 66 to 70 give the bottom of the calendar for a date, lines 71 to 75 give THE
-  // EMPTY STRING for a string - the accessor body is literally `Return ""`, not a null - lines 76 to 80 give
-  // `False` for a boolean and lines 81 to 85 give the empty identifier for one of those. Its test at lines
-  // 208 to 237 returns true for every one of those values, which is why the legacy code could not tell
-  // `false` from "not recorded". The module tree is the LARGEST consumer of that helper of all five in-scope
-  // trees.
-  //
-  // In the target every one of those values is DATA. The server serialises with an ignore condition that
-  // elides nothing, so they arrive un-elided, and the boolean members are non-nullable.
+  // EMPTY STRING for a string - the accessor body is literally `Return ""`, not a null - lines 76 to 80
+  // give `False` for a boolean and lines 81 to 85 give the empty identifier for one of those.
   describe('sentinel fidelity', () => {
     it('round-trips a detail carrying every marker value unchanged', () => {
       const marked: ModuleDetail = detail({
@@ -2304,10 +1834,6 @@ describe('ModuleStore', () => {
       const held: ModuleDetail | null = store.module();
       expect(held?.header).toBe('');
       expect(held?.iconFile).toBe('');
-      // Both markers are treated identically by the LEGACY predicate, and the target keeps them
-      // distinguishable: one legacy screen tested a message against the empty string directly while
-      // another tested it against the marker accessor, which is independent proof that the two were
-      // interchangeable there and must not be here.
       expect(held?.footer).toBeNull();
       expect(held?.moduleTitle).toBeNull();
     });
@@ -2367,12 +1893,7 @@ describe('ModuleStore', () => {
 
     it('keeps the FOUR distinct meanings of MINUS ONE apart within one scenario', () => {
       // The same number carries four unrelated meanings in this feature, and conflating any pair would be a
-      // silent behavioural change. All four appear below at once, each asserted through the member that owns
-      // its meaning:
-      //   a root page                            - the hierarchy places it at the top level
-      //   an unset default cache period          - held on the definition, untouched
-      //   a transfer target not yet assigned     - transmitted verbatim in a request body
-      //   the FIRST REAL PORTAL                  - the tenant identifier on a placement
+      // silent behavioural change.
       loadTabsWith(-1, [tabRow({ tabId: 0, tabName: 'Home', parentId: -1 })]);
       expect(store.tabTree().map((node) => node.tab.tabId)).toEqual([0]);
       expect(store.orphanTabs().length).toBe(0);
@@ -2428,12 +1949,6 @@ describe('ModuleStore', () => {
       expect(store.module()?.moduleId).toBe(0);
       expect(store.selectedModuleId()).toBe(0);
 
-      // ⚠ AND NO LISTING READ FOLLOWS, WHERE THIS CASE USED TO REQUIRE ONE. The create's re-read was
-      // removed: its only caller navigates TO the listing, which reads itself from its address on entry, so
-      // the store's read was a second read of the same page - and because this store serialises its listing
-      // reads, the two raced and the loser was cancelled. A browser audit measured it as
-      // `net::ERR_ABORTED` on `GET /api/v1/modules` followed by an identical `GET` answering 200 one
-      // millisecond later. Counted with `match` rather than `expectNone`, so the size IS the assertion.
       expect(
         httpMock.match(
           (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
@@ -2446,30 +1961,12 @@ describe('ModuleStore', () => {
     });
   });
 
-
-  // ===================================================================================================
   // PROOF 12 - FAILURES ARE HELD STRUCTURALLY, WITH THE TRACE IDENTIFIER, AND NEVER AS MARKUP
-  // ===================================================================================================
-  //
   // The server answers with an RFC 7807 document under a problem media type. Its per-field dictionary uses
   // .NET model-state keys, which are NOT camel-cased, and because that dictionary is an index signature
   // under `noPropertyAccessFromIndexSignature` every read of it below is an INDEX EXPRESSION.
-  //
-  // Severity is resolved by the shared helper rather than decided here, and the distinction it draws is
-  // load-bearing: a REFUSAL is a WARNING. The legacy authority is the access-denied page, fifty lines that
-  // perform no permission check of their own and render BOTH of their branches as a yellow warning, with the
-  // untrusted message HTML-encoded before display.
-  //
-  // The rate-limit status does not arise on any endpoint in this feature. The server's limiter is global and
-  // classifies a request from endpoint metadata - the `[CredentialEndpoint]` marker - falling back to a whole
-  // credential path segment on a body-carrying method, and the module actions carry neither, so no
-  // specification here asserts one: writing a case for a status no request can elicit would mislead a reader
-  // more than saying nothing would.
   describe('failure handling', () => {
     it('records a refusal on an all-pages replacement at WARNING severity, not as an error', () => {
-      // The server enforces a rule of its own on the all-pages flag and no check anticipating it exists in
-      // the slice: a copy of a server rule on the client gives an HTTP caller a different answer from every
-      // other caller, and the two copies drift.
       loadListWith([listRow({ moduleId: 0, tabModuleId: 5 })]);
 
       store.updateModule(0, updateRequest({ allTabs: true }), 5);
@@ -2500,10 +1997,6 @@ describe('ModuleStore', () => {
     });
 
     it('carries the TRACE IDENTIFIER into the failure slice, whole', () => {
-      // Required rather than optional. The identifier is derived server-side from the ambient activity or
-      // the request identifier, so the correlation value the application sends on every request round-trips
-      // back into this body - and it is the ONLY join key between what a person saw in the browser and what
-      // the server logged. It matters most on the transfer paths, which are the hardest to reproduce.
       const document: ProblemDetails = problem('module.content_invalid', 400, 'Not a valid document.');
 
       store.importModule(importRequest());
@@ -2538,10 +2031,6 @@ describe('ModuleStore', () => {
     });
 
     it('holds a refusal WORDING inert, even when it carries a script element', () => {
-      // Measured across the in-scope resource files: seventy-six values carry an HTML tag, and four carry a
-      // script element - one of them a live script block in a portal settings resource. So wording taken off
-      // the wire is untrusted, and this slice stores the STRUCTURED DOCUMENT and never pre-rendered markup.
-      // Nothing here builds markup, marks a value trusted, or stores the result of a sanitiser.
       const hostile = 'Rejected: <script>alert(1)</script>';
 
       store.loadModules();
@@ -2557,9 +2046,6 @@ describe('ModuleStore', () => {
     });
 
     it('holds a refusal wording carrying a leading break tag in BOTH legacy spellings, raw', () => {
-      // The legacy screens prefixed a message with a break tag in two different spellings - the unclosed
-      // form in the portal signup screen and the self-closing form in the account screen - and stripping it
-      // is the shared form-error helper concern rather than this one. The RAW document is what is stored.
       store.loadModules();
       expectRequest('GET', '/api/v1/modules').flush(
         problem('module.rejected', 400, '<br>The first problem'),
@@ -2620,15 +2106,8 @@ describe('ModuleStore', () => {
 
     /**
      * ⚠ THE SETTINGS READ ALSO REPORTS ITSELF INTO A SLOT OF ITS OWN, AND THIS SUITE EXISTS BECAUSE THE
-     * SHARED SLOT PROVABLY CANNOT CARRY THAT FACT. The settings screen issues three reads and every command
-     * clears the shared slot as it starts, so the last read to finish owns it. Measured against a running
-     * server: an administrative module answers `200` for the module, `403 module.settings_protected` for the
-     * settings and `404` for the definition, so the definition displaced the refusal and that screen
-     * rendered a full editable form beneath no banner, offering a save the server had already refused.
-     *
-     * The three expectations below are the ones that make the slot trustworthy: it must survive a LATER
-     * failure recorded by a different command, it must clear when the settings read is retried, and it must
-     * clear when a bag actually arrives.
+     * SHARED SLOT PROVABLY CANNOT CARRY THAT FACT. The settings screen issues three reads and every
+     * command clears the shared slot as it starts, so the last read to finish owns it.
      */
     it('records how the settings read ended in a slot a later failure cannot displace', () => {
       store.loadSettings(0);
@@ -2640,8 +2119,6 @@ describe('ModuleStore', () => {
       expect(store.settingsFailure()?.operation).toBe('loadSettings');
       expect(store.settingsFailure()?.problem?.status).toBe(403);
 
-      // A DIFFERENT command now fails, taking the shared slot. This is the displacement that used to lose
-      // the refusal entirely.
       store.loadDefinition(4);
       expectRequest('GET', '/api/v1/module-definitions/4').flush(
         problem('resource.not_found', 404, 'Gone.'),
@@ -2748,14 +2225,6 @@ describe('ModuleStore', () => {
     });
 
     it('refuses a replacement that echoes NO placement back, leaving the held row alone', () => {
-      // MIGRATION: this case used to assert that an echo-less replacement re-read the listing, on
-      //   the reading that a `200` could carry a null payload. It cannot: the update action
-      //   translates its outcome through the same helper every other value-bearing action uses, and
-      //   that helper answers a not-found problem document the moment the value is absent. So the
-      //   null is drift, the transport refuses it at the boundary, and the refusal is recorded as a
-      //   failure of the save. Committing it instead would have blanked the record the operator had
-      //   just edited WHILE REPORTING THE SAVE AS SUCCESSFUL, which is the defect being closed - and
-      //   the follow-up listing read it triggered would have hidden the drift behind a fresh page.
       loadListWith([listRow({ moduleId: 0, tabModuleId: 5 })]);
 
       store.updateModule(0, updateRequest(), 5);
@@ -2825,19 +2294,9 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF 13 - THE PUBLIC SURFACE IS OBSERVABLE BUT NOT WRITABLE, AND THE BOUNDARY HOLDS
-  // ===================================================================================================
-  //
-  // Composition belongs in this slice: sequencing several calls, holding in-flight and failure state,
-  // deriving the hierarchy, projecting the rows. Formatting, deciding a permission, assembling an HTTP
-  // request by hand, validating a rule and deciding what a pager shows do NOT. Each of those is asserted as
-  // an absence, because a leak across that boundary is how a second, divergent copy of a rule gets created.
   describe('the public surface and its boundary', () => {
     it('exposes writable state ONLY as readonly signals', () => {
-      // A writable signal carries both a setter and an updater; a readonly projection carries neither. The
-      // property-presence test is the type-safe proof: attempting the write instead would require a cast,
-      // and a cast is how an escape hatch gets into a specification.
       expect('set' in store.page).toBeFalse();
       expect('update' in store.page).toBeFalse();
       expect('set' in store.module).toBeFalse();
@@ -2923,9 +2382,9 @@ describe('ModuleStore', () => {
     });
 
     it('exposes NO method that decides a permission - the server is authoritative', () => {
-      // Two closed vocabularies exist and they are not interchangeable: the persisted permission keys on one
-      // side and the policy names the server enforces on the other. Neither decides anything on the client,
-      // there is no deny prefix in this generation of the schema, and a refusal arrives as a `403`.
+      // Two closed vocabularies exist and they are not interchangeable: the persisted permission keys on
+      // one side and the policy names the server enforces on the other. Neither decides anything on the
+      // client, there is no deny prefix in this generation of the schema, and a refusal arrives as a `403`.
       expect('hasPermission' in store).toBeFalse();
       expect('canEdit' in store).toBeFalse();
       expect('canView' in store).toBeFalse();
@@ -2945,9 +2404,6 @@ describe('ModuleStore', () => {
     });
 
     it('injects no other store, and addresses no other aggregate endpoint', () => {
-      // Cross-aggregate coordination is the feature component concern. A store reaching into another store
-      // would make one screen fetch what a different screen owns, and the traffic would be invisible in
-      // either of their specifications.
       loadListWith([listRow()]);
       loadTabsWith(0, [tabRow({ tabId: 0, parentId: -1 })]);
 
@@ -2967,8 +2423,7 @@ describe('ModuleStore', () => {
     it('activates no module-supplied controller, because that resolution moved to the server', () => {
       // The legacy resolved a class name held on the module row through reflection and invoked its
       // portability behaviour in-process; the target resolves it server-side through dependency injection
-      // over a closed set, and none of those legacy sites was ever component-object interop. Nothing on this
-      // side names a class, probes an assembly or invokes a behaviour.
+      // over a closed set, and none of those legacy sites was ever component-object interop.
       expect('businessControllerClass' in store).toBeFalse();
       expect('createObject' in store).toBeFalse();
       expect('resolveController' in store).toBeFalse();
@@ -2977,9 +2432,8 @@ describe('ModuleStore', () => {
 
     it('caches nothing, so every read issues a request', () => {
       // The legacy module controller was the largest single consumer of the legacy static cache, at
-      // twenty-one call sites, with a scaled-expiry set and a coarse portal-wide clear. Caching in the target
-      // is server-side behind an interface. A slice that memoised a read would serve a stale catalogue after
-      // an upgrade seeded a new definition.
+      // twenty-one call sites, with a scaled-expiry set and a coarse portal-wide clear. Caching in the
+      // target is server-side behind an interface.
       store.loadDefinitions();
       expectRequest('GET', '/api/v1/module-definitions').flush(envelope([definition({ moduleDefId: 4 })]));
       expect(store.definitions().length).toBe(1);
@@ -3006,23 +2460,8 @@ describe('ModuleStore', () => {
       expect(store.selectedModuleId()).toBeUndefined();
     });
   });
-  // ===================================================================================================
   // THE PICKER READS EVERY PAGE, BECAUSE IT OFFERS NO PAGER
-  // ===================================================================================================
-  //
-  // `loadChoices` used to issue ONE request for the widest page the endpoint accepts and publish its
-  // items as the whole set. The prose defended that as "a documented limit of a picker rather than a
-  // silent truncation" — documented in a source comment, which is not a place an operator can read, so
-  // it was a silent truncation.
-  //
-  // The consumer is what makes it serious. This slice feeds the import screen's TARGET picker, so on a
-  // tenant with more placements than one page the modules past the boundary could not be chosen as an
-  // import target at all: absent from the list, no pager to reach them, no indication anything had been
-  // left out, and nothing an operator could do about it. It is a data-loss defect wearing the costume of
-  // a page size.
-  //
-  // Every property below is about the walk's TERMINATION or about the total it publishes, because those
-  // are the two things that decide whether a shortfall stays visible.
+  // The consumer is what makes it serious.
   describe('the picker walks every page', () => {
     /** Consumes one page request of the walk, asserted by index and by the width it asks for. */
     function expectChoicePage(pageIndex: number): TestRequest {
@@ -3046,8 +2485,8 @@ describe('ModuleStore', () => {
 
       expectChoicePage(0).flush(walkPage(distinctRows(3), 3));
 
-      // A short page is the last page by definition, so no second request is made. The common case must
-      // not have been made more expensive by the walk: a tenant whose modules fit on one page still costs
+      // A short page is the last page by definition, so no second request is made. The common case must not
+      // have been made more expensive by the walk: a tenant whose modules fit on one page still costs
       // exactly one round trip.
       httpMock.expectNone(
         (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
@@ -3091,9 +2530,6 @@ describe('ModuleStore', () => {
     });
 
     it("stops on the SERVER'S OWN TOTAL when a final page is padded to full width", () => {
-      // Belt and braces against a server that answers a full page even though it has nothing more. Without
-      // this condition the walk would keep asking while the row count kept rising, and the short-page test
-      // would never fire.
       store.loadChoices();
 
       expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE));
@@ -3109,15 +2545,7 @@ describe('ModuleStore', () => {
     it("publishes the SERVER'S total and not the row count", () => {
       // ⚠ THE TOTAL IS REPORTED, NEVER RECOMPUTED, and this is the case that tells the two apart. The
       // server contradicts itself in the one direction that still completes a walk: it supplies THREE
-      // placements while claiming there are two. The walk ends — everything claimed has been gathered —
-      // and the store publishes the claim rather than the row count it could have counted for itself.
-      //
-      // ⚠ THE OPPOSITE DISCREPANCY IS NOT ASSERTED HERE BECAUSE IT CANNOT REACH THIS SLICE AT ALL.
-      // A server claiming MORE than it supplies no longer produces a published-but-short set for a
-      // reader to detect: the walk asks for the next page and, if the server has nothing further,
-      // REFUSES — see the case above, where the choice set comes back empty with a failure recorded.
-      // Detecting a truncated set was the earlier answer to that defect; not publishing one is the
-      // present answer, and it subsumes it.
+      // placements while claiming there are two.
       store.loadChoices();
 
       expectChoicePage(0).flush(walkPage(distinctRows(3), 2));
@@ -3137,14 +2565,7 @@ describe('ModuleStore', () => {
     });
 
     it('sends NO narrowing, ordering or free-text filter on any page of the walk', () => {
-      // The picker wants every placement, so it sends the paging pair and nothing else. Sending the
-      // browsable listing's coordinates would make opening a picker depend on whichever page a sibling
-      // listing happened to be on.
-      // ⚠ THE ORDER OF THESE FIVE CALLS IS LOAD-BEARING, and getting it wrong is what this note prevents
-      // a later edit from doing. `setSort`, `setQuery` and `setIncludeDeleted` each RETURN TO THE FIRST
-      // PAGE by design — a narrowing that kept the operator on page four of a result set that now has two
-      // would show them an empty grid — so every one of them must be set BEFORE the page index, or the
-      // index asserted below is reset by the store's own correct behaviour rather than by the walk.
+      // The picker wants every placement, so it sends the paging pair and nothing else.
       store.setSort('moduleTitle', 'Descending');
       store.setQuery('news');
       store.setIncludeDeleted(true);
@@ -3182,9 +2603,6 @@ describe('ModuleStore', () => {
         statusText: 'Internal Server Error',
       });
 
-      // An error terminates the whole stream, so no third page is requested and the partial rows are NOT
-      // published as though the walk had succeeded — a half-walk committed as a complete set would be the
-      // original defect with extra steps.
       httpMock.expectNone(
         (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
       );
@@ -3251,23 +2669,10 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // SESSION ISOLATION AND READ CONCURRENCY
-  //
-  // Two properties, both of which were absent before: this store had NO whole-store reset and NO
-  // request handles at all. What that meant in practice is worth stating, because neither symptom
-  // looks like a defect from inside a single screen.
-  //
-  // Without a reset, every slice below survived a sign-out — a listing of module titles, a page
-  // hierarchy naming a tenant's pages, and `exportedContent`, which is module CONTENT rather than
-  // metadata. The next operator to sign in was shown all of it.
-  //
-  // Without handles, two reads of the same thing raced, and the winner was whichever response arrived
-  // LAST rather than whichever request was issued last. Responses are not ordered by request order, so
-  // a first request delayed behind a slow query lands after a second and overwrites the newer answer
-  // with the older one — leaving a grid showing a page the pager says it is not on, with nothing in the
-  // application to explain it and nothing reproducible about it.
-  // ---------------------------------------------------------------------------------------------------
+  // Two properties, both of which were absent before: this store had NO whole-store reset and NO request
+  // handles at all. What that meant in practice is worth stating, because neither symptom looks like a
+  // defect from inside a single screen.
   describe('session isolation and read concurrency', () => {
     it('discards every tenant-scoped slice on reset, exported content included', () => {
       loadListWith([listRow({ moduleId: 4, moduleTitle: 'Announcements' })]);
@@ -3302,10 +2707,6 @@ describe('ModuleStore', () => {
     });
 
     it('cancels a read in flight on reset, so its answer cannot repopulate the store', () => {
-      // ⚠ THE HALF THAT CANNOT BE OMITTED. Clearing the slices without releasing the requests would
-      // clear them and then let the response already in flight repopulate them moments later — so the
-      // store would hold the previous session's modules with no command issued to explain where they
-      // came from.
       store.loadModules();
 
       const pending = expectRequest('GET', '/api/v1/modules');
@@ -3336,10 +2737,7 @@ describe('ModuleStore', () => {
 
     it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
       // ⚠ A REGRESSION GUARD FOR A REAL TRAP. An RxJS `Subscription` used as a container is CLOSED once
-      // unsubscribed, and anything added afterwards is unsubscribed the instant it is added. Holding the
-      // write handles that way would mean the FIRST session boundary released them correctly and then
-      // silently cancelled every subsequent write for the rest of the application's life — every save
-      // after one sign-out dispatched and never reporting an outcome.
+      // unsubscribed, and anything added afterwards is unsubscribed the instant it is added.
       store.reset();
 
       store.createModule(createRequest());
@@ -3352,21 +2750,14 @@ describe('ModuleStore', () => {
 
       pending.flush(envelope(detail({ moduleId: 9 })), { status: 201, statusText: 'Created' });
 
-      // ⚠ THE CALLBACK IS PROVEN BY WHAT IT PUBLISHED, NOT BY A SECOND REQUEST, and it used to be proven
-      // by the listing read the create performed. That read was removed: the only caller navigates TO the
-      // listing, which reads itself from its address on entry, so the store's read was a second read of
-      // the same page - and because this store serialises its listing reads, the two raced and the loser
-      // was cancelled, measured in a browser as `net::ERR_ABORTED` followed by an identical `GET` one
-      // millisecond later. The selection below is set by the same callback, so it proves exactly what the
-      // request proved, without depending on work that should not happen.
       expect(store.selectedModuleId()).toBe(9);
       expect(store.saving()).toBeFalse();
     });
 
     it('abandons the earlier listing read when a second is issued', () => {
       // ⚠ THE STALE-ANSWER RACE. Both requests answer the same question, so the LAST response to arrive
-      // wins — which is not necessarily the one asked for last. Releasing the first handle removes it
-      // from the race rather than leaving the outcome to timing.
+      // wins — which is not necessarily the one asked for last. Releasing the first handle removes it from
+      // the race rather than leaving the outcome to timing.
       store.loadModules();
 
       const first = expectRequest('GET', '/api/v1/modules');
@@ -3385,9 +2776,9 @@ describe('ModuleStore', () => {
     });
 
     it('abandons the earlier hierarchy read when a second is issued for another portal', () => {
-      // The page tree is the read most likely to be issued twice in quick succession, because changing
-      // the portal selector re-issues it — and the two answers describe DIFFERENT portals, so a stale
-      // winner shows one tenant's pages under another tenant's name.
+      // The page tree is the read most likely to be issued twice in quick succession, because changing the
+      // portal selector re-issues it — and the two answers describe DIFFERENT portals, so a stale winner
+      // shows one tenant's pages under another tenant's name.
       store.loadTabs(0);
 
       const first = expectRequest('GET', '/api/v1/portals/0/tabs');
@@ -3422,12 +2813,6 @@ describe('ModuleStore', () => {
     });
 
     it('does NOT abandon the definition CATALOGUE when a single definition is read', () => {
-      // ⚠ CANCELLATION IS PER SLICE, AND THIS IS THE CASE THAT PROVES IT. The catalogue and the one
-      // addressed definition are two slices answered by two endpoints, and a read of the second used to
-      // release the first's handle as well. The consequence was silent and unrecoverable from the
-      // screen: a pane that had dispatched the catalogue read got no rows, no failure and no request
-      // outstanding to fill them, so it would sit empty until something told it to read again — and
-      // nothing ever learned it had been interrupted.
       store.loadDefinitions();
 
       const catalogue = expectRequest('GET', '/api/v1/module-definitions');
@@ -3509,9 +2894,9 @@ describe('ModuleStore', () => {
     });
 
     it('runs a listing, a hierarchy, a module, a settings and a definition read side by side', () => {
-      // ⚠ THE WHOLE INVARIANT IN ONE CASE. Five different reads, five different handles, all in the air
-      // at once: none may abort another, because a screen composed of several panes dispatches exactly
-      // this way and each pane owns its own slice.
+      // ⚠ THE WHOLE INVARIANT IN ONE CASE. Five different reads, five different handles, all in the air at
+      // once: none may abort another, because a screen composed of several panes dispatches exactly this
+      // way and each pane owns its own slice.
       store.loadModules();
       const listing = expectRequest('GET', '/api/v1/modules');
 
@@ -3550,10 +2935,9 @@ describe('ModuleStore', () => {
     });
 
     it('does NOT abandon a write when a second write is issued', () => {
-      // The asymmetry with reads, asserted rather than assumed. Two writes are two distinct
-      // instructions, so abandoning the first because a second was issued would drop an outcome the
-      // server may already have committed — leaving the operator with no report of a change that
-      // happened.
+      // The asymmetry with reads, asserted rather than assumed. Two writes are two distinct instructions,
+      // so abandoning the first because a second was issued would drop an outcome the server may already
+      // have committed — leaving the operator with no report of a change that happened.
       store.createModule(createRequest());
 
       const first = expectRequest('POST', '/api/v1/modules');
@@ -3573,11 +2957,6 @@ describe('ModuleStore', () => {
         request.flush(envelope(detail()), { status: 201, statusText: 'Created' });
       }
 
-      // ⚠ NEITHER CREATE RE-READS THE LISTING NOW, so there is nothing to drain and the absence is
-      // asserted instead. This loop used to answer one read per create and tolerate one of them being
-      // cancelled - which was the duplicate itself, visible in the fixture: two identical reads for two
-      // creates, one of them abandoned. Counted with `match` rather than `expectNone` so the size IS the
-      // assertion and the case cannot pass vacuously.
       expect(
         httpMock.match(
           (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
@@ -3588,20 +2967,10 @@ describe('ModuleStore', () => {
     });
   });
 
-  // ===================================================================================================
   // PROOF - REQUEST-HANDLE OWNERSHIP, PICKER LIFETIME AND THE UNREACHABLE-SERVER CASE
-  // ===================================================================================================
-  //
-  // Three defects that were invisible to every specification above, because each one produced a
-  // plausible-looking state rather than an error: a read cancelled by an unrelated command, a read
-  // outliving the screen that started it, and an unreachable server reported as a refusal.
 
   describe('request-handle ownership', () => {
     it('does not cancel the definition catalogue when one definition is read', () => {
-      // ⚠ THE DEFECT: `loadDefinition` released `definitionsRequest` — the CATALOGUE handle it does
-      // not own. Because a cancelled subscription delivers NEITHER a value NOR an error, the screen
-      // waiting on the catalogue was left with an empty list, no failure to explain it, and no
-      // request in flight to finish it.
       store.loadDefinitions();
 
       const catalogue = expectRequest('GET', '/api/v1/module-definitions');
@@ -3681,9 +3050,6 @@ describe('ModuleStore', () => {
 
   describe('the picker-choice read', () => {
     it('records its failure against its own command rather than the listing', () => {
-      // ⚠ THE DEFECT: the choice read recorded `listModules`, so a screen filtering the failure slot
-      // for its own work claimed every grid read in the application, and a listing screen was shown
-      // refusals raised by a picker it knows nothing about.
       store.loadChoices();
 
       expectRequest('GET', '/api/v1/modules').flush(
@@ -3761,11 +3127,8 @@ describe('ModuleStore', () => {
 
   describe('an unreachable server', () => {
     it('publishes the transport status alone rather than the progress event in the body slot', () => {
-      // ⚠ THE DEFECT: the body was inspected first, and when no response arrives the framework puts a
-      // DOM `ProgressEvent` in the body slot. A progress event carries a string `type`, and the
-      // problem-document predicate is permissive about absence, so the event was accepted AS the
-      // document — the failure-code parser then read `'error'` as a candidate failure type and the
-      // severity and sentence were chosen for a response that never existed.
+      // ⚠ THE DEFECT: the body was inspected first, and when no response arrives the framework puts a DOM
+      // `ProgressEvent` in the body slot.
       store.loadModules();
 
       expectRequest('GET', '/api/v1/modules').error(new ProgressEvent('error'), {
@@ -3777,16 +3140,6 @@ describe('ModuleStore', () => {
 
       expect(failure?.operation).toBe('listModules');
 
-      // ⚠ THE EXPECTED DOCUMENT CHANGED, AND THE REASON IS A SECOND MEASURED DEFECT. This used to
-      // assert `toEqual({ status: 0 })` — a document carrying the status and nothing else. That is
-      // safe but too poor to present: measured on the listing with the network unreachable, the
-      // banner rendered its severity word and its message but `.error-banner__title` matched
-      // NOTHING, because a status-only document has no title to render. The portal store already
-      // composed this exact condition through the shared `transportProblem` helper, so one offline
-      // failure was presented as `Error / Network error / The server could not be reached…` on one
-      // screen and with the title silently missing on another. The helper is now used here too.
-      //
-      // Nothing is invented: every member below is derived from the status the transport reported.
       expect(failure?.problem?.status).toBe(0);
       expect(failure?.problem?.title)
         .withContext('the banner has a title to render')
@@ -3795,11 +3148,6 @@ describe('ModuleStore', () => {
         .withContext('and a sentence that says what happened')
         .toBe('The server could not be reached. Check your connection and try again.');
 
-      // The ORIGINAL requirement, unchanged and still the point of this spec: a DOM `ProgressEvent`
-      // must never be mistaken for the problem document. Its `type` is the string `'error'`, so
-      // asserting the RFC 7807 default proves the event was not accepted as the body — which is a
-      // stronger assertion than the previous `toBeUndefined`, because it pins what the type IS
-      // rather than only that it is absent.
       expect(failure?.problem?.type)
         .withContext('a progress event type must never be published as a problem type')
         .toBe('about:blank');

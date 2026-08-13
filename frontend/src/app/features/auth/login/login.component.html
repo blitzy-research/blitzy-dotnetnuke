@@ -1,204 +1,16 @@
-<!--
-  THE SIGN-IN SCREEN.
-
-  Migrated from `Website/DesktopModules/AuthenticationServices/DNN/Login.ascx` (37 lines of
-  markup) and the 205-line `Login.ascx.vb` behind it, both read in full. Every region below
-  is derived from measured legacy markup rather than from a redesign, and every string is
-  either the verbatim value of a legacy resource key or a constant the sibling component
-  publishes.
-
-  THE HOST IS THE LAYOUT CONTAINER. The title, the failure surface, the outstanding-revocation
-  advisory and the form are all direct children of it and none declares an outer margin of its
-  own, so the paired stylesheet owns the vertical rhythm through `:host` and never through a
-  wrapper element invented here. No extra element is emitted for its own sake.
-
-  NO SEMANTIC LANDMARK IS EMITTED HERE. `header`, `main`, `nav` and `footer` belong to
-  `app/layout/**`, which emits each exactly once; this template renders INSIDE the shell's
-  `main`, so repeating one would give the document two of a landmark that must be unique. No
-  heading is emitted either: `app-page-header` renders the single `h1` for the screen, and a
-  second heading would either compete with it or skip a level.
-
-  EVERY STRING IS INTERPOLATED PLAIN TEXT OR A STATIC ATTRIBUTE. Legacy resource values are
-  untrusted markup - across the in-scope resource files 76 entries carry an HTML tag and one
-  holds a live third-party advertising script with a remote source, all stored XML-escaped so
-  a naive search clears them wrongly. Nothing here uses a raw-HTML binding, a sanitiser
-  bypass or a trusted-markup wrapper. The legacy application had reached the same conclusion
-  where it handled a value it did not author: `Website/admin/Security/AccessDenied.ascx.vb:L43`
-  encodes before displaying rather than trusting what it was handed. Every string on THIS screen
-  is fixed at author time, so the policy is belt-and-braces rather than the only guard - which
-  is precisely why it is stated rather than assumed, since the next string added here may not be.
-
-  ============================================================================
-  MIGRATION ANNOTATION 1 - THE LEGACY LAYOUT TABLE IS GONE.
-  ============================================================================
-  `Login.ascx:L5` opens the whole screen with a table element carrying zero cell spacing, a
-  cell padding of three, no border, a width of 160 units and the summary "SignIn Design Table".
-  That summary wording is the tell: it is a LAYOUT container, not tabular data, and its nine
-  rows alternate between a label cell and a control cell. None of it is structure, so the rows
-  become a CSS grid in the paired stylesheet and each label-plus-control pair becomes one shared
-  form field. The 160-unit width is not reproduced as a pixel value either; the stylesheet caps
-  the measure at a declared breakpoint step instead.
-
-  The legacy element is DESCRIBED above rather than quoted, and so is every other legacy tag
-  named in this file. Reproducing the markup verbatim inside a comment would put the very
-  constructs this screen bans - a table element, a line-break element, a negative tab index -
-  back into the file's own bytes, where an audit that greps for them cannot tell a citation
-  from a relapse. Describing them keeps those searches honest and clean.
-
-  ============================================================================
-  MIGRATION ANNOTATION 2 - FIELD ORDER IS PRESERVED, INCLUDING ITS ODDITY.
-  ============================================================================
-  The legacy rows run account name (L7-L10), verification code (L12-L18), human-verification
-  challenge (L19-L24), password (L25-L31), submit (L32-L36) - so the verification code
-  genuinely sat BEFORE the password. With the challenge removed (annotation 3) the surviving
-  order is account name, conditional verification code, password, submit, which is the order
-  this template renders and the order the sibling component's form declares.
-
-  ============================================================================
-  MIGRATION ANNOTATION 3 - THE HUMAN-VERIFICATION CHALLENGE IS REMOVED.
-  ============================================================================
-  `Login.ascx:L19-L24` declared the challenge and `Login.ascx.vb:L162` gated the entire
-  handler on it. Its control lives under `Library/Controls/**`, a tree this migration excludes
-  wholesale, so its removal is a documented functional reduction rather than an oversight. It
-  is not uncompensated: the server rate-limits the credential endpoints per calling address,
-  and that refusal is surfaced below as its own calm state rather than as an error.
-
-  ============================================================================
-  MIGRATION ANNOTATION 4 - A REAL FORM, WHICH IS A PORT AND NOT AN ADDITION.
-  ============================================================================
-  `Login.ascx.vb:L101` registered a key capture so that the return key submitted the screen,
-  because a Web Forms button needed one. A real `<form>` with a submit-typed button does this
-  natively, so the behaviour survives and no key listener exists anywhere.
-
-  `novalidate` is deliberate: validation is the typed form's and the server's, and the
-  browser's own bubble would report a different message in a different place from the shared
-  field's, for the same fault.
-
-  ============================================================================
-  MIGRATION ANNOTATION 5 - THERE IS NO FOURTH AFFORDANCE.
-  ============================================================================
-  No keep-me-signed-in box, no forgotten-password link and no registration link, because the
-  37 lines of legacy markup contain none of the three and the authentication surface is closed
-  at four endpoints. Password retrieval in particular is abolished rather than ported - the
-  legacy provider stored credentials reversibly and mailed them back - so an administrative
-  reset is the only remedy for a forgotten credential and no recovery affordance appears here.
-
-  ============================================================================
-  MIGRATION ANNOTATION 6 - THE LABEL CONTROL'S OWN MARKUP IS NOT REPRODUCED.
-  ============================================================================
-  Each legacy label was `Website/controls/labelcontrol.ascx`, and three of its seven lines are
-  things this screen deliberately does not carry across.
-
-  The line-break element at its L8 was the only thing separating a label from its control -
-  layout expressed as a forced line break, because the surrounding table gave it nothing else.
-  Spacing is now the shared spacing scale, applied by the paired stylesheet, so no break element
-  appears anywhere here. The same disposal covers the literal spacing characters the legacy
-  admin markup used as gutters, 70 of them in the in-scope screens: a non-breaking space is not
-  spacing, it is content that happens to look like spacing, and it survives no reflow. There is
-  not one in this file, and the gaps in the stylesheet do the work instead.
-
-  Its help affordance was a link button wrapping the raster image at `~/images/help.gif`, and
-  BOTH the button and the image declared a negative tab index - which took the help toggle out
-  of the tab order, so a person navigating by keyboard could never reach the help text at all.
-  The shared field owns that affordance now and reverses the defect; this template neither ships
-  a raster asset (a favicon is the only image this workspace ships) nor writes a negative tab
-  index anywhere, and it renders no help markup of its own - it passes the help STRING and lets
-  the shared field present it.
-
-  ============================================================================
-  MIGRATION ANNOTATION 7 - LOCALISATION IS NOT PORTED.
-  ============================================================================
-  The legacy screen resolved every string through the localisation service against a resource
-  file, with a documented fallback chain in `Library/Controls/LabelControl.vb` (L266-L269
-  defaulting the key to the control's own identifier, L274 appending the suffix, L278-L281
-  deriving the help key, L292-L297 setting the label's `for`). No translation runtime exists in
-  this workspace's pinned dependency surface, so the mechanism has no target: the strings are
-  authored directly into this template and the resource files served as the AUTHORITY FOR
-  WORDING only. Consequently there is no message-tagging attribute and no localisation helper
-  on any element below, and the wording is the measured English value in every case. What is
-  preserved is the wording and the label-to-control association; what is dropped is the
-  indirection that produced them.
--->
-
-<!--
-  THE PAGE TITLE.
-
-  `ControlTitle_signin.Text` from `Website/admin/Authentication/App_LocalResources/Login.ascx.resx`
-  L156-L158, verbatim. That is the legacy screen's own title resource; the nearer resource file
-  beside the control carries only `Title.Text` = "Standard", which was the CAPTION OF A TAB in
-  the out-of-scope multi-provider container and not a heading for this screen.
-
-  No subtitle is bound. The legacy screen had no sub-heading and inventing one would put
-  authored wording on a screen whose every other string is measured.
--->
+<!-- THE PAGE TITLE. -->
 <app-page-header title="User Log In" />
 
 <!--
-  THE FAILURE SURFACE.
-
-  ⚠ IF THIS SCREEN DOES NOT RENDER THE REFUSAL, NOBODY DOES. The bearer-token interceptor
-  lists the sign-in endpoint among the anonymous ones, so no credential is attached and no
-  renewal is attempted; the error interceptor then returns early on exactly 401, deliberately,
-  because a sign-in refusal is this screen's to explain and announcing it globally as well
-  would report it twice. A template that omitted this region would leave the person watching a
-  form that visibly did nothing.
-
-  The banner is bound UNCONDITIONALLY and takes the whole problem document. Null is its
-  documented empty state, so it renders nothing until there is something to render, and it
-  resolves its own severity, sentence, per-field list and support reference from the document -
-  which is why nothing here iterates the error map or reduces the document to a string first.
+  ⚠ IF THIS SCREEN DOES NOT RENDER THE REFUSAL, NOBODY DOES. The bearer-token interceptor lists the
+  sign-in endpoint among the anonymous ones, so no credential is attached and no renewal is attempted;
+  the error interceptor then returns early on exactly 401, deliberately, because a sign-in refusal is
+  this screen's to explain and announcing it globally as well would report it twice.
 -->
 <app-error-banner [problem]="problem()" />
 
 @if (failed()) {
   <div class="login__failure">
-    <!--
-      THE FORM-LEVEL SENTENCE.
-
-      Two mutually exclusive branches, in the sibling component's own documented precedence.
-
-      The rate-limited branch comes FIRST and says nothing else, because nothing has broken -
-      the caller has simply attempted too often, and this is the compensating control for the
-      removed challenge (annotation 3). Its wording is the shared utility's constant, so the
-      same situation cannot be described two different ways depending on which layer noticed
-      it, and `role="status"` announces it POLITELY: it is not an error and must not interrupt.
-
-      The error branch renders the component's resolved sentence. That sentence resolves in the
-      sibling's own documented precedence, and the ORDER of two of its arms is what this region
-      actually depends on: a refusal that is one of the three verification outcomes yields that
-      outcome's wording, and ONLY a refusal that is none of them yields null when the banner was
-      given a document. A refusal that carried no document at all falls back to status wording,
-      so something is always said. `role="alert"` because it IS the direct result of the person's
-      own action and must be discoverable without moving focus.
-
-      ⚠ CONSEQUENCE, MEASURED IN A BROWSER RATHER THAN ASSUMED: on a verification rung the
-      ladder sentence renders HERE **and** beside the field, because the ladder arm precedes the
-      has-a-document arm. That is not a slip in either place - both surfaces are required. The
-      form-level line is what the legacy screen showed, and the field-level copy is where the
-      person must actually act, which is why the sibling's own message list puts the ladder
-      sentence at the head of the verification field's messages. The screen therefore SHOWS it
-      twice on that one rung, deliberately.
-
-      ⚠ AND IT IS SAID TWICE VISIBLY BUT ANNOUNCED ONCE, which is the whole reason the roles below
-      are bound rather than written literally. Because the shared field wraps its messages in a
-      region carrying an assertive role of its own, that one repeated sentence used to be ANNOUNCED
-      twice as well. Suppressing either VISUAL copy would drop one the design requires, and the
-      field's region belongs to the shared component and is used by every other screen - so on
-      exactly the path where the sentence is echoed at field level, this copy is rendered visibly
-      and hidden from assistive technology, leaving the field's region as the single assertive
-      source. It is beside the control the person must act on, and focus is moved there on the rung
-      that first reveals the field. On every other path - a wrong credential, a rate limit, a fault
-      carrying no document - nothing appears at field level, so this line is the only thing that
-      says anything and stays fully assertive. See `signInMessageEchoedAtField` on the paired class.
-
-      MIGRATION: the three verification sentences and the refusal sentence are reproduced
-      verbatim by the shared form-errors utility from
-      `Website/admin/Authentication/App_LocalResources/Login.ascx.resx` (L162, L165, L168,
-      L216, L222). No wording is authored here, and there is deliberately no fourth failure
-      message: the legacy handler assigns exactly three ladder codes. The file's L219 entry is
-      never rendered by any path - it is a dead key belonging to an out-of-scope screen and an
-      account-enumeration vector - so this template neither binds it nor names it.
-    -->
     @if (rateLimited()) {
       <p class="login__notice" role="status">{{ rateLimitMessage }}</p>
     } @else if (signInMessage() !== null) {
@@ -212,78 +24,24 @@
     }
 
     <!--
-      ⚠ THE SUPPORT REFERENCE IS DELIBERATELY NOT BOUND HERE, and the reason is measured rather
-      than stylistic. The sibling component offers a `supportReference` signal on the stated
-      grounds that "the banner renders nothing when the refusal carried no document, and a server
-      fault is exactly the case where the reference matters most" - but the store derives that
-      signal from the problem document itself (`problemSupportReference(this._problem())`), so it
-      is null in EXACTLY the case the region was meant to cover. A region gated on "no document
-      yet a reference" can therefore never render, and one gated on the reference alone could only
-      duplicate what the banner already shows from the same document.
-
-      Dead markup is worse than absent markup: it cannot be exercised by a specification, so it
-      rots unnoticed. The reference is therefore rendered by the shared banner alone, which is the
-      one component that has the document to read it from. If a reference is ever wanted for a
-      body-less failure, the value has to start existing on the store first - the fix belongs
-      there and not in this template.
+      Dead markup is worse than absent markup: it cannot be exercised by a specification, so it rots
+      unnoticed. The reference is therefore rendered by the shared banner alone, which is the one
+      component that has the document to read it from.
     -->
 
     <!--
-      THE DISMISS AFFORDANCE.
-
-      A real `button` with an explicit type, so it can never submit the form below it. It
-      clears the recorded failure and deliberately does NOT retract the verification field:
-      dismissing a message must not withdraw a box the person is being asked to fill in. The
-      sibling component re-homes focus onto the field still to be corrected, because this
-      button is itself inside the region being removed and the browser would otherwise drop
-      focus to the document body.
-
-      The wording is authored: the legacy screen had no dismissible message region at all, so
-      there is no resource key to reproduce.
+      A real `button` with an explicit type, so it can never submit the form below it. It clears the
+      recorded failure and deliberately does NOT retract the verification field: dismissing a message
+      must not withdraw a box the person is being asked to fill in.
     -->
     <button class="login__dismiss" type="button" (click)="dismissFailure()">Dismiss</button>
   </div>
 }
 
 <!--
-  THE OUTSTANDING-REVOCATION ADVISORY.
-
   ⚠ THIS SCREEN IS THE ONLY THING THAT RENDERS IT, AND THE STORE SAYS SO IN AS MANY WORDS.
-  `core/state/auth.store.ts` publishes the flag with the note that it "exists so the sign-in
-  screen can say so. Sign-out sends the operator there, which makes it the one place the report
-  is certain to be seen, and a warning nothing renders is the same silence it was meant to
-  replace." The authentication client raises the same sentence through the notification channel
-  as well, but that channel is transient by construction: a person who was looking elsewhere at
-  the moment they were signed out has lost it before they arrive here. This region is the
-  durable half of the report, and omitting it would restore exactly the silence the flag exists
-  to end.
-
-  IT IS NOT A FAILURE OF THIS ATTEMPT, so it sits OUTSIDE the failure region above and takes the
-  calm treatment rather than the refusal treatment. Nothing the person did was rejected and the
-  local sign-out did succeed; what it reports is that the renewal credential may still be live
-  on the server, together with the one action that genuinely exists for that. The sentence is
-  the authentication client's own constant and is never authored here, so the same situation
-  cannot be described two different ways depending on which layer noticed it.
-
-  ⚠ ORDERED AFTER THE FAILURE REGION DELIBERATELY, on two counts. A refusal of the attempt just
-  made outranks an advisory carried in from a previous session, so the newer fact is read first
-  whenever both are on screen; and on arrival from a sign-out, when there is no failure region at
-  all, this notice sits directly beneath the title where it cannot be missed. It shares the calm
-  notice treatment with the rate-limited state above because both are advisories on the same
-  surface tone rather than refusals - the paired stylesheet describes that treatment against the
-  rate-limited case, which is the older of the two readers, not as an exclusive claim on it.
-
-  `role="status"` announces it POLITELY. It is advice about something already finished, so it
-  must not interrupt what the person is doing, and it must not be mistaken for a rejection of
-  the credential they are about to type.
-
-  MIGRATION: a net addition with no legacy counterpart, because the failure it reports could not
-  happen before. The legacy screen's sign-out was `FormsAuthentication.SignOut`, which dropped a
-  cookie locally and left nothing outstanding anywhere; a bearer-token session holds a renewal
-  credential that the server has to be ASKED to withdraw, and that request can fail while the
-  local sign-out still succeeds. The report exists because the new mechanism has a failure mode
-  the old one did not, and reporting a clean sign-out that was not clean would be the one
-  outcome worse than saying nothing.
+  `core/state/auth.store.ts` publishes the flag with the note that it "exists so the sign-in screen can
+  say so.
 -->
 @if (revocationOutstanding()) {
   <p class="login__notice" role="status">{{ revocationMessage }}</p>
@@ -292,47 +50,10 @@
 <form class="login__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
   <div class="login__fields">
     <!--
-      THE ACCOUNT NAME. Legacy `txtUsername`, `Login.ascx:L10`, labelled by `plUsername` at L7
-      through the resource key `Username`, which resolves in
-      `Website/App_GlobalResources/SharedResources.resx` to "User Name:" (L1023) with the help
-      text "Enter your User Name below" (L1020). Both are reproduced verbatim.
-
-      MIGRATION: the required marker and the required message are NET ADDITIONS. All 37 lines
-      of legacy markup declared no validator control, so the legacy screen posted whatever was
-      typed and let the server refuse it; the MECHANISM changes while the BEHAVIOUR does not,
-      since an empty box still cannot complete a sign-in. No length, pattern or complexity rule
-      is applied to either credential field - tightening a policy mid-migration locks out
-      existing accounts - and the server stays authoritative.
-
-      `[error]` receives the component's ARRAY of messages unreduced: the shared field accepts
-      several and normalises them itself, so joining or truncating here would discard one the
-      person needs to read.
-
-      `aria-invalid` is rendered only when there IS something to report, because the attribute's
-      false value on every field is noise. It is bound from the same derivation the messages come
-      from, so a field can never announce itself valid while a message sits beneath it.
-
-      MIGRATION: `autocomplete`, `autocapitalize` and `spellcheck` are net additions, and the
-      last two are load-bearing rather than cosmetic - a mobile keyboard that capitalises the
-      first letter of a case-sensitive account name silently produces a credential the server
-      will refuse, and the legacy screen's own refusal wording ("remember that Passwords are
-      case sensitive") shows the case sensitivity was already a known trap.
-
-      MIGRATION: the length bound is a net addition, and it reproduces a SERVER bound rather
-      than inventing a client one. `Login.ascx:L10` declared `columns="9" width="150"`, which
-      sized the box and bounded nothing; the sibling component publishes the figure the sign-in
-      contract's own validation rule enforces, so the box now refuses at the point the server
-      would have refused. Stopping the typing is the whole of the intent: no message is
-      attached to it, because a bound a person cannot exceed can produce no fault to report.
-
-      ⚠ EMITTED AS `[attr.maxlength]`, NEVER AS A LITERAL `maxlength` OR A `[maxlength]`
-      PROPERTY BINDING, and the distinction is behavioural rather than stylistic. Those two
-      forms satisfy the reactive-forms maximum-length validator's selector,
-      `[maxlength][formControlName]`, and would attach a validator this screen never declared -
-      contributing an error key the sibling component's message collection does not map, so a
-      fault could arise that nothing renders. The attribute form reaches the element without
-      matching the directive, which is the same choice every other form in this workspace
-      records at its own call sites.
+      MIGRATION: the required marker and the required message are NET ADDITIONS. All 37 lines of legacy
+      markup declared no validator control, so the legacy screen posted whatever was typed and let the
+      server refuse it; the MECHANISM changes while the BEHAVIOUR does not, since an empty box still
+      cannot complete a sign-in.
     -->
     <app-form-field
       label="User Name:"
@@ -358,48 +79,6 @@
     <!--
       THE VERIFICATION CODE. Legacy `txtVerification`, `Login.ascx:L16`, in the row pair
       `rowVerification1` / `rowVerification2` that L12 and L15 both declare `visible="false"`.
-
-      ⚠ REVEALED FROM THE STORE'S SIGNAL, WHICH IS THE WHOLE LADDER. `Login.ascx.vb:L171`
-      branched on `If Not rowVerification1.Visible`, so the legacy ladder turned on whether the
-      field had ALREADY been revealed - state that survived the postback in Web Forms control
-      state. The first refusal reveals the field and asks for a code; only a subsequent refusal
-      can judge what was typed into it. The signal lives on the root-provided store precisely so
-      that navigation destroying this screen does not silently restart the ladder at its first
-      rung.
-
-      ⚠ REMOVED FROM THE DOCUMENT WHEN NOT REVEALED, never rendered and hidden. A box a person
-      is not being asked to fill in must not be reachable by Tab or announced by a screen
-      reader, and the sibling component's validator effect and focus move are both keyed to the
-      same signal - so the field, its validator and the focus that follows it can never disagree.
-
-      Its label is `plVerification` at `Login.ascx:L13`, whose text the markup states inline as
-      "Verification Code:" and whose help is `plVerification.Help` in the control's own resource
-      file - "Enter the verification code. You should have received the verification code on the
-      email address used when registering". Both verbatim.
-
-      MIGRATION: a value seeded from the legacy `verificationcode` query parameter travels on the
-      first attempt WITHOUT revealing the field, which is a deliberate divergence from
-      `Login.ascx.vb:L109-L116`: the legacy reveal was gated on a per-request portal setting that
-      an unauthenticated caller cannot read, so visibility is left entirely to the server's own
-      answer. Nothing in this template reveals the field.
-
-      ⚠ THE HELP STRING IS ONE UNBROKEN LINE ON PURPOSE. The shared field stores what it is
-      given without collapsing internal white space, so wrapping this attribute across two
-      source lines for readability would embed a newline and the indentation after it into the
-      value - and the requirement is that the measured resource value is reproduced verbatim.
-      The line is long because the resource value is long.
-
-      MIGRATION: `type="text"` and `autocomplete="off"` both preserve legacy behaviour rather
-      than modernising it, and the second is a deliberate REFUSAL of the obvious token.
-      `Login.ascx:L16` declares a plain `asp:textbox` - no `textmode`, no completion hint - so
-      the box is a text box and stays one. The one-time-code token is NOT used, because this is
-      not a one-time code: the help text above states the code arrived on the address used when
-      registering, and it is a durable registration code that stays valid across attempts rather
-      than a rotating passcode. Claiming otherwise would invite the browser's passcode
-      heuristics to offer an unrelated value from a message that has nothing to do with this
-      screen. Completion is switched off instead, which is the right treatment for a
-      security-relevant code and is the closest honest reading of a legacy box that asked the
-      browser for nothing at all.
     -->
     @if (verificationRequired()) {
       <app-form-field
@@ -424,22 +103,9 @@
     }
 
     <!--
-      THE PASSWORD. Legacy `txtPassword`, `Login.ascx:L29`, declared `textmode="password"` -
-      which is the one legacy attribute on this screen that carries a security property rather
-      than a layout one, and it is preserved exactly as `type="password"`. Its label is
-      `plPassword` at L26 through the resource key `Password`: "Password:" and "Enter your
-      Password below", `SharedResources.resx` L1017 and L1014.
-
-      MIGRATION: `Login.ascx.vb:L123` is NOT carried forward. It read
-      `txtPassword.Attributes.Add("value", txtPassword.Text)`, writing the submitted credential
-      into an HTML attribute so the box survived a postback. Nothing here writes a password into
-      an attribute, and there is no postback to survive: the value simply stays in the control,
-      which is what a single-page form does without any help.
-
-      `autocomplete="current-password"` is the standard token for this field and is a net
-      addition. It asks the BROWSER's own credential manager to fill the box; no code in this
-      workspace reads, copies, stores or logs the value, and no web storage of any kind is
-      touched.
+      `autocomplete="current-password"` is the standard token for this field and is a net addition. It
+      asks the BROWSER's own credential manager to fill the box; no code in this workspace reads,
+      copies, stores or logs the value, and no web storage of any kind is touched.
     -->
     <app-form-field
       label="Password:"
@@ -461,27 +127,8 @@
   </div>
 
   <!--
-    THE SUBMIT ROW. Legacy `cmdLogin`, `Login.ascx:L34`, captioned from `cmdLogin.Text` in the
-    control's own resource file - "Login" - verbatim.
-
-    `type="submit"` is what carries the legacy return-key behaviour (annotation 4).
-
-    ⚠ THE DISABLED STATE IS A COURTESY, NOT THE LOCK. It is bound from the store's phase for
-    this command specifically, so a session renewal running in the background cannot disable
-    this form; and the sibling component refuses a repeat submission in code as well, because a
-    disabled control can still be bypassed by return key or by script.
-
-    The progress indicator is rendered only while a request is in flight and carries its own
-    accessible label, so the wait is announced rather than merely animated. The label is
-    authored: the legacy screen showed no progress affordance at all, having none to show
-    during a full-page postback.
-
-    ⚠ THE BUSY STATE IS ALSO STATED ON THE COMMAND ITSELF, not only beside it. `disabled` says
-    the control cannot be used but not WHY, and a person who reaches this button while the
-    request is in flight - by returning to it, or by reading the form in order - meets a dead
-    control with no explanation. The busy attribute supplies the reason on the element that
-    became unusable. It is rendered only while it is true, because a permanent negative on a
-    resting control is noise of exactly the kind the rejected-state attributes above avoid.
+    THE SUBMIT ROW. Legacy `cmdLogin`, `Login.ascx:L34`, captioned from `cmdLogin.Text` in the control's
+    own resource file - "Login" - verbatim.
   -->
   <div class="login__actions">
     <button

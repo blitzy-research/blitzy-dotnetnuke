@@ -20,30 +20,14 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The class name is fixed by validation gate 5, which names this suite and requires the four documented status
-/// codes for the user resource - <c>201</c> on a create, <c>200</c> on a read and an update, and <c>204</c> on a
-/// delete.
+/// Three service behaviours shape the tests and are asserted rather than avoided. An account may not act on
+/// its own membership, so the unlock, approval and forced-password-change routes refuse when the caller
+/// addresses itself; the suite therefore drives those routes as the host account against a different
+/// account.
 /// </para>
 /// <para>
-/// This is the only resource in the migration whose writes reach outside the mapped entity model. Credentials
-/// live in the ASP.NET membership tables, which the eighty-eight legacy upgrade scripts only ever alter and
-/// never create, so they are provisioned by the fixture from an explicit script and reached through
-/// parameterised statements rather than through an entity type. Every assertion below that inspects a
-/// credential therefore queries those tables directly, and a create that succeeded but wrote no credential row
-/// would be caught rather than passing as a success.
-/// </para>
-/// <para>
-/// Three service behaviours shape the tests and are asserted rather than avoided. An account may not act on its
-/// own membership, so the unlock, approval and forced-password-change routes refuse when the caller addresses
-/// itself; the suite therefore drives those routes as the host account against a different account. A host
-/// account cannot be deleted through portal administration, and neither can the portal's designated
-/// administrator - both are refused so that a tenant cannot be left without anyone able to administer it.
-/// And a new credential must differ from the stored one, which is why the change-password test supplies a
-/// genuinely new value and a companion test proves that resubmitting the old one is refused.
-/// </para>
-/// <para>
-/// Every account name carries a random suffix. The login name is unique installation-wide, the suites share one
-/// database, and xUnit gives no ordering guarantee inside a collection.
+/// Every account name carries a random suffix. The login name is unique installation-wide, the suites share
+/// one database, and xUnit gives no ordering guarantee inside a collection.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -59,25 +43,12 @@ public sealed class UserApiTests
     /// <summary>A second credential used by the change-password tests.</summary>
     private const string ReplacementPassword = "Repl4cement!Pass";
 
-    /// <summary>
-    /// The total a legacy account listing reported when it had not counted anything.
-    /// </summary>
-    /// <remarks>
-    /// <c>Library/Components/Shared/Null.vb:L41-L43</c> defines <c>NullInteger</c> as <c>-1</c>, and the
-    /// account listing initialised its <c>ByRef totalRecords</c> argument to it. The value is named rather than
-    /// written inline so that the assertions which forbid it read as the one fact they are all making.
-    /// </remarks>
+    /// <summary>The total a legacy account listing reported when it had not counted anything.</summary>
     private const int LegacySentinelTotal = -1;
 
     /// <summary>
     /// The shortest credential the configured policy accepts, holding no non-alphanumeric character.
     /// </summary>
-    /// <remarks>
-    /// Exactly seven characters, matching <c>minRequiredPasswordLength="7"</c> at
-    /// <c>Website/release.config:L242</c>, and deliberately free of punctuation because
-    /// <c>minRequiredNonalphanumericCharacters="0"</c> at <c>:L243</c> required none. Both bounds are asserted
-    /// against this one value, which is why it sits at the boundary rather than comfortably inside it.
-    /// </remarks>
     private const string PolicyFloorPassword = "Abcde12";
 
     private readonly ApiTestFixture _fixture;
@@ -92,10 +63,8 @@ public sealed class UserApiTests
     /// </summary>
     /// <remarks>
     /// The absence of the host account is the load-bearing half of this test. A tenant's account list is a
-    /// tenant-scoped view, and the installation's operator is not one of the tenant's accounts even though it
-    /// holds a membership row so that it can administer the tenant. Listing it would disclose the operator's
-    /// login name to every tenant administrator, and would offer it as a target to routes that legitimately
-    /// refuse to act on it.
+    /// tenant-scoped view, and the installation's operator is not one of the tenant's accounts even though
+    /// it holds a membership row so that it can administer the tenant.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -147,9 +116,9 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The approval filter is answered by the credential store rather than by the mapped model, because approval
-    /// is recorded outside the entity graph. Asserting it proves the query root that reaches those tables is
-    /// wired and composable with paging.
+    /// The approval filter is answered by the credential store rather than by the mapped model, because
+    /// approval is recorded outside the entity graph. Asserting it proves the query root that reaches those
+    /// tables is wired and composable with paging.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -213,23 +182,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The body-bound search answers the same page as the equivalent query, and its request target carries no
-    /// identifying value.
+    /// The body-bound search answers the same page as the equivalent query, and its request target carries
+    /// no identifying value.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// THIS ENDPOINT EXISTS TO KEEP AN IDENTIFIER OUT OF THE REQUEST TARGET (CWE-598). A login name, an
-    /// electronic-mail address and above all a profile-property name paired with its value are the searching
-    /// operator's evidence about a particular person, and a query string is the least private part of a request:
-    /// it is written to server and proxy access logs in full, kept in browser history, and forwarded in the
-    /// referrer of any subsequent navigation. Transport encryption does not help with any of those, because none
-    /// of them is on the wire. The remedy is to move the filter into the body, which is logged by nothing by
-    /// default.
-    /// <para>
-    /// The two actions answer through the IDENTICAL service call, so the assertion here is equality with the
-    /// query form rather than a second description of what a search returns. If they ever diverge, this fails.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SearchUsers_ByLoginName_AnswersTheSamePageAsTheEquivalentQueryWithoutNamingAnyoneInTheTarget()
     {
@@ -278,11 +234,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This pair is the reason the endpoint is not merely tidier. The name says which attribute of a person is
-    /// being looked up and the value says what is being looked for, so a single logged line records that an
-    /// operator searched for a particular person by a particular attribute. A tenant is free to declare a
-    /// property holding a national identifier, a date of birth or a home address, so the content of this pair is
-    /// not something the migration can bound.
+    /// This pair is the reason the endpoint is not merely tidier. The name says which attribute of a person
+    /// is being looked up and the value says what is being looked for, so a single logged line records that
+    /// an operator searched for a particular person by a particular attribute.
     /// </remarks>
     [Fact]
     public async Task SearchUsers_ByProfileProperty_ReturnsOnlyMatchingAccountsAndDisclosesNeitherNameNorValue()
@@ -322,33 +276,15 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The body-bound search accepts the sort direction by MEMBER NAME, which is the vocabulary the query form
-    /// accepts and the only one any client of this API writes.
+    /// The body-bound search accepts the sort direction by MEMBER NAME, which is the vocabulary the query
+    /// form accepts and the only one any client of this API writes.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// ONE CONTRACT MEMBER HAD TWO INCOMPATIBLE WIRE FORMS AND NEITHER SIDE COULD SEE IT. <c>SortDir</c> is
-    /// bound from the query string on every collection endpoint, where the framework's type converter accepts
-    /// the member name, and from THIS body, which <c>System.Text.Json</c> bound with no converter registered
-    /// for the type and therefore accepted only the numeric discriminator. The single-page administration
-    /// client wrote the documented name into both, so the compensating search that exists to keep an
-    /// identifier out of the request target was answered <c>400</c> with
-    /// <c>"$.sortDir": ["The JSON value could not be converted to …SortDirection."]</c> while the identical
-    /// query-string listing succeeded. Nothing detected it: both sides are internally well typed, and no test
-    /// had ever sent the member in a body.
-    /// </para>
-    /// <para>
-    /// The body is written as a RAW JSON DOCUMENT rather than by serialising the request type, and that is the
-    /// point of the test. Serialising <c>UserSearchRequest</c> here would apply this assembly's own converter
-    /// policy and so could only ever produce a form the server accepts - which is precisely how the defect
-    /// survived. The literal below is the byte sequence the browser client sends.
-    /// </para>
-    /// <para>
-    /// Both directions are exercised and the two pages are asserted to be REVERSES of each other, so the test
-    /// proves the value was applied rather than merely accepted. A converter that bound every name to
-    /// <c>Ascending</c> would satisfy a status-code assertion and fail this one.
-    /// </para>
+    /// The body is written as a RAW JSON DOCUMENT rather than by serialising the request type, and that is
+    /// the point of the test. Serialising <c>UserSearchRequest</c> here would apply this assembly's own
+    /// converter policy and so could only ever produce a form the server accepts - which is precisely how
+    /// the defect survived.
     /// </remarks>
     [Fact]
     public async Task SearchUsers_WithTheSortDirectionNamed_AppliesItRatherThanRefusingTheBody()
@@ -380,8 +316,8 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The converter admits both spellings deliberately: the query-string binder accepts numeric text as well
-    /// as a name, so refusing the number in a body would have replaced one divergence with another.
+    /// The converter admits both spellings deliberately: the query-string binder accepts numeric text as
+    /// well as a name, so refusing the number in a body would have replaced one divergence with another.
     /// </remarks>
     [Fact]
     public async Task SearchUsers_WithTheSortDirectionAsADiscriminator_IsStillAccepted()
@@ -402,15 +338,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A direction outside the declared pair is reported by the request validator, in the same field-level shape
-    /// the query form produces, rather than as a deserialisation failure.
+    /// A direction outside the declared pair is reported by the request validator, in the same field-level
+    /// shape the query form produces, rather than as a deserialisation failure.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is why the converter carries an undeclared integer instead of refusing it. Membership is decided in
-    /// exactly one place - the <c>IsInEnum</c> rule on the paging contract - so one mistake gets one
-    /// explanation whichever transport carried it.
-    /// </remarks>
     [Fact]
     public async Task SearchUsers_WithAnUndeclaredSortDirection_IsReportedByTheValidator()
     {
@@ -437,8 +368,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Naming a profile property without a value is refused here exactly as it is on the query form, because the
-    /// rule belongs to the service rather than to either action.
+    /// Naming a profile property without a value is refused here exactly as it is on the query form,
+    /// because the rule belongs to the service rather than to either action.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -455,14 +386,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The body-bound search applies the same paging ceiling as the query form, because its validator derives
-    /// from the same base.
+    /// The body-bound search applies the same paging ceiling as the query form, because its validator
+    /// derives from the same base.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// Asserted because a caller moving a request from the query string into the body must not discover that a
-    /// larger page is suddenly legal. Two validators that happen to agree today would be free to drift; one base
-    /// class cannot.
+    /// Asserted because a caller moving a request from the query string into the body must not discover
+    /// that a larger page is suddenly legal. Two validators that happen to agree today would be free to
+    /// drift; one base class cannot.
     /// </remarks>
     [Fact]
     public async Task SearchUsers_WithPageSizeAboveTheCeiling_ReturnsBadRequest()
@@ -487,21 +418,6 @@ public sealed class UserApiTests
     /// <param name="member">The body member to send blank.</param>
     /// <param name="blank">The blank value to send.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// ⚠ THIS PINS A REGRESSION THAT REACHED A RUNNING BROWSER. The application service treats absence as
-    /// "do not filter" and REFUSES a filter that is present but blank, because an empty prefix matches
-    /// every row and would make a filtered search silently unfiltered. The query-bound listing never
-    /// reaches that rule - the framework's query binder converts a blank query value to null before the
-    /// action sees it, for the empty string and for whitespace alike - so the rule was unreachable over
-    /// HTTP until a body-bound action existed. Once one did, an operator CLEARING the search box on the
-    /// account listing posted <c>{"userName":""}</c> and met a red error banner where the same operation
-    /// through the query string answers 200.
-    /// <para>
-    /// Both blank forms are exercised for each member, because the binder converts both and a fix that
-    /// handled only the empty string would leave whitespace diverging - which is exactly the asymmetry
-    /// this endpoint exists to avoid.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData("userName", "")]
     [InlineData("userName", "   ")]
@@ -565,8 +481,7 @@ public sealed class UserApiTests
     /// The guard on the fix above. Normalising a blank profile-property VALUE to absent means a request
     /// naming a property with a blank value is now indistinguishable from one naming a property with no
     /// value at all - and that combination must remain a refusal, exactly as it is through the query
-    /// string. Without this case the previous test could be satisfied by discarding the rule instead of
-    /// by relocating one conversion.
+    /// string.
     /// </remarks>
     [Fact]
     public async Task SearchUsers_WithProfilePropertyNameAndABlankValue_IsStillRefused()
@@ -603,8 +518,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The body-bound search is gated on the same policy as the collection, so moving the filter off the target
-    /// widened nothing.
+    /// The body-bound search is gated on the same policy as the collection, so moving the filter off the
+    /// target widened nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -650,14 +565,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// SEC-004: the subject identifier matches deliberately, so the owner branch is the only tempting path.
-    /// The token names portal A while the arrival host resolves to an existing portal B; the policy must
-    /// refuse before the user service can turn the mismatch into an ordinary not-found response.
-    /// <para>
     /// The account resource is addressed by its canonical flat route, so the tenant is selected by the
     /// arrival host rather than by a path segment. That is what makes the host the thing this fact varies:
     /// on this surface the cross-tenant attempt cannot be expressed any other way.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task GetUser_AsTheSameSubjectArrivingOnAnotherTenantsHost_ReturnsForbidden()
@@ -695,7 +605,8 @@ public sealed class UserApiTests
 
     /// <summary>
     /// An account that exists but holds no membership of the addressed tenant answers <c>404 Not Found</c>,
-    /// which is the resource's tenant-isolation guarantee: reads are scoped by membership, not by identifier.
+    /// which is the resource's tenant-isolation guarantee: reads are scoped by membership, not by
+    /// identifier.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -712,8 +623,9 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A create answers <c>201 Created</c>, carries a location that resolves, records the tenant membership,
-    /// auto-assigns the tenant's automatic roles, and writes a credential to the external store.
+    /// A create answers <c>201 Created</c>, carries a location that resolves, records the tenant
+    /// membership, auto-assigns the tenant's automatic roles, and writes a credential to the external
+    /// store.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -939,8 +851,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A delete answers <c>204 No Content</c>, the account becomes unreadable in the tenant, and its credential
-    /// is removed from the external store because it held no other membership.
+    /// A delete answers <c>204 No Content</c>, the account becomes unreadable in the tenant, and its
+    /// credential is removed from the external store because it held no other membership.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -993,8 +905,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The tenant's designated administrator cannot be deleted, because a tenant with no administrator cannot be
-    /// administered.
+    /// The tenant's designated administrator cannot be deleted, because a tenant with no administrator
+    /// cannot be administered.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1028,28 +940,16 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A credential change answers <c>204 No Content</c>, and the new credential really replaces the old one -
-    /// proved by signing in with it and by the stored hash having moved.
+    /// A credential change answers <c>204 No Content</c>, and the new credential really replaces the old
+    /// one - proved by signing in with it and by the stored hash having moved.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The acting caller is THE ACCOUNT ITSELF, minted for the account the administrator just created, because
-    /// the self-service change endpoint now requires the caller to be the account holder. This suite used to
-    /// drive it as the host account operating on somebody else's credential, which is the shape the split
-    /// closed: a caller who is not the holder must go through the administrative reset, which is separately
-    /// authorised.
-    /// </remarks>
     [Fact]
     public async Task ChangePassword_ReturnsNoContentAndReplacesTheCredential()
     {
         using HttpClient administrator = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(administrator);
 
-        // The CHANGE operation is self-service, so it is driven AS THE ACCOUNT ITSELF, signed in with the
-        // credential the create supplied. An earlier revision of this test drove it as the host account, which
-        // the service now refuses: presenting the current credential is proof of possession rather than of
-        // authority, so a caller acting on somebody else's account uses the RESET operation, which is audited
-        // as an administrative act. The reset path has its own test immediately below.
         using HttpClient owner = await ClientForAccountAsync(created);
 
         string before = (await ReadStoredHashAsync(created.Username))!;
@@ -1117,10 +1017,9 @@ public sealed class UserApiTests
     /// credential exactly as it was.
     /// </summary>
     /// <remarks>
-    /// This is the load-bearing test for the split between the two operations. A change proves possession by
-    /// quoting the current credential; a reset quotes nothing, so the only thing standing between an
-    /// authenticated caller and another account's credential is the portal-administrator policy. The stored
-    /// hash is compared before and after because a refusal that still wrote would be a silent takeover.
+    /// This is the load-bearing test for the split between the two operations. A change proves possession
+    /// by quoting the current credential; a reset quotes nothing, so the only thing standing between an
+    /// authenticated caller and another account's credential is the portal-administrator policy.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1182,11 +1081,9 @@ public sealed class UserApiTests
     /// validator, which compares the two values it was given.
     /// </summary>
     /// <remarks>
-    /// The answer is <c>400 Bad Request</c> rather than <c>409 Conflict</c> because the request carries both
-    /// values, so it can be judged malformed without consulting the store at all. This reproduces the legacy
-    /// self-service check, which likewise compared the two form fields. The equivalent judgement made against
-    /// the stored hash - the only route available when no current credential is supplied - is a distinct
-    /// outcome and is pinned by the companion test below.
+    /// The answer is <c>400 Bad Request</c> rather than <c>409 Conflict</c> because the request carries
+    /// both values, so it can be judged malformed without consulting the store at all. This reproduces the
+    /// legacy self-service check, which likewise compared the two form fields.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1218,9 +1115,7 @@ public sealed class UserApiTests
     /// <remarks>
     /// A reset supplies no current credential, so nothing in the request itself reveals that the new value
     /// is the old one - the comparison can only be made against the store, which is why this outcome
-    /// describes the state of the resource rather than the shape of the request. Together with the companion
-    /// test above, this pins both halves of the guarantee that a credential change must actually change
-    /// something, and pins them to the two different reasons they are reached.
+    /// describes the state of the resource rather than the shape of the request.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1268,9 +1163,9 @@ public sealed class UserApiTests
 
     /// <summary>
     /// THE CENTRAL SECURITY FACT OF THE CREDENTIAL SPLIT. Naming the reset operation on the SELF-SERVICE
-    /// address is refused, so the current-credential check cannot be skipped by an instruction in the caller's
-    /// own request body. Before the split, this exact request succeeded and rewrote the account's credential
-    /// without proving anything: any bearer token that could reach the endpoint was enough.
+    /// address is refused, so the current-credential check cannot be skipped by an instruction in the
+    /// caller's own request body. Before the split, this exact request succeeded and rewrote the account's
+    /// credential without proving anything: any bearer token that could reach the endpoint was enough.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1331,9 +1226,9 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// An account may not reset its OWN credential through the administrative address, because doing so would
-    /// be a credential write with no proof of the current value and no administrator involved - which is
-    /// exactly the escape the split exists to remove.
+    /// An account may not reset its OWN credential through the administrative address, because doing so
+    /// would be a credential write with no proof of the current value and no administrator involved - which
+    /// is exactly the escape the split exists to remove.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1362,8 +1257,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Naming the change operation on the ADMINISTRATIVE address is refused, which is the mirror image of the
-    /// self-service refusal: neither operation can be reached through the other's endpoint.
+    /// Naming the change operation on the ADMINISTRATIVE address is refused, which is the mirror image of
+    /// the self-service refusal: neither operation can be reached through the other's endpoint.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1388,9 +1283,9 @@ public sealed class UserApiTests
 
     /// <summary>Approval can be withdrawn and restored, and each write answers <c>204 No Content</c>.</summary>
     /// <remarks>
-    /// The refused sign-in answers <c>400 Bad Request</c> rather than <c>401 Unauthorized</c>: the credential
-    /// is verified before the approval gate, so a caller reaching the refusal has proved its credential and
-    /// is not unauthenticated - its account is simply not authorised for this portal.
+    /// The refused sign-in answers <c>400 Bad Request</c> rather than <c>401 Unauthorized</c>: the
+    /// credential is verified before the approval gate, so a caller reaching the refusal has proved its
+    /// credential and is not unauthenticated - its account is simply not authorised for this portal.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1420,9 +1315,7 @@ public sealed class UserApiTests
 
         // The approval outcomes are UNAUTHORIZED, not bad-request. Each names an account state that refused
         // a sign-in the credential itself did not refuse, so the request was correct and the account was
-        // not yet admissible - telling a client its request was at fault would be the wrong answer. The
-        // outcome is still NAMED in the body, which is the property this fact exists to assert: the caller
-        // has proved its credential, so it is entitled to know which gate refused.
+        // not yet admissible - telling a client its request was at fault would be the wrong answer.
         refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         (await refused.Content.ReadAsStringAsync()).Should().Contain(
@@ -1468,9 +1361,7 @@ public sealed class UserApiTests
     /// THE DESTRUCTIVE READING WAS THE QUIET ONE. Bound as a non-nullable boolean the query parameter was
     /// OPTIONAL, so a caller addressing this route with no query string bound <see langword="false"/>: the
     /// account's approval was withdrawn and its live sessions were revoked, with nothing about the request
-    /// malformed enough for the model binder to object. The 400 this endpoint advertises was therefore
-    /// unreachable. This test is the evidence path the review asked for, and it asserts the account is left
-    /// APPROVED afterwards - the refusal has to be a refusal, not a refusal reported after the write.
+    /// malformed enough for the model binder to object.
     /// </remarks>
     [Fact]
     public async Task SetApproval_WhenTheStateIsOmitted_ReturnsBadRequestAndChangesNothing()
@@ -1502,8 +1393,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// An account may not set its own approval. Permitting it would let a pending account approve itself and
-    /// bypass the gate entirely.
+    /// An account may not set its own approval. Permitting it would let a pending account approve itself
+    /// and bypass the gate entirely.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1537,12 +1428,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A locked account is released by the unlock route, answers <c>204 No Content</c>, and can sign in again.
+    /// A locked account is released by the unlock route, answers <c>204 No Content</c>, and can sign in
+    /// again.
     /// </summary>
     /// <remarks>
-    /// The lock is applied by writing the credential store directly rather than by signing in wrongly enough
-    /// times to trip it. Driving the failure counter through the sign-in route would couple this test to the
-    /// configured attempt threshold and to the sign-in rate limiter, neither of which is what it is testing.
+    /// The lock is applied by writing the credential store directly rather than by signing in wrongly
+    /// enough times to trip it. Driving the failure counter through the sign-in route would couple this
+    /// test to the configured attempt threshold and to the sign-in rate limiter, neither of which is what
+    /// it is testing.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1612,8 +1505,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Requiring a credential change answers <c>204 No Content</c>, is visible on the account, and is refused a
-    /// second time because the account already owes one.
+    /// Requiring a credential change answers <c>204 No Content</c>, is visible on the account, and is
+    /// refused a second time because the account already owes one.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1665,14 +1558,6 @@ public sealed class UserApiTests
         blocked.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await blocked.Content.ReadAsStringAsync()).Should().Contain("remediation");
 
-        // MIGRATION: THE PROFILE ROUTE IS CLOSED TOO, because the outstanding requirement is a CREDENTIAL one
-        // and reading a profile cannot clear it. Each remediation allowance is admitted only while the
-        // requirement it remedies is the one outstanding: the profile routes open when a profile must be
-        // completed, the credential route opens when a credential must be changed, and the authentication
-        // lifecycle stays open throughout. Admitting every owner-scoped remediation route whenever ANY
-        // requirement was outstanding would widen the restricted session well past the one route that can end
-        // it, which is precisely what the sibling fact
-        // AuthApiTests.RequiredPasswordChange_AllowsOnlyAuthenticationAndOwnPasswordRemediation names.
         using HttpResponseMessage profile = await caller.GetAsync(
             ProfileRoute(_fixture.Seed.PortalId, account.UserId));
         profile.StatusCode.Should().Be(
@@ -1859,16 +1744,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// PRIV-01: the account holder may obtain everything the installation holds about them within the tenant
-    /// they are addressing, in one document, without an administrator's help.
+    /// PRIV-01: the account holder may obtain everything the installation holds about them within the
+    /// tenant they are addressing, in one document, without an administrator's help.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Driven as the ACCOUNT ITSELF rather than as an administrator, because self-service is the property the
-    /// finding is about: an export only an administrator can take is not a subject-access facility. The
-    /// administrative case is asserted separately below, since both are legitimate and they are different
-    /// events.
-    /// </remarks>
     [Fact]
     public async Task ExportPersonalData_AsTheAccountHolder_ReturnsOk()
     {
@@ -1946,8 +1825,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// PRIV-01: an unauthenticated caller cannot obtain a subject's data, and an account arriving on another
-    /// tenant's host cannot obtain it either even when the identifier matches.
+    /// PRIV-01: an unauthenticated caller cannot obtain a subject's data, and an account arriving on
+    /// another tenant's host cannot obtain it either even when the identifier matches.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2013,27 +1892,16 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// PRIV-03: every response from an endpoint that requires authorisation forbids caching, and an anonymous
-    /// endpoint does not, so the rule is proven to be keyed on authorisation rather than applied everywhere.
+    /// PRIV-03: every response from an endpoint that requires authorisation forbids caching, and an
+    /// anonymous endpoint does not, so the rule is proven to be keyed on authorisation rather than applied
+    /// everywhere.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The four authorised reads below are the ones that actually carry personal data: an account projection,
-    /// a profile, a listing of a tenant's accounts, and the export itself. A private browser cache that wrote
-    /// any of them to disk would leave them readable after a sign-out, and pressing Back would re-display
-    /// them.
-    /// </para>
-    /// <para>
-    /// THE REFUSALS ARE ASSERTED TOO. A cached <c>401</c> or <c>403</c> is a cached security decision, and a
-    /// rule that marked only successful responses would make the presence of the directive itself a signal
-    /// about whether a caller is entitled to a resource.
-    /// </para>
-    /// <para>
-    /// The negative control is the health endpoint, which is anonymous by design and carries no personal data;
-    /// it must NOT be marked, or this fact would pass equally against a change that made the whole API
-    /// uncacheable and would stop testing the rule it names.
-    /// </para>
+    /// The four authorised reads below are the ones that actually carry personal data: an account
+    /// projection, a profile, a listing of a tenant's accounts, and the export itself. A private browser
+    /// cache that wrote any of them to disk would leave them readable after a sign-out, and pressing Back
+    /// would re-display them.
     /// </remarks>
     [Fact]
     public async Task AuthorizedResponses_ForbidResponseCaching()
@@ -2069,21 +1937,10 @@ public sealed class UserApiTests
         forbidden.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         AssertPrivateAndUnstorable(forbidden, "an entitlement refusal must not be retained either");
 
-        /*
-         * THE NEGATIVE CONTROL, and it is asserted on `private` rather than on `no-store` for a MEASURED
-         * reason that a later reader would otherwise reverse.
-         *
-         * `/health` is anonymous and carries no personal data, so this rule does not reach it - but the
-         * response IS already `no-store`, because ASP.NET Core's own health middleware defaults
-         * `HealthCheckOptions.AllowCachingResponses` to false and writes `no-store, no-cache` plus the
-         * HTTP/1.0 spellings itself. Measured against the container image built BEFORE this rule existed:
-         * `Cache-Control: no-store, no-cache`, `Pragma: no-cache`, `Expires: Thu, 01 Jan 1970`.
-         *
-         * So asserting the absence of `no-store` here would assert something untrue of the framework and
-         * would fail whatever this rule did. `private` is the discriminator: the health default does not set
-         * it and never has, and this rule always does. Its absence therefore proves the rule is keyed on
-         * authorisation rather than applied to every response, which is the property the control exists for.
-         */
+        // `/health` is anonymous and carries no personal data, so this rule does not reach it - but the
+        // response IS already `no-store`, because ASP.NET Core's own health middleware defaults
+        // `HealthCheckOptions.AllowCachingResponses` to false and writes `no-store, no-cache` plus the
+        // HTTP/1.0 spellings itself.
         using HttpResponseMessage health = await anonymous.GetAsync(
             new Uri("/health", UriKind.Relative));
 
@@ -2094,15 +1951,13 @@ public sealed class UserApiTests
             "the freshness bound belongs to the authorisation rule, which does not reach an anonymous probe");
     }
 
-    /// <summary>
-    /// Asserts that one response may not be retained by a private or shared cache.
-    /// </summary>
+    /// <summary>Asserts that one response may not be retained by a private or shared cache.</summary>
     /// <param name="response">The response to inspect.</param>
     /// <param name="because">Why this response must not be retained.</param>
     /// <remarks>
     /// Deliberately does NOT assert the HTTP/1.0 <c>Pragma</c> spelling or an <c>Expires</c> bound. Those
-    /// belong to the stronger credential rule, and asserting them here would collapse the two rules into one
-    /// and stop either from being distinguishable. <c>AuthApiTests</c> owns the credential form.
+    /// belong to the stronger credential rule, and asserting them here would collapse the two rules into
+    /// one and stop either from being distinguishable. <c>AuthApiTests</c> owns the credential form.
     /// </remarks>
     private static void AssertPrivateAndUnstorable(HttpResponseMessage response, string because)
     {
@@ -2114,7 +1969,6 @@ public sealed class UserApiTests
             TimeSpan.Zero,
             "the fallback for an intermediary that computes freshness heuristically");
     }
-
 
     /// <summary>The profile projection answers <c>404 Not Found</c> for an account that does not exist.</summary>
     /// <returns>A task representing the test.</returns>
@@ -2130,8 +1984,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A profile value round-trips through a definition created for the purpose, which exercises the definition
-    /// resource and the profile resource against one another.
+    /// A profile value round-trips through a definition created for the purpose, which exercises the
+    /// definition resource and the profile resource against one another.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2180,7 +2034,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Malformed profile collections are rejected at the API boundary before any definition lookup or write.
+    /// Malformed profile collections are rejected at the API boundary before any definition lookup or
+    /// write.
     /// </summary>
     [Fact]
     public async Task UpdateProfile_WithDuplicateOrInvalidEntries_ReturnsBadRequest()
@@ -2262,8 +2117,8 @@ public sealed class UserApiTests
         IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
         int otherPortalId = otherPortal.PortalId;
         // Addressed at the OTHER portal's own alias, which is what makes the declaration foreign. A host
-        // account is exempt from tenant binding, so the same persona can reach either tenant; what decides the
-        // owning portal is the host name the request arrives at.
+        // account is exempt from tenant binding, so the same persona can reach either tenant; what decides
+        // the owning portal is the host name the request arrives at.
         using HttpClient foreignTenantHost = await _fixture.CreateHostClientAsync(otherPortal.Alias);
         ProfilePropertyDefinitionDto foreignDefinition =
             await CreateProfileDefinitionAsync(foreignTenantHost, required: false);
@@ -2355,9 +2210,8 @@ public sealed class UserApiTests
     /// <remarks>
     /// The answer is <c>404 Not Found</c> rather than <c>400 Bad Request</c>, and that is the deliberate
     /// contract rather than an accident: a profile property is itself an addressable resource under
-    /// <c>profile-definitions/{propertyDefinitionId}</c>, so naming one the tenant does not hold is reported the
-    /// same way as addressing it directly would be. The status translator registers both the long and the short
-    /// form of the unknown-property token, so the two routes cannot drift apart.
+    /// <c>profile-definitions/{propertyDefinitionId}</c>, so naming one the tenant does not hold is
+    /// reported the same way as addressing it directly would be.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2490,23 +2344,8 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    /// <summary>
-    /// The definition write path is validated at the BOUNDARY on its single canonical address.
-    /// </summary>
+    /// <summary>The definition write path is validated at the BOUNDARY on its single canonical address.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The name carries a space, which the legacy pattern
-    /// <c>^[a-zA-Z0-9._%\-+']+$</c> - rendered by the reflective property editor from the attribute on
-    /// <c>Library/Components/Users/Profile/ProfilePropertyDefinition.vb:L228</c> - refused. Rule-for-rule
-    /// parity is proved by the validator's own unit suite; what this fact proves is different and cannot be
-    /// proved there: that the validator is ATTACHED, by the globally registered filter, to this action.
-    /// </para>
-    /// <para>
-    /// The filter resolves a validator from the bound argument's type rather than from route metadata, and
-    /// the assertion proves that filter is attached to the canonical action.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task CreateProfileDefinition_WithANameTheLegacyPatternRefused_ReturnsBadRequest()
     {
@@ -2538,16 +2377,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Declaring the same profile property name from several callers at once declares it exactly once, refuses
-    /// every other caller as a conflict, and answers no caller with a server fault.
+    /// Declaring the same profile property name from several callers at once declares it exactly once,
+    /// refuses every other caller as a conflict, and answers no caller with a server fault.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6. <c>IX_ProfilePropertyDefinition</c> is unique over
-    /// <c>(PortalID, ModuleDefID, PropertyName)</c>, so every racer reads "not declared" before any of them
-    /// commits and the losers are refused by the index rather than by the read. The scope of what a contest
-    /// fact asserts, and why it does not assert which mechanism refused a given caller, is recorded on
-    /// <see cref="CreateUser_SubmittedConcurrentlyUnderOneLoginName_CreatesItOnceWithoutAnyServerFault"/>.
+    /// <c>IX_ProfilePropertyDefinition</c> is unique over <c>(PortalID, ModuleDefID, PropertyName)</c>, so
+    /// every racer reads "not declared" before any of them commits and the losers are refused by the index
+    /// rather than by the read.
     /// </remarks>
     [Fact]
     public async Task CreateProfileDefinition_SubmittedConcurrentlyUnderOneName_DeclaresItOnceWithoutAnyServerFault()
@@ -2606,7 +2443,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Tenant-authored validation expressions are length-bounded and must compile before they are persisted.
+    /// Tenant-authored validation expressions are length-bounded and must compile before they are
+    /// persisted.
     /// </summary>
     [Fact]
     public async Task CreateProfileDefinition_WithUnsafeValidationExpression_ReturnsBadRequest()
@@ -2636,19 +2474,13 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The canonical definition address serves the whole action set against the tenant the request resolves.
+    /// The canonical definition address serves the whole action set against the tenant the request
+    /// resolves.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <c>/api/v1/profile-definitions</c> is the address the contract froze, and every action is reachable
-    /// through it: create, read the member, read the collection, update and remove. The returned portal
-    /// identifier establishes that the operation acted on the RESOLVED tenant rather than on a default.
-    /// </para>
-    /// <para>
     /// The definition is removed at the end. Definitions are portal schema, so leaving one behind would
     /// change what every other profile fact in this suite sees.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task CanonicalProfileDefinitionAddress_ServesTheResolvedTenantAcrossItsActionSet()
@@ -2664,9 +2496,6 @@ public sealed class UserApiTests
 
         created.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        // Read through the ENVELOPE, which is what every payload-bearing success in this API publishes.
-        // Deserialising an envelope directly as its payload type yields a non-null object with every
-        // member unset, so a raw read here would compare defaults and pass or fail for the wrong reason.
         ProfilePropertyDefinitionDto? definition = await created.Content
             .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
 
@@ -2733,9 +2562,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The tenant a request runs under is resolved from its host header. The flat definition family carries no
-    /// competing portal identity, so a token for the seeded portal sent to another portal's host is refused
-    /// before the service is reached.
+    /// The tenant a request runs under is resolved from its host header. The flat definition family carries
+    /// no competing portal identity, so a token for the seeded portal sent to another portal's host is
+    /// refused before the service is reached.
     /// </remarks>
     [Fact]
     public async Task ListProfileDefinitions_AsAdministratorOfAnotherTenant_ReturnsForbidden()
@@ -2794,12 +2623,6 @@ public sealed class UserApiTests
         IsolatedPortal isolated = await CreateIsolatedPortalAsync(client);
         using HttpClient isolatedClient = await _fixture.CreateHostClientAsync(isolated.Alias);
 
-        // THE READ ANSWERS 200 WITH THE LEGACY DEFAULTS, FLAGGED AS UNSTORED. It used to answer 404, which was
-        // untrue - the tenant exists, so its settings resource does - and runtime testing measured the damage:
-        // four screens that read this document only to decide which columns to render put a screen-level "not
-        // found" alert above healthy content, and the settings screen disabled its own save control against a
-        // healthy server. The legacy reader applied a measured default for every absent key, so defaults are
-        // the behaviour-preserving answer; the absence of a STORE now travels inside the document.
         using HttpResponseMessage read = await isolatedClient.GetAsync(MembershipSettingsRoute(isolated.PortalId));
         read.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -2814,9 +2637,6 @@ public sealed class UserApiTests
             new MembershipSettingsDto(),
             ApiTestFixture.Json);
 
-        // THE WRITE ANSWERS 409, NOT 404, because the read for this very address answers 200: a caller cannot
-        // act on an API that says a resource both exists and does not. What is absent is the store, which is a
-        // state conflict the operator can repair, and the detail names the repair.
         written.StatusCode.Should().Be(HttpStatusCode.Conflict);
 
         string body = await written.Content.ReadAsStringAsync();
@@ -2824,8 +2644,9 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// With a "User Accounts" module instance in place the projection reads and writes, and the written values
-    /// survive a re-read - which proves they were reduced onto stored module settings and read back out again.
+    /// With a "User Accounts" module instance in place the projection reads and writes, and the written
+    /// values survive a re-read - which proves they were reduced onto stored module settings and read back
+    /// out again.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2849,9 +2670,6 @@ public sealed class UserApiTests
         defaults.ColumnDisplayName.Should().BeTrue();
         defaults.ColumnFirstName.Should().BeFalse();
 
-        // THE WRITE BODY IS ITS OWN CONTRACT. The read answers with the projection; the write states the
-        // whole set explicitly, which is why the two are separate types and why the values below are set on a
-        // request rather than on the object that was just read back.
         var desired = new UpdateMembershipSettingsRequest
         {
             RecordsPerPage = 25,
@@ -2890,8 +2708,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Membership settings reject unsupported discriminators, null policy text and redirect pages owned by a
-    /// different portal.
+    /// Membership settings reject unsupported discriminators, null policy text and redirect pages owned by
+    /// a different portal.
     /// </summary>
     [Fact]
     public async Task MembershipSettings_RejectMalformedValuesAndForeignRedirects()
@@ -2934,17 +2752,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: KEPT ALONGSIDE THE FACT ABOVE RATHER THAN FOLDED INTO IT, BECAUSE THE TWO ASSERT
-    /// DIFFERENT FAILURES. The fact above asserts the STATUS - that a malformed body and a foreign redirect
-    /// are both refused - and would still pass if the refusal came from the service with a single opaque
-    /// message. This one asserts the SHAPE: one entry per offending member, which can only happen if the
-    /// pipeline resolved a validator for the type the action binds. An endpoint that advertises a
-    /// field-error response and has no registered validator fails this and nothing else.
-    /// <para>
     /// The bound it exercises is named on the validator of the WRITE shape. It was written against a
     /// validator declared on the read projection, which no endpoint binds and which is therefore withdrawn;
     /// the bound itself is unchanged.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task MembershipSettings_WithAnInvalidShape_NamesEveryOffendingField()
@@ -2988,12 +2798,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the
-    /// submitted format against the stored one and spawned <c>UserController.UpdateDisplayNames</c>
-    /// (<c>Library/Components/Users/UserController.vb:L1259-L1268</c>) when they differed. The legacy sweep
-    /// ran on a background thread and reported nothing; here it is part of the same write and the count comes
-    /// back on the response, which is why this endpoint answers 200 with a body rather than 204. The
-    /// divergence is recorded in MIGRATION_NOTES.md.
+    /// Reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the submitted
+    /// format against the stored one and spawned <c>UserController.UpdateDisplayNames</c> when they
+    /// differed.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -3056,12 +2863,6 @@ public sealed class UserApiTests
     /// with what the operation actually does.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy grid decided this in markup at
-    /// <c>Website/admin/Users/Users.ascx.vb:L691-L692</c>, hiding the command for the tenant's designated
-    /// administrator. The capability now travels on the row, and this fact pins it to the operation rather
-    /// than to itself: the protected row is offered no command AND is refused when one is issued anyway.
-    /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
     public async Task ListUsers_PublishesADeletionCapabilityThatMatchesWhatDeletionDoes()
@@ -3070,8 +2871,8 @@ public sealed class UserApiTests
 
         UserDetailDto ordinary = await CreateUserAsync(client);
 
-        // Both rows are reached by NAME FILTER rather than by reading the unfiltered first page. Every other
-        // fact in this suite adds accounts to the same tenant, so a positional read would become
+        // Both rows are reached by NAME FILTER rather than by reading the unfiltered first page. Every
+        // other fact in this suite adds accounts to the same tenant, so a positional read would become
         // order-dependent and eventually stop finding what it asserts about.
         PagedEnvelope<UserListItemDto> members = await ListAsync(
             client,
@@ -3126,19 +2927,8 @@ public sealed class UserApiTests
 
     /// <summary>Reads one page of the seeded tenant's accounts under an explicit filter.</summary>
     /// <param name="client">A client entitled to enumerate accounts.</param>
-    /// <param name="filter">
-    /// The filter portion of the query string, without a leading separator. Pass an empty string for the
-    /// unfiltered collection.
-    /// </param>
+    /// <param name="filter">The filter portion of the query string, without a leading separator.</param>
     /// <returns>The page the endpoint served.</returns>
-    /// <remarks>
-    /// Every caller supplies the paging coordinates through this one helper, and it states them explicitly
-    /// rather than relying on the contract's defaults, so a change to a default cannot quietly move which page
-    /// a filter assertion is reading. The page size is a stated request value and NOT the legacy
-    /// <c>Records_PerPage</c> portal setting that <c>Website/admin/Users/Users.ascx.vb:L114</c> read, which is
-    /// why no assertion in this suite pins a page size: that setting is a presentation preference in the
-    /// membership projection, not a bound on the collection endpoint.
-    /// </remarks>
     private async Task<PagedEnvelope<UserListItemDto>> ListAsync(HttpClient client, string filter)
     {
         ArgumentNullException.ThrowIfNull(client);
@@ -3159,17 +2949,15 @@ public sealed class UserApiTests
         return page!;
     }
 
-    /// <summary>
-    /// Posts a LITERAL JSON document to the body-bound search and returns the page it answered.
-    /// </summary>
+    /// <summary>Posts a LITERAL JSON document to the body-bound search and returns the page it answered.</summary>
     /// <param name="client">An authenticated client.</param>
     /// <param name="json">The exact request body to send.</param>
     /// <returns>The page the search answered.</returns>
     /// <remarks>
-    /// The body is a raw literal rather than a serialised request object on purpose. Serialising the request
-    /// type would apply this assembly's own converter policy, so the bytes on the wire would be whatever the
-    /// server already accepts and a wire-form mismatch would be untestable - which is exactly how the sort
-    /// direction came to have one spelling in a query string and another in a body.
+    /// The body is a raw literal rather than a serialised request object on purpose. Serialising the
+    /// request type would apply this assembly's own converter policy, so the bytes on the wire would be
+    /// whatever the server already accepts and a wire-form mismatch would be untestable - which is exactly
+    /// how the sort direction came to have one spelling in a query string and another in a body.
     /// </remarks>
     private static async Task<PagedEnvelope<UserListItemDto>> SearchWithRawBodyAsync(
         HttpClient client,
@@ -3198,29 +2986,16 @@ public sealed class UserApiTests
 
     /// <summary>
     /// The account-owner policy admits the account holder only WITHIN THE TENANT ITS TOKEN NAMES: the same
-    /// account key addressed under another tenant's route is refused on the account detail, the profile read,
-    /// the profile write and the credential change alike.
+    /// account key addressed under another tenant's route is refused on the account detail, the profile
+    /// read, the profile write and the credential change alike.
     /// </summary>
     /// <param name="method">The verb under test.</param>
     /// <param name="routeSuffix">The suffix appended to the account route, empty for the account detail.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// THE DEFECT THIS PINS. An account key is installation-wide - <c>dbo.Users</c> carries no portal column
-    /// and membership is a row in <c>dbo.UserPortals</c> - while every route in this family names a portal.
-    /// The owner arm of the policy compared only the SUBJECT claim against the route's account, so a token
-    /// minted in one tenant satisfied it against any tenant's route for the same account, and the
-    /// administrator arm could not refuse what the owner arm had already granted. The responses are
-    /// portal-scoped projections, so that is a cross-tenant read and write rather than a theoretical one.
-    /// </para>
-    /// <para>
-    /// THE ANSWER MUST BE 403, NOT 404, AND THE DIFFERENCE IS THE WHOLE ASSERTION. Before the tenant
-    /// comparison existed these requests passed the policy and were refused further down by the service,
-    /// which reads the account WITH its membership and so answered not-found for an account that is not a
-    /// member of the addressed tenant. That is a refusal by accident: it depends on the account not being a
-    /// member of the second tenant, and a real DotNetNuke installation is full of accounts that belong to
-    /// several. A forbidden answer proves the request never reached the service at all.
-    /// </para>
+    /// THE DEFECT THIS PINS. An account key is installation-wide - <c>dbo.Users</c> carries no portal
+    /// column and membership is a row in <c>dbo.UserPortals</c> - while every route in this family names a
+    /// portal.
     /// </remarks>
     [Theory]
     [InlineData("GET", "")]
@@ -3240,10 +3015,7 @@ public sealed class UserApiTests
         // The account's own token, minted for the tenant it actually belongs to.
         using HttpClient holder = await ClientForAccountAsync(created);
 
-        // Its own account key, addressed under the OTHER tenant. The account family is addressed by its
-        // canonical flat route, so the tenant is selected by the ARRIVAL HOST rather than by a path
-        // segment - which makes the alias the thing this fact varies, and is the only way the cross-tenant
-        // attempt can be expressed on this surface.
+        // Its own account key, addressed under the OTHER tenant.
         holder.BaseAddress = new Uri($"http://{otherPortal.Alias}", UriKind.Absolute);
 
         var route = new Uri(
@@ -3253,8 +3025,8 @@ public sealed class UserApiTests
         using var request = new HttpRequestMessage(new HttpMethod(method), route);
 
         // The bodies below are well formed and would be accepted on the account's own tenant, which is what
-        // makes the refusal attributable to the policy rather than to a malformed request. Authorisation runs
-        // before model binding matters, so nothing here needs to be more than deserialisable.
+        // makes the refusal attributable to the policy rather than to a malformed request. Authorisation
+        // runs before model binding matters, so nothing here needs to be more than deserialisable.
         if (routeSuffix.Equals("/profile", StringComparison.Ordinal))
         {
             // Deliberately carries no portal identifier: the profile contract has none, because the portal
@@ -3270,10 +3042,7 @@ public sealed class UserApiTests
         else if (routeSuffix.Equals("/password", StringComparison.Ordinal))
         {
             // The credential route is the one member of this family whose requirement forbids the
-            // administrator fallback, so the owner arm is the ONLY arm that can grant it. Before the tenant
-            // comparison existed, a token minted in one tenant could therefore overwrite its own credential
-            // through another tenant's route - and the credential store is installation-wide, so that write
-            // was not even portal-scoped.
+            // administrator fallback, so the owner arm is the ONLY arm that can grant it.
             request.Content = JsonContent.Create(
                 new ChangePasswordRequest
                 {
@@ -3333,8 +3102,8 @@ public sealed class UserApiTests
 
         // The credential route is the strict member of this family - its requirement forbids the
         // administrator fallback - so proving it is served for the holder within its own tenant is what
-        // establishes that the tenant comparison closed the cross-tenant path without closing self-service on
-        // the one route that has no other way in.
+        // establishes that the tenant comparison closed the cross-tenant path without closing self-service
+        // on the one route that has no other way in.
         using HttpResponseMessage credential = await holder.PostAsJsonAsync(
             new Uri(
                 $"/api/v1/users/{Route(created.UserId)}/password",
@@ -3353,33 +3122,14 @@ public sealed class UserApiTests
 
     /// <summary>
     /// The account holder learns the tenant's per-property visibility decision from its OWN profile, on the
-    /// same request that carries the profile, while the settings endpoint that also declares it refuses them.
+    /// same request that carries the profile, while the settings endpoint that also declares it refuses
+    /// them.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THE REFUSAL IS ASSERTED IN THE SAME CASE AS THE SUCCESS, AND THAT PAIRING IS THE WHOLE POINT.
-    /// <c>Website/admin/Users/Profile.ascx.vb:L58-L63</c> offered the per-value visibility control when the
-    /// tenant's <c>Profile_DisplayVisibility</c> setting was on AND the viewer was the subject of the
-    /// profile. The migrated screen read that setting from <c>GET api/v1/users/settings</c>, which carries
-    /// <c>PolicyNames.PortalAdministrator</c> - so the second half of the legacy predicate guaranteed the
-    /// first half could never be read. An ordinary holder was answered 403, the policy stayed unresolved,
-    /// and the control was never offered however the tenant had configured it. The setting was stored,
-    /// published and inert.
-    /// </para>
-    /// <para>
-    /// Asserting only that the profile now carries the member would not catch a regression that moved the
-    /// fact back onto the administrator-only endpoint, because such a change would leave this member
-    /// present and merely stale. Asserting the 403 alongside it is what pins the reason the member exists
-    /// here at all.
-    /// </para>
-    /// <para>
     /// The tenant is left at whatever it has stored rather than being reconfigured, so the assertion is
     /// that the fact TRAVELS and is a real boolean - not that it holds a particular value, which would make
-    /// this case depend on fixture state it does not own. The stored-both-ways behaviour is pinned by
-    /// <c>GetProfile_PublishesTheTenantsVisibilityAffordanceDecision</c> in the unit suite, where the
-    /// settings source can be controlled directly.
-    /// </para>
+    /// this case depend on fixture state it does not own.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -3395,9 +3145,6 @@ public sealed class UserApiTests
 
         profile.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        // Read from the RAW payload rather than only through the typed envelope, because a
-        // deserialised bool cannot distinguish "the member was absent and defaulted" from "the member
-        // was present and false" - and an absent member is exactly the regression this case guards.
         using JsonDocument document = JsonDocument.Parse(
             await profile.Content.ReadAsStringAsync());
 
@@ -3407,7 +3154,6 @@ public sealed class UserApiTests
             .Should().BeTrue("the holder has no other way to learn the tenant's decision");
         decision.ValueKind.Should().BeOneOf(JsonValueKind.True, JsonValueKind.False);
 
-        // The same fact, asked for where the migrated screen used to ask for it.
         using HttpResponseMessage settings = await holder.GetAsync(MembershipSettingsRoute(0));
 
         settings.StatusCode.Should().Be(
@@ -3419,16 +3165,9 @@ public sealed class UserApiTests
     /// <param name="account">The account to act as.</param>
     /// <returns>A client presenting the token the API issued to that account.</returns>
     /// <remarks>
-    /// <para>
-    /// The account is one this suite created, and the credential is the one it supplied while creating it, so
-    /// the sign-in additionally proves the create path stored a credential the login path can verify - which
-    /// is the half of the create contract no response body can show.
-    /// </para>
-    /// <para>
-    /// No role is asserted, because none would help: the self-service credential and profile endpoints are
-    /// gated on SUBJECT-versus-ROUTE equality rather than on a role, so no role would admit this caller and
-    /// none is needed to.
-    /// </para>
+    /// The account is one this suite created, and the credential is the one it supplied while creating it,
+    /// so the sign-in additionally proves the create path stored a credential the login path can verify -
+    /// which is the half of the create contract no response body can show.
     /// </remarks>
     private Task<HttpClient> ClientForAccountAsync(UserDetailDto account)
     {
@@ -3443,15 +3182,6 @@ public sealed class UserApiTests
     /// <param name="client">A client holding the administrators role, addressed at the owning tenant.</param>
     /// <param name="required">Whether the property must be supplied.</param>
     /// <returns>The created definition.</returns>
-    /// <remarks>
-    /// MIGRATION: THE OWNING TENANT IS THE CLIENT'S ADDRESS, NOT AN ARGUMENT. The declaration route is flat -
-    /// <c>api/v1/profile-definitions</c> names no portal - so the endpoint takes the tenant from the host the
-    /// request arrived at. This helper used to accept a portalId and DISCARD it, which quietly made every
-    /// call create a declaration in the caller's own tenant: two facts about cross-tenant isolation set
-    /// themselves up by asking for a declaration in another portal, received one in the seeded portal, and
-    /// then asserted isolation against a declaration that was never foreign. Both now pass a client addressed
-    /// at the tenant they mean, and the parameter that could lie is gone.
-    /// </remarks>
     private async Task<ProfilePropertyDefinitionDto> CreateProfileDefinitionAsync(
         HttpClient client,
         bool required)
@@ -3504,9 +3234,10 @@ public sealed class UserApiTests
     /// settings projection is stored.
     /// </summary>
     /// <remarks>
-    /// SEC-007: both the definition and its module instance are written directly and idempotently. The package
-    /// is administrative and therefore MUST NOT be placeable through the ordinary module-creation catalogue;
-    /// direct setup models host installation without weakening the API boundary this test is meant to preserve.
+    /// both the definition and its module instance are written directly and idempotently. The package is
+    /// administrative and therefore MUST NOT be placeable through the ordinary module-creation catalogue;
+    /// direct setup models host installation without weakening the API boundary this test is meant to
+    /// preserve.
     /// </remarks>
     /// <returns>A task representing the setup.</returns>
     private async Task EnsureUserAccountsModuleAsync()
@@ -3571,11 +3302,6 @@ public sealed class UserApiTests
             return;
         }
 
-        // SEC-007: the instance is written directly rather than posted to /api/v1/modules. The package is
-        // administrative, so it must not be placeable through the ordinary module-creation catalogue, and a
-        // setup step that used the catalogue would weaken exactly the boundary these tests assert. No pane,
-        // alignment, colour or border value is written either: those columns are appearance concerns that
-        // AAP 0.2.2.1 and 0.2.2.4 place out of scope, and no request contract declares them.
         await _fixture.Database.ExecuteAsync(
             """
             INSERT INTO [dbo].[Modules]
@@ -3620,9 +3346,6 @@ public sealed class UserApiTests
         using System.Text.Json.JsonDocument document =
             System.Text.Json.JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        // The created representation travels inside the shared success envelope, so the identifier is one
-        // level down under "data". Read as raw JSON rather than through a typed envelope because only the
-        // one member is wanted, and naming it here proves the envelope member name as a side effect.
         int portalId = document.RootElement
             .GetProperty("data")
             .GetProperty("portalId")
@@ -3704,14 +3427,6 @@ public sealed class UserApiTests
     /// </summary>
     /// <param name="read">The definition the caller read back.</param>
     /// <returns>An amendment carrying the same values, ready to be modified and put.</returns>
-    /// <remarks>
-    /// MIGRATION: the update verb binds <c>UpdateProfilePropertyDefinitionRequest</c>, which carries the nine
-    /// members <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) writes and no others. Echoing the
-    /// read-back projection would still succeed, because no unmapped-member handling is configured and the
-    /// deserialiser ignores what it does not recognise - but it would exercise a wider shape than the boundary
-    /// advertises, which is exactly the confusion the split removed. Seeding the amendment from the read is
-    /// what keeps a whole-representation PUT from blanking the members a test did not mean to change.
-    /// </remarks>
     private static UpdateProfilePropertyDefinitionRequest AmendmentFrom(ProfilePropertyDefinitionDto read) => new()
     {
         DataType = read.DataType,
@@ -3748,33 +3463,10 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The two projections are written out by hand from different sources - the listing from a paged query,
-    /// the single read from a keyed one - so nothing but a test keeps them in step. The failure this guards
-    /// against was exactly that drift: the listing reported an empty given name, family name and electronic
-    /// mail address for every account while the single read reported all three correctly, which no consumer
-    /// can reconcile and no compiler can catch.
-    /// </para>
-    /// <para>
     /// The comparison is driven off the SHARED members rather than a hand-copied list of names, so a member
     /// added to both contracts is compared automatically instead of being silently omitted. The listing's
-    /// address and telephone are excluded deliberately: they are profile values the listing composes and the
-    /// single read does not carry at all, so they have no counterpart to agree with.
-    /// </para>
-    /// <para>
-    /// The members the tenant WITHHOLDS from a listing are excluded too, and their exclusion is DERIVED from
-    /// the tenant's own published settings rather than hard-coded, so the fact cannot drift out of step with
-    /// the configuration. A listing minimises the columns the tenant has switched off - it is a screen
-    /// projection subject to that tenant's configuration - while the keyed single read is the privileged read
-    /// and is not minimised. Requiring the two to agree on a withheld member would be requiring the listing
-    /// to publish PII the tenant has switched off, so the fact asserts agreement where the tenant publishes
-    /// and asserts the withholding itself where it does not.
-    /// </para>
-    /// <para>
-    /// Reading the flags from <c>GET /api/v1/users/settings</c> is also what demonstrates the answer to the
-    /// obvious objection: a withheld value and an unrecorded one are always separable by a caller, because the
-    /// flag that distinguishes them is published on the same API.
-    /// </para>
+    /// address and telephone are excluded deliberately: they are profile values the listing composes and
+    /// the single read does not carry at all, so they have no counterpart to agree with.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -3900,9 +3592,9 @@ public sealed class UserApiTests
                 compared.Add(listProperty.Name);
             }
 
-            // The comparison is only meaningful if it actually reached the members the drift emptied, so every
-            // one of the five is accounted for: either compared against the privileged read, or asserted as
-            // withheld by the tenant's own published setting. Neither list may simply omit it.
+            // The comparison is only meaningful if it actually reached the members the drift emptied, so
+            // every one of the five is accounted for: either compared against the privileged read, or
+            // asserted as withheld by the tenant's own published setting. Neither list may simply omit it.
             foreach (string member in new[]
             {
                 nameof(UserListItemDto.Username),
@@ -3950,9 +3642,7 @@ public sealed class UserApiTests
             }
 
             // At least one column must actually be withheld under the tenant's settings, or this fact would
-            // pass without ever exercising the minimisation it exists to pin. The measured legacy defaults
-            // switch the given-name, family-name, electronic-mail and last-login columns off, so a tenant that
-            // has never configured the accounts module withholds four of them.
+            // pass without ever exercising the minimisation it exists to pin.
             withheld.Should().NotBeEmpty(
                 "the minimisation must be exercised, not merely permitted");
         }
@@ -3965,36 +3655,14 @@ public sealed class UserApiTests
         }
     }
 
-    // =============================================================================================
-    // MEMBER SERVICES. The self-service subscription surface that replaces
-    // Website/admin/Users/MemberServices.ascx.vb - a catalogue read, subscribe, cancel, trial and the
-    // redemption of a role's invitation code, all five addressed by account and all five gated on
-    // ownership alone.
-    //
     // Every caller below is the ACCOUNT ITSELF, signed in through the real endpoint with the credential the
-    // test created it with. That is not incidental: the legacy panel operated on the signed-in account and
-    // never on the account its container was managing, so a suite that drove these routes as an
-    // administrator would be exercising an affordance the legacy application did not have and would not
-    // notice if the ownership policy were dropped.
-    // =============================================================================================
+    // test created it with.
 
     /// <summary>
     /// The catalogue lists the tenant's public roles with this account's own state, and a subscription
     /// round-trips through it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// One fact for the whole round trip on purpose: reading the catalogue, subscribing, re-reading it and
-    /// cancelling are one workflow, and asserting them separately would leave the second read's meaning
-    /// depending on a sibling test's side effect.
-    /// </para>
-    /// <para>
-    /// The seeded <c>Subscribers</c> role is public with a zero service fee, which is exactly the shape the
-    /// legacy screen offered a direct subscription for - <c>objRole.IsPublic And objRole.ServiceFee = 0.0</c>
-    /// at <c>MemberServices.ascx.vb:L105</c>.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task MemberServices_ListSubscribeAndCancelRoundTripForTheAccountItself()
     {
@@ -4015,9 +3683,6 @@ public sealed class UserApiTests
                 offer.SubscriptionRequiresPayment.Should().BeFalse("this public role charges nothing");
                 offer.TrialOffered.Should().BeFalse("a free service has no trial to take");
 
-                // The seeded Subscribers role is public AND auto-assigned, so a freshly created account
-                // already holds it - and the catalogue says so rather than presenting an offer the account
-                // has already taken. That is the whole point of carrying the account's own state on the row.
                 before.Should()
                     .ContainSingle(row => row.RoleId == _fixture.Seed.SubscribersRoleId).Subject
                     .Should().Match<MemberServiceDto>(row =>
@@ -4068,12 +3733,6 @@ public sealed class UserApiTests
     /// Cancelling a service the account does not hold is reported as absent rather than silently accepted.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The legacy removal returned a bare <c>Boolean</c> and the screen turned <see langword="false"/> into
-    /// one undifferentiated message, so a caller could not tell a subscription it did not hold from one it
-    /// was not allowed to end. The delegated primitive reports a reason instead, which is what lets this
-    /// answer <c>404</c>.
-    /// </remarks>
     [Fact]
     public async Task CancelService_ForASubscriptionNotHeld_IsReportedAsAbsent()
     {
@@ -4104,19 +3763,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the security boundary the whole surface rests on, and it is asserted for every one of the five
-    /// addresses rather than for a representative sample: a route added later that inherited mere
+    /// This is the security boundary the whole surface rests on, and it is asserted for every one of the
+    /// five addresses rather than for a representative sample: a route added later that inherited mere
     /// authentication would look identical in the source.
-    /// </para>
-    /// <para>
-    /// The administrator and the host are refused with <c>403</c> rather than admitted, which is a deliberate
-    /// narrowing measured from the legacy container: <c>DisplayServices</c>
-    /// (<c>ManageUsers.ascx.vb:L61-L66</c>) hid the tab whenever the screen was reached through the
-    /// administrative <c>ctl=Edit</c> entry point, and the panel would have acted on the administrator's own
-    /// account in any case. An administrator who must change somebody else's membership uses the role
-    /// resource, which is tenant administration and a separate, reviewable act.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task MemberServices_AdmitNobodyButTheAccountTheyName()
@@ -4160,20 +3809,6 @@ public sealed class UserApiTests
     /// code is a request the caller can correct.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The role is created and its code written by direct statement because no endpoint publishes a private
-    /// role with an invitation code as one operation, and because the point of the fact is precisely that an
-    /// UNPUBLISHED role is reachable this way: the legacy handler read
-    /// <c>GetPortalRoles(PortalSettings.PortalId)</c> at <c>MemberServices.ascx.vb:L407</c> and applied
-    /// neither the public test nor the fee test the grid's own commands applied.
-    /// </para>
-    /// <para>
-    /// The empty and unmatched submissions both answer <c>400</c>, and for different reasons that the problem
-    /// type distinguishes: the first is refused by declarative validation, the second by the service. The
-    /// legacy screen answered the first with silence and the second with a fixed sentence.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task RedeemServiceCode_EnrolsTheAccountInAnUnpublishedRoleAndRefusesAnUnmatchedCode()
     {
@@ -4250,9 +3885,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The first arm of both legacy gates is <c>objRole.IsPublic</c>. The administrator role is the clearest
-    /// case available in the seeded tenant: it exists, its identifier is knowable, and self-service
-    /// subscription to it would be a privilege escalation.
+    /// The first arm of both legacy gates is <c>objRole.IsPublic</c>. The administrator role is the
+    /// clearest case available in the seeded tenant: it exists, its identifier is knowable, and
+    /// self-service subscription to it would be a privilege escalation.
     /// </remarks>
     [Fact]
     public async Task SubscribeToService_RefusesARoleTheTenantDoesNotPublish()
@@ -4278,14 +3913,6 @@ public sealed class UserApiTests
     /// A paid service is refused on both directions, and the catalogue says so before the caller tries.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy subscribe and cancel paths BOTH ended in
-    /// <c>Response.Redirect("~/admin/Sales/PayPalSubscription.aspx?…")</c> for a fee-bearing role
-    /// (<c>MemberServices.ascx.vb:L113</c> and <c>:L115</c>, the second appending <c>&amp;cancel=1</c>), and
-    /// AAP 0.2.2.4 excludes sales administration. The row is still LISTED - dropping it would silently erase
-    /// a tenant's paid offering - and the free trial on the same role remains fully performable, because the
-    /// legacy trial gate is the TRIAL fee rather than the service fee.
-    /// </remarks>
     [Fact]
     public async Task PaidService_IsListedWithItsTermsButNeitherSubscribedNorCancelledHere()
     {
@@ -4376,14 +4003,8 @@ public sealed class UserApiTests
         }
     }
 
-    /// <summary>
-    /// A free service offers no trial, which is <c>ShowTrial</c>'s own first arm.
-    /// </summary>
+    /// <summary>A free service offers no trial, which is <c>ShowTrial</c>'s own first arm.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>If objRole.IsPublic And objRole.ServiceFee = 0.0 Then _ShowTrial = False</c>
-    /// (<c>MemberServices.ascx.vb:L330-L331</c>). There is nothing to trial when there is nothing to pay.
-    /// </remarks>
     [Fact]
     public async Task StartServiceTrial_RefusesAFreeServiceThatHasNothingToTrial()
     {
@@ -4438,12 +4059,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>The role identifier.</returns>
     /// <remarks>
-    /// A role of its own rather than the seeded <c>Subscribers</c> role, because that one is auto-assigned and
-    /// a freshly created account therefore already holds it: a subscription round trip needs a service whose
-    /// starting state is "not held". Written by direct statement because the role write surface belongs to the
-    /// role resource and reaching it here would make an account fact depend on a sibling resource's endpoint.
-    /// The frequency codes are the never-expires <c>N</c>, matching what portal provisioning gives a tenant's
-    /// own roles, so the derivation stores no bound and the fact does not depend on a clock.
+    /// A role of its own rather than the seeded <c>Subscribers</c> role, because that one is auto-assigned
+    /// and a freshly created account therefore already holds it: a subscription round trip needs a service
+    /// whose starting state is "not held".
     /// </remarks>
     private Task<int> InsertPublicServiceRoleAsync() =>
         _fixture.Database.ScalarAsync<int>(
@@ -4460,16 +4078,14 @@ public sealed class UserApiTests
                 ["roleName"] = "ITest Service " + Suffix(),
             });
 
-    /// <summary>
-    /// Removes a role a member-services fact created, together with any assignment it accumulated.
-    /// </summary>
+    /// <summary>Removes a role a member-services fact created, together with any assignment it accumulated.</summary>
     /// <param name="roleId">The role identifier.</param>
     /// <returns>A task representing the removal.</returns>
     /// <remarks>
     /// The assignments go first even though the schema cascades, because these facts also assert assignment
     /// COUNTS and a row left behind by an ordering assumption would be invisible until a sibling fact
-    /// disagreed with it. Every member-services fact that inserts a role removes it, so the tenant's role set
-    /// is the seeded one again afterwards and a listing total elsewhere cannot drift.
+    /// disagreed with it. Every member-services fact that inserts a role removes it, so the tenant's role
+    /// set is the seeded one again afterwards and a listing total elsewhere cannot drift.
     /// </remarks>
     private async Task RemoveRoleAsync(int roleId)
     {
@@ -4560,11 +4176,6 @@ public sealed class UserApiTests
     /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    /// <remarks>
-    /// A separate address from <see cref="PasswordRoute"/> because it is a separate operation with a separate
-    /// authorisation policy. The two used to share one address and were told apart by a discriminator in the
-    /// request body, which let the caller choose whether the current credential had to be proved.
-    /// </remarks>
     private static Uri PasswordResetRoute(int _, int userId) =>
         new($"/api/v1/users/{Route(userId)}/password-reset", UriKind.Relative);
 
@@ -4642,17 +4253,10 @@ public sealed class UserApiTests
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];
 
     /// <summary>
-    /// An ordinary authenticated member holds none of the administrative account operations, however many of
-    /// them it addresses at its own tenant.
+    /// An ordinary authenticated member holds none of the administrative account operations, however many
+    /// of them it addresses at its own tenant.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is the account-takeover surface in one assertion. An earlier revision gated all thirteen user
-    /// routes on the class-level authentication attribute alone, so every operation below succeeded for any
-    /// authenticated caller: enumerating a tenant's accounts and their personal data, creating and deleting
-    /// accounts, unlocking and approving them, forcing credential changes, and rewriting the tenant's
-    /// membership settings. The member here is a real seeded account that holds no administrator role.
-    /// </remarks>
     [Fact]
     public async Task AdministrativeUserRoutes_AreRefusedToAnOrdinaryMember()
     {
@@ -4694,15 +4298,15 @@ public sealed class UserApiTests
 
     /// <summary>
     /// An ordinary member cannot read, update or set the credential of an account that is not its own, and
-    /// cannot use the administrative reset operation on itself to sidestep presenting its current credential.
+    /// cannot use the administrative reset operation on itself to sidestep presenting its current
+    /// credential.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The second half is the subtler defect and the reason the service performs its own check. Account access
-    /// legitimately admits the account itself, so the route policy alone would let an account choose RESET -
-    /// which presents no current credential by design - and thereby set a new one without proving it knew the
-    /// old. That turns a stolen access token into a permanent takeover, so the reset operation requires
-    /// administrative authority regardless of who the account belongs to.
+    /// The second half is the subtler defect and the reason the service performs its own check. Account
+    /// access legitimately admits the account itself, so the route policy alone would let an account choose
+    /// RESET - which presents no current credential by design - and thereby set a new one without proving
+    /// it knew the old.
     /// </remarks>
     [Fact]
     public async Task SelfServiceUserRoutes_AreConfinedToTheCallersOwnAccountAndOperation()
@@ -4734,10 +4338,8 @@ public sealed class UserApiTests
             "setting another account's credential is an administrative reset, not self-service");
 
         // A self-targeted RESET is refused at the reset endpoint itself, which is where the property lives:
-        // that route carries the portal-administrator policy, so the account cannot reach it even for itself.
-        // This is what stops a stolen access token from becoming a permanent takeover - were the reset
-        // operation available to the account, the owner could set a new credential without presenting the
-        // current one, which would make the change endpoint's verification optional.
+        // that route carries the portal-administrator policy, so the account cannot reach it even for
+        // itself.
         using HttpResponseMessage selfReset = await member.PostAsJsonAsync(
             PasswordResetRoute(portalId, _fixture.Seed.MemberUserId),
             new ChangePasswordRequest
@@ -4752,10 +4354,9 @@ public sealed class UserApiTests
             "reset presents no current credential, so it must not be reachable by the account itself");
 
         // And the reset operation cannot be smuggled into the CHANGE endpoint either, which is the second
-        // half of the same guarantee: whether the current credential is verified is the endpoint's answer and
-        // never the caller's, so a discriminator naming the other operation is refused rather than obeyed.
-        // The refusal is a bad request rather than a forbidding, because the caller may legitimately use this
-        // endpoint - it named the wrong operation on it.
+        // half of the same guarantee: whether the current credential is verified is the endpoint's answer
+        // and never the caller's, so a discriminator naming the other operation is refused rather than
+        // obeyed.
         using HttpResponseMessage smuggledReset = await member.PostAsJsonAsync(
             PasswordRoute(portalId, _fixture.Seed.MemberUserId),
             new ChangePasswordRequest
@@ -4786,27 +4387,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The electronic-mail filter narrows the collection on a PREFIX, and a fragment taken from the middle of
-    /// a held address matches nothing.
+    /// The electronic-mail filter narrows the collection on a PREFIX, and a fragment taken from the middle
+    /// of a held address matches nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// This is one of the four filter shapes the legacy account listing offered, and the prefix half is the
-    /// load-bearing assertion. <c>Website/admin/Users/Users.ascx.vb:L268</c> called
-    /// <c>GetUsersByEmail(..., SearchText + "%", CurrentPage - 1, PageSize, TotalRecords)</c>: the screen
-    /// appended the wildcard itself, so the match was anchored at the start of the address and a mid-string
-    /// fragment found nothing. A filter that had drifted to a containment match would still answer
-    /// <c>200 OK</c> with a plausible-looking page, so only the negative half of this test can tell the two
-    /// apart.
-    /// </para>
-    /// <para>
-    /// The wildcard is NOT sent by the caller here. Appending it was a property of the legacy screen composing
-    /// a <c>LIKE</c> argument by hand; the target takes a plain prefix and owns the pattern behind the
-    /// repository interface, which is also what keeps a caller from injecting wildcard metacharacters into the
-    /// match.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListUsers_FilteredByEmailAddress_MatchesAPrefixAndNotAMidStringFragment()
     {
@@ -4833,24 +4417,12 @@ public sealed class UserApiTests
             .Subject;
         matched.Username.Should().Be(request.Username);
 
-        // MIGRATION: the FILTER is server-side and the PROJECTION is minimised, and the two are independent.
-        // The tenant's measured legacy default switches the electronic-mail column off
-        // (UserModuleBase.vb:L109-L111 defaults Column_Email to False), so a default tenant withholds the
-        // address from the listing - and the filter above still matched on it, because narrowing happens in
-        // the query against the stored column and never depends on what the row is allowed to publish. This
-        // is the whole point of server-side minimisation: the caller can search by an address it is not
-        // handed back.
-        //
-        // The account is therefore identified by its login name and identifier, which carry no visibility
-        // flag, rather than by the withheld address.
+        // The FILTER is server-side and the PROJECTION is minimised, and the two are independent.
         matched.UserId.Should().Be(createdUser.UserId);
         matched.Email.Should().BeEmpty(
             "the tenant's default withholds the electronic-mail column, and a withheld column must not cross "
             + "the API boundary even when it was the column filtered on");
 
-        // A fragment lifted from the middle of the very address that was just matched by prefix. The account
-        // demonstrably exists and demonstrably holds the fragment, so an empty page here can only be the
-        // anchoring.
         string fragment = localPart[3..];
         fragment.Should().NotBeNullOrEmpty("the seeded address must be long enough to yield a mid-string cut");
 
@@ -4863,16 +4435,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The login-name filter narrows the collection on a PREFIX too, and rejects a mid-string fragment for the
-    /// same reason.
+    /// The login-name filter narrows the collection on a PREFIX too, and rejects a mid-string fragment for
+    /// the same reason.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The legacy call site is <c>Website/admin/Users/Users.ascx.vb:L270</c>,
-    /// <c>GetUsersByUserName(..., SearchText + "%", ...)</c>. The seeded login name is used rather than a
-    /// created one because it is the value the rest of the suite already proves is listed, so a failure here
-    /// cannot be blamed on the account being absent.
-    /// </remarks>
     [Fact]
     public async Task ListUsers_FilteredByLoginName_MatchesAPrefixAndNotAMidStringFragment()
     {
@@ -4901,24 +4467,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The profile-property filter is the fourth query shape, and it returns only the accounts that actually
-    /// hold the named value.
+    /// The profile-property filter is the fourth query shape, and it returns only the accounts that
+    /// actually hold the named value.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The legacy shape is <c>GetUsersByProfileProperty(portalId, propertyName, propertyValue, ...)</c>
-    /// (<c>Library/Components/Users/UserController.vb:L864</c>), reached from
-    /// <c>Website/admin/Users/Users.ascx.vb:L273</c>. It is the only filter that reaches outside the account
-    /// row into the profile value table, so it is the one a mapping change is most likely to break, and the
-    /// negative half - an account that holds no value must not be listed - is what proves the join rather than
-    /// a coincidence.
-    /// </para>
-    /// <para>
-    /// Both accounts are created by this test rather than seeded, so the value is held by exactly one of a
-    /// known pair and the assertion does not depend on what other suites have written.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListUsers_FilteredByProfileProperty_ReturnsOnlyTheAccountsHoldingThatValue()
     {
@@ -4960,38 +4512,13 @@ public sealed class UserApiTests
             "an account holding no value for the named property is not a match");
     }
 
-    /// <summary>
-    /// No query shape ever reports the legacy sentinel total, however the collection is filtered.
-    /// </summary>
+    /// <summary>No query shape ever reports the legacy sentinel total, however the collection is filtered.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Library/Components/Users/UserController.vb</c> reported the total through a
-    /// <c>ByRef totalRecords</c> argument initialised to <c>-1</c>, and <c>FillUserCollection</c>
-    /// (<c>L215-L255</c>) ends in a <c>Catch Exc As Exception</c> at <c>L253</c> whose body logs nothing and
-    /// rethrows nothing. A failed read therefore returned an empty collection beside a total of <c>-1</c>, and
-    /// the calling screen rendered it as though it were a count. The target replaces the argument with the
-    /// paged envelope, whose total is a genuine count on every path, so <c>-1</c> is not merely unlikely here
-    /// but unrepresentable - and that is worth pinning precisely because the legacy value was produced by
-    /// swallowing the error rather than by counting.
-    /// </para>
-    /// <para>
-    /// All five shapes are swept in one test rather than as five: the guarantee is a property of the envelope
-    /// rather than of any one filter, and asserting it once per shape would multiply the host round trips
-    /// without adding a distinct failure mode. The free-text shape is included even though it has no legacy
-    /// counterpart, because it reaches the same envelope.
-    /// </para>
-    /// <para>
     /// The profile-property shape names a definition this test creates rather than a plausible literal. A
-    /// property the tenant does not define is answered <c>404 Not Found</c> - a profile property is itself an
-    /// addressable resource, so naming an absent one is reported the way addressing it directly would be -
-    /// which would make the sweep assert the wrong thing.
-    /// </para>
-    /// <para>
-    /// The sweep deliberately mixes shapes that match records with shapes that match none: the freshly created
-    /// definition holds no values, so its page is legitimately empty. An empty page is precisely where a
-    /// sentinel total would otherwise pass unnoticed, since nothing in the records would look wrong.
-    /// </para>
+    /// property the tenant does not define is answered <c>404 Not Found</c> - a profile property is itself
+    /// an addressable resource, so naming an absent one is reported the way addressing it directly would be
+    /// - which would make the sweep assert the wrong thing.
     /// </remarks>
     [Fact]
     public async Task ListUsers_AcrossEveryQueryShape_NeverReportsTheLegacySentinelTotal()
@@ -5029,23 +4556,7 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>UserController.vb:L687</c> and <c>:L706</c> called
-    /// <c>GetUsers(portalId, ..., -1, -1, -1)</c>, and the provider turned that into "every row" at four
-    /// identical sites -
-    /// <c>Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb:L1160-L1163</c>
-    /// and the three that follow it - by testing <c>pageIndex = -1</c> and substituting
-    /// <c>pageSize = Integer.MaxValue</c>. The XML documentation on those same methods tells the caller to
-    /// "set pageSize = -1", naming the wrong parameter; the code is the contract.
-    /// </para>
-    /// <para>
-    /// The target has no unpaged mode and does not reproduce the sentinel. A page index below zero and a page
-    /// size below one are each a field-level <c>400</c>, which is the deliberate divergence: the danger in
-    /// carrying the sentinel across was that a nullable-or-zero mapping would read <c>-1</c> as page zero of
-    /// size zero and answer <c>200 OK</c> with an empty page, reporting nothing wrong to a caller that had
-    /// asked for everything. Refusing it names the parameter instead, and a caller that wants every row asks
-    /// for a page size it can state.
-    /// </para>
+    /// The target has no unpaged mode and does not reproduce the sentinel.
     /// </remarks>
     [Fact]
     public async Task ListUsers_WithTheLegacyUnpagedSentinel_IsRefusedAndNamesTheOffendingField()
@@ -5070,9 +4581,9 @@ public sealed class UserApiTests
             nameof(PagedRequest.PageSize),
             "the sentinel page size must be attributed to the parameter that carried it");
 
-        // Named separately as well, because the provider's real test was on the INDEX while its documentation
-        // named the SIZE. Sending only the index proves the index alone is enough to be refused, so neither
-        // parameter can pass by relying on the other to fail.
+        // Named separately as well, because the provider's real test was on the INDEX while its
+        // documentation named the SIZE. Sending only the index proves the index alone is enough to be
+        // refused, so neither parameter can pass by relying on the other to fail.
         using HttpResponseMessage indexOnly = await client.GetAsync(new Uri(
             "/api/v1/users?pageIndex=-1&pageSize=10",
             UriKind.Relative));
@@ -5087,34 +4598,16 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Neither zero nor minus one addresses an account, because the account table's identity seed makes both
-    /// unreachable.
+    /// Neither zero nor minus one addresses an account, because the account table's identity seed makes
+    /// both unreachable.
     /// </summary>
     /// <param name="userId">The identifier being addressed.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the CONTRAST case of the migration's sentinel handling, and it is the one place where copying
-    /// the pattern that is correct everywhere else would be wrong.
-    /// <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L98</c> declares
-    /// <c>[UserID] int IDENTITY (1, 1)</c>, so the first account is <c>1</c> and neither <c>0</c> nor
-    /// <c>-1</c> can ever name a row. The neighbouring resources are seeded differently on purpose -
-    /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c> at <c>:L77</c> and <c>Roles.RoleID</c> is
-    /// <c>IDENTITY (0, 1)</c> at <c>:L115</c> - so for those two the very values refused here are legitimate
-    /// identifiers.
-    /// </para>
-    /// <para>
-    /// The collision is what makes the assertion worth having: <c>Null.vb:L41-L43</c> defines
-    /// <c>NullInteger</c> as <c>-1</c>, which is simultaneously the legacy marker for "absent" and a real
-    /// portal identifier. An implementation that treated a non-positive route value as "absent" and short
-    /// circuited would answer identically here while being wrong for portals, so this test is paired with the
-    /// tenant fact below rather than standing alone.
-    /// </para>
-    /// <para>
-    /// A theory over two integers rather than one over a nullable: an <c>[InlineData(null)]</c> row against a
-    /// non-nullable <c>int</c> parameter is an analyser error under this solution's warnings-as-errors policy,
-    /// and there is nothing to gain by widening the parameter when both values under test are real integers.
-    /// </para>
+    /// A theory over two integers rather than one over a nullable: an <c>[InlineData(null)]</c> row against
+    /// a non-nullable <c>int</c> parameter is an analyser error under this solution's warnings-as-errors
+    /// policy, and there is nothing to gain by widening the parameter when both values under test are real
+    /// integers.
     /// </remarks>
     [Theory]
     [InlineData(0)]
@@ -5138,22 +4631,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A tenant whose identifier is not positive is served normally, which is the other half of the identity
-    /// seed contrast.
+    /// A tenant whose identifier is not positive is served normally, which is the other half of the
+    /// identity seed contrast.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c>
-    /// (<c>01.00.00.SqlDataProvider:L77</c>), so the installation's first tenant is <c>-1</c> and its second is
-    /// <c>0</c>. Both values are indistinguishable from the legacy <c>NullInteger</c> marker, and both are
-    /// legitimate. The seeded tenant demonstrates the negative case through the host-resolved context; the
-    /// flat route must not reject that resolved identifier merely because it is not positive.
-    /// </para>
-    /// <para>
-    /// The assertion on the seeded identifier is an inequality rather than an equality: what matters is that a
-    /// non-positive tenant identifier is exercised at all, not which particular value the seed produced.
-    /// </para>
+    /// <c>Portals.PortalID</c> is <c>IDENTITY (-1, 1)</c> (<c>01.00.00.SqlDataProvider:L77</c>), so the
+    /// installation's first tenant is <c>-1</c> and its second is <c>0</c>. Both values are
+    /// indistinguishable from the legacy <c>NullInteger</c> marker, and both are legitimate.
     /// </remarks>
     [Fact]
     public async Task ListUsers_ForAResolvedTenantWhoseIdentifierIsNotPositive_ReturnsOk()
@@ -5170,25 +4655,15 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// Two accounts may hold the same electronic-mail address, and the second create is accepted rather than
-    /// refused.
+    /// Two accounts may hold the same electronic-mail address, and the second create is accepted rather
+    /// than refused.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy installation permitted duplicates:
-    /// <c>Website/release.config:L244</c> registers the membership provider with
-    /// <c>requiresUniqueEmail="false"</c>. Preserving that is a migration obligation rather than a preference,
-    /// because the existing data may already contain duplicates and a uniqueness rule introduced here would
-    /// reject the very accounts the installation holds. The clause is explicit that validation rules must
-    /// MATCH, and a rule the legacy system did not have is as much a divergence as a rule dropped.
-    /// </para>
-    /// <para>
-    /// This fact is the guard against that specific regression, and it is deliberately positive: it asserts
-    /// <c>201 Created</c> rather than merely "not <c>409</c>", and then proves both accounts are listed under
-    /// the shared address. The conflict this resource DOES report is on the login name, which the neighbouring
-    /// facts cover - so the pair together fix which field is unique and which is not.
-    /// </para>
+    /// The legacy installation permitted duplicates: <c>Website/release.config:L244</c> registers the
+    /// membership provider with <c>requiresUniqueEmail="false"</c>. Preserving that is a migration
+    /// obligation rather than a preference, because the existing data may already contain duplicates and a
+    /// uniqueness rule introduced here would reject the very accounts the installation holds.
     /// </remarks>
     [Fact]
     public async Task CreateUser_WithAnEmailAddressAnotherAccountHolds_ReturnsCreated()
@@ -5236,25 +4711,9 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. Four sequential checks run in front of this insert and none of them can close the
-    /// window in front of it: <c>IX_Users</c> is unique over the login name, so every racer reads "not taken"
-    /// before any of them commits and the losers are refused by the index instead. Left untranslated, that
-    /// refusal reached the transport - which references neither the mapper nor the database client by design -
-    /// and was answered 500, reporting a server fault for a store that had correctly kept exactly one account.
-    /// </para>
-    /// <para>
-    /// The row count is read from the column, because that is the only place the claim can be settled. The
-    /// account create writes inside a transaction spanning the account, its memberships, its role assignments
-    /// and its credential, so a partially committed racer would be invisible to any listing while still
-    /// leaving a row behind.
-    /// </para>
-    /// <para>
-    /// The fact asserts the OUTCOME - one account, every other caller refused as a conflict, no 5xx, one row -
-    /// and deliberately not which mechanism refused a given caller: the checks and the index answer
-    /// identically by design, and which wins depends on scheduling. The translation itself is pinned
-    /// deterministically by <c>DuplicateKeyTranslationTests</c> and by the service-level facts.
-    /// </para>
+    /// Four sequential checks run in front of this insert and none of them can close the window in front of
+    /// it: <c>IX_Users</c> is unique over the login name, so every racer reads "not taken" before any of
+    /// them commits and the losers are refused by the index instead.
     /// </remarks>
     [Fact]
     public async Task CreateUser_SubmittedConcurrentlyUnderOneLoginName_CreatesItOnceWithoutAnyServerFault()
@@ -5372,8 +4831,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A failure at the final account-row delete rolls credentials, grants, profile values, role assignments
-    /// and portal membership back together.
+    /// A failure at the final account-row delete rolls credentials, grants, profile values, role
+    /// assignments and portal membership back together.
     /// </summary>
     [Fact]
     public async Task DeleteUser_WhenFinalDeleteFails_RollsBackTheWholeCascade()
@@ -5453,24 +4912,10 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The legacy policy, measured from the provider registration at
     /// <c>Website/release.config:L242-L243</c>, is <c>minRequiredPasswordLength="7"</c> and
     /// <c>minRequiredNonalphanumericCharacters="0"</c>, with <c>requiresQuestionAndAnswer="false"</c> at
-    /// <c>:L241</c>. A seven-character alphanumeric credential therefore satisfied it, and the account created
-    /// here proves the target still accepts one - including at sign-in, which is where a silently tightened
-    /// rule would lock an existing account out rather than merely inconvenience a new one.
-    /// </para>
-    /// <para>
-    /// Hardening the policy during a migration is the change that cannot be undone from the outside: existing
-    /// stored credentials cannot be re-derived to satisfy a new rule, so every account holding a
-    /// seven-character credential would be stranded. Any hardening is therefore a separate, deliberate
-    /// decision, and this test is what makes an accidental one fail.
-    /// </para>
-    /// <para>
-    /// No question-and-answer pair is sent, because the request contract carries none - which is the same
-    /// parity fact expressed structurally rather than by assertion.
-    /// </para>
+    /// <c>:L241</c>.
     /// </remarks>
     [Fact]
     public async Task CreateUser_WithACredentialOnThePolicyFloor_ReturnsCreatedAndCanSignIn()
@@ -5508,30 +4953,10 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A create carrying several unusable values answers a per-field validation document naming every one of
-    /// them.
+    /// A create carrying several unusable values answers a per-field validation document naming every one
+    /// of them.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The status alone is not the contract. What the legacy screens gave the operator was a list of the
-    /// individual things that were wrong, rendered by the validation summary beside the fields, and the
-    /// equivalent of that list is the <c>errors</c> object of the RFC 7807 document. A response that collapsed
-    /// three field failures into one sentence would still be a <c>400</c>, so the field names are asserted
-    /// rather than the count.
-    /// </para>
-    /// <para>
-    /// The names are read through <c>nameof</c> on the request contract, so a renamed member breaks this test
-    /// at compile time instead of at run time.
-    /// </para>
-    /// <para>
-    /// The media type is deliberately not asserted, for the reason recorded against the portal suite: the
-    /// framework serves a controller-produced problem document as <c>application/json</c> rather than as
-    /// <c>application/problem+json</c>, and pinning the value it currently emits would cement a deviation and
-    /// make correcting it later look like a regression. The envelope MEMBERS are what this asserts, because
-    /// those are what a client reads.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task CreateUser_WithSeveralUnusableValues_NamesEveryOffendingField()
     {
@@ -5567,35 +4992,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A new credential the policy cannot accept is refused with the field named, on the self-service change
-    /// route.
+    /// A new credential the policy cannot accept is refused with the field named, on the self-service
+    /// change route.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The legacy credential screen carried no declarative validator at all - <c>Website/admin/Users/</c>
-    /// <c>Password.ascx</c> declares none, and <c>User.ascx</c> only a server-side custom validator - so the
-    /// code behind was the sole authority for what a usable credential was. The target moves that authority
-    /// into a request validator, and this asserts the consequence a caller can observe: the refusal names the
-    /// member it refused, so a client can attach the message to the field the operator typed into.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy outcome channel was <c>PasswordUpdateStatus</c>
-    /// (<c>Library/Components/Users/Membership/PasswordUpdateStatus.vb</c>), whose eight members carry NO
-    /// explicit values - so <c>Success</c> is <c>0</c> there, the opposite of <c>UserCreateStatus</c>, where
-    /// <c>Success</c> is <c>13</c> and the zero member is the "nothing has happened yet" marker. Nothing in
-    /// this suite asserts either number, and that is the point of asserting outcomes as statuses and named
-    /// fields instead. Six of the eight map onto observable results here - <c>Success</c> to
-    /// <c>204 No Content</c>, <c>PasswordMissing</c> and <c>PasswordInvalid</c> to a <c>400</c> naming
-    /// <c>newPassword</c>, <c>PasswordMismatch</c> to a <c>400</c> naming <c>confirmPassword</c>,
-    /// <c>PasswordNotDifferent</c> to the refusal the neighbouring facts cover, and
-    /// <c>PasswordResetFailed</c> to the reset route's refusal. The remaining two,
-    /// <c>InvalidPasswordAnswer</c> and <c>InvalidPasswordQuestion</c>, are unreachable BY CONSTRUCTION: the
-    /// legacy provider was registered with <c>requiresQuestionAndAnswer="false"</c>
-    /// (<c>Website/release.config:L241</c>), so no question-and-answer pair was ever demanded, and the request
-    /// contract carries no member through which one could be supplied. They are recorded here rather than
-    /// asserted, because a test cannot reach a state the contract has no way to express.
-    /// </para>
+    /// <c>Password.ascx</c> declares none, and <c>User.ascx</c> only a server-side custom validator - so
+    /// the code behind was the sole authority for what a usable credential was.
     /// </remarks>
     [Fact]
     public async Task ChangePassword_WithAnUnusableNewCredential_NamesTheOffendingField()
@@ -5657,29 +5061,13 @@ public sealed class UserApiTests
         signedIn.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
-    /// <summary>
-    /// No account representation carries credential material, and no route serves one back.
-    /// </summary>
+    /// <summary>No account representation carries credential material, and no route serves one back.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: password retrieval is deliberately NOT carried forward. The legacy installation could return
-    /// a stored credential to a caller - <c>Website/release.config:L239</c> registers the provider with
-    /// <c>enablePasswordRetrieval="true"</c> over <c>passwordFormat="Encrypted"</c> at <c>:L245</c>, and the
-    /// key that reversed the encryption was committed to source control alongside it. The target stores a
-    /// one-way BCrypt hash, so retrieval is not merely unpublished but impossible, and
-    /// <c>UserController.vb:L433</c>'s <c>GetPassword</c> has no counterpart.
-    /// </para>
-    /// <para>
-    /// Two things are therefore asserted. First, that no representation leaks the material: the payloads are
-    /// scanned as RAW JSON rather than through a typed model, because a typed read can only see members the
-    /// test already knows to look for, whereas an unexpected member added later is exactly the leak worth
-    /// catching. Second, that reading the credential route is not a way to obtain it either.
-    /// </para>
-    /// <para>
-    /// The scan looks for the member NAMES rather than for the credential value, since the value would be
-    /// hashed and so would not appear literally even in a body that disclosed it.
-    /// </para>
+    /// MIGRATION: password retrieval is deliberately NOT carried forward. The legacy installation could
+    /// return a stored credential to a caller - <c>Website/release.config:L239</c> registers the provider
+    /// with <c>enablePasswordRetrieval="true"</c> over <c>passwordFormat="Encrypted"</c> at <c>:L245</c>,
+    /// and the key that reversed the encryption was committed to source control alongside it.
     /// </remarks>
     [Fact]
     public async Task UserRepresentations_NeverCarryCredentialMaterial()
@@ -5748,24 +5136,10 @@ public sealed class UserApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The failing path is the one that matters. A correlation identifier echoed only on success is of no use
-    /// to the caller who has something to report, and the header is written by a callback registered before
-    /// the pipeline continues precisely so that a response composed by the error path still carries it. This
-    /// asserts it on a <c>404</c> for an account, which is the outcome a caller is most likely to be asking
-    /// about.
-    /// </para>
-    /// <para>
-    /// A supplied value is echoed exactly once. The header is assigned rather than appended, so a caller
-    /// cannot end up with two identifiers to choose between, and an absent one is generated so that every
-    /// response carries something to quote.
-    /// </para>
-    /// <para>
-    /// An unusable value - here one far longer than the accepted bound - is REPLACED rather than echoed, and
-    /// specifically does not turn the request into a <c>400</c>. Rejecting the request would let a caller's
-    /// malformed diagnostic header break an otherwise valid operation, and echoing it would put unvalidated
-    /// caller text into a response header.
-    /// </para>
+    /// The failing path is the one that matters. A correlation identifier echoed only on success is of no
+    /// use to the caller who has something to report, and the header is written by a callback registered
+    /// before the pipeline continues precisely so that a response composed by the error path still carries
+    /// it.
     /// </remarks>
     [Fact]
     public async Task RefusedUserRequest_CarriesACorrelationIdentifierOnItsProblemDocument()
@@ -5818,32 +5192,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The legacy account operations that were deliberately not carried forward, and the ones that belong to a
-    /// different resource, are absent from this one.
+    /// The legacy account operations that were deliberately not carried forward, and the ones that belong
+    /// to a different resource, are absent from this one.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// An absence is as much a part of the published contract as a presence, and it is the half that no other
-    /// test can accidentally cover. Each address below was reachable in the legacy administration and is
-    /// intentionally unpublished here, so a later revision that reinstates one - by porting a screen
-    /// mechanically, say - fails this test rather than quietly widening the surface.
-    /// </para>
-    /// <para>
     /// The absences fall into two kinds. Some operations are gone outright: bulk deletion, deleting every
     /// unauthorised account at once, bulk electronic mail, and the users-online view, whose supporting
-    /// subsystem is out of scope. Others exist but belong elsewhere, and the distinction is the point.
-    /// Signing in is the authentication resource's operation, not an account sub-resource. Role ASSIGNMENT is
-    /// the role resource's operation - <c>POST roles/{roleId}/users</c> - so posting to the
-    /// account's role collection must not be a second way to do it, even though READING that collection is
-    /// legitimately published and is asserted elsewhere. Reordering a profile property is a PROPERTY of the
-    /// definition, written through its <c>viewOrder</c> member on the update verb, and never an action address.
-    /// </para>
-    /// <para>
-    /// Both an unrouted address and a routed one that refuses the verb are accepted, because the two are
-    /// equally conclusive about the operation being unavailable and which of them a given address produces is
-    /// a routing detail rather than a contract. What is NOT accepted is a success.
-    /// </para>
+    /// subsystem is out of scope.
     /// </remarks>
     [Fact]
     public async Task WithdrawnAndForeignAccountOperations_AreNotPublishedOnThisResource()
@@ -5899,30 +5255,13 @@ public sealed class UserApiTests
             "ordering is a member of the definition rather than an action upon it");
     }
 
-    /// <summary>
-    /// A member quota of zero means UNLIMITED, so account creation is not refused at that value.
-    /// </summary>
+    /// <summary>A member quota of zero means UNLIMITED, so account creation is not refused at that value.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This guards an inversion that reads as a bug in either direction. The legacy gate was
-    /// <c>PortalSettings.Users &lt; PortalSettings.UserQuota Or UserInfo.IsSuperUser Or
-    /// PortalSettings.UserQuota = 0</c> (<c>Website/admin/Users/ManageUsers.ascx.vb:L367</c>) - the third
-    /// disjunct is what makes zero mean "no limit" rather than "no accounts permitted". A port that dropped it
-    /// and compared the count against the quota alone would refuse EVERY create on a default tenant, because
-    /// the <c>UserQuota</c> column defaults to zero and no seeded tenant sets it.
-    /// </para>
-    /// <para>
     /// The quota is read from the tenant row rather than assumed, so the test states the precondition it
     /// depends on instead of inheriting it. Two accounts are then created in succession: one create could
-    /// succeed under a quota of one, whereas two cannot be explained by any positive bound the tenant does not
-    /// hold.
-    /// </para>
-    /// <para>
-    /// The refusal side is deliberately NOT asserted. At a quota of zero there is no bound to exceed, so no
-    /// request can reach a quota refusal, and a test that manufactured one would be asserting a rule this
-    /// tenant does not have.
-    /// </para>
+    /// succeed under a quota of one, whereas two cannot be explained by any positive bound the tenant does
+    /// not hold.
     /// </remarks>
     [Fact]
     public async Task CreateUser_UnderAZeroMemberQuota_IsNotRefused()
@@ -5948,23 +5287,14 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The account picker answers <c>200 OK</c> with the tenant's accounts, and its rows carry the key and the
-    /// two captions AND NOTHING ELSE.
+    /// The account picker answers <c>200 OK</c> with the tenant's accounts, and its rows carry the key and
+    /// the two captions AND NOTHING ELSE.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// THE ABSENT MEMBERS ARE THE ASSERTION. This endpoint exists because a picker was being filled from the
-    /// account listing, whose row carries a postal address, a telephone number, an electronic-mail address, two
-    /// audit instants and four status flags - all transferred so that a name and a login could be rendered. The
-    /// test therefore reads the RAW JSON and enumerates the property names, because a typed deserialisation
-    /// would silently discard any extra member the server sent and would pass even if the exposure came back.
-    /// </para>
-    /// <para>
-    /// The host account is withheld here as it is from the listing: the installation's operator is not one of
-    /// the tenant's accounts even though it holds a membership row so that it can administer the tenant, and
-    /// offering it as a role-assignment choice would disclose the operator's login name to every tenant
+    /// The host account is withheld here as it is from the listing: the installation's operator is not one
+    /// of the tenant's accounts even though it holds a membership row so that it can administer the tenant,
+    /// and offering it as a role-assignment choice would disclose the operator's login name to every tenant
     /// administrator.
-    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -6007,12 +5337,6 @@ public sealed class UserApiTests
     }
 
     /// <summary>The picker's name filter matches a prefix of the login name.</summary>
-    /// <remarks>
-    /// The login name alone is matched, because the legacy name box resolved an account by it
-    /// (<c>SecurityRoles.ascx.vb:L476-L488</c>) and the caller that walks this endpoint for a typed name
-    /// relies on ordering by that login name to put an exact match on the first page. A prefix rather than a
-    /// substring, because every legacy account search appended a single trailing wildcard to the search text.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAccountChoices_FilteredByLoginNamePrefix_ReturnsOnlyMatchingAccounts()
@@ -6035,9 +5359,7 @@ public sealed class UserApiTests
             item.Username.StartsWith(IntegrationSeed.MemberUserName, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>
-    /// A wildcard in the picker's filter matches itself rather than acting as a pattern.
-    /// </summary>
+    /// <summary>A wildcard in the picker's filter matches itself rather than acting as a pattern.</summary>
     /// <remarks>
     /// The legacy pattern was assembled by string concatenation, so a caller's own per-cent sign became a
     /// wildcard and one character matched every account in the installation. Expressed through an escaped
@@ -6064,15 +5386,9 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// A single-row request answers the tenant's account total, which is the count probe the legacy control's
-    /// own threshold rule needs.
+    /// A single-row request answers the tenant's account total, which is the count probe the legacy
+    /// control's own threshold rule needs.
     /// </summary>
-    /// <remarks>
-    /// <c>UserModuleBase.vb:L178-L186</c> read the tenant's account count and offered the drop-down only at or
-    /// below one thousand accounts. That probe used to be served by the account listing, so reading a number
-    /// disclosed a complete account row; here the one row it returns carries a key and two captions, and the
-    /// total is the same total.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListAccountChoices_WithASingleRowRequest_ReportsTheTenantTotal()
@@ -6153,9 +5469,9 @@ public sealed class UserApiTests
     /// The picker refuses an ordering by a field it does not return, so no accepted parameter is discarded.
     /// </summary>
     /// <remarks>
-    /// The account listing accepts <c>Email</c> as an ordering; this endpoint does not, and the difference is
-    /// the projection. Ordering a drop-down by a value none of its options displays is an ordering the operator
-    /// cannot verify, so it is refused rather than honoured invisibly or accepted and dropped.
+    /// The account listing accepts <c>Email</c> as an ordering; this endpoint does not, and the difference
+    /// is the projection. Ordering a drop-down by a value none of its options displays is an ordering the
+    /// operator cannot verify, so it is refused rather than honoured invisibly or accepted and dropped.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -6177,8 +5493,8 @@ public sealed class UserApiTests
     }
 
     /// <summary>
-    /// The picker carries the same authorisation policy as the account collection, so narrowing the projection
-    /// widened nothing.
+    /// The picker carries the same authorisation policy as the account collection, so narrowing the
+    /// projection widened nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]

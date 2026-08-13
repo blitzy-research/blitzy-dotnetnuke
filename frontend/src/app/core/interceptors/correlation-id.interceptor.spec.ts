@@ -1,115 +1,3 @@
-//
-// Specification for `correlationIdInterceptor` - the outermost functional HTTP
-// interceptor of the dnn-migration administration front end.
-//
-// ---------------------------------------------------------------------------
-// THERE IS NO PREDECESSOR SUITE, AND NO PREDECESSOR BEHAVIOUR EITHER
-// ---------------------------------------------------------------------------
-// The legacy DotNetNuke 4.9.0 VB.NET Web Forms application shipped no automated
-// tests of any kind, so there is no assertion to port. It also carried no
-// request-scoped identifier of any kind: the interceptor's own source records that
-// a case-insensitive search for `correlation`, `x-request-id` and `requestid`
-// across the five in-scope `Library/Components` domain trees, `Website/admin` and
-// the legacy web configuration matched zero files. Every expectation below is
-// therefore net-new coverage of net-new behaviour - nothing here is a translation,
-// and no legacy outcome changes by adding it.
-//
-// ---------------------------------------------------------------------------
-// WHY THIS SUITE EXISTS AT ALL
-// ---------------------------------------------------------------------------
-// The interceptor is the only participant in the correlation loop that lives in
-// the browser. If it silently stops attaching the header, nothing breaks
-// visibly - requests still succeed, screens still render - and the loss shows up
-// only later as server log lines that cannot be joined to the browser-side
-// observation that provoked them. That failure mode is invisible to every other
-// spec in this workspace, which is precisely why the behaviour is pinned here.
-//
-// ---------------------------------------------------------------------------
-// TWO COMPLEMENTARY STYLES OF EXERCISE, AND WHY BOTH ARE NEEDED
-// ---------------------------------------------------------------------------
-// 1. Through the real `HttpClient`, with the interceptor registered exactly as
-//    `app.config.ts` registers it and the testing backend standing in for the
-//    network. This is the only way to prove the *registration* works - that
-//    `withInterceptors([...])` reaches an ordinary `HttpClient` call - and it is
-//    the only way to observe chain ordering against a second interceptor.
-// 2. By calling the exported function directly with a hand-built request and a
-//    hand-built `next`. This is the only way to observe the request object that
-//    was handed downstream *by identity*, which is the whole substance of the
-//    "a caller-supplied header is never overwritten" contract: the interceptor
-//    must forward the original object, not an equal-looking clone of it.
-//
-// Direct invocation is legitimate here rather than a shortcut. `HttpInterceptorFn`
-// is allowed to call `inject()`, and one that did would have to be invoked inside
-// an injection context; this one declares in its own header that it "takes no
-// dependency injection", and its source confirms it - there is no `inject` call
-// anywhere in the module. Calling it as a plain function both relies on and
-// asserts that property, and it keeps the generation-path specs hermetic: the
-// only code running between installing a `Math.random` stub and counting its
-// calls is the interceptor itself.
-//
-// ---------------------------------------------------------------------------
-// EVERY URL BELOW IS RELATIVE, AND THAT IS A CONTRACT RATHER THAN A HABIT
-// ---------------------------------------------------------------------------
-// Every request issued and every `expectOne` matcher used in this file addresses a
-// RELATIVE path beginning `/api/v1/`. No absolute host appears anywhere, and none
-// may be introduced.
-//
-// The reason is that specs see the PRODUCTION environment. `angular.json` declares
-// no `configurations` block at all on the `test` target, so that target has no
-// `fileReplacements`; the module that reaches a spec is therefore
-// `src/environments/environment.ts`, which is itself the production file
-// (`production: true`, `apiBaseUrl: '/api/v1'`). The replacements run the other way
-// round from the usual arrangement - the `production` build configuration lists
-// none, while `development` is the one that swaps in `environment.development.ts` -
-// so a spec written against an absolute development host would be asserting a base
-// URL that this compilation never sees.
-//
-// The relative base is also load-bearing at run time, and its failure mode is
-// invisible to every compiler and every unit test. `docker/nginx.conf` proxies
-// `/api/` through to the API container, so the browser reaches the API through the
-// very origin that served the application. An absolute value naming the API
-// service by its compose service name would resolve only from inside the Docker
-// network - that hostname does not resolve in a browser at all - and would
-// additionally turn every call into a cross-origin request subject to the API's
-// CORS policy. Both containers would still build and both would still report
-// healthy, and the end-to-end validation gate would fail anyway. Pinning the
-// relative shape here is what keeps that from reaching a container image.
-//
-// ---------------------------------------------------------------------------
-// THE OTHER HALF OF THE LOOP IS SERVER-SIDE AND CANNOT BE ASSERTED HERE
-// ---------------------------------------------------------------------------
-// Recorded rather than tested, because no client-side assertion can reach it. The
-// API's `CorrelationIdMiddleware` consumes this header, keeps the inbound value
-// when it passes the same four clauses the interceptor validates against, and
-// pushes it onto the server's structured logging scope - which is the join between
-// a browser-side observation and the server log lines for the same request.
-//
-// On a failure the value also commonly surfaces in the response body:
-// `GlobalExceptionHandler` writes an RFC 7807 `ProblemDetails` whose `traceId` is
-// derived as `Activity.Current?.Id ?? httpContext?.TraceIdentifier`. That is why
-// `traceId` matching this header is the common case rather than a guarantee - an
-// ambient trace, when one is running, wins over the request identifier the
-// middleware aligns to this value.
-//
-// On a SUCCESS there is no body-borne appearance at all: `Dtos/Common/ApiMeta.cs`
-// deliberately declares no `CorrelationId`, `TraceId` or `RequestId` member, so the
-// response header is the only carrier. That asymmetry is the reason the specs below
-// pin the REQUEST header so precisely: it is the one end of the loop this
-// application controls and the one a regression here would silently sever.
-//
-// ---------------------------------------------------------------------------
-// SPEC ORDER IS RANDOMISED
-// ---------------------------------------------------------------------------
-// `karma.conf.js` deliberately leaves Jasmine's `random` at its default of `true`.
-// Every spec below is therefore written to be order-independent: each one installs
-// whatever global stubbing it needs, and every stub is removed again before the
-// next spec runs. Jasmine restores `spyOn` automatically; the own-property shims
-// used to make a platform primitive *absent* cannot be expressed as spies, so they
-// are tracked explicitly and unwound by a suite-wide `afterEach`. The
-// `global state restoration` block below proves that unwinding actually works
-// rather than assuming it.
-//
-
 import {
   HttpClient,
   HttpContext,
@@ -129,44 +17,29 @@ import { of } from 'rxjs';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 
 /**
- * The header the interceptor attaches.
- *
- * Restated here rather than imported: the interceptor keeps its
- * `CORRELATION_ID_HEADER` constant module-private, and widening its exported
- * surface merely to be observable from a spec would be the wrong trade. Restating
- * the literal means a change to the spelling has to be made in both places, which
- * is the intent - an accidental change fails these specs loudly instead of
- * breaking the loop silently, each side looking for a header the other never
- * sends. The identical literal is declared server-side by the API's
- * correlation-id middleware.
+ * The header the interceptor attaches. Restated here rather than imported: the interceptor keeps its
+ * `CORRELATION_ID_HEADER` constant module-private, and widening its exported surface merely to be
+ * observable from a spec would be the wrong trade.
  */
 const CORRELATION_ID_HEADER = 'X-Correlation-Id';
 
 /**
- * The same header name in lower case.
- *
- * HTTP compares header names case-insensitively and `HttpHeaders` normalises them
- * accordingly, so a caller who supplies this spelling must be recognised as having
- * already supplied the header. That is asserted rather than assumed, because the
- * interceptor's short-circuit depends entirely on `HttpHeaders.has` performing
- * that normalisation.
+ * The same header name in lower case. HTTP compares header names case-insensitively and `HttpHeaders`
+ * normalises them accordingly, so a caller who supplies this spelling must be recognised as having
+ * already supplied the header.
  */
 const LOWER_CASE_CORRELATION_ID_HEADER = 'x-correlation-id';
 
 /**
- * The number of random bytes a version 4 UUID is built from, mirroring the
- * interceptor's own `UUID_BYTE_LENGTH`.
+ * The number of random bytes a version 4 UUID is built from, mirroring the interceptor's own
+ * `UUID_BYTE_LENGTH`.
  */
 const UUID_BYTE_LENGTH = 16;
 
 /**
- * The canonical RFC 4122 version 4 shape: 36 characters, lower-case hexadecimal,
- * the version nibble fixed at `4` and the variant nibble one of `8`, `9`, `a`, `b`.
- *
- * Anchored at both ends so a value with leading or trailing content fails. The
- * interceptor documents that all three of its generation sources must be
- * indistinguishable in shape from one another, so this single pattern is applied
- * to every path.
+ * The canonical RFC 4122 version 4 shape: 36 characters, lower-case hexadecimal, the version nibble fixed
+ * at `4` and the variant nibble one of `8`, `9`, `a`, `b`. Anchored at both ends so a value with leading
+ * or trailing content fails.
  */
 const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -174,21 +47,10 @@ const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9
 const PORTAL_LIST_URL = '/api/v1/portals';
 
 /**
- * A page of portals, as `GET /api/v1/portals` really answers.
- *
- * ⚠ THE RESPONSE SHAPE MATTERS EVEN WHERE THE ASSERTION IS ABOUT A REQUEST HEADER. The five
- * ordering probes below flushed a bare `null` for this endpoint, and the listing cannot answer
- * that: it is the one endpoint whose body IS the page envelope, so it always answers
- * `{ items, meta }`. A `null` is what a `204` carries, and this action declares 200 only.
- *
- * The correction is not cosmetic even though the probes read only headers. These cases are the
- * ones that establish how this interceptor COMPOSES with the credential interceptor, and the
- * credential interceptor's own recovery path turns on the response it observes; specifying the
- * composition against a body neither endpoint can produce leaves the arrangement unproven in
- * exactly the situation it exists for.
- *
- * The tenant is `-1`, which is the first portal an installation has rather than a marker for
- * "no portal": `01.00.00.SqlDataProvider:L77` declares `[PortalID] [int] IDENTITY (-1, 1)`.
+ * A page of portals, as `GET /api/v1/portals` really answers. ⚠ THE RESPONSE SHAPE MATTERS EVEN WHERE THE
+ * ASSERTION IS ABOUT A REQUEST HEADER. The five ordering probes below flushed a bare `null` for this
+ * endpoint, and the listing cannot answer that: it is the one endpoint whose body IS the page envelope,
+ * so it always answers `{ items, meta }`.
  */
 const PORTAL_PAGE_BODY = Object.freeze({
   items: [
@@ -205,50 +67,33 @@ const PORTAL_PAGE_BODY = Object.freeze({
 });
 
 /**
- * A second endpoint, used where two distinct requests must be told apart.
- *
- * The canonical role collection is flat; its tenant is resolved from the request host.
+ * A second endpoint, used where two distinct requests must be told apart. The canonical role collection
+ * is flat; its tenant is resolved from the request host.
  */
 const ROLE_LIST_URL = '/api/v1/roles';
 
 /**
- * The identifier of the portal a delete spec addresses.
- *
- * `0` rather than `1`, because the legacy `Portals.PortalID` column is declared
- * `IDENTITY(-1,1)`: the seed and first generated value is `-1`, while the shipped default
- * portal row is inserted explicitly with `PortalID` `0`, so both are legitimate row
- * identifiers - and `-1` is simultaneously the legacy `Null.NullInteger` sentinel. Nothing in
- * this interceptor interprets the value - it is a path segment here and no more -
- * but choosing a realistic one keeps the fixture honest about the schema this
- * migration maps onto.
+ * The identifier of the portal a delete spec addresses. `0` rather than `1`, because the legacy
+ * `Portals.PortalID` column is declared `IDENTITY(-1,1)`: the seed and first generated value is `-1`,
+ * while the shipped default portal row is inserted explicitly with `PortalID` `0`, so both are legitimate
+ * row identifiers - and `-1` is simultaneously the legacy `Null.NullInteger` sentinel.
  */
 const DELETED_PORTAL_ID = 0;
 
 /**
- * A caller-supplied identifier in the COMPACT canonical form: 32 hexadecimal characters.
- *
- * Deliberately a form this interceptor could not have produced - it generates the
- * hyphenated 36-character rendering and nothing else - so a forwarded value matching this
- * one is the strongest available evidence that the caller's value really was preserved
- * rather than regenerated and coincidentally equal. It is nevertheless a shape the API
- * keeps, because 32 hexadecimal characters is exactly what the API itself mints, so the
- * pass-through it exercises is the one a retry depends on.
+ * A caller-supplied identifier in the COMPACT canonical form: 32 hexadecimal characters. Deliberately a
+ * form this interceptor could not have produced - it generates the hyphenated 36-character rendering and
+ * nothing else - so a forwarded value matching this one is the strongest available evidence that the
+ * caller's value really was preserved rather than regenerated and coincidentally equal.
  */
 const CALLER_SUPPLIED_ID = '9f2c4d6e8a0b1c3d5e7f0a1b2c3d4e5f';
 
 /**
- * A second caller-supplied identifier, used only to build a request whose
- * correlation header arrives on **two** header lines.
- *
- * It is deliberately as acceptable as {@link CALLER_SUPPLIED_ID} on its own merits - the
- * same canonical compact form - and that is the whole point. The single-line clause is the
- * only reason a request carrying both must be replaced, so a specification built from two
- * individually *valid* values fails the moment that clause is weakened, whereas one built
- * from invalid values would keep passing on the strength of a different clause entirely.
+ * A second caller-supplied identifier, used only to build a request whose correlation header arrives on
+ * **two** header lines.
  */
 const SECOND_CALLER_SUPPLIED_ID = '0123456789abcdef0123456789abcdef';
 
-/** An unrelated header, used to prove that everything else is carried across. */
 const OTHER_HEADER = 'X-Other-Header';
 
 /** The value of {@link OTHER_HEADER}, expected back byte-identical. */
@@ -261,23 +106,15 @@ const ACCEPT_HEADER = 'Accept';
 const ACCEPT_HEADER_VALUE = 'application/json';
 
 /**
- * The credential header the next interceptor in the real chain attaches.
- *
- * Named here so the ordering specs can assert against the same spelling the
- * negative spec uses, and so that "the identifier is stamped before credentials are
- * attached" is expressed once rather than as a scattered string literal.
+ * The credential header the next interceptor in the real chain attaches. Named here so the ordering specs
+ * can assert against the same spelling the negative spec uses, and so that "the identifier is stamped
+ * before credentials are attached" is expressed once rather than as a scattered string literal.
  */
 const AUTHORIZATION_HEADER = 'Authorization';
 
 /**
- * An obviously synthetic credential for the ordering probe to attach.
- *
- * Deliberately unmistakable as a placeholder. It is not a token, is not derived
- * from one, authorises nothing and matches no real credential format - the probe
- * only needs *some* value to prove a header was added after the identifier, and a
- * value that could be mistaken for a live credential has no place in a fixture.
- * Nothing in this suite reads, decodes or transmits it beyond the in-memory
- * testing backend.
+ * An obviously synthetic credential for the ordering probe to attach. Deliberately unmistakable as a
+ * placeholder.
  */
 const FAKE_BEARER_CREDENTIAL = 'Bearer fake-access-token';
 
@@ -293,90 +130,52 @@ const QUERY_PARAMETER_NAME = 'pageSize';
 /** The value of {@link QUERY_PARAMETER_NAME}. */
 const QUERY_PARAMETER_VALUE = '25';
 
-/**
- * The value a stubbed `crypto.randomUUID` returns.
- *
- * Typed as the template literal shape `lib.dom` declares for `randomUUID` so the
- * stub is assignable without a cast. The value is canonical - version nibble `4`,
- * variant nibble `8` - yet obviously synthetic, so seeing it arrive verbatim in the
- * header proves the primitive's output is used as-is and is not re-formatted.
- */
+/** The value a stubbed `crypto.randomUUID` returns. */
 const STUBBED_RANDOM_UUID: `${string}-${string}-${string}-${string}-${string}` =
   '11111111-2222-4333-8444-555555555555';
 
 /**
- * The exact identifier produced when `crypto.getRandomValues` fills the 16 byte
- * buffer with the ascending sequence `0x00 .. 0x0f`.
- *
- * Worked through by hand from the interceptor's own formatting rules, so the
- * assertion pins the byte-to-character mapping rather than merely the shape:
- *
- *   raw bytes  00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
- *   byte 6     (0x06 & 0x0f) | 0x40 = 0x46   <- version nibble forced to 4
- *   byte 8     (0x08 & 0x3f) | 0x80 = 0x88   <- variant bits forced to binary 10
- *   hex        000102030405460788090a0b0c0d0e0f
- *   grouped    00010203-0405-4607-8809-0a0b0c0d0e0f
+ * The exact identifier produced when `crypto.getRandomValues` fills the 16 byte buffer with the ascending
+ * sequence `0x00 .. 0x0f`.
  */
 const ASCENDING_BYTES_UUID = '00010203-0405-4607-8809-0a0b0c0d0e0f';
 
-/**
- * The exact identifier produced from 16 zero bytes.
- *
- * The only two non-zero nibbles in it are the ones the specification forces, which
- * is what makes this the sharpest available proof that the version and variant
- * rewriting happens at all rather than being inherited from lucky randomness.
- */
+/** The exact identifier produced from 16 zero bytes. */
 const ALL_BITS_CLEAR_UUID = '00000000-0000-4000-8000-000000000000';
 
-/**
- * The exact identifier produced from 16 `0xff` bytes.
- *
- * The mirror image of {@link ALL_BITS_CLEAR_UUID}: here the forced nibbles are the
- * only two that are *not* `f`, proving the masks clear the bits they must clear
- * (`0x4f` keeps the low nibble, `0xbf` keeps the low six bits).
- */
+/** The exact identifier produced from 16 `0xff` bytes. */
 const ALL_BITS_SET_UUID = 'ffffffff-ffff-4fff-bfff-ffffffffffff';
 
 /**
- * The constant `Math.random` result used to make the last-resort path
- * deterministic. `Math.floor(0.5 * 256)` is `0x80`, so every one of the 16 bytes
- * arrives as `0x80` before the version and variant rewriting.
+ * The constant `Math.random` result used to make the last-resort path deterministic. `Math.floor(0.5 *
+ * 256)` is `0x80`, so every one of the 16 bytes arrives as `0x80` before the version and variant
+ * rewriting.
  */
 const CONSTANT_RANDOM_FRACTION = 0.5;
 
 /**
- * The exact identifier produced when every byte is `0x80`.
- *
- *   byte 6  (0x80 & 0x0f) | 0x40 = 0x40
- *   byte 8  (0x80 & 0x3f) | 0x80 = 0x80
- *   hex     80808080808040808080808080808080
- *   grouped 80808080-8080-4080-8080-808080808080
+ * The exact identifier produced when every byte is `0x80`. byte 6 (0x80 & 0x0f) | 0x40 = 0x40 byte 8
+ * (0x80 & 0x3f) | 0x80 = 0x80 hex 80808080808040808080808080808080 grouped
+ * 80808080-8080-4080-8080-808080808080.
  */
 const CONSTANT_FRACTION_UUID = '80808080-8080-4080-8080-808080808080';
 
 /**
- * How many identifiers a uniqueness spec draws.
- *
- * Large enough that a stuck or memoised generator is caught immediately, small
- * enough that the spec stays instantaneous. Nothing statistical is being claimed
- * here: the interceptor's contract is that consecutive requests get *distinct*
- * identifiers, and this observes exactly that.
+ * How many identifiers a uniqueness spec draws. Large enough that a stuck or memoised generator is caught
+ * immediately, small enough that the spec stays instantaneous.
  */
 const UNIQUENESS_SAMPLE_SIZE = 128;
 
 /**
- * The sentinel recorded in place of a missing identifier, so a uniqueness spec
- * distinguishes "128 distinct values" from "127 distinct values plus one request
- * that was never stamped".
+ * The sentinel recorded in place of a missing identifier, so a uniqueness spec distinguishes "128
+ * distinct values" from "127 distinct values plus one request that was never stamped".
  */
 const MISSING_IDENTIFIER = '<no identifier was attached>';
 
 /**
- * The response a stub `next` hands back.
- *
- * Compared by identity in the forwarding specs, which is what proves the
- * interceptor returns the downstream observable untouched rather than wrapping,
- * re-emitting or replacing the response.
+ * The response a stub `next` hands back. Compared by identity in the forwarding specs, which is what
+ * proves the interceptor returns the downstream observable untouched rather than wrapping, re-emitting or
+ * replacing the response.
  */
 const TERMINAL_RESPONSE = new HttpResponse<unknown>({ status: 204, statusText: 'No Content' });
 
@@ -387,9 +186,9 @@ const CONTEXT_DEFAULT = 'the token default, which means the context was lost';
 const CARRIED_CONTEXT_VALUE = 'carried across the clone';
 
 /**
- * An `HttpContext` token, used to prove that cloning for the header does not drop
- * the request context. Downstream interceptors carry per-request switches in the
- * context, so losing it would break them silently.
+ * An `HttpContext` token, used to prove that cloning for the header does not drop the request context.
+ * Downstream interceptors carry per-request switches in the context, so losing it would break them
+ * silently.
  */
 const DIAGNOSTIC_CONTEXT = new HttpContextToken<string>(() => CONTEXT_DEFAULT);
 
@@ -406,12 +205,10 @@ interface Interception {
 }
 
 /**
- * Invokes the interceptor directly with a stub `next` and records everything
- * observable about the call.
- *
- * The stub returns a synchronous `of(...)`, so the returned observable completes
- * before this function does and the recorded flags are final by the time the
- * caller asserts on them - no `fakeAsync`, no `tick`, no scheduler involved.
+ * Invokes the interceptor directly with a stub `next` and records everything observable about the call.
+ * The stub returns a synchronous `of(...)`, so the returned observable completes before this function
+ * does and the recorded flags are final by the time the caller asserts on them - no `fakeAsync`, no
+ * `tick`, no scheduler involved.
  *
  * @param request The request to hand to the interceptor.
  * @returns What the interceptor forwarded and what its observable emitted.
@@ -444,8 +241,8 @@ function runInterceptor(request: HttpRequest<unknown>): Interception {
 }
 
 /**
- * Builds a `GET` request that carries two unrelated headers and no correlation
- * identifier - the ordinary case the interceptor exists to handle.
+ * Builds a `GET` request that carries two unrelated headers and no correlation identifier - the ordinary
+ * case the interceptor exists to handle.
  */
 function requestWithoutIdentifier(): HttpRequest<unknown> {
   return new HttpRequest<unknown>('GET', PORTAL_LIST_URL, {
@@ -457,12 +254,11 @@ function requestWithoutIdentifier(): HttpRequest<unknown> {
 }
 
 /**
- * Builds a fully populated `PUT` request: body, query parameters, request context,
- * response type and credentials flag all set to non-default values, so a clone
- * that dropped any one of them is detectable.
+ * Builds a fully populated `PUT` request: body, query parameters, request context, response type and
+ * credentials flag all set to non-default values, so a clone that dropped any one of them is detectable.
  *
- * @param headerName The spelling under which the correlation identifier is
- * supplied, or `undefined` to omit it entirely.
+ * @param headerName The spelling under which the correlation identifier is supplied, or `undefined` to
+ * omit it entirely.
  */
 function fullyPopulatedRequest(headerName?: string): HttpRequest<unknown> {
   const headers =
@@ -486,38 +282,23 @@ function identifierOn(request: HttpRequest<unknown>): string | null {
 }
 
 /**
- * Builds a request carrying an arbitrary inbound identifier.
- *
- * `HttpHeaders` is constructed from an object literal rather than by cloning,
- * because a value that the interceptor is expected to REJECT must reach it exactly
- * as the caller wrote it — untrimmed, unnormalised and of whatever length the test
- * chose.
+ * Builds a request carrying an arbitrary inbound identifier. `HttpHeaders` is constructed from an object
+ * literal rather than by cloning, because a value that the interceptor is expected to REJECT must reach
+ * it exactly as the caller wrote it — untrimmed, unnormalised and of whatever length the test chose.
  *
  * @param value The value to place in the correlation header.
  * @returns A GET request carrying that value and nothing else of interest.
  */
 function requestCarrying(value: string): HttpRequest<unknown> {
-  // Set through `clone` rather than through the `HttpHeaders` constructor: the
-  // constructor initialises lazily from an object literal, while `set` stores the
-  // value eagerly and verbatim. For a value chosen precisely because it is
-  // degenerate — empty, over-long, or carrying a control character — the eager path
-  // is the one that provably preserves it.
   return new HttpRequest<unknown>('GET', PORTAL_LIST_URL).clone({
     setHeaders: { [CORRELATION_ID_HEADER]: value },
   });
 }
 
 /**
- * Builds a request whose correlation header arrives on **two** header lines.
- *
- * `append` is the only way to reach this state, and reaching it is the entire
- * reason this helper exists rather than reusing {@link requestCarrying}. Every
- * other route collapses the two values into one line and so cannot exercise the
- * clause under test: an object literal keyed by header name can hold one value per
- * key, and `setHeaders` - which is what `requestCarrying` uses - *replaces* the
- * named header rather than adding to it. Only `append` produces the two-element
- * array that `getAll` returns and that the interceptor's single-line clause
- * inspects.
+ * Builds a request whose correlation header arrives on **two** header lines. `append` is the only way to
+ * reach this state, and reaching it is the entire reason this helper exists rather than reusing {@link
+ * requestCarrying}.
  *
  * @param first The value on the first header line.
  * @param second The value on the second header line.
@@ -536,38 +317,17 @@ function allIdentifiersOn(request: HttpRequest<unknown>): readonly string[] | nu
   return request.headers.getAll(CORRELATION_ID_HEADER);
 }
 
-/**
- * The hyphenated canonical form, in upper case.
- *
- * Case is immaterial to the accepted shape and is neither required nor rewritten, so this
- * value must be forwarded exactly as written. Restated here rather than imported, because
- * a specification that borrowed the implementation's own constants would pass whatever the
- * implementation happened to say.
- */
+/** The hyphenated canonical form, in upper case. */
 const UPPER_CASE_HYPHENATED_ID = '4D19AE7C-1B8F-4E2A-9D6C-3F5B7A091E2D';
 
-/**
- * A value one character short of the compact canonical form.
- *
- * The shape test has no length bound of its own - each accepted form has exactly one
- * length - so an off-by-one in either length comparison shows up here rather than nowhere.
- */
+/** A value one character short of the compact canonical form. */
 const ONE_CHARACTER_SHORT_ID = '9f2c4d6e8a0b1c3d5e7f0a1b2c3d4e5';
 
-/**
- * A value one character longer than the compact canonical form.
- */
+/** A value one character longer than the compact canonical form. */
 const ONE_CHARACTER_LONG_ID = '9f2c4d6e8a0b1c3d5e7f0a1b2c3d4e5f0';
 
 /**
- * Builds a `crypto.getRandomValues` replacement that fills the buffer
- * deterministically.
- *
- * Written as a function declaration returning a generic function declaration
- * rather than as nested arrows, so the generic signature `lib.dom` declares -
- * `<T extends ArrayBufferView | null>(array: T): T` - is reproduced exactly and
- * the stub is assignable to the spy without a cast. The real primitive fills in
- * place and returns the same object; so does this.
+ * Builds a `crypto.getRandomValues` replacement that fills the buffer deterministically.
  *
  * @param byteAt Produces the byte for a given index.
  * @param observeLength Optional hook receiving the length actually requested.
@@ -596,27 +356,22 @@ interface OwnPropertyShim {
   /** The property name that was shadowed. */
   readonly name: string;
   /**
-   * The own descriptor found before shadowing, or `undefined` when the property
-   * was inherited from a prototype and the object had no own descriptor at all.
+   * The own descriptor found before shadowing, or `undefined` when the property was inherited from a
+   * prototype and the object had no own descriptor at all.
    */
   readonly original: PropertyDescriptor | undefined;
 }
 
 /**
- * Every shim installed by the currently running spec. Emptied by the suite-wide
- * `afterEach`, which is what keeps randomised spec order safe.
+ * Every shim installed by the currently running spec. Emptied by the suite-wide `afterEach`, which is
+ * what keeps randomised spec order safe.
  */
 const installedShims: OwnPropertyShim[] = [];
 
 /**
- * Makes an inherited platform primitive look absent to the code under test.
- *
- * The interceptor decides between its three generation sources with
- * `typeof crypto.randomUUID === 'function'`, and a Jasmine spy is itself a
- * function - so `spyOn` cannot express "not present". `crypto.randomUUID` and
- * `crypto.getRandomValues` live on `Crypto.prototype` rather than on the `crypto`
- * instance, so defining an own property whose value is `undefined` shadows the
- * inherited one for exactly as long as the shim stands.
+ * Makes an inherited platform primitive look absent to the code under test. The interceptor decides
+ * between its three generation sources with `typeof crypto.randomUUID === 'function'`, and a Jasmine spy
+ * is itself a function - so `spyOn` cannot express "not present".
  *
  * @param target The object to shadow a property on.
  * @param name The property to make appear absent.
@@ -636,14 +391,6 @@ function shadowAsAbsent(target: object, name: string): void {
   });
 }
 
-/**
- * Removes every shim installed by {@link shadowAsAbsent}, most recent first.
- *
- * Where there was no own descriptor to begin with the shim is *deleted* rather
- * than overwritten, because assigning the prototype's function back onto the
- * instance would leave the object permanently altered - own where it used to be
- * inherited - and that residue would leak into every later spec.
- */
 function restoreShadowedProperties(): void {
   for (const shim of installedShims.splice(0).reverse()) {
     if (shim.original === undefined) {
@@ -655,11 +402,8 @@ function restoreShadowedProperties(): void {
 }
 
 describe('correlationIdInterceptor', () => {
-  // Suite-wide safety net. Jasmine unwinds `spyOn` on its own; the own-property
-  // shims cannot be spies, so they are unwound here for every spec whether or not
-  // that spec installed one. Randomised order makes this mandatory rather than
-  // tidy: a shim surviving one spec would silently change which generation path a
-  // later spec exercises.
+  // Suite-wide safety net. Jasmine unwinds `spyOn` on its own; the own-property shims cannot be spies, so
+  // they are unwound here for every spec whether or not that spec installed one.
   afterEach(() => {
     restoreShadowedProperties();
   });
@@ -674,10 +418,6 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('carries neither primitive as an own property of crypto', () => {
-      // The shadowing technique below relies on both living on `Crypto.prototype`.
-      // If a future platform or polyfill moved them onto the instance the shims
-      // would still restore correctly - `shadowAsAbsent` snapshots whatever it
-      // finds - but the reader should be told which arrangement is in force.
       expect([
         Object.getOwnPropertyDescriptor(crypto, 'randomUUID'),
         Object.getOwnPropertyDescriptor(crypto, 'getRandomValues'),
@@ -686,19 +426,6 @@ describe('correlationIdInterceptor', () => {
   });
 
   describe('the request boundary', () => {
-    /*
-     * The scope of the header, asserted in its own right because the defect it closes was
-     * one of BREADTH rather than of behaviour on any single request.
-     *
-     * The interceptor used to stamp, or preserve, the header on every request the client
-     * issued. Two things followed. A caller-supplied identifier was forwarded to a foreign
-     * origin, disclosing a value only this API has any use for; and because
-     * `X-Correlation-Id` is not a CORS-safelisted request header, adding it turned an
-     * otherwise simple cross-origin request into one requiring a preflight, which a
-     * third-party endpoint not listing the name in `Access-Control-Allow-Headers` refuses
-     * outright. The scope is now the same one the bearer interceptor uses.
-     */
-
     let httpClient: HttpClient;
     let httpMock: HttpTestingController;
 
@@ -756,9 +483,8 @@ describe('correlationIdInterceptor', () => {
 
       const forwarded = httpMock.expectOne(FOREIGN_URL).request;
 
-      // The caller's own header is not STRIPPED either - the interceptor removes nothing it
-      // did not add - so what is asserted is that the interceptor neither replaced it nor
-      // took any part in sending it.
+      // The caller's own header is not STRIPPED either - the interceptor removes nothing it did not add -
+      // so what is asserted is that the interceptor neither replaced it nor took any part in sending it.
       expect(forwarded.headers.get(CORRELATION_ID_HEADER)).toBe('caller-supplied-identifier');
     });
 
@@ -797,9 +523,9 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('stamps the health probes even though they sit outside the API base', () => {
-      // The one explicit inclusion. The probes are this API's own endpoints and its
-      // correlation middleware runs for them, so a probe must stay traceable - the address
-      // test alone would exclude them because they are published at the host root.
+      // The one explicit inclusion. The probes are this API's own endpoints and its correlation middleware
+      // runs for them, so a probe must stay traceable - the address test alone would exclude them because
+      // they are published at the host root.
       for (const probe of ['/health', '/health/live', '/health/ready']) {
         httpClient.get(probe).subscribe();
 
@@ -833,10 +559,9 @@ describe('correlationIdInterceptor', () => {
     beforeEach(() => {
       TestBed.configureTestingModule({
         providers: [
-          // The real client is provided first and the testing backend second, which
-          // is the order Angular requires: `provideHttpClientTesting` replaces the
-          // backend `provideHttpClient` installed, and a reversed order leaves the
-          // live backend in place and sends the request at the network.
+          // The real client is provided first and the testing backend second, which is the order Angular
+          // requires: `provideHttpClientTesting` replaces the backend `provideHttpClient` installed, and a
+          // reversed order leaves the live backend in place and sends the request at the network.
           provideHttpClient(withInterceptors([correlationIdInterceptor])),
           provideHttpClientTesting(),
         ],
@@ -885,9 +610,9 @@ describe('correlationIdInterceptor', () => {
       const identifier = identifierOn(pending.request);
       pending.flush('failed', { status: 500, statusText: 'Internal Server Error' });
 
-      // The identifier is attached on the way out, before any outcome is known, so
-      // a failing request carries it exactly as a succeeding one does. That is what
-      // lets a server-side error log line be joined to the call that provoked it.
+      // The identifier is attached on the way out, before any outcome is known, so a failing request
+      // carries it exactly as a succeeding one does. That is what lets a server-side error log line be
+      // joined to the call that provoked it.
       expect(identifier).toMatch(CANONICAL_UUID_PATTERN);
     });
 
@@ -906,12 +631,9 @@ describe('correlationIdInterceptor', () => {
     it('stamps a bodyless mutating request', () => {
       httpClient.delete(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).subscribe();
 
-      // The third verb completes the method-agnosticism claim. The interceptor
-      // branches on the inbound header alone and never inspects the method, so a
-      // regression that started keying off the verb - stamping only requests with a
-      // body, say - would pass the GET and POST specs above and fail here.
-      // A delete is also the request whose identifier matters most in a log: it is
-      // the one whose effect cannot be re-read afterwards.
+      // The third verb completes the method-agnosticism claim. The interceptor branches on the inbound
+      // header alone and never inspects the method, so a regression that started keying off the verb -
+      // stamping only requests with a body, say - would pass the GET and POST specs above and fail here.
       expect(
         identifierOn(httpMock.expectOne(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).request),
       ).toMatch(CANONICAL_UUID_PATTERN);
@@ -920,9 +642,8 @@ describe('correlationIdInterceptor', () => {
     it('sends that request under the method the caller chose', () => {
       httpClient.delete(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).subscribe();
 
-      // Stamping the header must not disturb the verb: the clone carries the method
-      // across, and a delete that arrived as anything else would be a different
-      // operation entirely.
+      // Stamping the header must not disturb the verb: the clone carries the method across, and a delete
+      // that arrived as anything else would be a different operation entirely.
       expect(httpMock.expectOne(`${PORTAL_LIST_URL}/${DELETED_PORTAL_ID}`).request.method).toBe(
         'DELETE',
       );
@@ -954,31 +675,6 @@ describe('correlationIdInterceptor', () => {
   });
 
   describe('position in the interceptor chain', () => {
-    // WHY THIS BLOCK EXISTS, AND WHAT IT DOES *NOT* CLAIM.
-    //
-    // `withInterceptors([A, B, C])` composes as `A(next = B(next = C(next =
-    // backend)))`. On the REQUEST path that means A runs first, so the correlation
-    // identifier is attached before the auth interceptor can add `Authorization`
-    // and before anything downstream can short-circuit, retry or fail the request.
-    // That is the claim this block makes observable, and it is correct.
-    //
-    // D-I1. The same composition makes the RESPONSE path the exact reverse -
-    // `backend -> C -> B -> A` - so the outermost interceptor is the LAST to see a
-    // response, not the first. The migration plan's stated rationale for putting
-    // error translation last, that doing so lets it "observe the final response
-    // after any 401 refresh-and-retry", is therefore inverted with respect to the
-    // ordering it prescribes: registered third, the error interceptor sees a
-    // response BEFORE the two interceptors registered ahead of it do. The
-    // prescribed ORDER is nonetheless right for an independent reason - the auth
-    // interceptor is the one that swallows a recovered 401, and it can only do that
-    // from inside, which is where being registered second puts it.
-    //
-    // None of that is this file's business to fix. This interceptor touches no
-    // response at all - a property asserted directly under "what it deliberately
-    // does not do" - so the response-path ordering has no observable consequence
-    // here. The correction belongs to `auth.interceptor.ts` and
-    // `error.interceptor.ts`, and is recorded here only so that a reader who
-    // arrives via the plan's rationale is not misled by it.
     let httpClient: HttpClient;
     let httpMock: HttpTestingController;
     let identifierSeenByProbe: (string | null)[];
@@ -988,16 +684,8 @@ describe('correlationIdInterceptor', () => {
       identifierSeenByProbe = [];
       authorizationSeenByProbe = [];
 
-      // A stand-in for the auth interceptor, registered *after* the one under test
-      // exactly as `app.config.ts` registers the real one. It records what it can
-      // see the moment it runs and only then adds its own header, which is what
-      // turns the ordering claim into two independent observations: the correlation
-      // identifier is already present when credential handling begins, and the
-      // credential header is not yet present when the identifier is stamped.
-      //
-      // Deliberately LOCAL and NOT exported. It is a probe, not production API, and
-      // it must never be mistaken for one - the real credential handling lives in
-      // `auth.interceptor.ts` and does considerably more than this.
+      // A stand-in for the auth interceptor, registered *after* the one under test exactly as
+      // `app.config.ts` registers the real one.
       const orderProbeInterceptor: HttpInterceptorFn = (request, next) => {
         identifierSeenByProbe.push(identifierOn(request));
         authorizationSeenByProbe.push(request.headers.get(AUTHORIZATION_HEADER));
@@ -1033,10 +721,9 @@ describe('correlationIdInterceptor', () => {
       httpClient.get(PORTAL_LIST_URL).subscribe();
       httpMock.expectOne(PORTAL_LIST_URL).flush(PORTAL_PAGE_BODY);
 
-      // The other half of the same ordering claim. Asserting only that the probe saw
-      // the identifier would be satisfied by either order if some later change also
-      // stamped the identifier late; asserting that the probe had not yet added its
-      // own header pins the direction unambiguously.
+      // The other half of the same ordering claim. Asserting only that the probe saw the identifier would
+      // be satisfied by either order if some later change also stamped the identifier late; asserting that
+      // the probe had not yet added its own header pins the direction unambiguously.
       expect(authorizationSeenByProbe).toEqual([null]);
     });
 
@@ -1053,9 +740,8 @@ describe('correlationIdInterceptor', () => {
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
       pending.flush(PORTAL_PAGE_BODY);
 
-      // Both headers arrive together. This is the shape a real authenticated call
-      // has on the wire, and it proves the two interceptors compose rather than
-      // overwrite one another's work.
+      // Both headers arrive together. This is the shape a real authenticated call has on the wire, and it
+      // proves the two interceptors compose rather than overwrite one another's work.
       expect([
         identifierOn(pending.request),
         pending.request.headers.get(AUTHORIZATION_HEADER),
@@ -1067,12 +753,9 @@ describe('correlationIdInterceptor', () => {
       const pending = httpMock.expectOne(PORTAL_LIST_URL);
       pending.flush(PORTAL_PAGE_BODY);
 
-      // The mechanism the preservation contract exists to serve, observed end to
-      // end. `auth.interceptor.ts` recovers a 401 by re-sending the request object
-      // it was handed - one this interceptor has already stamped - so the retry
-      // carries the first attempt's identifier rather than a second one. Feeding the
-      // request the probe forwarded back through the interceptor reproduces exactly
-      // that re-entry, and the identifier must survive it unchanged.
+      // The mechanism the preservation contract exists to serve, observed end to end. `auth.interceptor.ts`
+      // recovers a 401 by re-sending the request object it was handed - one this interceptor has already
+      // stamped - so the retry carries the first attempt's identifier rather than a second one.
       const reSent = runInterceptor(pending.request).forwarded[0];
 
       expect(identifierOn(reSent)).toBe(identifierOn(pending.request));
@@ -1080,33 +763,15 @@ describe('correlationIdInterceptor', () => {
   });
 
   describe('a request that already carries the header', () => {
-    // WHY PRESERVATION IS THE CONTRACT, AND WHICH CONCRETE MECHANISM DEPENDS ON IT.
-    //
-    // The consumer is `auth.interceptor.ts`. When the API answers 401 it renews the
-    // session and retries ONCE, and it builds that retry by cloning the ORIGINAL
-    // request object it was handed - the very object this interceptor, sitting
-    // outside it, has already stamped - adding only a refreshed bearer token. The
-    // retry therefore re-enters the chain carrying an identifier that is already
-    // present.
-    //
-    // If this interceptor overwrote a value it found, the retry would be issued
-    // under a second identifier and one logical operation - "the caller asked for
-    // this resource, was challenged, and was served after renewal" - would be split
-    // across two unrelated identifiers in the server logs. The operator reading
-    // those logs would see an unexplained 401 and an unexplained success with
-    // nothing tying them together, which is precisely the failure correlation exists
-    // to prevent. Preserving the value is what makes both attempts joinable as one.
-    //
-    // Preservation is conditional on the value being one the API will actually
-    // honour; the clauses, and why forwarding an unusable value would preserve
-    // nothing at all, are exercised in the block that follows this one.
+    // The consumer is `auth.interceptor.ts`. When the API answers 401 it renews the session and retries
+    // ONCE, and it builds that retry by cloning the ORIGINAL request object it was handed - the very object
+    // this interceptor, sitting outside it, has already stamped - adding only a refreshed bearer token.
     it('forwards the very same request object rather than a clone', () => {
       const original = fullyPopulatedRequest(CORRELATION_ID_HEADER);
 
-      // Identity, not equality. A retry must re-send byte-identical headers so the
-      // server recognises the second attempt as the same logical operation; an
-      // equal-looking clone would satisfy `toEqual` while still being a different
-      // object, and the contract is explicit that the original is forwarded.
+      // Identity, not equality. A retry must re-send byte-identical headers so the server recognises the
+      // second attempt as the same logical operation; an equal-looking clone would satisfy `toEqual` while
+      // still being a different object, and the contract is explicit that the original is forwarded.
       expect(runInterceptor(original).forwarded[0]).toBe(original);
     });
 
@@ -1123,12 +788,9 @@ describe('correlationIdInterceptor', () => {
     it('does not replace a value that could not have been generated here', () => {
       const forwarded = runInterceptor(fullyPopulatedRequest(CORRELATION_ID_HEADER)).forwarded[0];
 
-      // The preserved value is the COMPACT canonical form, which this interceptor never
-      // generates — it emits the hyphenated rendering — so a value matching it cannot have
-      // been minted here and coincidentally compared equal. What the interceptor checks is
-      // the SHAPE, not the origin: a retry legitimately re-sends whatever the first attempt
-      // carried, and the API mints compact identifiers of its own, so both canonical forms
-      // are forwarded unchanged. The refusals are exercised in their own block below.
+      // The preserved value is the COMPACT canonical form, which this interceptor never generates — it
+      // emits the hyphenated rendering — so a value matching it cannot have been minted here and
+      // coincidentally compared equal.
       expect(identifierOn(forwarded)).not.toMatch(CANONICAL_UUID_PATTERN);
     });
 
@@ -1161,46 +823,15 @@ describe('correlationIdInterceptor', () => {
   });
 
   describe('a request carrying an inbound value the API would refuse', () => {
-    // WHY THIS BLOCK EXISTS. "Never overwrite a caller-supplied value" and "always
-    // send an identifier the API will keep" are in tension, and the interceptor
-    // resolves it by validating the inbound value against the same rule
-    // `CorrelationIdMiddleware` applies: exactly one header line, whose content is one
-    // of two CANONICAL shapes — 32 hexadecimal characters, or the hyphenated
-    // 36-character `8-4-4-4-12` rendering. A value failing either clause is REPLACED
-    // rather than forwarded, because forwarding it would mean the request and its log
-    // entry carried different identifiers — the one failure mode correlation exists to
-    // prevent. Each clause is asserted separately so a regression names the clause it
-    // broke.
-    //
-    // ⚠ THE SHAPE CLAUSE REPLACED A CHARACTER-RANGE CLAUSE, AND THAT IS A SECURITY FIX
-    // RATHER THAN A TIGHTENING FOR ITS OWN SAKE. Any printable value used to be
-    // accepted, so a caller could send a password, an e-mail address, a bearer token or
-    // an API key and have this application carry it into the server's logging scope, its
-    // response headers, its problem documents and an operator's support reference. Those
-    // four shapes are asserted below, alongside the near-canonical values that a shape
-    // test must also refuse if it is to be one.
-
-    // THE SINGLE-LINE CLAUSE. Asserted first because it is the first clause the
-    // comment above names, and separately from the three value-shape clauses below
-    // because it is the only one that is not a property of a value at all: both
-    // values here would be forwarded untouched on their own. What disqualifies the
-    // request is the ambiguity of there being two of them, and `getAll` returning a
-    // two-element array is the only way that state is observable.
-    //
-    // Every other test in this block reaches the interceptor through a single header
-    // line, so without these three the `inbound.length === 1` comparison could be
-    // relaxed to `>= 1` - or deleted along with the surrounding `null` check - and the
-    // whole suite would still pass while the browser and the server silently
-    // disagreed about the identifier for the same request.
+    // THE SINGLE-LINE CLAUSE. Asserted first because it is the first clause the comment above names, and
+    // separately from the three value-shape clauses below because it is the only one that is not a property
+    // of a value at all: both values here would be forwarded untouched on their own.
 
     it('replaces a repeated header even though either value alone would be kept', () => {
       const forwarded = runInterceptor(
         requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID),
       ).forwarded[0];
 
-      // The premise, asserted rather than assumed: each value on its own takes the
-      // pass-through branch. That is what makes the replacement below attributable to
-      // the repetition and to nothing else about either value.
       expect(identifierOn(runInterceptor(requestCarrying(CALLER_SUPPLIED_ID)).forwarded[0]))
         .toBe(CALLER_SUPPLIED_ID);
       expect(identifierOn(runInterceptor(requestCarrying(SECOND_CALLER_SUPPLIED_ID)).forwarded[0]))
@@ -1214,16 +845,12 @@ describe('correlationIdInterceptor', () => {
         requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID),
       ).forwarded[0];
 
-      // The premise: the request really did arrive with two lines. Without this the
-      // assertion below would also be satisfied by a helper that had quietly
-      // collapsed them before the interceptor ever ran.
+      // The premise: the request really did arrive with two lines. Without this the assertion below would
+      // also be satisfied by a helper that had quietly collapsed them before the interceptor ever ran.
       expect(
         allIdentifiersOn(requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID)),
       ).toEqual([CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID]);
 
-      // `setHeaders` replaces rather than appends, so the ambiguity the server refuses
-      // is resolved here rather than forwarded. Appending would have produced three
-      // lines and left the request refusable for the very same reason.
       expect(allIdentifiersOn(forwarded)?.length).toBe(1);
     });
 
@@ -1231,10 +858,7 @@ describe('correlationIdInterceptor', () => {
       const original = requestCarryingTwoIdentifiers(CALLER_SUPPLIED_ID, SECOND_CALLER_SUPPLIED_ID);
       const forwarded = runInterceptor(original).forwarded[0];
 
-      // Neither value survives. Keeping the first would be the tempting "repair" - it
-      // is a usable identifier, after all - but the server discards the whole header
-      // when it arrives more than once, so forwarding either value would leave the
-      // browser holding an identifier that appears in no server log line.
+      // Neither value survives.
       expect(allIdentifiersOn(forwarded)).not.toContain(CALLER_SUPPLIED_ID);
       expect(allIdentifiersOn(forwarded)).not.toContain(SECOND_CALLER_SUPPLIED_ID);
 
@@ -1251,19 +875,12 @@ describe('correlationIdInterceptor', () => {
     it('replaces a value that is only whitespace', () => {
       const forwarded = runInterceptor(requestCarrying('   ')).forwarded[0];
 
-      // Blankness needs no clause of its own any more: whitespace is not hexadecimal, so
-      // it fails the shape test on its content as well as on its length. The value is
-      // never trimmed either, so a canonical identifier padded with spaces is refused
-      // rather than silently repaired into one the caller never sent.
       expect(identifierOn(forwarded)).toMatch(CANONICAL_UUID_PATTERN);
       expect(identifierOn(runInterceptor(requestCarrying(` ${CALLER_SUPPLIED_ID} `)).forwarded[0]))
         .toMatch(CANONICAL_UUID_PATTERN);
     });
 
     it('accepts the hyphenated canonical form in upper case', () => {
-      // Case is immaterial to the shape and is neither required nor rewritten, so the
-      // value has to survive exactly as written. Re-casing it would make the browser and
-      // the server disagree about the identifier for one request.
       const forwarded = runInterceptor(requestCarrying(UPPER_CASE_HYPHENATED_ID)).forwarded[0];
 
       expect(identifierOn(forwarded)).toBe(UPPER_CASE_HYPHENATED_ID);
@@ -1300,10 +917,6 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('replaces a value that looks like a password, an address, a token or a key', () => {
-      // THE SEMANTIC CASE, and the reason the shape rule exists. Every value here is
-      // printable US-ASCII within the old length bound, so every one of them used to be
-      // accepted — and accepted means published to the server's log scope, echoed on the
-      // response, carried in the problem document and shown to an operator.
       const secrets: readonly string[] = [
         'Integr8tion!Pass',
         'operator@contoso.example',
@@ -1335,9 +948,6 @@ describe('correlationIdInterceptor', () => {
     it('replaces the header outright rather than appending a second value', () => {
       const forwarded = runInterceptor(requestCarrying('')).forwarded[0];
 
-      // `setHeaders` replaces the named header, so exactly one value must survive. An
-      // append would produce two header lines, which is itself one of the four
-      // clauses the API refuses.
       expect(forwarded.headers.getAll(CORRELATION_ID_HEADER)?.length).toBe(1);
     });
 
@@ -1366,9 +976,6 @@ describe('correlationIdInterceptor', () => {
 
       runInterceptor(original);
 
-      // `HttpHeaders` is immutable and `clone` is the only mechanism used, so the
-      // caller's object must be observably unchanged afterwards. A mutation here
-      // would make a retry of the *original* object carry a stale identifier.
       expect(original.headers.has(CORRELATION_ID_HEADER)).toBeFalse();
     });
 
@@ -1491,11 +1098,6 @@ describe('correlationIdInterceptor', () => {
 
   describe('identifier generation - crypto.getRandomValues, the fallback that earns its place', () => {
     beforeEach(() => {
-      // `randomUUID` is exposed only in secure contexts, and this application is
-      // served over plain HTTP on a published container port - so on any origin
-      // other than `localhost` this is the *real* production path, not a
-      // hypothetical one. Making the primitive absent is therefore reproducing a
-      // deployment, not contriving a branch.
       shadowAsAbsent(crypto, 'randomUUID');
     });
 
@@ -1601,13 +1203,9 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('keeps the largest possible fraction inside byte range', () => {
-      // `Math.random()` is specified as `[0, 1)`, and `1 - Number.EPSILON / 2` is
-      // exactly the largest double below 1. Scaling it by 256 yields the largest
-      // double below 256, which floors to 255 - so the top of the generator's range
-      // maps onto the top of the byte range with nothing left over. Were the
-      // scaling one step coarser the byte would reach 256, and the interceptor's
-      // reliance on `Uint8Array` truncation to keep the value in range would become
-      // load-bearing instead of incidental.
+      // `Math.random()` is specified as `[0, 1)`, and `1 - Number.EPSILON / 2` is exactly the largest
+      // double below 1. Scaling it by 256 yields the largest double below 256, which floors to 255 - so the
+      // top of the generator's range maps onto the top of the byte range with nothing left over.
       spyOn(Math, 'random').and.returnValue(1 - Number.EPSILON / 2);
 
       expect(identifierOn(runInterceptor(requestWithoutIdentifier()).forwarded[0])).toBe(
@@ -1637,10 +1235,9 @@ describe('correlationIdInterceptor', () => {
         identifiers.add(identifierOn(forwarded) ?? MISSING_IDENTIFIER);
       }
 
-      // The interceptor's own header concedes that this source is weaker than the
-      // other two and explains why that is acceptable for a diagnostic label. What
-      // it must still deliver is that two requests do not collide, which is what
-      // this observes.
+      // The interceptor's own header concedes that this source is weaker than the other two and explains
+      // why that is acceptable for a diagnostic label. What it must still deliver is that two requests do
+      // not collide, which is what this observes.
       expect(identifiers.size).toBe(UNIQUENESS_SAMPLE_SIZE);
     });
   });
@@ -1685,10 +1282,8 @@ describe('correlationIdInterceptor', () => {
 
   describe('what it deliberately does not do', () => {
     it('logs nothing', () => {
-      // The interceptor's header states that a log call here would duplicate what
-      // the server already records against the same identifier. Console output from
-      // a per-request interceptor would also be the single noisiest thing this
-      // application could do, so the silence is asserted rather than trusted.
+      // The interceptor's header states that a log call here would duplicate what the server already
+      // records against the same identifier.
       const consoleSpies = [
         spyOn(console, 'debug'),
         spyOn(console, 'error'),
@@ -1706,9 +1301,9 @@ describe('correlationIdInterceptor', () => {
     it('adds no authorisation header of its own', () => {
       const forwarded = runInterceptor(requestWithoutIdentifier()).forwarded[0];
 
-      // Attaching credentials is the auth interceptor's job. This one is registered
-      // ahead of it precisely so that the identifier exists before any credential
-      // handling happens, and it must not stray into that territory.
+      // Attaching credentials is the auth interceptor's job. This one is registered ahead of it precisely
+      // so that the identifier exists before any credential handling happens, and it must not stray into
+      // that territory.
       expect(forwarded.headers.has(AUTHORIZATION_HEADER)).toBeFalse();
     });
 
@@ -1719,9 +1314,9 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('needs no injection context, matching its no-dependency claim', () => {
-      // Every direct invocation in this suite already relies on this; stating it
-      // once as an expectation makes the reliance deliberate. An interceptor that
-      // called `inject()` outside an injection context would throw NG0203 here.
+      // Every direct invocation in this suite already relies on this; stating it once as an expectation
+      // makes the reliance deliberate. An interceptor that called `inject()` outside an injection context
+      // would throw NG0203 here.
       expect(() => runInterceptor(requestWithoutIdentifier())).not.toThrow();
     });
   });
@@ -1778,9 +1373,8 @@ describe('correlationIdInterceptor', () => {
     });
 
     it('starts every spec with an unstubbed Math.random', () => {
-      // Jasmine unwinds `spyOn` itself; observing that here means a spec that
-      // stubbed `Math.random` cannot silently poison a later one under randomised
-      // order.
+      // Jasmine unwinds `spyOn` itself; observing that here means a spec that stubbed `Math.random` cannot
+      // silently poison a later one under randomised order.
       expect(jasmine.isSpy(Math.random)).toBeFalse();
     });
 

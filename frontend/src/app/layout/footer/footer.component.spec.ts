@@ -8,22 +8,10 @@ const PRODUCT_DESIGNATION = 'DotNetNuke';
 
 const FOUR_DIGIT_YEAR_ANYWHERE = /\b\d{4}\b/;
 
-/**
- * The WHOLE rendered sentence, anchored at both ends, with the year captured.
- *
- * Anchoring is what makes this oracle mutation-sensitive: a substring check passes
- * against extra text, reordering and a substituted year alike, whereas the anchored
- * form fails on all three. The capture group lets the rendered year be compared
- * against the component's own year without this spec reading a clock of its own.
- * The shape reproduces the legacy copyright resource wording with its second
- * placeholder resolved to the product designation.
- */
+/** The WHOLE rendered sentence, anchored at both ends, with the year captured. */
 const COPYRIGHT_SENTENCE = /^Copyright \(c\) (\d{4}) DotNetNuke$/;
 
-/**
- * Matches a string that is exactly four digits end to end. Used against the
- * component's own year member, which carries nothing else.
- */
+/** Matches a string that is exactly four digits end to end. */
 const FOUR_DIGIT_YEAR_EXACT = /^\d{4}$/;
 
 const FOREIGN_LANDMARKS: readonly string[] = ['header', 'nav', 'main', 'aside'];
@@ -52,11 +40,9 @@ describe('FooterComponent', () => {
   const footerText = (): string => footerElement()?.textContent ?? '';
 
   /**
-   * The band's text with every run of whitespace collapsed to one space and the ends
-   * trimmed, which is what makes an anchored whole-sentence assertion possible
-   * against a template authored across several lines. It deliberately does NOT
-   * discard whitespace entirely: a missing space between the year and the product
-   * name still fails.
+   * The band's text with every run of whitespace collapsed to one space and the ends trimmed, which is
+   * what makes an anchored whole-sentence assertion possible against a template authored across several
+   * lines.
    */
   const normalisedFooterText = (): string => footerText().replace(/\s+/g, ' ').trim();
 
@@ -68,11 +54,6 @@ describe('FooterComponent', () => {
       return;
     }
 
-    // Asserted as a structure because the paired stylesheet addresses both elements
-    // BY TYPE rather than by class: a wrapper `<div>`, a second paragraph or a
-    // `<span>` around the year silently stops the rules matching, and the sibling
-    // `<p>` rule that zeroes the user-agent margin would leave the band's intrinsic
-    // height wrong.
     const descendants = Array.from(footer.querySelectorAll('*'));
 
     expect(descendants.map((element: Element): string => element.tagName)).toEqual(['P']);
@@ -112,11 +93,6 @@ describe('FooterComponent', () => {
       return;
     }
 
-    // A four-digit pattern alone is satisfied by a template that hard-codes an old
-    // year, which is the regression this band is exposed to: the year is resolved
-    // once in TypeScript and interpolated in markup, so the two could drift apart
-    // silently. Comparing the captured run against the component's own member closes
-    // that gap without reading a clock.
     expect(match[1]).toBe(String(component.currentYear));
   });
 
@@ -125,18 +101,13 @@ describe('FooterComponent', () => {
   });
 
   it('renders exactly the year it resolved once at construction', () => {
-    // The determinism guard. The component reads the platform clock through one named
-    // seam, exactly once per instance, so a second independent clock read introduced
-    // anywhere in the band could disagree with the first across a New Year boundary.
-    // Comparing against the component's own member catches that and cannot itself
-    // become flaky, because both sides come from the same single read.
+    // The determinism guard. The component reads the platform clock through one named seam, exactly once
+    // per instance, so a second independent clock read introduced anywhere in the band could disagree with
+    // the first across a New Year boundary.
     expect(footerText()).toContain(String(component.currentYear));
   });
 
   it('exposes a precomposed copyright line matching the rendered sentence exactly', () => {
-    // Held to the SAME anchored sentence as the rendered band, so the whole line and
-    // the year on its own cannot drift apart: the band re-states the wording in
-    // markup, so the member could otherwise keep it while the template lost it.
     expect(component.copyrightText).toMatch(COPYRIGHT_SENTENCE);
     expect(component.copyrightText).toContain(COPYRIGHT_PREFIX);
     expect(component.copyrightText).toContain(PRODUCT_DESIGNATION);
@@ -152,10 +123,9 @@ describe('FooterComponent', () => {
   });
 
   it('composes the precomposed line from the same year the band renders', () => {
-    // Cross-checks the two published members against each other through the
-    // RENDERED output, which is the only place a divergence would actually be
-    // visible to a user. Asserting the member against itself would prove nothing;
-    // asserting it against the band proves the single-source-of-truth claim.
+    // Cross-checks the two published members against each other through the RENDERED output, which is the
+    // only place a divergence would actually be visible to a user. Asserting the member against itself
+    // would prove nothing; asserting it against the band proves the single-source-of-truth claim.
     expect(normalisedFooterText()).toBe(component.copyrightText);
     expect(normalisedFooterText()).toMatch(FOUR_DIGIT_YEAR_ANYWHERE);
   });

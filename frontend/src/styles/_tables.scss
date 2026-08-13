@@ -1,45 +1,27 @@
-// Bare-element table presentation plus the data-grid conventions the shared data-table composes
-// from. Row-state and sort hooks are ARIA attributes rather than classes, so a state cannot be
-// painted without also being announced.
+// Bare-element table presentation plus the data-grid conventions the shared data-table composes from.
+// Row-state and sort hooks are ARIA attributes rather than classes, so a state cannot be painted without
+// also being announced.
 
 @use 'mixins' as mx;
 
 table {
   inline-size: var(--size-full);
 
-  // THE GRIDS HAVE NO CELL BORDERS, AND THAT IS DELIBERATE. Not one border
-  // declaration appears anywhere in this file. It is stated prominently because
-  // it is the easiest convention to "improve" by adding rules between cells,
-  // which would visibly diverge from every ported screen.
-  //
-  // Collapsing the border model is what makes the borderlessness hold: the
-  // separated model the browser defaults to inserts a 2px gap between cells. It
-  // also means there is no divider to leave dangling after the final row, so the
-  // usual last-child exception is unnecessary here.
+  // Collapsing the border model is what makes the borderlessness hold: the separated model the browser
+  // defaults to inserts a 2px gap between cells. It also means there is no divider to leave dangling after
+  // the final row, so the usual last-child exception is unnecessary here.
   border-collapse: collapse;
 
   background-color: transparent;
 
   font-family: var(--font-family-base);
 
-  // The dense grid step. Body cells inherit it from here and the head and foot take one step up in
-  // their own rule below, so the two govern disjoint element sets rather than competing. Every step
-  // of the ramp is relative to the browser's base size, so a reader who raises their font
-  // preference scales the whole grid. Naming a line height alongside it makes row height
-  // predictable instead of engine-dependent.
   font-size: var(--font-size-sm);
 
   line-height: var(--line-height-tight);
 
-  // `inherit` rather than a palette entry: body text has no declared colour, so the row inherits
-  // the user agent default and renders identically to the measured legacy value. Declaring it
-  // rather than omitting it keeps the row independent of any colour a future ancestor might
-  // introduce.
   color: inherit;
 
-  // The inherited default for body content. The logical keyword rather than a
-  // physical edge, so the grid reads correctly under a right-to-left writing
-  // mode.
   text-align: start;
 }
 
@@ -52,20 +34,16 @@ caption {
   text-align: start;
 }
 
-// The hook to reach for when a visible page heading already says the same thing,
-// instead of dropping the caption: a table with no caption leaves screen-reader
-// users no way to tell one grid from another on a screen that shows two. The
-// mixin clips the element rather than removing it, so it keeps a box, keeps its
-// text and keeps its place in the reading order — which is why neither
-// `display: none` nor `visibility: hidden` appears anywhere in this file.
+// The hook to reach for when a visible page heading already says the same thing, instead of dropping the
+// caption: a table with no caption leaves screen-reader users no way to tell one grid from another on a
+// screen that shows two.
 caption[data-visually-hidden] {
   @include mx.visually-hidden;
 }
 
-// Declaring the size on the SECTION rather than on the cell is what makes a row header inside the
-// body come out at body size: it inherits from the table, not from here. That is the correct result,
-// since a row header sits among the data it labels, and it falls out of the structure instead of
-// needing a second rule.
+// Declaring the size on the SECTION rather than on the cell is what makes a row header inside the body come
+// out at body size: it inherits from the table, not from here. That is the correct result, since a row
+// header sits among the data it labels, and it falls out of the structure instead of needing a second rule.
 thead,
 tfoot {
   font-size: var(--font-size-lg);
@@ -73,17 +51,11 @@ tfoot {
 }
 
 tfoot {
-  // MIGRATION: newly visible through no change of value. The page background is the same colour, so
-  // a footer painted with it used to be indistinguishable from the page behind it; it becomes
-  // meaningful only because the zebra stripe below paints alternate body rows a different surface.
   background-color: var(--color-background);
 }
 
 th,
 td {
-  // One step, uniformly, because the grids being replaced disagreed with one another on cell
-  // padding; normalising removes an inconsistency rather than introducing one. Top alignment keeps a
-  // short cell level with a tall neighbour.
   padding-block: var(--space-1);
   padding-inline: var(--space-1);
 
@@ -132,18 +104,9 @@ td {
 }
 
 th {
-  // ⚠ A HEADING IS A FIXED LABEL, NOT CONTENT, AND MUST NEVER BE SHREDDED. The rule above needs
-  // `anywhere` so an unbreakable DATA run - an address, a package name - cannot escape its column and
-  // overprint its neighbour. A heading has the opposite requirement: its text is a short label chosen
-  // by the application rather than arbitrary stored data, so there is no long-token case to contain,
-  // and breaking it mid-word destroys the one cue telling a reader what the column holds. This is a
-  // narrowing of when a break is permitted rather than a removal of the safety net: `break-word` still
-  // allows one in the pathological case of a single word wider than the entire column.
-  //
-  // Set here rather than by dropping `th` from the shared selector above, because every other
-  // declaration in that block - the padding step, the alignment, the border treatment - is
-  // deliberately shared by both cell kinds, and splitting the selector would duplicate all of them
-  // and invite the two to drift apart.
+  // ⚠ A HEADING IS A FIXED LABEL, NOT CONTENT, AND MUST NEVER BE SHREDDED. The rule above needs `anywhere`
+  // so an unbreakable DATA run - an address, a package name - cannot escape its column and overprint its
+  // neighbour.
   overflow-wrap: break-word;
 
   font-weight: var(--font-weight-bold);
@@ -151,12 +114,9 @@ th {
   color: var(--color-primary);
 }
 
-// Both alignments are written out explicitly rather than left to inheritance, and that is deliberate
-// rather than verbose: the table above sets start alignment, which every cell inherits, but the
-// browser's own stylesheet targets the header cell element directly and a direct rule outranks an
-// inherited value. Naming both removes the dependency on a browser default. Per-column alignment is
-// left to a component-scoped rule the header inherits from, so no global modifier class is spent
-// on it.
+// Both alignments are written out explicitly rather than left to inheritance, and that is deliberate rather
+// than verbose: the table above sets start alignment, which every cell inherits, but the browser's own
+// stylesheet targets the header cell element directly and a direct rule outranks an inherited value.
 th[scope='col'] {
   text-align: center;
 }
@@ -165,82 +125,44 @@ th[scope='row'] {
   text-align: start;
 }
 
-// MIGRATION: the alternating row is distinguished by its background rather than by its text colour.
-// The grid this replaces recoloured every second row's TEXT with the hue reserved for error
-// messages and left both backgrounds identical, so the stripe is the functional replacement for the
-// only distinction there was, and it leaves the text colour exactly as the normal row sets it.
-// Only the body is striped: the head and foot are separate sections and are not matched by this
-// rule, which is correct, since a striped header row would compete with the header's own treatment.
 tbody > tr:nth-child(even) {
   background-color: var(--color-surface);
 }
 
-// Keyed to the ARIA state rather than to a class, which is the most useful
-// decision in this rule: colour must never be the only carrier of meaning, and
-// keying the tint to the attribute makes that impossible to violate — a row that
-// is not announced as selected cannot be painted as selected, so the obligation is
-// discharged by the selector itself rather than by a convention someone has to
-// remember.
-//
-// SPECIFICITY: this selector and the stripe above are exactly equal, so the
-// cascade resolves them by source order and this rule MUST stay below the stripe.
-// That is the whole reason no importance flag is needed anywhere in this file — do
-// not reorder these two rules.
+// Keyed to the ARIA state rather than to a class, which is the most useful decision in this rule: colour
+// must never be the only carrier of meaning, and keying the tint to the attribute makes that impossible to
+// violate — a row that is not announced as selected cannot be painted as selected, so the obligation is
+// discharged by the selector itself rather than by a convention someone has to remember.
 tbody > tr[aria-selected='true'] {
   background-color: var(--color-selected);
 }
 
-// Matching the bare attribute rather than one of its values covers a row that is
-// selectable but not currently selected, which is the ordinary case. The pointer
-// is the affordance for a mouse and the ring for a keyboard.
-//
-// ⚠⚠ THE ATTRIBUTE'S PRESENCE IS THE SELECTABILITY CONTRACT, and this rule is why that
-// contract has teeth. The shared table component emits `aria-selected` only when a
-// consumer binds its row-selection output — six of the seven grids in this application
-// bind nothing — so a row in a non-selecting grid matches neither this rule nor the tint
-// above. Before that condition existed, every row in every grid carried the attribute and
-// therefore carried a pointer cursor and a focus ring, promising an action that did not
-// happen. Do not loosen this selector to `tbody > tr`: the attribute is what ties the
-// visible affordance to the announced one, and a class or an element selector would let
-// the two drift apart again.
+// Matching the bare attribute rather than one of its values covers a row that is selectable but not
+// currently selected, which is the ordinary case. The pointer is the affordance for a mouse and the ring
+// for a keyboard.
 tbody > tr[aria-selected] {
   cursor: pointer;
 
   @include mx.focus-ring;
 }
 
-// Keyed to the sort state for the same reason the selected row is: a header that
-// looks sortable but does not announce its direction is unusable with a screen
-// reader, and tying the appearance to the attribute stops the two drifting apart.
+// Keyed to the sort state for the same reason the selected row is: a header that looks sortable but does
+// not announce its direction is unusable with a screen reader, and tying the appearance to the attribute
+// stops the two drifting apart.
 th[aria-sort] {
   cursor: pointer;
 }
 
-// SUPPLEMENTARY to the direction indicator the component draws, never a replacement for it: a tint
-// says "this column" but cannot say "ascending", and direction must not be carried by colour. The
-// head is not striped, so this tint has nothing to collide with.
+// SUPPLEMENTARY to the direction indicator the component draws, never a replacement for it: a tint says
+// "this column" but cannot say "ascending", and direction must not be carried by colour. The head is not
+// striped, so this tint has nothing to collide with.
 th[aria-sort='ascending'],
 th[aria-sort='descending'] {
   background-color: var(--color-surface);
 }
 
-// A real button rather than a click handler on the cell, because only a button is
-// reachable by keyboard and announced as operable. This rule makes it inherit the
-// header's appearance so choosing the accessible element costs nothing visually,
-// and the ring is never suppressed — no rule in this file removes an outline.
-//
-// MIGRATION: THE RING ON THIS BUTTON IS THE ONE THAT WAS MEASURED INVISIBLE, and two
-// decisions outside this rule keep it visible. This file paints heading cells with the
-// brand token as TEXT and paints the heading band no surface at all — see the `th`
-// rule above — so the ring here falls on the page surface, the alternating surface or
-// the selected tint rather than on a brand-filled band, at about 12.6:1, 11.6:1 and
-// 8.2:1 against the ring colour. Painting `thead` or `th` with a brand background
-// would reintroduce the collision at 1:1, because the shared ring resolves its colour
-// from that same token; do not add such a rule here. Independently, the shared
-// focus-ring mixin now bands the outline with a contrasting outer shadow, so the ring
-// survives a dark backdrop wherever one is introduced. The `background-color`
-// declaration below is `transparent` for the button so the cell's own surface — not a
-// second one — is what the ring is measured against.
+// A real button rather than a click handler on the cell, because only a button is reachable by keyboard and
+// announced as operable.
 th[aria-sort] > button {
   font: inherit;
   color: inherit;
@@ -249,71 +171,33 @@ th[aria-sort] > button {
   padding: 0;
   cursor: pointer;
 
-  // Inline-level on purpose. An inline-level box is positioned by the text alignment of the cell
-  // around it, so the button lands centred under a column header and at the start edge under a
-  // header a component has re-aligned, without this file restating either alignment. The gap
-  // reserves room for the component's direction indicator beside the label.
-  //
-  // ⚠ `baseline` RATHER THAN `center`, BECAUSE A CENTRED FLEX CONTAINER HAS NO BASELINE TO SHARE.
-  // A heading row mixes two shapes: a sortable label inside this button, and a plain text label in
-  // a heading that offers no sorting. They must sit on ONE line, and with centred items they did
-  // not — a flex container whose items are not baseline-aligned exposes no item baseline to the
-  // line box around it, so the container was positioned by its own edge instead and the label
-  // inside it landed measurably off the neighbouring text: 389px against 377px on the account
-  // listing, a 12px step across a single heading row. Aligning the items to their baselines gives
-  // the container the label's own baseline, so both shapes share the line by construction. The
-  // direction indicator sits on that same baseline, which is where a glyph reading as punctuation
-  // beside a word belongs, and neither the inline-level positioning nor the gap above is affected.
+  // Inline-level on purpose. An inline-level box is positioned by the text alignment of the cell around it,
+  // so the button lands centred under a column header and at the start edge under a header a component has
+  // re-aligned, without this file restating either alignment.
   display: inline-flex;
   align-items: baseline;
   gap: var(--space-1);
 
-  // ⚠ WRAPPING IS WHAT KEEPS THIS BUTTON INSIDE ITS OWN CELL, and it is required by the heading
-  // rule above rather than being a stylistic choice. Telling a heading `break-word` keeps its label's
-  // min-content size at the whole word, which is the point - the label must never be shredded. But a
-  // flex container's automatic minimum size is the SUM of its items' contributions when it cannot
-  // wrap, so this button inherited a floor of label + gap + indicator and refused to shrink into a
-  // narrower cell. Measured on the role listing, whose thirteen columns leave an 84.14px content box:
-  // the label `Description` is 82.52px, plus a 4px gap and a 12px indicator gives 98.52px, so the
-  // button stood 10.38px outside its cell and, once that column was sorted, painted its direction
-  // glyph into the column beside it.
-  //
-  // Permitting a wrap makes the automatic minimum the WIDEST SINGLE ITEM instead of the sum - here
-  // 82.52px, which fits - so the label keeps its own line whole and the indicator drops beneath it
-  // only in the one case where there is genuinely no room for both. Nothing else moves: the other
-  // nine headings on that grid are narrow enough to keep both on one line, and `align-items` applies
-  // per flex line, so the label and the glyph still share a baseline whenever they share a line.
-  //
-  // The two alternatives were rejected on the merits. `min-width: 0` lets the button shrink past its
-  // label, which reinstates the mid-word break this whole pair of rules exists to prevent. `overflow:
-  // hidden` clips the indicator, destroying the only cue that says which direction the column is
-  // sorted in. Wrapping loses neither the label nor the cue.
+  // ⚠ WRAPPING IS WHAT KEEPS THIS BUTTON INSIDE ITS OWN CELL, and it is required by the heading rule above
+  // rather than being a stylistic choice. Telling a heading `break-word` keeps its label's min-content size
+  // at the whole word, which is the point - the label must never be shredded.
   flex-wrap: wrap;
   text-align: inherit;
 
   @include mx.focus-ring;
 }
 
-// A single spanning cell carrying a zero-result or still-loading message while the
-// table's structure stays on screen, so the reader keeps the column headings as
-// context. This is the narrower of two patterns and they must not be confused: the
-// shared empty-state component assumes no surrounding table context and replaces
-// the table outright. Use that when the grid has nothing worth keeping; use this
-// when the grid stays and only its rows are absent.
-//
-// Generous block padding lifts the message clear of the header row so it does not
-// read as data, and the muted colour marks it as commentary rather than a record.
+// A single spanning cell carrying a zero-result or still-loading message while the table's structure stays
+// on screen, so the reader keeps the column headings as context.
 td[data-placeholder] {
   padding-block: var(--space-6);
   color: var(--color-text-muted);
   text-align: center;
 }
 
-// An admin grid has many columns and cannot always fit. Scrolling the region
-// rather than the page keeps the surrounding layout intact, and the automatic
-// value means no scrollbar appears at all when the table already fits. The
-// breakpoint comes from a mixin: no raw media feature query appears in this file,
-// and a custom property is not evaluated inside one in any case.
+// An admin grid has many columns and cannot always fit. Scrolling the region rather than the page keeps the
+// surrounding layout intact, and the automatic value means no scrollbar appears at all when the table
+// already fits.
 [data-table-scroll] {
   overflow-x: auto;
 
@@ -321,16 +205,13 @@ td[data-placeholder] {
   // into the page or the browser's own back gesture.
   overscroll-behavior-x: contain;
 
-  // A scrollable region must be operable by keyboard, which means focusable — the
-  // consumer supplies the tab stop, the accessible name and the region role — and
-  // a focusable element must show where the focus is.
+  // A scrollable region must be operable by keyboard, which means focusable — the consumer supplies the tab
+  // stop, the accessible name and the region role — and a focusable element must show where the focus is.
   @include mx.focus-ring;
 
-  // Below the tablet step, stop forcing the grid to the width of its container and
-  // let the columns take the width their content needs, so the region scrolls
-  // instead of crushing every column into an unreadable sliver. The minimum keeps
-  // a narrow grid filling the region rather than collapsing to its content. Above
-  // this step the table rule's full width applies unchanged.
+  // Below the tablet step, stop forcing the grid to the width of its container and let the columns take the
+  // width their content needs, so the region scrolls instead of crushing every column into an unreadable
+  // sliver. The minimum keeps a narrow grid filling the region rather than collapsing to its content.
   @include mx.respond-below('md') {
     & > table {
       inline-size: auto;
@@ -356,41 +237,14 @@ table[data-sticky-head] thead th {
   box-shadow: var(--elevation-1);
 }
 
-// No pager styling. A pager is a SIBLING of the table and not part of it, so no
-// rule here reaches inside a table to style one, and the shared pagination
-// component must not be rendered into a foot row.
+// No pager styling. A pager is a SIBLING of the table and not part of it, so no rule here reaches inside a
+// table to style one, and the shared pagination component must not be rendered into a foot row.
 
-// No row hover, and the omission is principled. A hover rule on a touch device sticks to the
-// last-tapped element until something else is tapped, so it needs a hover-capability query - and
-// _mixins.scss, the only file permitted a raw media feature query, exposes no such guard. Emitting
-// no rule beats emitting an unguarded one, and the pointer and focus ring above already tell the
-// reader which rows and headers are interactive. If hover styling is wanted, add a guard mixin to
-// _mixins.scss and include it here rather than writing a query in this file.
+// No row hover, and the omission is principled. A hover rule on a touch device sticks to the last-tapped
+// element until something else is tapped, so it needs a hover-capability query - and _mixins.scss, the only
+// file permitted a raw media feature query, exposes no such guard.
 
-// =============================================================================
-//  COMMANDS INSIDE A CELL — the pointer-target floor for a row's own actions
-// =============================================================================
-//
-// ⚠ WHY A GLOBAL RULE FOR THIS AND NOT A PER-SCREEN ONE. A row command is a LINK in every
-// grid in the console — it navigates to an editing screen, so a button would be the wrong
-// element — and a link takes no chrome from _forms.scss, which is where the pointer-target
-// floor for buttons is declared. The consequence was measured on every listing: 10 alias
-// links at 39.5-66.7 by 11, row commands at 32 by 13 and 80 by 13 against a 10px type
-// size, and the "Settings" command at 52.1 by 20.5 — all short of the 24 by 24 that WCAG
-// 2.2 SC 2.5.8 binds. Declaring it once here fixes every grid at once and cannot be lost
-// by one screen omitting it, which is exactly how the breach came about.
-//
-// SCOPED TO A CELL, deliberately. A link in prose is not a pointer target in this sense and
-// must keep its inline flow, so the selector reaches only links that a grid renders inside
-// its own cells. A link that already exceeds the floor is untouched, because both
-// declarations are minima.
-//
-// `inline-flex` rather than `block` for two reasons worth stating: the cell's own text
-// alignment still positions the command, which is what lets a centred column centre it and
-// a start-aligned column start it; and centring within the floor is what turns the extra
-// height into space around the label instead of leaving the label at the top edge.
-// `flex-wrap` is inherited from nothing here — a command that must stack its parts says so
-// in its own stylesheet.
+// COMMANDS INSIDE A CELL — the pointer-target floor for a row's own actions
 td a,
 th a {
   display: inline-flex;

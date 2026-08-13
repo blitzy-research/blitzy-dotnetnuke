@@ -1,34 +1,4 @@
-/**
- * Specification for `core/state/session-lifecycle.service.ts`.
- *
- * ---------------------------------------------------------------------------
- * WHAT THIS FILE IS ACTUALLY PROVING
- * ---------------------------------------------------------------------------
- * One property, stated once and asserted from several directions:
- *
- *   ⚠ NO SESSION MAY END WITHOUT EVERY DOMAIN SLICE BEING DISCARDED, AND NO REQUEST ISSUED
- *   BY THE OLD SESSION MAY OUTLIVE IT.
- *
- * The reason it needs a specification of its own rather than being folded into the stores'
- * is that the defect it prevents is INVISIBLE from inside any single store. Each store's
- * `reset()` can be correct while a session still leaks, because the leak is a store nobody
- * called. So the central case here is the cross-session one: real data is loaded into every
- * store as operator A, the session ends, and nothing operator A could see remains legible.
- *
- * ---------------------------------------------------------------------------
- * WHY REAL STORES AND A REAL HTTP BACKEND, NOT MOCKS
- * ---------------------------------------------------------------------------
- * A mocked store would prove that `reset()` was CALLED, which is the weaker of the two
- * statements and the one that cannot fail interestingly. It could not prove that the reset
- * actually empties the slice a screen reads, and it could not prove the cancellation half at
- * all - a spy has no in-flight request to abandon. Every store here is therefore the real
- * one, and every request is answered through the testing backend, so each assertion is made
- * against the state a component would genuinely render.
- *
- * `httpMock.verify()` runs after every case and is load-bearing rather than tidy: it fails
- * the case if any request was issued that no expectation accounted for, which is how "the
- * old session's requests did not outlive it" is proved rather than asserted.
- */
+/** Specification for `core/state/session-lifecycle.service.ts`. */
 
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -50,27 +20,12 @@ import type { AuthSession } from '../models/auth.model';
 // FIXTURES
 // ---------------------------------------------------------------------------
 
-/**
- * An expiry comfortably ahead of whenever this suite runs, derived from the clock rather than written
- * down.
- *
- * ⚠ AN ABSOLUTE DATE IS A TEST THAT EXPIRES. This fixture used to carry `2030-01-01T00:00:00Z`,
- * which holds a session valid by the calendar rather than by anything the specification controls: on the
- * first of January 2030 every case depending on it begins asserting the opposite of what it was written
- * to assert, and it does so SILENTLY, because a session read as already expired is a state this
- * application handles rather than an error it reports.
- *
- * One hour is longer than any run of this suite and shorter than any window the application treats as
- * unusual, and it is computed ONCE per module load so every case in the file shares one instant rather
- * than racing the clock between them.
- */
 const FUTURE_SESSION_EXPIRY_UTC: string = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
 /**
- * A credential pair, shaped as the sign-in endpoint shapes one.
- *
- * The values are obvious placeholders rather than anything resembling a real token: nothing
- * here is parsed, and a value that looked like a credential would invite somebody to try.
+ * A credential pair, shaped as the sign-in endpoint shapes one. The values are obvious placeholders
+ * rather than anything resembling a real token: nothing here is parsed, and a value that looked like a
+ * credential would invite somebody to try.
  */
 const SESSION_BODY: AuthSession = {
   accessToken: 'operator-a-access-token',
@@ -106,14 +61,9 @@ describe('SessionLifecycleService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()`
-      // REPLACES the backend the real client installed, so reversing the two would leave the
-      // live backend in place and every expectation below would find nothing.
-      //
-      // No interceptor is registered. The bearer credential and the correlation identifier
-      // are attached by the two functional interceptors wired at application configuration,
-      // and running that chain here would mean asserting several units at once - the
-      // interceptor's own use of this service is asserted in the interceptor's specification.
+      // The real client FIRST and the testing backend SECOND: `provideHttpClientTesting()` REPLACES the
+      // backend the real client installed, so reversing the two would leave the live backend in place and
+      // every expectation below would find nothing.
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
 
@@ -138,22 +88,15 @@ describe('SessionLifecycleService', () => {
   }
 
   /**
-   * Establishes a held session, exactly as the sign-in flow would.
-   *
-   * Written through the token custodian rather than by posting credentials, because this
-   * specification is about ENDING a session and staging one through the sign-in endpoint would
-   * add a request every case then has to account for.
+   * Establishes a held session, exactly as the sign-in flow would. Written through the token custodian
+   * rather than by posting credentials, because this specification is about ENDING a session and staging
+   * one through the sign-in endpoint would add a request every case then has to account for.
    */
   function holdSession(): void {
     tokens.store(SESSION_BODY);
   }
 
-  /**
-   * Loads one real record into each of the four domain stores and queues a notification.
-   *
-   * Every answer is flushed, so each store ends in the state a screen would render rather
-   * than in a half-loaded one - which is what makes the assertions afterwards meaningful.
-   */
+  /** Loads one real record into each of the four domain stores and queues a notification. */
   function loadOperatorAData(): void {
     portals.loadPortals();
     expectOne('/api/v1/portals').flush({
@@ -172,9 +115,6 @@ describe('SessionLifecycleService', () => {
       meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
     });
 
-    // The unfiltered listing, which is the one command that really does ask the server for
-    // every account. The filtered read deliberately dispatches nothing until a search has been
-    // chosen, so it would leave this store empty and prove nothing about the discard.
     users.showAllAccounts();
     expectOne('/api/v1/users').flush({
       items: [
@@ -273,9 +213,6 @@ describe('SessionLifecycleService', () => {
 
       service.endSession();
 
-      // ⚠ THE DEFECT THIS PREVENTS IS A DISCLOSURE, NOT UNTIDINESS. These stores are
-      // root-provided, so they outlive the session; anything surviving here is legible to
-      // whoever signs in next on this browser without a full page reload.
       expect(portals.portals())
         .withContext('one operator portals must not be visible to the next')
         .toEqual([]);
@@ -374,9 +311,9 @@ describe('SessionLifecycleService', () => {
       const revocation = httpMock.expectOne('/api/v1/auth/logout');
 
       expect(revocation.request.method).toBe('POST');
-      // MIGRATION: revocation reaches the REFRESH token only. An access token already issued
-      // cannot be recalled, which is why its lifetime is short and why the legacy
-      // `FormsAuthentication.SignOut` has no exact counterpart.
+      // Revocation reaches the REFRESH token only. An access token already issued cannot be recalled, which
+      // is why its lifetime is short and why the legacy `FormsAuthentication.SignOut` has no exact
+      // counterpart.
       expect(revocation.request.body).toEqual({ refreshToken: SESSION_BODY.refreshToken });
 
       // 204, which HTTP forbids from carrying a body.
@@ -387,20 +324,6 @@ describe('SessionLifecycleService', () => {
       expect(portals.portals()).toEqual([]);
       expect(roles.roleItems()).toEqual([]);
 
-      /*
-       * ⚠ THIS ASSERTION REPLACES `expect(notifications.notifications()).toEqual([])`, WHICH
-       * ENCODED A DEFECT.
-       *
-       * That earlier expectation was written when nothing announced a sign-out at all, so an empty
-       * queue looked like the clean outcome. Once a confirmation was added it kept passing anyway —
-       * because the confirmation was raised from inside `AuthStore.logout`, and this service's own
-       * `finalize` teardown then emptied the queue on top of it. A real browser measured the
-       * resulting lifetime at 10 ms, invisible to the operator and invisible to this line.
-       *
-       * A bare emptiness check cannot tell "nothing was ever said" from "something was said and
-       * destroyed", which is exactly why it guarded the fault. The queue's CONTENTS are asserted
-       * instead, which distinguishes them.
-       */
       expect(notifications.notifications().length)
         .withContext('the sign-out is confirmed, and confirmed exactly once')
         .toBe(1);
@@ -416,12 +339,6 @@ describe('SessionLifecycleService', () => {
       // Survives the departure to the sign-in screen, which is where it is meant to be read.
       expect(confirmation.survivesNavigation).toBeTrue();
 
-      /*
-       * AND THE SESSION-ISOLATION PROPERTY STILL HOLDS, which the emptiness check used to carry on
-       * its own. `loadOperatorAData` queues a notice naming operator A's record; the only survivor
-       * is the fixed sentence above, so nothing that operator could see is legible to whoever signs
-       * in next on this page load.
-       */
       expect(confirmation.message)
         .withContext('the survivor is a fixed sentence, carrying nothing from the ended session')
         .not.toContain('Operator A');
@@ -430,12 +347,9 @@ describe('SessionLifecycleService', () => {
     it('confirms the sign-out AFTER its own teardown, not before it', () => {
       holdSession();
 
-      /*
-       * The ordering is the whole defect, so it is asserted directly rather than inferred from the
-       * end state. `purge` is what empties the message queue, and a confirmation raised before it
-       * cannot survive it — so this case proves the queue was written last by watching the two
-       * events in sequence.
-       */
+      // The ordering is the whole defect, so it is asserted directly rather than inferred from the end
+      // state. `purge` is what empties the message queue, and a confirmation raised before it cannot
+      // survive it — so this case proves the queue was written last by watching the two events in sequence.
       const order: string[] = [];
 
       // The QUEUE-EMPTYING is watched rather than a store's reset, because emptying the queue is
@@ -453,12 +367,9 @@ describe('SessionLifecycleService', () => {
         .expectOne('/api/v1/auth/logout')
         .flush(null, { status: 204, statusText: 'No Content' });
 
-      /*
-       * The queue is emptied SEVERAL times on this path — once by the store's discard at subscribe
-       * time, then again by `purge` and by `AuthStore.reset`'s own discard inside the teardown — so
-       * the count is not asserted and must not be. The load-bearing property is that the statement
-       * comes after the LAST of them.
-       */
+      // The queue is emptied SEVERAL times on this path — once by the store's discard at subscribe time,
+      // then again by `purge` and by `AuthStore.reset`'s own discard inside the teardown — so the count is
+      // not asserted and must not be.
       expect(order.filter((event) => event === 'clear').length)
         .withContext('the teardown does empty the queue, so the ordering question is real')
         .toBeGreaterThan(0);
@@ -486,9 +397,6 @@ describe('SessionLifecycleService', () => {
         .expectOne('/api/v1/auth/logout')
         .flush('', { status: 500, statusText: 'Internal Server Error' });
 
-      // A person who asks to sign out must end up signed out on this device. Leaving the
-      // session in place because a revocation request failed would be the opposite of what
-      // they asked for, and they cannot act on the error in any case.
       expect(completed)
         .withContext('the failure is absorbed rather than surfaced to the caller')
         .toBeTrue();
@@ -496,18 +404,8 @@ describe('SessionLifecycleService', () => {
       expect(portals.portals()).toEqual([]);
       expect(modules.modules()).toEqual([]);
 
-      /*
-       * ⚠ BOTH FACTS ARE REPORTED, AS TWO STATEMENTS. The local sign-out completed, which is the
-       * part the operator asked for, AND a refresh credential was left un-revoked on the server.
-       * Folding the second into the first would misdescribe the outcome, and retracting the first to
-       * make room for the second would tell someone who asked to sign out that they had not.
-       *
-       * This also guards a read-ordering trap that no type can catch: the residue is recorded on the
-       * store by `logout`'s error handler, and `AuthStore.reset` — reached from the teardown — sets
-       * that flag back to `false`. The service must therefore read it BEFORE tearing down. If it
-       * ever reads it afterwards this case fails with one statement instead of two, while every
-       * other assertion here still passes.
-       */
+      // ⚠ BOTH FACTS ARE REPORTED, AS TWO STATEMENTS. The local sign-out completed, which is the part the
+      // operator asked for, AND a refresh credential was left un-revoked on the server.
       const raised = notifications.notifications();
 
       expect(raised.length)
@@ -580,11 +478,9 @@ describe('SessionLifecycleService', () => {
 
   describe('the boundary it deliberately does not cross', () => {
     it('does not navigate, because where a caller should end up differs by caller', () => {
-      // The shell sends the operator to the sign-in screen; the interceptor is mid-way through
-      // re-throwing the server's own response and must not have that outcome displaced by a
-      // routing failure. So the navigation belongs to the caller. Asserted structurally: the
-      // service is constructed in an injector with NO router at all, so a navigation would
-      // have failed to resolve a dependency.
+      // The shell sends the operator to the sign-in screen; the interceptor is mid-way through re-throwing
+      // the server's own response and must not have that outcome displaced by a routing failure. So the
+      // navigation belongs to the caller.
       expect(() => service.endSession()).not.toThrow();
     });
 

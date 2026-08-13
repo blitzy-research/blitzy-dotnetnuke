@@ -128,21 +128,10 @@ services:
       - Jwt__Issuer=${JWT_ISSUER:-DnnMigration}
       - Jwt__Audience=${JWT_AUDIENCE:-DnnMigration}
       - Jwt__ExpirationMinutes=${JWT_EXPIRATION_MINUTES:-60}
-      # RefreshTokenStore:*. Passed through so the store's shape is reachable
-      # without editing a tracked file, which is the whole point of it being
-      # configuration: an operator whose deployment tracks more concurrent
-      # sessions than the default ceiling allows raises it here.
-      #
-      # The provider is declared once, above, beside its connection string. It names
-      # WHICH store this deployment runs, and the API refuses
-      # to start when the name and the registered implementation disagree. This
-      # image ships exactly one store, and it is process-local: refresh state is
-      # neither shared between replicas nor carried across a restart, which is
-      # why the topology note at the head of this file publishes a single api
-      # service. Setting this to "External" is meaningful only for a deployment
-      # that builds its own host on top of this repository and registers its own
-      # IRefreshTokenStore after AddInfrastructure; against THIS image it would
-      # correctly stop the container, because no replacement is registered in it.
+      # RefreshTokenStore:*, passed through so an operator whose deployment tracks
+      # more concurrent sessions than the default ceiling allows raises it here
+      # rather than by editing a tracked file. The provider is declared once, above,
+      # beside its connection string.
       - RefreshTokenStore__MaximumTrackedTokens=${REFRESH_TOKEN_MAX_TRACKED:-100000}
       - RefreshTokenStore__ConcurrentUseGraceSeconds=${REFRESH_TOKEN_GRACE_SECONDS:-5}
       # The one browser origin the API admits cross-origin. The containerised
@@ -172,21 +161,12 @@ services:
     # so the container can reach a SQL Server running on this machine.
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # wget, AND IT MUST STAY wget: the aspnet:8.0-alpine runtime image ships
-    # BusyBox wget as its only HTTP client. A probe written with any other tool
-    # exits 127 on every attempt, the service is reported unhealthy for its whole
-    # life, and `condition: service_healthy` below then holds the front end back
-    # for ever - with both images built perfectly. The exec-array form needs no
-    # shell in the image.
-    #
-    # The path is /health, the ANONYMOUS LIVENESS view, and it stays there. This
-    # topology declares no database service, so the store is external and may
-    # legitimately be unreachable while the process starts; a probe that depended
-    # on it would report the container unhealthy for a reason unrelated to whether
-    # it can answer. Readiness stays available at /health/ready for an
-    # orchestrator that wants to gate traffic on the store. The command is
-    # identical to the HEALTHCHECK baked into docker/api.Dockerfile, so the image
-    # and the orchestrator agree.
+    # wget, AND IT MUST STAY wget: the aspnet:8.0-alpine runtime image ships BusyBox
+    # wget as its only HTTP client, so a probe written with any other tool exits 127
+    # on every attempt and `condition: service_healthy` below holds the front end
+    # back for ever. The exec-array form needs no shell in the image. The command is
+    # identical to the HEALTHCHECK baked into docker/api.Dockerfile, whose comment
+    # carries the reasoning for the path.
     #
     # The interval is deliberately shorter than the image's: Docker runs the FIRST
     # probe only after one interval has elapsed, so a thirty-second interval would
@@ -196,23 +176,18 @@ services:
     # starting - configuration binding, options validation and the first listener -
     # which is all this path reports on, the store being excluded from it.
     healthcheck:
-      # The address is frozen by AAP 0.9.3, which supplies this health check as a
-      # preserved example, and it is also the right one for a topology whose store is
-      # external - see the paragraph above and the matching directive in
-      # docker/api.Dockerfile. A store outage is reported by /health/ready and by the
-      # 503 + Retry-After answer every store-backed endpoint gives, not by failing
-      # this probe and stranding the front end behind the condition below.
+      # The address is frozen by AAP 0.9.3, and it is also the right one for a
+      # topology whose store is external: a store outage is reported by /health/ready
+      # and by the 503 + Retry-After answer every store-backed endpoint gives, not by
+      # failing this probe and stranding the front end behind the condition below.
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       start_period: 20s
       retries: 3
-    # SEC-12. RUNTIME PRIVILEGE AND FILESYSTEM POSTURE, AND EVERY LINE OF IT WAS MEASURED
-    # AGAINST THIS IMAGE RATHER THAN COPIED FROM A HARDENING GUIDE.
-    #
-    # The image already runs as a non-root account - api.Dockerfile creates uid 1000
-    # and declares `USER appuser` - so what was missing was everything that stops that
-    # account from GAINING privilege or writing anything down.
+    # SEC-12. RUNTIME PRIVILEGE AND FILESYSTEM POSTURE, every value measured against
+    # this image. api.Dockerfile creates uid 1000 and declares `USER appuser`; what
+    # follows is what stops that account gaining privilege or writing anything down.
     security_opt:
       # Refuses setuid/setgid escalation for this container and every process it
       # spawns. The image contains no setuid binary today; this is what keeps a future
@@ -224,22 +199,17 @@ services:
     # /health/ready with 200 and completed a real sign-in returning an access token.
     cap_drop:
       - ALL
-    # NO TMPFS, AND THAT IS THE STRONGER POSTURE RATHER THAN AN OVERSIGHT.
+    # NO TMPFS. There is not a single filesystem write anywhere in backend/src - no
+    # File.Create, no FileStream, no Directory.CreateDirectory - so a writable path
+    # would be surface with no consumer. The two candidates were checked individually:
+    # data protection is registered with an IN-MEMORY key-ring repository, so no key
+    # file is written (AddEphemeralDataProtection), and module export returns its
+    # payload in the response rather than writing a file.
     #
-    # There is not a single filesystem write anywhere in backend/src - no File.Create,
-    # no FileStream, no Directory.CreateDirectory - so a writable path would be surface
-    # with no consumer. The two candidates were checked individually rather than
-    # assumed: data protection is registered with an IN-MEMORY key-ring repository, so
-    # no key file is written (see AddEphemeralDataProtection), and module export returns
-    # its payload in the response instead of writing a file the way the legacy handler
-    # did.
-    #
-    # WHAT IT COSTS, stated because it is a real trade: /tmp is read-only, so the .NET
-    # diagnostics IPC socket is not created and dotnet-counters or dotnet-dump cannot
-    # attach to a running container. Measured - /tmp is empty and the application does
-    # not care. An operator who needs live diagnostics can add `tmpfs: [/tmp]` here,
-    # which weakens nothing else; it is absent because nothing in the delivered code
-    # needs it.
+    # WHAT IT COSTS: /tmp is read-only, so the .NET diagnostics IPC socket is not
+    # created and dotnet-counters or dotnet-dump cannot attach to a running container.
+    # An operator who needs live diagnostics can add `tmpfs: [/tmp]` here, which
+    # weakens nothing else.
     read_only: true
     restart: unless-stopped
     networks:
@@ -261,29 +231,25 @@ services:
     # as an all-interfaces one does.
     #
     # WHY LOOPBACK. This listener is PLAIN HTTP - nothing in this image terminates
-    # TLS - and it is not merely serving static files: docker/nginx.conf proxies
-    # /api/ to the API, so the sign-in form, the credentials posted to it and every
-    # bearer token the SPA then sends all traverse this port in cleartext. Published
-    # on every interface, that made the whole credential path readable to anyone who
-    # could route to this host, and the API's own loopback-only publication did not
-    # help, because the traffic that matters was arriving through THIS proxy. Calling
-    # the file a demonstration topology is documentation, not a technical guard, so
-    # the guard is here: the cleartext profile is reachable from this host and the
-    # compose network and nowhere else.
+    # TLS - and it is not merely serving static files: docker/nginx.conf proxies /api/
+    # to the API, so the sign-in form, the credentials posted to it and every bearer
+    # token the SPA then sends all traverse this port in cleartext. Published on every
+    # interface that would make the whole credential path readable to anyone who could
+    # route to this host, and the API's own loopback publication would not help,
+    # because the traffic that matters arrives through THIS proxy.
     #
     # A PUBLIC INTERFACE IS THE TLS OVERLAY'S JOB. docker/docker-compose.tls.yml
     # replaces this list with 80:80 and 443:443, where 443 is encrypted and 80 exists
     # only to redirect a browser to it. That is the only topology in this repository
     # that publishes a routable port, and the only one entitled to.
     #
-    # There is deliberately no environment block for the SPA bundle itself: it is a
-    # static build whose API base address was baked in at BUILD time as the RELATIVE
-    # path /api/v1, which is what makes the browser call the same origin that served
-    # the application. No run-time variable can reach it - there is no Node process in
-    # this container - so declaring one would only mislead. (The TLS overlay does add
-    # an environment block, for the nginx image's own template renderer rather than
-    # for the bundle.) There is no health check here either; the front end's own
-    # liveness probe is baked into its image, and nothing in this topology waits on it.
+    # There is deliberately no environment block for the SPA bundle: it is a static
+    # build whose API base address was baked in at BUILD time as the RELATIVE path
+    # /api/v1, which is what makes the browser call the same origin that served the
+    # application, and no run-time variable can reach it - there is no Node process in
+    # this container. (The TLS overlay does add one, for the nginx image's own
+    # template renderer rather than for the bundle.) There is no health check here
+    # either; the front end's own liveness probe is baked into its image.
     ports:
       - "127.0.0.1:4200:80"
     # THIS CONDITION IS WHY /health MUST BE ANONYMOUS. The front end is held
@@ -299,12 +265,9 @@ services:
       api:
         condition: service_healthy
     # SEC-12. THE PROXY RUNS UNPRIVILEGED, WITH NO CAPABILITIES AND NOTHING WRITABLE
-    # EXCEPT TWO EPHEMERAL DIRECTORIES. Every value below was established by running
-    # this image, not by reading a guide - the order the barriers appeared in is
-    # recorded because each one looks like a reason to give up on the next.
-    #
+    # EXCEPT TWO EPHEMERAL DIRECTORIES, every value established by running this image.
     # nginx as shipped runs a ROOT master that spawns workers as an unprivileged
-    # account. That master is what this addresses: it is not needed here.
+    # account; that master is not needed here.
     user: "101:101"
     security_opt:
       - no-new-privileges:true
@@ -325,8 +288,7 @@ services:
       - ALL
     read_only: true
     # THE ONLY TWO WRITABLE PATHS, both ephemeral and both owned by the account that
-    # writes them. Discovered by measurement rather than listed defensively: with a
-    # read-only root and no tmpfs, nginx refused to start with
+    # writes them. With a read-only root and no tmpfs, nginx refuses to start with
     # `mkdir("/var/cache/nginx/client_temp") failed (30: Read-only file system)`.
     #
     #  - /var/cache/nginx holds the proxy and client body temp directories nginx creates

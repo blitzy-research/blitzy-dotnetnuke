@@ -1,37 +1,3 @@
-// MIGRATION: this suite is the parity proof for Validation/CreatePortalRequestValidator.cs. Its subject is
-// not "does the validator reject bad input" but "does the validator enforce, field for field and word for
-// word, the rule set the legacy portal signup screen enforced". Every assertion below therefore names the
-// legacy declaration it reproduces, and every message is quoted character for character rather than matched
-// by substring, because a substring match cannot tell "Portal Name Is Required." apart from
-// "<br>Portal Name Is Required." - and that single difference is the divergence recorded further down.
-//
-// MIGRATION: the legacy declarations, measured rather than assumed. Website/admin/Portal/signup.ascx is 115
-// lines and declares EIGHT asp:requiredfieldvalidator controls and nothing else - zero
-// asp:RegularExpressionValidator, zero asp:CompareValidator. Website/admin/Portal/sitesettings.ascx is 568
-// lines and declares the mirror image: zero required-field validators and exactly TWO asp:CompareValidator,
-// both Operator="DataTypeCheck". Both families are covered here, the second by proving its absence from this
-// contract rather than by inventing a rule for it. A census across the five in-scope admin directories -
-// Website/admin/{Portal,Users,Security,Modules,Tabs} - returns RequiredField 16, RegularExpression 3,
-// Compare 19, Range 0 and Custom 1, so asp:CompareValidator is in fact the LARGEST family in the surface
-// being migrated and the plan's naming of only the first two families understates it.
-//
-// MIGRATION: the eight messages this screen displayed at run time are NOT the eight inline errormessage
-// attributes. Every validator carries a resourcekey, and ASP.NET localisation overwrites the inline text
-// with the resource value, which in every one of the eight cases is the inline text prefixed with a literal
-// <br> element - Website/admin/Portal/App_LocalResources/Signup.ascx.resx L144/145, L183/184, L186/187,
-// L207/208, L210/211, L213/214, L222/223 and L267/268, each holding <data name> on the first line and
-// <value> on the second. The target drops the <br>, and that IS a divergence rather than an oversight: these
-// strings now travel as data in the errors member of an RFC 7807 problem document, where an HTML fragment
-// would be a defect. For the Portal validators the leading <br> is the ONLY difference between the inline
-// and resource forms, so the divergence is exactly that and nothing more. The assertions below pin the
-// stripped form, and the <br>-bearing form is quoted in this note so the measurement survives.
-//
-// MIGRATION: the legacy screen accumulated its messages - Signup.ascx.vb:L193, L214 and L221 all append
-// with "&=" - so one postback could report several problems at once, and a per-character guard loop could
-// report the SAME problem several times. The first behaviour is reproduced and asserted; the second is not,
-// and its non-reproduction is asserted too, so that the difference is a tested decision rather than an
-// accident.
-
 using System.Globalization;
 using DnnMigration.Application.Dtos.Portal;
 using DnnMigration.Application.Options;
@@ -43,200 +9,139 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Proves rule-for-rule and word-for-word parity between
-/// <see cref="CreatePortalRequestValidator"/> and the validator declarations measured on the legacy
-/// portal signup screen, together with the two comparison validators on the legacy site-settings
-/// screen.
+/// Proves rule-for-rule and word-for-word parity between <see cref="CreatePortalRequestValidator"/> and the
+/// validator declarations measured on the legacy portal signup screen, together with the two comparison
+/// validators on the legacy site-settings screen.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Both fields of every failure are asserted.</b> A test that proves only "the request was
-/// rejected" does not prove parity, because the pair the client actually consumes is the property
-/// name and the message: those two populate the <c>errors</c> dictionary of the problem document the
-/// Api layer returns. Every assertion here therefore goes through
-/// <see cref="ShouldReport(ValidationResult, string, string)"/>, which requires a single failure
-/// carrying both the expected property and the expected wording. The problem-document transport
-/// itself belongs to the Api layer and is deliberately unreachable from this project.
-/// </para>
-/// <para>
 /// <b>Wording that looks wrong is preserved on purpose.</b> The alias field reports "Portal Name Is
 /// Required." because <c>valPortalName</c> declares <c>controltovalidate="txtPortalName"</c> at
-/// <c>signup.ascx:L41</c> while <c>L39</c> labels that same box "Portal Alias:". The message names a
-/// field it does not guard, and correcting it would break the equivalence of error messages that the
-/// migration requires. Two spaces after a sentence period, and the one message that ends without a
-/// full stop, are reproduced for the same reason and must not be tidied.
+/// <c>signup.ascx:L41</c> while <c>L39</c> labels that same box "Portal Alias:".
 /// </para>
 /// <para>
 /// <b>Three asymmetries are pinned here because each looks like a defect until the legacy source is
-/// checked.</b> The portal title is length-capped but <em>not</em> required, because the screen
-/// declared no validator on it. No lower bound is enforced on any fee or quota, because the only
-/// comparison validator over a fee is a type check with no companion. And the administrator's given
-/// and family names are capped at the schema's fifty characters rather than the markup's hundred.
-/// </para>
-/// <para>
-/// <b>The validator's one dependency is the bound password policy.</b> It is constructed directly
-/// with a plain options object, so this suite needs no container, no configuration source and no
-/// test double of any kind. The defaults of that options type are themselves the shipped legacy
-/// policy - a minimum length of seven and no required non-alphanumeric characters, from
-/// <c>Website/release.config:L242-L243</c> - which is why <see cref="ShippedPolicy"/> constructs it
-/// with no adjustment and why the substituted message below names 7 and 0.
+/// checked.</b> The portal title is length-capped but <em>not</em> required, because the screen declared no
+/// validator on it. No lower bound is enforced on any fee or quota, because the only comparison validator
+/// over a fee is a type check with no companion.
 /// </para>
 /// </remarks>
 public class CreatePortalRequestValidatorTests
 {
-    /// <summary>
-    /// The <c>valPortalName</c> message (<c>signup.ascx:L40-L41</c>), which guards the alias.
-    /// </summary>
+    /// <summary>The <c>valPortalName</c> message, which guards the alias.</summary>
     private const string AliasRequired = "Portal Name Is Required.";
 
     /// <summary>
-    /// The <c>InvalidName</c> message the signup code-behind raised for a disallowed alias character
-    /// (<c>Signup.ascx.resx:L234-L235</c>, raised at <c>Signup.ascx.vb:L193</c> and L214).
+    /// The <c>InvalidName</c> message the signup code-behind raised for a disallowed alias character.
     /// </summary>
     private const string AliasCharacters = "The Portal Name Must Not Contain Spaces Or Punctuation.";
 
     /// <summary>
-    /// The <c>valTemplate</c> message (<c>signup.ascx:L67-L68</c>). It is the one message on the
-    /// screen with no trailing full stop, and that is asserted rather than normalised.
+    /// The <c>valTemplate</c> message. It is the one message on the screen with no trailing full stop, and
+    /// that is asserted rather than normalised.
     /// </summary>
     private const string TemplateRequired = "Please select a template file";
 
     /// <summary>
-    /// Wording for the bare-file-name rule on the template selection, which has no legacy
-    /// counterpart because a server-populated drop-down list could not submit a path.
+    /// Wording for the bare-file-name rule on the template selection, which has no legacy counterpart
+    /// because a server-populated drop-down list could not submit a path.
     /// </summary>
     private const string TemplateBareName =
         "Template must be a file name and must not contain a directory path.";
 
-    /// <summary>
-    /// The <c>valFirstName</c> message (<c>signup.ascx:L79-L80</c>).
-    /// </summary>
+    /// <summary>The <c>valFirstName</c> message.</summary>
     private const string FirstNameRequired = "First Name Is Required.";
 
-    /// <summary>
-    /// The <c>valLastName</c> message (<c>signup.ascx:L84-L85</c>).
-    /// </summary>
+    /// <summary>The <c>valLastName</c> message.</summary>
     private const string LastNameRequired = "Last Name Is Required.";
 
-    /// <summary>
-    /// The <c>valUsername</c> message (<c>signup.ascx:L89-L90</c>).
-    /// </summary>
+    /// <summary>The <c>valUsername</c> message.</summary>
     private const string UsernameRequired = "Username Is Required.";
 
-    /// <summary>
-    /// The <c>valPassword</c> message (<c>signup.ascx:L95-L96</c>).
-    /// </summary>
+    /// <summary>The <c>valPassword</c> message.</summary>
     private const string PasswordRequired = "Password Is Required.";
 
-    /// <summary>
-    /// The <c>valEmail</c> message (<c>signup.ascx:L106-L107</c>).
-    /// </summary>
+    /// <summary>The <c>valEmail</c> message.</summary>
     private const string EmailRequired = "Email Is Required.";
 
     /// <summary>
-    /// The shared <c>InvalidEmail.Text</c> wording
-    /// (<c>Website/App_GlobalResources/SharedResources.resx:L282-L283</c>), including the two spaces
-    /// after the sentence period that the legacy file uses.
+    /// The shared <c>InvalidEmail.Text</c> wording, including the two spaces after the sentence period that
+    /// the legacy file uses.
     /// </summary>
     private const string EmailInvalid =
         "The email address specified is invalid.  Please specify a valid email address.";
 
-    /// <summary>
-    /// The screen's own <c>InvalidHomeFolder.Text</c> wording
-    /// (<c>Signup.ascx.resx:L288-L289</c>).
-    /// </summary>
+    /// <summary>The screen's own <c>InvalidHomeFolder.Text</c> wording.</summary>
     private const string HomeFolderInvalid = "The Home Folder you specified is not valid.";
 
     /// <summary>
-    /// The shared <c>InvalidPassword.Text</c> wording
-    /// (<c>SharedResources.resx:L285-L286</c>) with its two bracketed tokens resolved against the
+    /// The shared <c>InvalidPassword.Text</c> wording with its two bracketed tokens resolved against the
     /// shipped policy, exactly as the legacy membership path resolved them at run time.
     /// </summary>
     /// <remarks>
     /// The numbers are 7 and 0 because <c>Website/release.config</c> declares
-    /// <c>minRequiredPasswordLength="7"</c> at L242 and
-    /// <c>minRequiredNonalphanumericCharacters="0"</c> at L243, and the options type defaults to the
-    /// same pair. A test further down proves neither bracketed token survives into a message.
+    /// <c>minRequiredPasswordLength="7"</c> at L242 and <c>minRequiredNonalphanumericCharacters="0"</c> at
+    /// L243, and the options type defaults to the same pair. A test further down proves neither bracketed
+    /// token survives into a message.
     /// </remarks>
     private const string CredentialInvalidUnderShippedPolicy =
         "The password specified is invalid.  Please specify a valid password.  Passwords must be at "
         + "least 7 characters in length and contain at least 0 non-alphanumeric characters.";
 
     /// <summary>
-    /// The same wording resolved against the stricter policy used by the tests that prove the
-    /// thresholds are read from configuration rather than hard-coded.
+    /// The same wording resolved against the stricter policy used by the tests that prove the thresholds
+    /// are read from configuration rather than hard-coded.
     /// </summary>
     private const string CredentialInvalidUnderStricterPolicy =
         "The password specified is invalid.  Please specify a valid password.  Passwords must be at "
         + "least 10 characters in length and contain at least 2 non-alphanumeric characters.";
 
-    // MIGRATION: the three literals below are the candidate wordings for a confirmation-mismatch rule, and
-    // this contract carries NO rule that can emit any of them. They are quoted here, and asserted absent
-    // further down, because the legacy sources disagree with one another about which one the mismatch used
-    // and an executing agent must not silently adopt one. The screen's own local entry is what actually
-    // rendered on this flow; the two shared entries are a duplicate pair under one logical name, and the
-    // first of the three is the only one with no trailing full stop.
+    // The three literals below are the candidate wordings for a confirmation-mismatch rule, and this
+    // contract carries NO rule that can emit any of them.
 
-    /// <summary>
-    /// The <c>valConfirm</c> message (<c>signup.ascx:L101-L102</c>), whose text box has no
-    /// counterpart on the request contract.
-    /// </summary>
+    /// <summary>The <c>valConfirm</c> message, whose text box has no counterpart on the request contract.</summary>
     private const string ConfirmationRequired = "Password Confirmation Is Required.";
 
     /// <summary>
-    /// <c>InvalidPassword.Text</c> from the screen's own resource file
-    /// (<c>Signup.ascx.resx:L237-L238</c>) - the wording this flow actually rendered for a mismatch,
-    /// raised at <c>Signup.ascx.vb:L221</c>.
+    /// <c>InvalidPassword.Text</c> from the screen's own resource file - the wording this flow actually
+    /// rendered for a mismatch, raised at <c>Signup.ascx.vb:L221</c>.
     /// </summary>
     private const string MismatchScreenWording = "The Password Values Entered Do Not Match.";
 
     /// <summary>
-    /// <c>PasswordMismatch.Text</c> from the shared resource file
-    /// (<c>SharedResources.resx:L852-L853</c>). The only one of the three with no trailing full stop.
+    /// <c>PasswordMismatch.Text</c> from the shared resource file. The only one of the three with no
+    /// trailing full stop.
     /// </summary>
     private const string MismatchSharedWording = "The Password and Confirmation Passwords do not match";
 
     /// <summary>
-    /// <c>PasswordMismatch.Text1</c> from the shared resource file
-    /// (<c>SharedResources.resx:L969-L970</c>), the duplicate of the entry above under one logical
-    /// name.
+    /// <c>PasswordMismatch.Text1</c> from the shared resource file, the duplicate of the entry above under
+    /// one logical name.
     /// </summary>
     private const string MismatchSharedAlternateWording = "Password Values Entered Do Not Match.";
 
-    // MIGRATION: the two literals below belong to the site-settings screen's DataTypeCheck comparison
-    // validators. Neither field they guard is part of the creation contract - the legacy creation call took
-    // fifteen positional arguments and neither an expiry date nor a hosting fee was among them
-    // (Signup.ascx.vb:L274) - so no rule here can emit either wording, and that is asserted rather than
-    // assumed. The first carries no resourcekey, so its inline text with the leading <br> is authoritative
-    // and there is no resource divergence for it; the second's resource value
-    // (SiteSettings.ascx.resx:L495-L496) is byte-identical to its inline text, so there is none for it
-    // either.
+    // The two literals below belong to the site-settings screen's DataTypeCheck comparison validators.
 
     /// <summary>
-    /// The <c>valExpiryDate</c> message (<c>sitesettings.ascx:L433-L435</c>),
-    /// <c>Operator="DataTypeCheck" Type="Date"</c>, quoted with the leading element it carries inline.
+    /// The <c>valExpiryDate</c> message, <c>Operator="DataTypeCheck" Type="Date"</c>, quoted with the
+    /// leading element it carries inline.
     /// </summary>
     private const string ExpiryDateTypeCheck = "<br>Invalid expiry date!";
 
     /// <summary>
-    /// The <c>valHostFee</c> message (<c>sitesettings.ascx:L444-L446</c>),
-    /// <c>Operator="DataTypeCheck" Type="Currency"</c>. It has no lower-bound companion, which is why
-    /// no fee rule exists to reproduce.
+    /// The <c>valHostFee</c> message, <c>Operator="DataTypeCheck" Type="Currency"</c>. It has no
+    /// lower-bound companion, which is why no fee rule exists to reproduce.
     /// </summary>
     private const string HostFeeTypeCheck = "Invalid fee, needs to be a currency value!";
 
-    /// <summary>
-    /// The validator under test, constructed with the shipped legacy policy.
-    /// </summary>
+    /// <summary>The validator under test, constructed with the shipped legacy policy.</summary>
     private readonly CreatePortalRequestValidator _validator = new(ShippedPolicy());
 
     // ---------------------------------------------------------------------------------------------
     // Acceptance, and the dependency the validator declares
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// A request that satisfies every measured rule is accepted, and reports nothing at all.
-    /// </summary>
+    /// <summary>A request that satisfies every measured rule is accepted, and reports nothing at all.</summary>
     [Fact]
     public void AWellFormedRequest_IsAcceptedAndReportsNothing()
     {
@@ -247,15 +152,14 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// The asynchronous entry point reaches the same verdict as the synchronous one, so a caller on
-    /// either path is held to the identical rule set.
+    /// The asynchronous entry point reaches the same verdict as the synchronous one, so a caller on either
+    /// path is held to the identical rule set.
     /// </summary>
     /// <returns>A task that completes when the assertions have run.</returns>
     /// <remarks>
     /// The asynchronous overload is awaited rather than blocked on, which is the migration's
-    /// asynchronous-throughout rule applied to a test: no result property is read, no wait is
-    /// performed, and the method returns a task rather than void so the framework observes its
-    /// completion.
+    /// asynchronous-throughout rule applied to a test: no result property is read, no wait is performed,
+    /// and the method returns a task rather than void so the framework observes its completion.
     /// </remarks>
     [Fact]
     public async Task TheAsynchronousEntryPoint_AgreesWithTheSynchronousOne()
@@ -275,12 +179,6 @@ public class CreatePortalRequestValidatorTests
     /// <summary>
     /// The validator refuses to exist without a policy rather than falling back to built-in defaults.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy screen enforced no credential policy of its own and the policy was
-    /// applied further down the call chain, inside the membership path. Concentrating it at the
-    /// boundary means the boundary must be told what the policy is; silently defaulting would enforce
-    /// a policy nobody configured, which is the failure mode this guard exists to prevent.
-    /// </remarks>
     [Fact]
     public void AMissingPolicy_IsRefusedAtConstruction()
     {
@@ -291,13 +189,12 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// The options type this suite constructs is the shipped legacy policy, not a convenient
-    /// invention.
+    /// The options type this suite constructs is the shipped legacy policy, not a convenient invention.
     /// </summary>
     /// <remarks>
-    /// Pinning the defaults here is what entitles every credential assertion below to quote 7 and 0.
-    /// If a future change tightened these defaults, this test would fail first and name the reason,
-    /// rather than a dozen message assertions failing without explaining themselves.
+    /// Pinning the defaults here is what entitles every credential assertion below to quote 7 and 0. If a
+    /// future change tightened these defaults, this test would fail first and name the reason, rather than
+    /// a dozen message assertions failing without explaining themselves.
     /// </remarks>
     [Fact]
     public void TheShippedPolicy_IsTheLegacyPolicy()
@@ -325,9 +222,9 @@ public class CreatePortalRequestValidatorTests
     /// </summary>
     /// <param name="alias">The submitted alias.</param>
     /// <remarks>
-    /// The parameter is declared nullable so that the absent case can be supplied at all: the
-    /// contract's property is nullable, and a non-nullable theory parameter fed a null would not
-    /// compile under this solution's warning policy.
+    /// The parameter is declared nullable so that the absent case can be supplied at all: the contract's
+    /// property is nullable, and a non-nullable theory parameter fed a null would not compile under this
+    /// solution's warning policy.
     /// </remarks>
     [Theory]
     [InlineData(null)]
@@ -345,8 +242,8 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// The alias length is bounded by the markup limit the legacy text box declared, and the boundary
-    /// is exercised on both sides of the limit as well as at it.
+    /// The alias length is bounded by the markup limit the legacy text box declared, and the boundary is
+    /// exercised on both sides of the limit as well as at it.
     /// </summary>
     /// <param name="length">The submitted alias length.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
@@ -371,16 +268,10 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// An alias a parent portal may legitimately carry is accepted, including the two normalisations
-    /// the legacy screen applied before it measured anything.
+    /// An alias a parent portal may legitimately carry is accepted, including the two normalisations the
+    /// legacy screen applied before it measured anything.
     /// </summary>
     /// <param name="alias">The submitted alias.</param>
-    /// <remarks>
-    /// The upper-case case matters more than it looks: the permitted character sets hold lower-case
-    /// letters only, and the legacy screen lowered the value at <c>Signup.ascx.vb:L183</c> before
-    /// testing it, so measuring the raw value would reject an alias the legacy screen accepted. The
-    /// scheme-prefixed case is the second normalisation, from L184.
-    /// </remarks>
     [Theory]
     [InlineData("localhost")]
     [InlineData("LOCALHOST")]
@@ -401,8 +292,8 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// An alias containing anything outside the set the legacy guard loop permitted is refused, with
-    /// the code-behind's own wording.
+    /// An alias containing anything outside the set the legacy guard loop permitted is refused, with the
+    /// code-behind's own wording.
     /// </summary>
     /// <param name="alias">The submitted alias.</param>
     [Theory]
@@ -426,25 +317,9 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// A child portal's alias is measured only after the final separator, and against the narrower of
-    /// the two character sets.
+    /// A child portal's alias is measured only after the final separator, and against the narrower of the
+    /// two character sets.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Both halves are asserted together because they are one rule: the legacy code derived the
-    /// measured segment at <c>Signup.ascx.vb:L202</c> and then widened the permitted set only when
-    /// the portal was not a child (L207-L210). Testing either half alone would let the other regress.
-    /// </para>
-    /// <para>
-    /// The fourth case is the one this rule exists to serve and was previously untested. A BARE SEGMENT -
-    /// no separator at all - is what the legacy portal-page branch submitted
-    /// (<c>Signup.ascx.vb:L187-L197</c>), and the service composes it beneath the resolved parent's
-    /// authority. It must therefore be ACCEPTED here, and the third case shows why that is not vacuous:
-    /// a no-separator value is measured whole, so a bare segment passes and a host name typed into the
-    /// child field does not. Tightening this rule to demand a separator would make the composition
-    /// unreachable and silently reinstate the defect, which is what pins the case here.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void ChildAlias_IsMeasuredAfterTheFinalSeparatorAndAgainstTheNarrowerSet()
     {
@@ -488,17 +363,7 @@ public class CreatePortalRequestValidatorTests
             + Describe(segmentAccepted));
     }
 
-    /// <summary>
-    /// A disallowed character is reported once however many times it occurs.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy guard loop appended its message inside a per-character loop
-    /// (<c>Signup.ascx.vb:L191-L195</c> and L212-L216), so an alias with three offending characters
-    /// rendered the same sentence three times. That duplication was an artefact of concatenating into
-    /// an HTML string and is deliberately not reproduced: the rule that fires is identical, and only
-    /// the repetition is gone. A problem document reports one failure per rule per property, so
-    /// reproducing the duplication would produce three identical entries for one problem.
-    /// </remarks>
+    /// <summary>A disallowed character is reported once however many times it occurs.</summary>
     [Fact]
     public void ADisallowedAliasCharacter_IsReportedOnceNotOncePerOccurrence()
     {
@@ -516,8 +381,8 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// A single property reports only its first failure, reproducing the legacy sequencing in which a
-    /// field that failed in the browser never reached the checks that came after it.
+    /// A single property reports only its first failure, reproducing the legacy sequencing in which a field
+    /// that failed in the browser never reached the checks that came after it.
     /// </summary>
     [Fact]
     public void AlongsideALengthFailure_TheCharacterSetRuleDoesNotAlsoFire()
@@ -541,24 +406,8 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L67-L68, valTemplate -> TemplateFile
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// A template must be chosen, and the requirement is expressed as ordinary string presence.
-    /// </summary>
+    /// <summary>A template must be chosen, and the requirement is expressed as ordinary string presence.</summary>
     /// <param name="templateFile">The submitted template.</param>
-    /// <remarks>
-    /// MIGRATION: <c>valTemplate</c> is declared <c>InitialValue="-1"</c>
-    /// (<c>signup.ascx:L67-L68</c>), which is how a required-field validator refuses a drop-down list
-    /// still sitting on its unselected placeholder. That "-1" is a placeholder for a list item and NOT
-    /// an identifier, and the target field is a template file name, so presence became ordinary string
-    /// presence and no numeric comparison exists to test. The distinction is load-bearing rather than
-    /// pedantic: the same negative value is the legacy absent-integer sentinel
-    /// (<c>Library/Components/Shared/Null.vb</c>, whose <c>NullInteger</c> is -1) while being
-    /// simultaneously the seed of the portals primary key
-    /// (<c>01.00.00.SqlDataProvider:L77</c>, <c>IDENTITY (-1, 1)</c>) and therefore a real, addressable
-    /// row identifier - the shipped default portal occupies the very next value, zero
-    /// (<c>01.00.00.SqlDataProvider:L7125</c>). Treating -1 as a marker of absence anywhere would be a
-    /// defect, so no test here asserts that any identifier must be positive or non-zero.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -575,15 +424,14 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// The placeholder value the legacy drop-down list used is not treated as a sentinel: submitted as
-    /// a template name it is an ordinary non-empty string and is accepted.
+    /// The placeholder value the legacy drop-down list used is not treated as a sentinel: submitted as a
+    /// template name it is an ordinary non-empty string and is accepted.
     /// </summary>
     /// <param name="templateFile">The submitted template.</param>
     /// <remarks>
     /// This is the inverse of a rule that must not exist, and it is asserted so that nobody later
-    /// "restores" a numeric placeholder comparison the target deliberately does not have. Both the
-    /// bare placeholder and a name merely beginning with it are accepted, because neither qualifies a
-    /// path.
+    /// "restores" a numeric placeholder comparison the target deliberately does not have. Both the bare
+    /// placeholder and a name merely beginning with it are accepted, because neither qualifies a path.
     /// </remarks>
     [Theory]
     [InlineData("-1")]
@@ -598,17 +446,13 @@ public class CreatePortalRequestValidatorTests
         result.IsValid.Should().BeTrue(Describe(result));
     }
 
-    /// <summary>
-    /// A template selection must name a file and must not qualify it with a path.
-    /// </summary>
+    /// <summary>A template selection must name a file and must not qualify it with a path.</summary>
     /// <param name="templateFile">The submitted template.</param>
     /// <remarks>
-    /// MIGRATION: this rule has no counterpart in the markup, because a server-populated drop-down
-    /// list could not express a path. The structural guarantee the list provided has to be stated as a
-    /// rule now that the same value arrives as a free-form string, since the service concatenates it
-    /// onto a directory and opens the result. Preserving a guarantee is not the same as adding a
-    /// restriction, and whether the named template exists is still the service's question, never this
-    /// one's.
+    /// MIGRATION: this rule has no counterpart in the markup, because a server-populated drop-down list
+    /// could not express a path. The structural guarantee the list provided has to be stated as a rule now
+    /// that the same value arrives as a free-form string, since the service concatenates it onto a
+    /// directory and opens the result.
     /// </remarks>
     [Theory]
     [InlineData("Portals/_default/admin.template")]
@@ -650,20 +494,8 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L52, txtTitle -> PortalName: capped, and deliberately NOT required
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The portal name is bounded but not required, which is measured rather than overlooked.
-    /// </summary>
+    /// <summary>The portal name is bounded but not required, which is measured rather than overlooked.</summary>
     /// <param name="portalName">The submitted portal name.</param>
-    /// <remarks>
-    /// MIGRATION: the box that supplies this value is <c>txtTitle</c>, labelled "Title:" at
-    /// <c>signup.ascx:L51</c> and declaring no validator whatsoever at L52, yet its text is the first
-    /// of the fifteen positional arguments the legacy screen passed
-    /// (<c>Signup.ascx.vb:L274</c>). The similarly named <c>valPortalName</c> validator, whose message
-    /// reads "Portal Name Is Required.", is bound to a different box altogether - the one L39 labels
-    /// "Portal Alias:" - so deriving a requiredness rule for this field from that wording would invent
-    /// a rule the legacy screen never enforced. The column is declared NOT NULL, but an empty string
-    /// satisfies NOT NULL and the legacy screen could submit one.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -679,9 +511,7 @@ public class CreatePortalRequestValidatorTests
         Failures(result, nameof(CreatePortalRequest.PortalName)).Should().BeEmpty();
     }
 
-    /// <summary>
-    /// The portal name length is bounded at the width the markup and the schema agree on.
-    /// </summary>
+    /// <summary>The portal name length is bounded at the width the markup and the schema agree on.</summary>
     /// <param name="length">The submitted name length.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
     /// <remarks>
@@ -714,17 +544,9 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L56 and L61, txtDescription and txtKeyWords: capped, no validator declared
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The two metadata fields are bounded by their columns and are otherwise unconstrained.
-    /// </summary>
+    /// <summary>The two metadata fields are bounded by their columns and are otherwise unconstrained.</summary>
     /// <param name="length">The submitted length, applied to both fields at once.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
-    /// <remarks>
-    /// Neither box declared a validator, so neither field is required and only the width applies. The
-    /// markup limit of 500 at <c>signup.ascx:L56</c> and L61 matches
-    /// <c>Description nvarchar(500) NULL</c> and <c>KeyWords nvarchar(500) NULL</c> in the rebuilt
-    /// table.
-    /// </remarks>
     [Theory]
     [InlineData(499, true)]
     [InlineData(500, true)]
@@ -751,10 +573,10 @@ public class CreatePortalRequestValidatorTests
     /// Neither metadata field is required, and an absent value is indistinguishable from an empty one.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy null contract represents an absent string as the empty string rather than
-    /// as a database null - its string sentinel is literally "" - so a caller sending either is
-    /// sending the same thing as far as the legacy data is concerned. This test pins that the two are
-    /// treated alike here, which is why no rule in this file distinguishes them.
+    /// The legacy null contract represents an absent string as the empty string rather than as a database
+    /// null - its string sentinel is literally "" - so a caller sending either is sending the same thing as
+    /// far as the legacy data is concerned. This test pins that the two are treated alike here, which is
+    /// why no rule in this file distinguishes them.
     /// </remarks>
     [Fact]
     public void MetadataFields_TreatAnAbsentValueAndAnEmptyOneAlike()
@@ -775,16 +597,8 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L47, txtHomeDirectory: capped, no validator declared, defaulted by the service
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// An absent home directory is a request for the server-side default rather than a failure.
-    /// </summary>
+    /// <summary>An absent home directory is a request for the server-side default rather than a failure.</summary>
     /// <param name="homeDirectory">The submitted directory.</param>
-    /// <remarks>
-    /// MIGRATION: the legacy screen pre-filled this box with a placeholder and sent the empty string
-    /// when the user left it untouched (<c>Signup.ascx.vb:L245-L249</c>), after which the controller
-    /// derived the default from the new portal's identifier - a value that cannot exist before the row
-    /// does. So the defaulting stays in the service and no requiredness rule appears at the boundary.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -798,9 +612,7 @@ public class CreatePortalRequestValidatorTests
         result.IsValid.Should().BeTrue(Describe(result));
     }
 
-    /// <summary>
-    /// The home directory length is bounded at the width of the column that stored it.
-    /// </summary>
+    /// <summary>The home directory length is bounded at the width of the column that stored it.</summary>
     /// <param name="length">The submitted directory length.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
     [Theory]
@@ -828,14 +640,10 @@ public class CreatePortalRequestValidatorTests
     /// </summary>
     /// <param name="homeDirectory">The submitted directory.</param>
     /// <remarks>
-    /// MIGRATION: this shape rule is net-new and is a deliberate divergence, recorded as such. The
-    /// legacy screen's own check resolved the submitted value to a physical path and reported failure
-    /// only when that resolution came back empty (<c>Signup.ascx.vb:L251-L257</c>); it applied no
-    /// shape rule at all, so a rooted, drive-qualified or parent-traversing value was concatenated
-    /// straight into a path. Preserving that is not something behaviour preservation can be read to
-    /// require. What is preserved is the wording, taken verbatim from
-    /// <c>Signup.ascx.resx:L288-L289</c>, so an operator sees the message the legacy application
-    /// showed; only the moment of refusal moves earlier.
+    /// MIGRATION: this shape rule is net-new and is a deliberate divergence, recorded as such. The legacy
+    /// screen's own check resolved the submitted value to a physical path and reported failure only when
+    /// that resolution came back empty; it applied no shape rule at all, so a rooted, drive-qualified or
+    /// parent-traversing value was concatenated straight into a path.
     /// </remarks>
     [Theory]
     [InlineData("/rooted")]
@@ -856,34 +664,8 @@ public class CreatePortalRequestValidatorTests
             HomeFolderInvalid);
     }
 
-    /// <summary>
-    /// A home directory carrying a control character is refused, with the same wording.
-    /// </summary>
+    /// <summary>A home directory carrying a control character is refused, with the same wording.</summary>
     /// <param name="homeDirectory">The submitted directory.</param>
-    /// <remarks>
-    /// <para>
-    /// This is a separate branch of the shape rule from the traversal cases above, and it is reachable by
-    /// an input none of them describes: every value below is an ORDINARY RELATIVE PATH — no leading
-    /// separator, no drive letter, no backslash, no <c>.</c> or <c>..</c> segment, no blank segment and no
-    /// wholly-blank value — so it clears every other clause and can only be refused by the
-    /// control-character test. Without these cases that test could be deleted and every other
-    /// home-directory assertion would stay green.
-    /// </para>
-    /// <para>
-    /// The values matter beyond coverage. A NUL byte truncates a path at the operating-system boundary,
-    /// where <c>content\0.txt</c> and <c>content</c> address different things to a validator and the same
-    /// thing to a file system. A newline or carriage return smuggles a second line into anything that
-    /// later writes the value out — a log entry or a configuration file — and a tab is refused for the same
-    /// reason a wholly blank value is: it is neither a directory name nor an omission. Refusing the whole
-    /// control range rather than enumerating the dangerous members is what makes the rule closed.
-    /// </para>
-    /// <para>
-    /// Both halves are asserted: the exact legacy message reaches the caller, and validation returns a
-    /// failure rather than throwing. The second half is not redundant — a path-handling routine that
-    /// threw on a NUL byte would turn a bad submission into a server fault, and the refusal is performed
-    /// by inspection precisely so that it cannot.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData("cont\0ent")]
     [InlineData("Portals/0\0")]
@@ -905,9 +687,7 @@ public class CreatePortalRequestValidatorTests
         ShouldReport(result, nameof(CreatePortalRequest.HomeDirectory), HomeFolderInvalid);
     }
 
-    /// <summary>
-    /// An ordinary relative directory is accepted, including a nested one.
-    /// </summary>
+    /// <summary>An ordinary relative directory is accepted, including a nested one.</summary>
     /// <param name="homeDirectory">The submitted directory.</param>
     [Theory]
     [InlineData("Portals/0")]
@@ -928,9 +708,7 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L79-L80, L84-L85, L89-L90 and L106-L107: the administrator's identifying fields
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The administrator's given name is required, with the legacy wording.
-    /// </summary>
+    /// <summary>The administrator's given name is required, with the legacy wording.</summary>
     /// <param name="firstName">The submitted name.</param>
     [Theory]
     [InlineData(null)]
@@ -947,9 +725,7 @@ public class CreatePortalRequestValidatorTests
             FirstNameRequired);
     }
 
-    /// <summary>
-    /// The administrator's family name is required, with the legacy wording.
-    /// </summary>
+    /// <summary>The administrator's family name is required, with the legacy wording.</summary>
     /// <param name="lastName">The submitted name.</param>
     [Theory]
     [InlineData(null)]
@@ -966,9 +742,7 @@ public class CreatePortalRequestValidatorTests
             LastNameRequired);
     }
 
-    /// <summary>
-    /// The administrator's sign-in name is required, with the legacy wording.
-    /// </summary>
+    /// <summary>The administrator's sign-in name is required, with the legacy wording.</summary>
     /// <param name="username">The submitted name.</param>
     [Theory]
     [InlineData(null)]
@@ -985,9 +759,7 @@ public class CreatePortalRequestValidatorTests
             UsernameRequired);
     }
 
-    /// <summary>
-    /// The administrator's address is required, with the legacy wording.
-    /// </summary>
+    /// <summary>The administrator's address is required, with the legacy wording.</summary>
     /// <param name="email">The submitted address.</param>
     [Theory]
     [InlineData(null)]
@@ -1011,28 +783,7 @@ public class CreatePortalRequestValidatorTests
     /// <param name="length">The submitted name length, applied to both fields at once.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the schema wins over the markup here, and the difference is fifty against a hundred.
-    /// The text boxes at <c>signup.ascx:L79</c> and L84 admit a hundred characters, but the terminal
-    /// columns are <c>FirstName nvarchar(50) NOT NULL</c> and <c>LastName nvarchar(50) NOT NULL</c>,
-    /// from the <c>Tmp_Users</c> definition at
-    /// <c>01.00.06.SqlDataProvider:L182-L197</c> - and the legacy class library agrees, decorating both
-    /// properties <c>MaxLength(50), Required(True)</c> at
-    /// <c>Library/Components/Users/UserInfo.vb:L144</c> and L178. Accepting a hundred would admit a
-    /// value the database then truncates or refuses.
-    /// </para>
-    /// <para>
-    /// The terminal width has to be derived correctly, and the obvious shortcut is unsound. Searching
-    /// the eighty-eight upgrade scripts for an <c>ALTER COLUMN</c> touching either name returns
-    /// nothing, but that proves nothing on its own: this schema evolves several tables by the
-    /// drop-and-recreate idiom instead - build <c>Tmp_&lt;Table&gt;</c>, copy the rows, drop the
-    /// original, then <c>sp_rename</c> the temporary into place, confirmed at
-    /// <c>01.00.06.SqlDataProvider:L230</c>. The same empty search would derive twenty characters for
-    /// the address fields, which were in fact widened to fifty by exactly that idiom. The sound rule is
-    /// therefore: take the LAST <c>Tmp_&lt;Table&gt;</c> recreate, then apply any later
-    /// <c>ALTER COLUMN</c> on top. Applied to these two columns it yields fifty, so the shortcut
-    /// happens to reach the right answer here for the wrong reason.
-    /// </para>
+    /// The terminal width has to be derived correctly, and the obvious shortcut is unsound.
     /// </remarks>
     [Theory]
     [InlineData(49, true)]
@@ -1056,16 +807,13 @@ public class CreatePortalRequestValidatorTests
         ShouldReportLengthFailure(result, nameof(CreatePortalRequest.AdministratorLastName), 50);
     }
 
-    /// <summary>
-    /// The sign-in name is bounded at a hundred, where the markup and the schema agree.
-    /// </summary>
+    /// <summary>The sign-in name is bounded at a hundred, where the markup and the schema agree.</summary>
     /// <param name="length">The submitted name length.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
     /// <remarks>
     /// The column is <c>Username nvarchar(100) NOT NULL</c>, introduced by the second <c>Tmp_Users</c>
     /// rebuild, and the text box at <c>signup.ascx:L89</c> declares the same figure. This width is
-    /// genuinely terminal: the only later statement touching the column adds its uniqueness
-    /// constraint.
+    /// genuinely terminal: the only later statement touching the column adds its uniqueness constraint.
     /// </remarks>
     [Theory]
     [InlineData(99, true)]
@@ -1088,18 +836,16 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// The address is bounded at the terminal column width of 256, not at the markup's hundred, and
-    /// the over-length case reports the shared malformed-address wording rather than a length message.
+    /// The address is bounded at the terminal column width of 256, not at the markup's hundred, and the
+    /// over-length case reports the shared malformed-address wording rather than a length message.
     /// </summary>
     /// <param name="length">The total submitted address length.</param>
     /// <param name="expectedToBeAccepted">Whether that length is expected to survive validation.</param>
     /// <remarks>
     /// MIGRATION: the hundred on the text box at <c>signup.ascx:L106</c> is a presentation limit on one
     /// screen rather than a storage constraint, and the column it once matched no longer exists: the
-    /// original <c>Email nvarchar(100) NOT NULL</c> was dropped at
-    /// <c>02.02.01.SqlDataProvider:L51</c> and re-added as <c>Email nvarchar(256) NULL</c> at
-    /// <c>03.00.13.SqlDataProvider:L110</c>. A caller that bypassed the screen was never held to the
-    /// hundred, so enforcing it now would refuse a value the legacy system stored.
+    /// original <c>Email nvarchar(100) NOT NULL</c> was dropped at <c>02.02.01.SqlDataProvider:L51</c> and
+    /// re-added as <c>Email nvarchar(256) NULL</c> at <c>03.00.13.SqlDataProvider:L110</c>.
     /// </remarks>
     [Theory]
     [InlineData(255, true)]
@@ -1124,29 +870,15 @@ public class CreatePortalRequestValidatorTests
             EmailInvalid);
     }
 
-    /// <summary>
-    /// A malformed address is refused with the shared wording, and a well-formed one is accepted.
-    /// </summary>
+    /// <summary>A malformed address is refused with the shared wording, and a well-formed one is accepted.</summary>
     /// <param name="email">The submitted address.</param>
     /// <param name="expectedToBeAccepted">Whether the address is expected to survive validation.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this shape rule is net-new on this path and its absence was a gap rather than a
-    /// faithful omission. <c>signup.ascx:L106-L107</c> declares a required-field validator over the box
-    /// and no expression validator at all, so a malformed address passed the screen and went on to
-    /// become the new administrator's contact address - on a portal that by definition has no other
-    /// account able to administer it. The rule delegates to the single domain authority rather than
-    /// restating a pattern, so this path and the account-creation path cannot disagree about what an
-    /// address is. The wording is the shared entry, because the screen carried none of its own for a
-    /// condition it never reported.
-    /// </para>
-    /// <para>
-    /// Two consequences of that shared authority are asserted here deliberately. A final domain label
-    /// of five or more letters is accepted, which the legacy pattern's four-letter ceiling refused -
-    /// a documented loosening. And a local part beginning with a character the legacy pattern's
-    /// leading word boundary rejected is still rejected, which is a preserved legacy defect: widening
-    /// it would accept addresses the legacy application refused.
-    /// </para>
+    /// MIGRATION: this shape rule is net-new on this path and its absence was a gap rather than a faithful
+    /// omission. <c>signup.ascx:L106-L107</c> declares a required-field validator over the box and no
+    /// expression validator at all, so a malformed address passed the screen and went on to become the new
+    /// administrator's contact address - on a portal that by definition has no other account able to
+    /// administer it.
     /// </remarks>
     [Theory]
     [InlineData("admin@example.com", true)]
@@ -1181,9 +913,7 @@ public class CreatePortalRequestValidatorTests
     // signup.ascx L95-L96, valPassword -> AdministratorPassword, plus the policy it now reads
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The administrator's credential is required, with the legacy wording.
-    /// </summary>
+    /// <summary>The administrator's credential is required, with the legacy wording.</summary>
     /// <param name="password">The submitted credential.</param>
     [Theory]
     [InlineData(null)]
@@ -1201,16 +931,13 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// A credential shorter than the configured minimum is refused with the legacy policy wording,
-    /// both of whose bracketed tokens are resolved from the bound policy.
+    /// A credential shorter than the configured minimum is refused with the legacy policy wording, both of
+    /// whose bracketed tokens are resolved from the bound policy.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the screen itself declared only a required-field validator over this box, so
-    /// requiredness is the screen's contribution and keeps the screen's wording. The policy lived
-    /// further down, in the membership path, and under the shipped configuration only its minimum
-    /// length could ever fire. Concentrating it here is what stops a policy failure surfacing as an
-    /// unhandled fault instead of a message naming the field, because the credential reaches a hasher
-    /// that refuses the same values unconditionally.
+    /// The screen itself declared only a required-field validator over this box, so requiredness is the
+    /// screen's contribution and keeps the screen's wording. The policy lived further down, in the
+    /// membership path, and under the shipped configuration only its minimum length could ever fire.
     /// </remarks>
     [Fact]
     public void AdministratorPassword_MustMeetTheConfiguredMinimumLength()
@@ -1235,13 +962,11 @@ public class CreatePortalRequestValidatorTests
         accepted.IsValid.Should().BeTrue(Describe(accepted));
     }
 
-    /// <summary>
-    /// Neither bracketed token survives into a reported message.
-    /// </summary>
+    /// <summary>Neither bracketed token survives into a reported message.</summary>
     /// <remarks>
-    /// The legacy membership path rewrote both tokens at run time from the same two configured
-    /// numbers. A message that still carried a bracketed token would mean the substitution had been
-    /// lost, which no wording assertion elsewhere would necessarily catch.
+    /// The legacy membership path rewrote both tokens at run time from the same two configured numbers. A
+    /// message that still carried a bracketed token would mean the substitution had been lost, which no
+    /// wording assertion elsewhere would necessarily catch.
     /// </remarks>
     [Fact]
     public void TheCredentialPolicyMessage_CarriesNoUnresolvedToken()
@@ -1262,18 +987,11 @@ public class CreatePortalRequestValidatorTests
             message => message.Contains("at least 0 non-alphanumeric", StringComparison.Ordinal));
     }
 
-    /// <summary>
-    /// No upper bound is imposed on the credential at the width the legacy text box declared.
-    /// </summary>
+    /// <summary>No upper bound is imposed on the credential at the width the legacy text box declared.</summary>
     /// <param name="length">The submitted credential length.</param>
     /// <remarks>
-    /// MIGRATION: the markup capped the two credential boxes at twenty characters
-    /// (<c>signup.ascx:L94</c> and L100), matching the plaintext column of the baseline schema, which
-    /// the second table rebuild then widened. That ceiling is deliberately not reproduced, because the
-    /// column no longer holds the submitted value at all - the Infrastructure layer replaces it with a
-    /// fixed-width one-way hash - so the storage limit that justified it has gone, and enforcing it now
-    /// would cap credential strength for no remaining reason. This test exists so that nobody restores
-    /// it believing they are restoring fidelity.
+    /// MIGRATION: the markup capped the two credential boxes at twenty characters, matching the plaintext
+    /// column of the baseline schema, which the second table rebuild then widened.
     /// </remarks>
     [Theory]
     [InlineData(21)]
@@ -1289,25 +1007,11 @@ public class CreatePortalRequestValidatorTests
         result.IsValid.Should().BeTrue(Describe(result));
     }
 
-    /// <summary>
-    /// The credential is nonetheless bounded, by a net-new ceiling expressed in encoded bytes.
-    /// </summary>
+    /// <summary>The credential is nonetheless bounded, by a net-new ceiling expressed in encoded bytes.</summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this ceiling has no legacy counterpart and is not a policy rule. The field feeds a
-    /// deliberately expensive one-way function, so an unbounded value would let a caller choose how
-    /// much work the server performs. Because the wording is net-new rather than legacy, it is
-    /// asserted through the shared constant that declares it rather than transcribed here: the four
-    /// credential boundaries in this solution read that one declaration, and a transcription would be
-    /// the very drift the shared constant exists to prevent. The legacy-derived messages elsewhere in
-    /// this file are transcribed independently, which is where independent transcription earns its
-    /// keep.
-    /// </para>
-    /// <para>
-    /// The unit is encoded bytes rather than characters because that is what the algorithm consumes.
-    /// At more than twelve times the legacy input width it cannot refuse a credential the legacy
-    /// screen accepted.
-    /// </para>
+    /// This ceiling has no legacy counterpart and is not a policy rule. The field feeds a deliberately
+    /// expensive one-way function, so an unbounded value would let a caller choose how much work the server
+    /// performs.
     /// </remarks>
     [Fact]
     public void AdministratorPassword_IsBoundedByTheSharedCredentialCeiling()
@@ -1331,13 +1035,11 @@ public class CreatePortalRequestValidatorTests
             CredentialBounds.MaximumByteLengthMessage);
     }
 
-    /// <summary>
-    /// A multi-byte character counts as the bytes it occupies, not as one character.
-    /// </summary>
+    /// <summary>A multi-byte character counts as the bytes it occupies, not as one character.</summary>
     /// <remarks>
-    /// A credential of well under the ceiling in characters can exceed it in bytes, and the rule is
-    /// only meaningful if it measures what the algorithm consumes. This case would pass a
-    /// character-counted ceiling and must not pass this one.
+    /// A credential of well under the ceiling in characters can exceed it in bytes, and the rule is only
+    /// meaningful if it measures what the algorithm consumes. This case would pass a character-counted
+    /// ceiling and must not pass this one.
     /// </remarks>
     [Fact]
     public void AdministratorPassword_CountsEncodedBytesRatherThanCharacters()
@@ -1360,10 +1062,9 @@ public class CreatePortalRequestValidatorTests
     /// message names the configured numbers rather than any built-in pair.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: a configured minimum of zero skips the rule entirely rather than registering a
-    /// comparison that can never fail, because a rule that cannot fail is indistinguishable from
-    /// enforcement under review. The shipped configuration is exactly that case
-    /// (<c>Website/release.config:L243</c>), so both halves have to be asserted: the shipped policy
+    /// A configured minimum of zero skips the rule entirely rather than registering a comparison that can
+    /// never fail, because a rule that cannot fail is indistinguishable from enforcement under review. The
+    /// shipped configuration is exactly that case, so both halves have to be asserted: the shipped policy
     /// accepts a wholly alphanumeric credential, and a stricter policy refuses the same one.
     /// </remarks>
     [Fact]
@@ -1398,15 +1099,7 @@ public class CreatePortalRequestValidatorTests
         satisfied.IsValid.Should().BeTrue(Describe(satisfied));
     }
 
-    /// <summary>
-    /// A configured strength pattern is enforced, and an unconfigured one registers no rule.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: an unconfigured pattern skips the rule rather than compiling an empty one, because an
-    /// empty pattern matches every input and would be a silent no-op wearing the appearance of
-    /// enforcement. The shipped configuration files declare no pattern at all, which is why the
-    /// unconfigured half of this test is the shipped behaviour.
-    /// </remarks>
+    /// <summary>A configured strength pattern is enforced, and an unconfigured one registers no rule.</summary>
     [Fact]
     public void TheStrengthPatternRule_IsRegisteredOnlyWhenAPatternIsConfigured()
     {
@@ -1443,25 +1136,10 @@ public class CreatePortalRequestValidatorTests
     /// mismatch wordings.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the eighth validator on the screen guarded a second credential box that was never one
-    /// of the fifteen positional arguments - the call site at <c>Signup.ascx.vb:L274</c> passes the
-    /// credential once - was never persisted, and is absent from the request contract by design, so
-    /// there is no property for a rule to bind to. The equality check the code-behind ran at
-    /// <c>Signup.ascx.vb:L220-L222</c> moves to the browser form, where both values exist; sending a
-    /// credential twice over the wire would widen its exposure without adding any safety. Note that the
-    /// check was server-side to begin with - the screen declares no comparison validator - so this is a
-    /// change of mechanism and of location rather than a change of rule. The divergence is that this
-    /// contract cannot report a mismatch at all.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the wording such a rule would have used is genuinely ambiguous in the legacy sources,
-    /// so all three measured strings are asserted absent rather than one being quietly adopted. The
-    /// screen's own local entry is the one this flow actually rendered; the shared file additionally
-    /// carries a duplicate pair under one logical name, and only the first of the three ends without a
-    /// full stop. An executing agent that later adds a mismatch rule must choose deliberately between
-    /// them, and this test is what will tell them a choice is being made.
-    /// </para>
+    /// The eighth validator on the screen guarded a second credential box that was never one of the fifteen
+    /// positional arguments - the call site at <c>Signup.ascx.vb:L274</c> passes the credential once - was
+    /// never persisted, and is absent from the request contract by design, so there is no property for a
+    /// rule to bind to.
     /// </remarks>
     [Fact]
     public void NoRuleReproducesTheConfirmationValidatorOrItsCandidateWordings()
@@ -1479,39 +1157,9 @@ public class CreatePortalRequestValidatorTests
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Neither of the site-settings comparison validators has a counterpart on the creation contract,
-    /// and no rule here can emit either wording.
+    /// Neither of the site-settings comparison validators has a counterpart on the creation contract, and
+    /// no rule here can emit either wording.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: both are <c>Operator="DataTypeCheck"</c> validators over fields the creation call
-    /// never carried - an expiry date at <c>sitesettings.ascx:L433</c> and a hosting fee at L444 - so
-    /// they belong to the portal UPDATE surface rather than to this one. They are asserted absent here
-    /// so that the comparison family is demonstrably covered rather than merely unmentioned: the
-    /// measured census across the five in-scope admin directories puts comparison validators at
-    /// nineteen against sixteen required-field validators, making them the largest family in the
-    /// surface being migrated.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the fee validator has NO lower-bound companion. The clamping that exists in the
-    /// legacy system is service behaviour on a role rather than validation on a portal -
-    /// <c>Library/Components/Portal/PortalController.vb:L395</c> and L398 coerce a negative fee to zero
-    /// on a role instance created at L390 while a template installs its roles - and the quota boxes on
-    /// the same screen declare no validator at all. Role fees, by contrast, DO carry lower-bound
-    /// validators on their own screen. That asymmetry is reproduced rather than harmonised: converting
-    /// a silent coercion into a rejected request would be a behavioural change, and tidying the portal
-    /// path toward the role path would import a rule the portal screen never had.
-    /// </para>
-    /// <para>
-    /// MIGRATION: a type check is where the legacy relied on loose coercion, because the admin
-    /// code-behinds compiled with strict typing disabled (<c>Website/release.config:L125</c>) while the
-    /// class library did not. In C# an empty string parses to neither a number nor a date, so a blank
-    /// optional numeric or date field has to be modelled as nullable rather than turned into a
-    /// validation failure. This contract carries no numeric or date member at all, so no such coercion
-    /// happens at this boundary - which is the cleanest available resolution of the asymmetry, and the
-    /// reason the culture test further down has no date or currency input to pin.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void NeitherSiteSettingsComparisonValidatorHasACounterpartHere()
     {
@@ -1532,17 +1180,9 @@ public class CreatePortalRequestValidatorTests
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// One submission reports every failing field, not merely the first, reproducing the legacy
-    /// screen's accumulating message.
+    /// One submission reports every failing field, not merely the first, reproducing the legacy screen's
+    /// accumulating message.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy code-behind appended each problem to one string with "&amp;=" and rendered
-    /// the whole of it, so a user saw every problem at once. That behaviour maps onto a validation
-    /// result carrying one failure per rule and onto the per-field errors member of a problem document.
-    /// Seven failures are expected here and the count is asserted exactly, so that a future rule which
-    /// fired twice for one problem, or a cascade change that suppressed a field, would be caught rather
-    /// than absorbed.
-    /// </remarks>
     [Fact]
     public void EveryFailingField_IsReportedTogether()
     {
@@ -1575,25 +1215,8 @@ public class CreatePortalRequestValidatorTests
             + "and the eighth guards a browser-only confirmation control that was never submitted");
     }
 
-    /// <summary>
-    /// The verdict and the legacy wording do not depend on the server's regional settings.
-    /// </summary>
+    /// <summary>The verdict and the legacy wording do not depend on the server's regional settings.</summary>
     /// <param name="cultureName">The culture to pin for the duration of the assertions.</param>
-    /// <remarks>
-    /// <para>
-    /// A suite that passed under one machine's locale and failed under another's would be a defect, so
-    /// the culture is pinned explicitly rather than inherited. The Turkish case is the one that earns
-    /// this test: a culture-sensitive lower-casing maps a capital I to a dotless character that the
-    /// permitted alias set does not contain, so an upper-case alias the legacy screen accepted would be
-    /// refused. The validator lowers invariantly, and this proves it.
-    /// </para>
-    /// <para>
-    /// Only wording the validator supplies explicitly is asserted here. The two length rules take their
-    /// wording from the validation framework, which translates it according to the ambient interface
-    /// culture, so asserting those strings under a pinned culture would test the framework's
-    /// translations rather than this migration's parity.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("de-DE")]
@@ -1644,15 +1267,15 @@ public class CreatePortalRequestValidatorTests
     // ---------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Builds the password policy the legacy application shipped, which is the options type's own
-    /// default state.
+    /// Builds the password policy the legacy application shipped, which is the options type's own default
+    /// state.
     /// </summary>
     /// <returns>The shipped policy.</returns>
     private static PasswordPolicyOptions ShippedPolicy() => new();
 
     /// <summary>
-    /// Builds a policy stricter than the shipped one, used to prove that the credential thresholds and
-    /// the numbers in the credential message are read from configuration rather than hard-coded.
+    /// Builds a policy stricter than the shipped one, used to prove that the credential thresholds and the
+    /// numbers in the credential message are read from configuration rather than hard-coded.
     /// </summary>
     /// <returns>The stricter policy.</returns>
     private static PasswordPolicyOptions StricterPolicy() => new()
@@ -1661,17 +1284,15 @@ public class CreatePortalRequestValidatorTests
         MinRequiredNonAlphanumericCharacters = 2,
     };
 
-    /// <summary>
-    /// Builds a validator bound to a specific policy.
-    /// </summary>
+    /// <summary>Builds a validator bound to a specific policy.</summary>
     /// <param name="policy">The policy to bind.</param>
     /// <returns>The validator.</returns>
     private static CreatePortalRequestValidator ValidatorFor(PasswordPolicyOptions policy) =>
         new(policy);
 
     /// <summary>
-    /// Builds a request that satisfies every measured rule, so that each test can violate exactly one
-    /// field and a failure names the rule that broke.
+    /// Builds a request that satisfies every measured rule, so that each test can violate exactly one field
+    /// and a failure names the rule that broke.
     /// </summary>
     /// <returns>The request.</returns>
     private static CreatePortalRequest Valid() => new()
@@ -1690,9 +1311,7 @@ public class CreatePortalRequestValidatorTests
         AdministratorEmail = "admin@example.com",
     };
 
-    /// <summary>
-    /// Builds an otherwise valid request carrying a specific credential.
-    /// </summary>
+    /// <summary>Builds an otherwise valid request carrying a specific credential.</summary>
     /// <param name="password">The credential to submit.</param>
     /// <returns>The request.</returns>
     private static CreatePortalRequest WithCredential(string password)
@@ -1721,16 +1340,10 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// Validates every probe this suite uses to prove a rule's absence, and returns every message any
-    /// of them produced.
+    /// Validates every probe this suite uses to prove a rule's absence, and returns every message any of
+    /// them produced.
     /// </summary>
     /// <returns>The messages.</returns>
-    /// <remarks>
-    /// Proving that no rule can emit a wording needs more than one request: a valid one reports nothing,
-    /// so the probes deliberately include a wholly blank request, one that violates every shape rule at
-    /// once, and one that violates every length rule at once. Together they exercise every rule the
-    /// validator declares, which is what makes the absence assertions meaningful rather than vacuous.
-    /// </remarks>
     private IReadOnlyList<string> AllMessagesFromEveryProbe()
     {
         CreatePortalRequest blank = new();
@@ -1767,18 +1380,12 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// Asserts that a result reports exactly one failure carrying both the expected property name and
-    /// the expected wording.
+    /// Asserts that a result reports exactly one failure carrying both the expected property name and the
+    /// expected wording.
     /// </summary>
     /// <param name="result">The validation result.</param>
     /// <param name="propertyName">The property the failure must name.</param>
     /// <param name="expectedMessage">The wording the failure must carry, character for character.</param>
-    /// <remarks>
-    /// Both fields are asserted together on purpose. The pair is what the Api layer projects into the
-    /// per-field errors member of a problem document, so a test that checked only the wording would pass
-    /// even if the failure were attributed to the wrong field, and one that checked only the property
-    /// would pass even if the legacy wording had been rewritten.
-    /// </remarks>
     private static void ShouldReport(
         ValidationResult result,
         string propertyName,
@@ -1792,20 +1399,15 @@ public class CreatePortalRequestValidatorTests
     }
 
     /// <summary>
-    /// Asserts that a result reports exactly one length failure against a property, and that the
-    /// failure names the configured bound.
+    /// Asserts that a result reports exactly one length failure against a property, and that the failure
+    /// names the configured bound.
     /// </summary>
     /// <param name="result">The validation result.</param>
     /// <param name="propertyName">The property the failure must name.</param>
     /// <param name="maximumLength">The bound the failure must name.</param>
     /// <remarks>
-    /// The two length rules are the only rules in the validator whose wording it does not supply
-    /// itself: the validation framework generates it and translates it according to the ambient
-    /// interface culture. Transcribing that generated English text here would pin a translation table
-    /// rather than this migration's parity, so the property, the singleness of the failure and the
-    /// bound named in the message are asserted instead - the bound being the part that carries the
-    /// migration decision. Every rule whose wording comes from a legacy resource is asserted character
-    /// for character by <see cref="ShouldReport(ValidationResult, string, string)"/>.
+    /// The two length rules are the only rules in the validator whose wording it does not supply itself:
+    /// the validation framework generates it and translates it according to the ambient interface culture.
     /// </remarks>
     private static void ShouldReportLengthFailure(
         ValidationResult result,
@@ -1822,17 +1424,13 @@ public class CreatePortalRequestValidatorTests
             + "migration decision");
     }
 
-    /// <summary>
-    /// Returns every message a result reported.
-    /// </summary>
+    /// <summary>Returns every message a result reported.</summary>
     /// <param name="result">The validation result.</param>
     /// <returns>The messages.</returns>
     private static IReadOnlyList<string> Messages(ValidationResult result) =>
         result.Errors.Select(failure => failure.ErrorMessage).ToList();
 
-    /// <summary>
-    /// Returns the failures a result reported against one property.
-    /// </summary>
+    /// <summary>Returns the failures a result reported against one property.</summary>
     /// <param name="result">The validation result.</param>
     /// <param name="propertyName">The property to filter on.</param>
     /// <returns>The failures.</returns>
@@ -1843,17 +1441,13 @@ public class CreatePortalRequestValidatorTests
             .Where(failure => string.Equals(failure.PropertyName, propertyName, StringComparison.Ordinal))
             .ToList();
 
-    /// <summary>
-    /// Renders a result as a reason for an assertion that expected the request to be accepted.
-    /// </summary>
+    /// <summary>Renders a result as a reason for an assertion that expected the request to be accepted.</summary>
     /// <param name="result">The validation result.</param>
     /// <returns>The rendered reason.</returns>
     private static string Describe(ValidationResult result) =>
         "the request should have been accepted but reported: " + Rendered(result);
 
-    /// <summary>
-    /// Renders every failure a result reported as property-and-message pairs.
-    /// </summary>
+    /// <summary>Renders every failure a result reported as property-and-message pairs.</summary>
     /// <param name="result">The validation result.</param>
     /// <returns>The rendered failures.</returns>
     private static string Rendered(ValidationResult result) =>

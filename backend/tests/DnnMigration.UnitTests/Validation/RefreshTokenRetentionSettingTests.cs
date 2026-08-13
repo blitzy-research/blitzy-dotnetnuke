@@ -4,43 +4,27 @@ using Xunit;
 
 namespace DnnMigration.UnitTests.Validation;
 
-/// <summary>
-/// Pins the two settings that turn refresh-record retention from an intention into a behaviour.
-/// </summary>
+/// <summary>Pins the two settings that turn refresh-record retention from an intention into a behaviour.</summary>
 /// <remarks>
 /// <para>
 /// PRIV-02. <strong>WHY THEY EXIST AT ALL.</strong> Both shipped stores reclaimed a record only when its
-/// family's absolute ceiling had elapsed, and only ever as a side effect of issuing or rotating a token. Two
-/// consequences followed, and the second is the worse one. An ordinary sign-out left a row naming the account,
-/// the tenant and the token digest for the remainder of the refresh lifetime - days, for a session that had
-/// already ended. And an installation nobody signed in to again reclaimed nothing at all, indefinitely, which
-/// is precisely the installation where no operator is watching.
+/// family's absolute ceiling had elapsed, and only ever as a side effect of issuing or rotating a token.
+/// Two consequences followed, and the second is the worse one.
 /// </para>
 /// <para>
-/// <see cref="RefreshTokenStoreOptions.RevokedRecordRetentionHours"/> is the documented minimum period the
-/// finding asked for, and <see cref="RefreshTokenStoreOptions.RetentionSweepMinutes"/> is what makes it real:
-/// a retention window that is only applied when traffic happens to arrive is a statement about intent.
-/// </para>
-/// <para>
-/// <strong>WHY THE BOUNDS ARE ASSERTED RATHER THAN THE DEFAULTS ALONE.</strong> Each bound closes a distinct
-/// failure. Below the retention floor a revoked record is erased before a replay of its family could be
-/// recognised, which discards the one signal that makes a credential stolen before a sign-out visible
-/// afterwards. Above its ceiling the record is personal data kept for a signal nobody will read. Below the
-/// sweep floor the sweep becomes a busy loop against the store; above its ceiling the sweep runs less often
-/// than the retention it is meant to enforce, and the retention setting silently stops describing behaviour.
-/// </para>
-/// <para>
-/// Unit tests, because validation is a pure function of the settings object. The stores' own behaviour under
-/// these values is exercised in the integration suite, where there is a store to observe.
+/// <strong>WHY THE BOUNDS ARE ASSERTED RATHER THAN THE DEFAULTS ALONE.</strong> Each bound closes a
+/// distinct failure. Below the retention floor a revoked record is erased before a replay of its family
+/// could be recognised, which discards the one signal that makes a credential stolen before a sign-out
+/// visible afterwards.
 /// </para>
 /// </remarks>
 public sealed class RefreshTokenRetentionSettingTests
 {
     /// <summary>A deployment that configures nothing gets a bounded retention and an hourly sweep.</summary>
     /// <remarks>
-    /// The defaults matter more than usual here: they are what every deployment that has not read this section
-    /// runs, and before these settings existed the effective retention was the whole refresh lifetime and the
-    /// effective sweep interval was "whenever somebody signs in".
+    /// The defaults matter more than usual here: they are what every deployment that has not read this
+    /// section runs, and before these settings existed the effective retention was the whole refresh
+    /// lifetime and the effective sweep interval was "whenever somebody signs in".
     /// </remarks>
     [Fact]
     public void TheDefaultsAreOneDayOfRetentionSweptEveryHour()
@@ -59,11 +43,6 @@ public sealed class RefreshTokenRetentionSettingTests
 
     /// <summary>Both bounds of the revoked-record retention are enforced.</summary>
     /// <param name="hours">The configured retention.</param>
-    /// <remarks>
-    /// Zero is included deliberately and is the row that matters most: it reads as "erase on revocation", which
-    /// would make the record's removal simultaneous with the event that created it and is therefore
-    /// indistinguishable from keeping no signal at all.
-    /// </remarks>
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -107,12 +86,9 @@ public sealed class RefreshTokenRetentionSettingTests
     /// The retention settings are validated for the PROCESS-LOCAL store too, not only for the durable one.
     /// </summary>
     /// <remarks>
-    /// PRIV-02. The load-bearing case, and the one an implementation is most likely to get wrong: every other
-    /// setting below the provider check describes the shared store and is deliberately skipped for a
-    /// process-local deployment. Retention is not one of those - the process-local store honours the same
-    /// window and the same sweep - so a deployment running the shipped default must be told when it has
-    /// configured an impossible value, rather than having it silently ignored because it is not using SQL
-    /// Server.
+    /// PRIV-02. The load-bearing case, and the one an implementation is most likely to get wrong: every
+    /// other setting below the provider check describes the shared store and is deliberately skipped for a
+    /// process-local deployment.
     /// </remarks>
     [Fact]
     public void TheRetentionSettingsAreJudgedWhateverProviderIsSelected()
@@ -134,11 +110,6 @@ public sealed class RefreshTokenRetentionSettingTests
     }
 
     /// <summary>A refusal explains the consequence rather than merely restating the bound.</summary>
-    /// <remarks>
-    /// The message is what an operator has to act on at three in the morning, and "must be between 1 and 720"
-    /// does not say which direction is dangerous or why. Asserted so that a later edit shortening the message
-    /// has to be a deliberate one.
-    /// </remarks>
     [Fact]
     public void ARefusalSaysWhatTheValueWouldHaveCost()
     {

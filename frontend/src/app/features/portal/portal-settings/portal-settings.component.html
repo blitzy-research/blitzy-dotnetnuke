@@ -1,129 +1,32 @@
 <!--
-  THE PORTAL SETTINGS SCREEN.
-
-  MIGRATION: THE TWO-LEVEL SECTION-HEAD HIERARCHY BECOMES A TWO-TAB STRIP OVER NESTED
-    COLLAPSIBLE GROUPS, AND THE THIRD TOP-LEVEL GROUP IS DROPPED WITH SKINNING. Measured
-    from `Website/admin/Portal/sitesettings.ascx`: it declares THIRTEEN section heads, of
-    which exactly THREE carry `IncludeRule="True"` and are therefore top level — the basic
-    group at L14, the advanced group at L204 and the stylesheet editor at L539. The other
-    ten are their children, paired to their bodies by `Section="tblX"`. The stylesheet
-    editor goes with the excluded skinning subsystem, so two top-level groups remain and
-    this screen is a two-tab strip whose panels hold the surviving children as grouped
-    field sets. The advanced group's own `IsExpanded="False"` translates to "not the tab
-    that opens first", and each CHILD keeps its own measured default: site details, site
-    marketing, security settings and page management open; other settings and host
-    settings closed.
-
-  MIGRATION: THE SITE WIZARD COLLAPSES INTO THIS SCREEN AND PRODUCES NO ROUTE OF ITS OWN.
-    `Website/admin/Portal/sitewizard.ascx` is a reference input only. There is no wizard
-    route, no step navigator, no next-or-back pair and no step state anywhere below: its
-    remaining subject matter is these same portal columns, and the legacy section heads
-    already let a caller visit them in any order. The portal-template screen likewise
-    produces no target file — no selector, no send-out action and no take-in action appears
-    here, because the interface publishes no portal-template resource to call.
-
-  MIGRATION: THE TAB STRIP AND THE DISCLOSURES ARE AUTHORED HERE RATHER THAN AS SHARED
-    COMPONENTS. The shared inventory is closed at ten members and this is the only screen
-    that needs either affordance, so an eleventh member would widen a settled contract for
-    a single caller. The strip declares the roles a tab strip promises AND implements the
-    keyboard movement they oblige, because declaring them without it would be worse than
-    declaring neither.
-
-  MIGRATION: THE LEGACY TOGGLE'S NEGATIVE TAB INDEX IS REVERSED, NOT REPRODUCED.
-    `Website/controls/sectionheadcontrol.ascx` L3 withdraws its toggle from the tab order
-    with a negative tab index — spelled with a capital I, so a case-sensitive search
-    undercounts it — leaving every legacy section head operable by pointer only. Each
-    toggle below is a real `button` reachable by Tab and activated by Enter and Space,
-    carrying its expanded state and a reference to the body it controls. The strip's own
-    triggers use a roving tab index for the same reason: one stop for the strip, arrow keys
-    within it. Reversing this costs no rendered pixel, which is why it is done here.
-
-  MIGRATION: EVERY STRING HERE IS INTERPOLATED PLAIN TEXT. Legacy resource values are
-    untrusted markup — this screen's own resource file holds a live third-party advertising
-    script, stored XML-escaped so a naive search clears it wrongly — so no raw-markup
-    binding, no sanitiser bypass and no trusted-markup wrapper appears anywhere below. The
-    help sentences that need structure are authored as real elements instead.
-
-  MIGRATION: WORDING COMES FROM THE RESOURCE VALUE, NEVER FROM THE MARKUP ATTRIBUTE, AND
-    THE TWO DISAGREE TWICE ON THIS SCREEN. `sitesettings.ascx` L73 declares
-    `text="Marketing"` while `Marketing.Text` resolves to "Site Marketing"; L51 declares
-    `Text="Key Words:"` with a space while `plKeyWords.Text` resolves to "Keywords:". The
-    resource value wins in both cases. The page title is likewise the settings-mode
-    entry — "Site Settings" — and not the edit-mode "Edit Portals". Every string below is
-    supplied by the paired class from that measured set, so this template invents none.
-
-  MIGRATION: THE LEGACY LAYOUT TABLES ARE GONE. `sitesettings.ascx` nested its fields in
-    tables with `cellspacing`, `cellpadding` and pixel widths — its own `summary`
-    attributes name them design tables. Tabular markup is for tabular data and there is
-    none on this screen; the layout here is grid and flex declared in the paired
-    stylesheet, and every value it uses is a design token.
-
-  MIGRATION: SIX LEGACY GROUPS RENDER NOTHING AT ALL, BECAUSE EVERY FIELD THEY HELD IS OUT
-    OF SCOPE. Appearance and the stylesheet editor go with skinning; the payment group goes
-    with the excluded commerce surface, and its stored processor credential is never
-    rendered, held or logged here. The usability group and the secure-transport group go
-    further: both are measured to be module-setting rows of the "Site Settings" module
-    rather than portal columns — `PortalSettings.vb` L923 resolves the site settings read
-    to a module-settings read and L970 resolves the write the same way — so neither is a
-    column this resource can carry. THERE IS NO PORTAL-SETTINGS TABLE: a case-insensitive
-    sweep for one across all eighty-eight schema scripts returns nothing, and the legacy
-    composite of that name is a per-request ambient object assembled from portal columns.
-    No key-and-value settings editor is offered below, and no group is rendered empty or
-    filled with invented content in place of what it lost.
-
-  MIGRATION: FOUR FURTHER FIELDS ARE DROPPED FROM GROUPS THAT DO SURVIVE. The default
-    language selector goes with the unported localisation mechanism; the site-log retention
-    box goes with the excluded logging provider; the premium-module dual list goes with the
-    excluded provider families; and the home directory box was already disabled in the
-    legacy markup, so it offered no workflow to preserve. Each is named here so that its
-    absence reads as a decision rather than an omission.
+  MIGRATION: THE TWO-LEVEL SECTION-HEAD HIERARCHY BECOMES A TWO-TAB STRIP OVER NESTED COLLAPSIBLE
+  GROUPS, AND THE THIRD TOP-LEVEL GROUP IS DROPPED WITH SKINNING. Measured from
+  `Website/admin/Portal/sitesettings.ascx`: it declares THIRTEEN section heads, of which exactly THREE
+  carry `IncludeRule="True"` and are therefore top level — the basic group at L14, the advanced group at
+  L204 and the stylesheet editor at L539.
 -->
 <section class="portal-settings">
-  <!--
-    The page-level action projects into the header slot. The form's own action bar does NOT
-    — the header component's contract is explicit that an in-page form action bar belongs to
-    the consuming feature's footer, and it is authored there.
-  -->
+  <!-- The page-level action projects into the header slot. -->
   <app-page-header [title]="pageTitle" [subtitle]="portalName()">
     @if (canDelete()) {
       <!--
-        Bare, and deliberately so: the shared inventory declares no button member, and the
-        global form stylesheet already gives every button its appearance and its focus ring.
-
-        MIGRATION: withheld when the target IS the portal currently being browsed, which the
-        legacy screen expressed as `cmdDelete.Visible = (intPortalId <> PortalId)`. A portal
-        may not be deleted out from under the session viewing it.
+        Bare, and deliberately so: the shared inventory declares no button member, and the global form
+        stylesheet already gives every button its appearance and its focus ring.
       -->
       <button class="page-action" type="button" [disabled]="busy()" (click)="onDeleteRequested()">Delete</button>
     }
 
     <!--
-      ⚠ THE ONLY LINK IN THE APPLICATION TO A PORTAL'S HOST NAMES. Every anchor the console
-      renders was enumerated and none addressed `:portalId/aliases`, so that screen could be
-      reached only by typing its address — while the alias endpoints grant a tenant
-      administrator every action by right.
-
-      MIGRATION: the legacy console reached Site Settings and Portal Aliases as separate
-      administration modules from its menu, and `SiteSettings.ascx.vb:L484-L489` reads the
-      referring address specifically to detect arrival FROM the Portal Aliases module, which is
-      direct evidence that operators moved between the two. This console has no per-tenant menu
-      to reproduce and its rail carries collection entries only, so the link between the screens
-      is where that movement now lives.
-
-      Placed after Delete rather than before it: the destructive command keeps the position the
-      legacy screen gave it, and a navigation link must not sit between an operator and the
-      control they were reaching for.
+      ⚠ THE ONLY LINK IN THE APPLICATION TO A PORTAL'S HOST NAMES. Every anchor the console renders was
+      enumerated and none addressed `:portalId/aliases`, so that screen could be reached only by typing
+      its address — while the alias endpoints grant a tenant administrator every action by right.
     -->
     @if (aliasesLink(); as aliases) {
       <!--
         The accessible name is QUALIFIED WITH THE TENANT while the visible text stays the bare module
         title, so a reader is told whose host names these are and a speech-input caller can still say
         what they see: the name BEGINS with the visible text, which is what WCAG 2.5.3 Label in Name
-        requires. When the title has not arrived yet the bare label stands alone rather than being
-        qualified with an empty string.
-
-        An anchor, not a button: this is a navigation to an addressable screen, so it must be
-        middle-clickable and open-in-new-tab-able, and the router link is what makes it both.
+        requires.
       -->
       <a
         class="page-action"
@@ -134,15 +37,11 @@
     }
   </app-page-header>
 
-  <!--
-    The failure surface. It renders nothing when there is no problem document, derives its
-    own severity, field list and support reference, and carries the live region, so this
-    screen neither composes an error sentence nor decides how forcefully to show one.
-  -->
+  <!-- The failure surface. -->
   <app-error-banner [problem]="problem()" />
 
   @if (!hasPortalId()) {
-    <!-- The address named no usable portal. Said plainly rather than left blank. -->
+    <!-- The address named no usable portal. -->
     <p class="portal-settings__intro">{{ portalIdMissingMessage }}</p>
   } @else if (loading()) {
     <app-loading-spinner size="large" label="Loading site settings…" />
@@ -155,20 +54,11 @@
     >
       @for (tab of tabOrder; track tab) {
         <!--
-          Only the selected tab is in the sequential tab order; the arrow keys move between
-          them, which is the strip's own contract rather than the document's.
-
-          THE CONTROL REFERENCE IS DROPPED WHILE THERE IS NOTHING TO CONTROL. Only the
-          selected panel is in the document — the other is DESTROYED, not hidden — so naming
-          it from the unselected trigger would point at an element that does not exist, and a
-          reference that resolves to nothing is worse than no reference: assistive technology
-          is told a relationship exists and then cannot follow it. The attribute binding
-          resolves to null and the attribute is omitted entirely, so the reference exists
-          exactly when its target does. `aria-selected` still carries the state, which is
-          what makes the reference optional in the first place. This is not invented here —
-          `shared/components/form-field` reached the identical conclusion for its own
-          disclosure, for the identical reason, and this screen follows that precedent rather
-          than contradicting it.
+          THE CONTROL REFERENCE IS DROPPED WHILE THERE IS NOTHING TO CONTROL. Only the selected panel is
+          in the document — the other is DESTROYED, not hidden — so naming it from the unselected
+          trigger would point at an element that does not exist, and a reference that resolves to
+          nothing is worse than no reference: assistive technology is told a relationship exists and
+          then cannot follow it.
         -->
         <button
           #tabControl
@@ -198,23 +88,8 @@
           <p class="portal-settings__intro">{{ tabHelp['basic'] }}</p>
 
           <!--
-            Site Details. Open by default: its section head declared no collapsed state.
-
-            EACH NESTED GROUP IS A GROUPED FIELD SET WITH A CAPTION, and that is a
-            structural decision rather than a stylistic one. The legacy child section head
-            was a caption standing over a set of related controls, which is precisely what a
-            field set and its caption express; the caption becomes the group's accessible
-            name for free, so a reader arriving at any control inside is told which group it
-            belongs to. The paired stylesheet states the same contract from its side — it
-            declares nothing that a field set and its caption already provide — so the
-            grouping boundary, its radius, its inset and the caption's type all resolve to
-            tokens in the global form partial rather than being restated here.
-
-            The toggle sits INSIDE the caption, so the group's name and the control that
-            opens it are one thing. It carries its own expanded state and a reference to the
-            body it controls, and the body is REMOVED when closed rather than hidden, so the
-            reference names something whenever it exists and text that is not on the screen
-            is never left in the accessibility tree.
+            The toggle sits INSIDE the caption, so the group's name and the control that opens it are
+            one thing.
           -->
           <fieldset
             class="portal-settings__section"
@@ -240,16 +115,10 @@
             @if (isSectionOpen('siteDetails')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('siteDetails')">
                 <!--
-                  ⚠ NOT MARKED REQUIRED, AND NOTHING HERE REFUSES A BLANK TITLE. This field
-                  briefly carried a `[required]` marker, an `aria-required` announcement and a
-                  `Validators.required` rule, mirroring a `NotEmpty()` the update contract
-                  carried; all four are withdrawn together as a parity break. The legacy screen
-                  declares no `RequiredFieldValidator` on its 568 lines, and its write path
-                  stored a blank title as the empty string — `SqlDataProvider.vb:L632` passes
-                  `PortalName` raw while wrapping fourteen sibling arguments in `GetNull`, and
-                  `[PortalName] [nvarchar] (128) NOT NULL` accepts the empty string. Marking it
-                  required here refused an input both legacy tiers took. See the control's own
-                  note in the component for the full citation set.
+                  ⚠ NOT MARKED REQUIRED, AND NOTHING HERE REFUSES A BLANK TITLE. This field briefly
+                  carried a `[required]` marker, an `aria-required` announcement and a
+                  `Validators.required` rule, mirroring a `NotEmpty()` the update contract carried; all
+                  four are withdrawn together as a parity break.
                 -->
                 <app-form-field
                   [label]="fieldLabel['portalName']"
@@ -268,10 +137,7 @@
                   </div>
                 </app-form-field>
 
-                <!--
-                  MIGRATION: a plain multi-line box. The legacy rich-text provider is
-                  excluded, and the measured row count and character limit are preserved.
-                -->
+                <!-- A plain multi-line box. -->
                 <app-form-field
                   class="portal-settings__field--wide"
                   [label]="fieldLabel['description']"
@@ -324,16 +190,9 @@
                 </app-form-field>
 
                 <!--
-                  The identifier is read-only and upper-cased, exactly as the legacy screen
-                  rendered it: into a label through `.ToString.ToUpper`, never into an input.
-                  An output element is the semantic match for a value the page produces
-                  rather than one the operator types.
-
-                  `for` is supplied even though nothing here is typed into. The legacy label
-                  declared `controlname="lblGUID"` at `sitesettings.ascx:L68`, so it DID name
-                  its control, and the wrapper maps that attribute onto `for`. An output
-                  element is one of the labelable elements, so the association is valid and
-                  the read-only value is named by its caption rather than left anonymous.
+                  `for` is supplied even though nothing here is typed into. The legacy label declared
+                  `controlname="lblGUID"` at `sitesettings.ascx:L68`, so it DID name its control, and
+                  the wrapper maps that attribute onto `for`.
                 -->
                 <app-form-field
                   [label]="fieldLabel['guid']"
@@ -351,18 +210,8 @@
           </fieldset>
 
           <!--
-            MIGRATION: Site Marketing survives with EXACTLY ONE field, so it is rendered
-            rather than dropped. Its body at `sitesettings.ascx` L75-L128 holds five labelled
-            rows; four go and one stays. The search-engine selector, the site-map box and the
-            verification box go with the excluded search provider, along with their three
-            submit handlers. The advertising row goes further and is never rendered at all:
-            its resource value holds a live third-party script with a remote source, which is
-            the reason no value on this screen is ever bound as markup. Banner advertising is
-            a genuine portal column and remains. Its section head declared itself expanded,
-            and it is.
-
-            The caption reads "Site Marketing" — the resource value — and not the markup
-            attribute's "Marketing".
+            Site Marketing survives with EXACTLY ONE field, so it is rendered rather than dropped. Its
+            body at `sitesettings.ascx` L75-L128 holds five labelled rows; four go and one stays.
           -->
           <fieldset
             class="portal-settings__section"
@@ -388,51 +237,23 @@
             @if (isSectionOpen('marketing')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('marketing')">
                 <!--
-                  NO `for` HERE, DELIBERATELY, and the same reasoning governs the user
-                  registration group on the other tab. The legacy label named a control -
-                  `ControlName="optBanners"` at `sitesettings.ascx:L118` - but the control it
-                  named was ONE radio list server control standing for the whole group, and a
-                  group of radios has no single element in its place here. `for` may only name
-                  a labelable element, which the group's own wrapper is not, and pointing it at
-                  one arbitrary radio would name that radio rather than the group and leave the
-                  other two anonymous. The wrapper already names the group correctly through a
-                  group role carrying a reference to this caption, which is the equivalent the
-                  legacy single-control association translates to.
+                  NO `for` HERE, DELIBERATELY, and the same reasoning governs the user registration
+                  group on the other tab.
                 -->
                 <app-form-field
                   [label]="fieldLabel['bannerAdvertising']"
                   [help]="fieldHelp['bannerAdvertising']"
                 >
                   <div class="portal-settings__control">
+                    <!-- Horizontal, three choices, matching the legacy list item for item. -->
                     <!--
-                      Horizontal, three choices, matching the legacy list item for item. The
-                      wrapper the field component places around projected content is a group
-                      named by the label, which is what a set of radio choices needs.
-                    -->
-                    <!--
-                      BLITZY [A11Y]: a native radio renders at the user agent's own 13 by 13
-                      pixel box, below the 24 by 24 minimum that the current success criterion
-                      for target size states. It is REPORTED here rather than corrected here,
-                      for two reasons that both point the same way. The size is not set by this
-                      screen: the global form partial styles this control's accent colour,
-                      margin and cursor and deliberately sets no box, so the value is the user
-                      agent default and every radio in the workspace shares it — a per-screen
-                      correction would fix one of them and diverge from the rest. And the only
-                      instrument available from a template is an inline style, which the design
-                      system forbids outright. The legacy screen rendered the same user-agent
-                      control, so this is continuity rather than regression. The wrapping label
-                      does enlarge the pointer area, and the group is fully keyboard operable,
-                      so nothing here is unreachable. Owner: the global form partial.
-                      The same note applies to the registration group on the other tab.
+                      BLITZY [A11Y]: a native radio renders at the user agent's own 13 by 13 pixel box,
+                      below the 24 by 24 minimum that the current success criterion for target size
+                      states.
                     -->
                     @for (choice of bannerChoices; track choice.value) {
                       <label>
-                        <!--
-                          ⚠ The static `name` is what makes these one NATIVE radio group. The reactive
-                          directive groups them in the model only and writes no `name` attribute, so
-                          without it arrow-key movement and the single tab stop are both lost. Its value
-                          is the control's own name, so the two cannot drift apart.
-                        -->
+                        <!-- ⚠ The static `name` is what makes these one NATIVE radio group. -->
                         <input
                           type="radio"
                           name="bannerAdvertising"
@@ -444,11 +265,9 @@
                     }
 
                     <!--
-                      The hosting provider's lock. Measured: for a caller without the host
-                      account the list is disabled and this notice appears exactly when the
-                      STORED choice is Host; for a host account the notice is hidden outright.
-                      The stored value decides, not the value currently in the form, so
-                      choosing Host does not lock the control mid-edit.
+                      The hosting provider's lock. Measured: for a caller without the host account the
+                      list is disabled and this notice appears exactly when the STORED choice is Host;
+                      for a host account the notice is hidden outright.
                     -->
                     @if (bannerLockedByHost()) {
                       <p class="portal-settings__notice">{{ bannerHostLockNotice }}</p>
@@ -471,10 +290,7 @@
         >
           <p class="portal-settings__intro">{{ tabHelp['advanced'] }}</p>
 
-          <!--
-            Security Settings. Open by default: its section head declared no collapsed
-            state. One surviving field — the registration mode, a portal column.
-          -->
+          <!-- Security Settings. Open by default: its section head declared no collapsed state. -->
           <fieldset
             class="portal-settings__section"
             [class.portal-settings__section--collapsed]="!isSectionOpen('security')"
@@ -504,18 +320,13 @@
                 >
                   <div class="portal-settings__control">
                     <!--
-                      BLITZY [A11Y]: the user-agent radio box falls below the stated target-size
-                      minimum here for the same reason, and with the same owner, as the banner
-                      group on the other tab. Reported, not corrected from a feature template.
+                      BLITZY [A11Y]: the user-agent radio box falls below the stated target-size minimum
+                      here for the same reason, and with the same owner, as the banner group on the
+                      other tab.
                     -->
                     @for (choice of registrationChoices; track choice.value) {
                       <label>
-                        <!--
-                          ⚠ The static `name` is what makes these one NATIVE radio group. The reactive
-                          directive groups them in the model only and writes no `name` attribute, so
-                          without it arrow-key movement and the single tab stop are both lost. Its value
-                          is the control's own name, so the two cannot drift apart.
-                        -->
+                        <!-- ⚠ The static `name` is what makes these one NATIVE radio group. -->
                         <input
                           type="radio"
                           name="userRegistration"
@@ -531,17 +342,6 @@
             }
           </fieldset>
 
-          <!--
-            Page Management. Open by default. All four selectors share ONE option list: the
-            legacy screen issued the identical query four times — `sitesettings.ascx.vb`
-            L299, L304, L309 and L314 are the same call with the same arguments — and doing
-            that here would be four requests for one answer.
-
-            The caption reads "Page Management", the resource value behind the `Pages` key.
-            No page may be created, deleted, reordered, moved or transferred from this
-            screen: these are selectors over pages that already exist, which is all the
-            legacy screen offered here too.
-          -->
           <fieldset
             class="portal-settings__section"
             [class.portal-settings__section--collapsed]="!isSectionOpen('pages')"
@@ -576,27 +376,6 @@
                   [error]="messagesFor('splashTabId')"
                 >
                   <div class="portal-settings__control">
-                    <!--
-                      The option value is bound by VALUE rather than as an attribute, so the
-                      control holds a number. An attribute binding would make every stored
-                      page identifier a string and break the comparison that selects one.
-
-                      ⚠ THE ENCODED `value="0: -1"` ATTRIBUTE THIS PRODUCES IS DELIBERATE, and
-                      the alternative was measured before it was declined. `[ngValue]` makes
-                      Angular's select accessor write `index: value` into the DOM attribute and
-                      keep the real value in its own option map, which is how a select can hold
-                      a number at all. Switching to `[value]` would remove the encoding and
-                      corrupt the write: the accessor hands back `element.value`, so the control
-                      typed `FormControl<number>` would hold the STRING `'-1'` after any
-                      selection, `selectedPageToWire` compares with `===` against the numeric
-                      sentinel, `'-1' === -1` is false, and the request would carry `"-1"` as a
-                      page identifier instead of the null that "none specified" means.
-
-                      The encoding reaches no user. It is not rendered — the option's text is
-                      its label — it is not the option's accessible name, and it is never
-                      submitted, because this form posts through the store rather than natively.
-                      The only surface it appears on is the DOM inspector.
-                    -->
                     <select formControlName="splashTabId" [id]="controlId('splashTabId')">
                       @for (option of pageOptions(); track option.value) {
                         <option [ngValue]="option.value">{{ option.label }}</option>
@@ -653,15 +432,7 @@
             }
           </fieldset>
 
-          <!--
-            MIGRATION: Other Settings survives with EXACTLY TWO fields, so it is rendered
-            rather than dropped. Its body at `sitesettings.ascx` L387-L418 holds five labelled
-            rows; three go and two stay. The default-language selector goes with the unported
-            localisation mechanism, the site-log retention box with the excluded logging
-            provider, and the premium-module dual list with the excluded provider families.
-            The administrator and the portal time zone are genuine portal columns and remain.
-            Its section head declared itself collapsed, and it is.
-          -->
+          <!-- Other Settings survives with EXACTLY TWO fields, so it is rendered rather than dropped. -->
           <fieldset
             class="portal-settings__section"
             [class.portal-settings__section--collapsed]="!isSectionOpen('other')"
@@ -685,24 +456,6 @@
 
             @if (isSectionOpen('other')) {
               <div class="portal-settings__grid" [id]="sectionBodyId('other')">
-                <!--
-                  MIGRATION: `cboAdministratorId` from `sitesettings.ascx:L395`, filled at
-                  `SiteSettings.ascx.vb:L331-L336` from the members of the portal's own
-                  administrator role and written as argument nine of the portal update at
-                  `:L775`. This was previously a read-only display, because no read existed that
-                  could enumerate the administrators of the portal the ROUTE names — every role
-                  read resolves its tenant from the caller's own context. That read now exists on
-                  the portal resource, so the legacy affordance is restored rather than
-                  approximated.
-
-                  `[ngValue]` rather than `[value]`, matching the page selectors above: the
-                  control holds a number, and an attribute binding would make every account
-                  identifier a string and break the comparison that selects one.
-
-                  The two states below are ASIDES about the list, not validation messages, so
-                  they sit outside the field's error slot — the same treatment the page selectors
-                  give their own unavailable notice.
-                -->
                 <app-form-field
                   [label]="fieldLabel['administratorId']"
                   [for]="controlId('administratorId')"
@@ -724,13 +477,7 @@
                   </div>
                 </app-form-field>
 
-                <!--
-                  MIGRATION: the time zone is an explicit offset in whole minutes rather than a
-                  named-zone list. The legacy list was built from a global resource catalogue in
-                  an excluded tree, and no date library is in the pinned dependency surface, so
-                  the named zones have no source here. The offset is the value the column
-                  actually stores, so the setting stays fully editable and nothing is invented.
-                -->
+                <!-- The time zone is an explicit offset in whole minutes rather than a named-zone list. -->
                 <app-form-field
                   [label]="fieldLabel['timeZoneOffset']"
                   [for]="controlId('timeZoneOffset')"
@@ -739,12 +486,8 @@
                 >
                   <div class="portal-settings__control portal-settings__control--medium">
                     <!--
-                      The note below is referenced from the CONTROL rather than from the field,
-                      which is the finer-grained of the two wirings the field component
-                      documents as supported. The field already describes its group from the
-                      measured help text; this adds the unit to the input's own description, so
-                      the two compose instead of competing and a reader hears the unit at the
-                      moment it starts typing a number.
+                      The note below is referenced from the CONTROL rather than from the field, which is
+                      the finer-grained of the two wirings the field component documents as supported.
                     -->
                     <input
                       type="text"
@@ -758,47 +501,14 @@
                 </app-form-field>
 
                 <!--
-                  THE UNIT NOTE IS A SIBLING OF THE FIELD, NOT A CHILD OF IT, and the placement
-                  is load-bearing rather than incidental. Two nested measures cap it if it sits
-                  inside: the screen's own wrapper keeps a short numeric input from stretching
-                  to the width of the group, and the field component's own two-track layout
-                  caps its control slot as well. A sentence placed inside either one wraps into
-                  a narrow column — measured at five fragments inside the inner cap and three
-                  inside the outer, the last of them a single orphaned word. The surrounding
-                  group is a single-column grid, so as a sibling the note takes the group's full
-                  measure and reads as two lines. It loses nothing by moving: it never was part
-                  of the field's accessible description by position, and it is now part of it by
-                  explicit reference from the control above.
+                  THE UNIT NOTE IS A SIBLING OF THE FIELD, NOT A CHILD OF IT, and the placement is
+                  load-bearing rather than incidental.
                 -->
                 <p class="portal-settings__notice" id="portal-settings-timeZoneOffset-unit">
                   The offset from Coordinated Universal Time, in minutes. Behind UTC is
                   negative — for example −480 for Pacific Time.
                 </p>
 
-                <!--
-                  MIGRATION: `cboCurrency` from `sitesettings.ascx:L300-L304`, written as argument
-                  eight of the portal update at `SiteSettings.ascx.vb:L774`. It was previously
-                  returned unchanged from the loaded snapshot and shown nowhere, so a value the API
-                  publishes — `USD` on the measured installation — appeared on no tab and in no
-                  section while still being re-submitted on every save. That is a legacy workflow
-                  with no successor, so the field is restored here.
-
-                  ⚠ A TEXT BOX RATHER THAN THE LEGACY SELECTOR, and the reason is a scope boundary
-                  rather than a shortcut. `SiteSettings.ascx.vb:L320-L327` filled the list from
-                  `ctlList.GetListEntryInfoCollection("Currency")` — the list subsystem, which is
-                  excluded, and whose `Lists` table is not among the twenty-five this installation
-                  has. There is therefore no source for the option set, and inventing one would
-                  refuse values the column holds and the server accepts, including whatever an
-                  installation already stores. The column is `char(3)` and the server's only rule is
-                  that length, so that is the only rule applied. The divergence is recorded in
-                  MIGRATION_NOTES.md.
-
-                  ⚠ IN *THIS* SECTION, NOT ITS LEGACY ONE. The legacy screen kept it under `dshPayment`
-                  ("Payment Settings", `sitesettings.ascx:L294`), a section this screen drops entirely
-                  along with its other subject matter. Restoring a whole section for one field would be
-                  a larger change than the finding needs; placing the field beside the other
-                  site-wide, non-host values keeps it editable with the smallest structural change.
-                -->
                 <app-form-field
                   [label]="fieldLabel['currency']"
                   [for]="controlId('currency')"
@@ -816,21 +526,7 @@
                   </div>
                 </app-form-field>
 
-                <!--
-                  MIGRATION: `cboDefaultLanguage` from `sitesettings.ascx:L401-L405`, written as
-                  argument twenty-five of the portal update at `SiteSettings.ascx.vb:L780`. Same
-                  history as the currency above: on the wire, on no tab, and re-submitted anyway.
-
-                  ⚠ A TEXT BOX RATHER THAN THE LEGACY CULTURE SELECTOR, for the same class of reason.
-                  `SiteSettings.ascx.vb:L422` filled it with
-                  `Localization.LoadCultureDropDownList(..., CultureDropDownTypes.NativeName, ...)`,
-                  and the localisation subsystem is out of scope — no translation runtime is in the
-                  pinned dependency surface, so the culture catalogue has no source here. The column
-                  is `nvarchar(10)` and the server's only rule is that length. Recorded in
-                  MIGRATION_NOTES.md.
-
-                  This field IS in its legacy section: `dshOther` is where the legacy screen kept it.
-                -->
+                <!-- ⚠ A TEXT BOX RATHER THAN THE LEGACY CULTURE SELECTOR, for the same class of reason. -->
                 <app-form-field
                   [label]="fieldLabel['defaultLanguage']"
                   [for]="controlId('defaultLanguage')"
@@ -851,20 +547,7 @@
             }
           </fieldset>
 
-          <!--
-            Host Settings.
-
-            MIGRATION: gated on the HOST ACCOUNT, not on a permission. The legacy gate was a
-            super-user test, and the permission vocabulary this application resolves has no
-            member for it — a permission-based gate would match nothing and hide the section
-            from everybody, including the accounts it is for. The gate is advisory in any case:
-            the server applies the same rule and answers a refusal, which this screen presents
-            rather than pre-empts.
-
-            The controls behind the gate are still hydrated and still returned, because the
-            update resource replaces every column it names. That is also what the legacy
-            postback did — a hidden control kept its value in the serialised control tree.
-          -->
+          <!-- Host Settings. -->
           @if (isSuperUser()) {
             <fieldset
               class="portal-settings__section"
@@ -889,20 +572,6 @@
 
               @if (isSectionOpen('host')) {
                 <div class="portal-settings__grid" [id]="sectionBodyId('host')">
-                  <!--
-                    A native date control. The legacy screen paired a free-text box with a
-                    separate calendar link; the control now provides the picker itself, so the
-                    link has nothing to open. An absent expiry shows an EMPTY box — never a
-                    placeholder date.
-
-                    THE LENGTH LIMIT IS DECLARED EVEN THOUGH A DATE CONTROL IGNORES IT, and
-                    that is deliberate rather than an oversight. The measured limit is part of
-                    the field's contract, the paired class enforces it as a validator so it is
-                    live regardless, and declaring it here keeps the markup honest about the
-                    constraint the field carries. If the control ever degrades to plain text —
-                    which is exactly what a browser without date support does — the attribute
-                    becomes effective again with no change required.
-                  -->
                   <app-form-field
                     [label]="fieldLabel['expiryDate']"
                     [for]="controlId('expiryDate')"
@@ -937,12 +606,7 @@
                     </div>
                   </app-form-field>
 
-                  <!--
-                    The three quota boxes show the stored number, INCLUDING zero. The legacy
-                    hydration used a plain string conversion with no special case, so a stored
-                    zero appeared as `0`; the "zero means unlimited" rule is stated in the disk
-                    space help text and nowhere else, because that is where the legacy stated it.
-                  -->
+                  <!-- The three quota boxes show the stored number, INCLUDING zero. -->
                   <app-form-field
                     [label]="fieldLabel['hostSpace']"
                     [for]="controlId('hostSpace')"
@@ -1003,11 +667,7 @@
         </div>
       }
 
-      <!--
-        The form's own action bar. It is outside both panels because it commits the whole
-        form, not the tab that happens to be showing: the controls on the other tab are part
-        of the same write.
-      -->
+      <!-- The form's own action bar. -->
       <div class="portal-settings__actions">
         <button type="submit" [disabled]="busy()"
           [attr.aria-busy]="busy() ? 'true' : null">Update</button>
@@ -1018,40 +678,31 @@
             ⚠ THE LABEL IS BOUND, NOT WRITTEN. It read "Saving…" unconditionally, and this indicator
             shows whenever any request this screen depends on is outstanding - including the refetch
             that a plain REVISIT issues, where the form renders immediately from the store's held
-            settings and nothing has been submitted at all. An operator was told their work was being
-            saved when it was not. The paired class now chooses the wording from what is actually in
-            flight.
+            settings and nothing has been submitted at all.
           -->
           <app-loading-spinner size="small" [label]="busyLabel()" />
         }
       </div>
 
       @if (submitRejected()) {
-        <!--
-          Named once at form level for a reader who never saw the individual fields. The
-          per-field messages are rendered by the field wrapper, each in its own live region.
-        -->
+        <!-- Named once at form level for a reader who never saw the individual fields. -->
         <p class="portal-settings__notice" role="alert">{{ formInvalidMessage }}</p>
       }
     </form>
   }
 
   <!--
-    The confirmation is CREATED when it is needed, because it opens itself as a modal on
-    first view. Its wording is this screen's own measured message — including the space
-    before its question mark — and not the shared "delete this item" question the portal
-    listing asks.
+    The confirmation is CREATED when it is needed, because it opens itself as a modal on first view. Its
+    wording is this screen's own measured message — including the space before its question mark — and
+    not the shared "delete this item" question the portal listing asks.
   -->
   @if (confirmingDelete()) {
-    <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
-       shows the SAME title, which the shared dialog declares as its default; binding one here is how
-       five different titles for one action came about - runtime testing found `Delete`,
-       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
-       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
-       `window.confirm()` carrying the single shared string `DeleteItem`
-       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
-       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
-       resource value this migration must preserve. -->
+    <!--
+      ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+      the SAME title, which the shared dialog declares as its default; binding one here is how five
+      different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+      `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+    -->
     <app-confirm-dialog
       [title]="deleteConfirmTitle"
       [message]="deleteConfirmMessage()"

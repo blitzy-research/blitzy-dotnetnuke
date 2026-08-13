@@ -20,27 +20,20 @@ using Module = DnnMigration.Domain.Entities.Module;
 namespace DnnMigration.UnitTests.Services;
 
 /// <summary>
-/// Covers the account workflow: the split between the tracked account row and the external credential store,
-/// the membership transitions an administrator may apply, the profile reconciliation, and the settings that
-/// are stored against a module instance rather than against the tenant.
+/// Covers the account workflow: the split between the tracked account row and the external credential
+/// store, the membership transitions an administrator may apply, the profile reconciliation, and the
+/// settings that are stored against a module instance rather than against the tenant.
 /// </summary>
 /// <remarks>
 /// <para>
-/// An account is two things in two places. The row in the tenant's own table is tracked and committed through
-/// the unit of work; the credential is held in the external membership store and is reached by explicit
-/// statements. Every member below is asserted against both, because the interesting failures are exactly the
-/// ones where the two disagree: an account row with no credential, a credential the store refuses after the
-/// row has already committed, and a membership transition that the row would accept but the credential store
-/// reports as already applied. The transitions deliberately do not commit the unit of work at all — they
-/// write through the credential store and then correct the loaded row so the answer a caller reads back is
-/// consistent.
+/// An account is two things in two places. The row in the tenant's own table is tracked and committed
+/// through the unit of work; the credential is held in the external membership store and is reached by
+/// explicit statements.
 /// </para>
 /// <para>
 /// Membership settings are not tenant columns. They are module settings held against the tenant's single
 /// account-management module instance, which is why reading them can legitimately answer nothing and why
-/// writing them can legitimately fail with nowhere to write. That indirection reaches further than it looks:
-/// the display-name format and the default profile visibility both come from it, so an account update and a
-/// profile read both depend on a module instance existing. Those couplings are asserted rather than assumed.
+/// writing them can legitimately fail with nowhere to write.
 /// </para>
 /// </remarks>
 public class UserServiceTests
@@ -49,11 +42,9 @@ public class UserServiceTests
     /// The first key <c>dbo.Portals.PortalID</c> issues, which is a REAL TENANT and not the host scope.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
-    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first tenant an installation has. The host
-    /// scope is a SQL <c>NULL</c> portal, which <c>03.03.03.SqlDataProvider:L74-L83</c> established. The
-    /// constant is named for what it is so that no assertion below can be read as treating -1 as an
-    /// absence.
+    /// <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c> (<c>01.00.00.SqlDataProvider:L77</c>), so -1
+    /// is the first tenant an installation has. The host scope is a SQL <c>NULL</c> portal, which
+    /// <c>03.03.03.SqlDataProvider:L74-L83</c> established.
     /// </remarks>
     private const int FirstTenantPortalId = -1;
 
@@ -68,8 +59,8 @@ public class UserServiceTests
     private const int AdministratorId = 9;
 
     /// <summary>
-    /// The account that ACTS in a test, kept distinct from every account a test acts upon so that a caller and
-    /// a subject can never be confused for one another.
+    /// The account that ACTS in a test, kept distinct from every account a test acts upon so that a caller
+    /// and a subject can never be confused for one another.
     /// </summary>
     private const int CallerId = 77;
 
@@ -145,14 +136,14 @@ public class UserServiceTests
 
     /// <summary>
     /// Reported when the credential changed between this request reading it and writing it, so the store
-    /// refused the write on purpose. Its reason token ends in <c>superseded</c>, so the Api edge answers
-    /// <c>409</c> - a well-formed request the resource's current state declines.
+    /// refused the write on purpose.
     /// </summary>
     private const string PasswordSupersededCode = "user.password.superseded";
 
     /// <summary>
-    /// Reported when an operation that must end an account's sessions could not, so the operation itself was
-    /// abandoned. Its reason token ends in <c>store_unavailable</c>, so the Api edge answers <c>503</c>.
+    /// Reported when an operation that must end an account's sessions could not, so the operation itself
+    /// was abandoned. Its reason token ends in <c>store_unavailable</c>, so the Api edge answers
+    /// <c>503</c>.
     /// </summary>
     private const string SessionRevocationFailedCode = "user.session.revocation_store_unavailable";
 
@@ -168,14 +159,10 @@ public class UserServiceTests
 
     private const string PasswordUnsupportedOperationCode = "user.password.unsupported-operation";
 
-    /// <summary>
-    /// The refusal a credential change carries when the caller is not the account that owns it.
-    /// </summary>
+    /// <summary>The refusal a credential change carries when the caller is not the account that owns it.</summary>
     private const string PasswordChangeSelfOnlyForbiddenCode = "user.password.change-self-only-forbidden";
 
-    /// <summary>
-    /// The refusal an administrative reset carries when the caller does not administer the tenant.
-    /// </summary>
+    /// <summary>The refusal an administrative reset carries when the caller does not administer the tenant.</summary>
     private const string PasswordResetForbiddenCode = "user.password.reset-forbidden";
 
     private const string UnlockNotLockedCode = "user.unlock.not-locked";
@@ -205,9 +192,7 @@ public class UserServiceTests
 
     private const string ProfileDefinitionNotFoundCode = "profile-definition.not-found";
 
-    /// <summary>
-    /// The tenant has switched self-service subscription off - <c>Profile_ManageServices</c>.
-    /// </summary>
+    /// <summary>The tenant has switched self-service subscription off - <c>Profile_ManageServices</c>.</summary>
     private const string ServiceDisabledCode = "user.service.disabled-forbidden";
 
     /// <summary>The addressed role is not one the tenant publishes for self-service.</summary>
@@ -232,52 +217,13 @@ public class UserServiceTests
     /// scoped to a tenant.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The inventory is asserted BY NAME rather than by count. A count fails identically for a correct
-    /// addition and an incorrect one and names neither, so it forces the next reader to work out which member
-    /// moved; a named set says exactly what the contract is and fails with the missing or surplus name in the
-    /// message.
-    /// </para>
-    /// <para>
-    /// Two of them are recent and both are named deliberately.
-    /// <c>RequiresProfileCompletionAsync</c> lets the sign-in path evaluate the legacy profile gate without
-    /// the completeness rule acquiring a second implementation. <c>ResetPasswordAsync</c> exists because the
-    /// self-service credential change and the administrative reset were once a single member that chose
-    /// between them by reading a discriminator out of the caller's own request body, which let the caller
-    /// decide whether the current credential had to be proved; they are two members now precisely so the two
-    /// authorisation policies can differ, and this inventory asserts that the split is still in place.
-    /// </para>
-    /// <para>
-    /// FIVE of them are the member-services surface, and the count moved from twenty-one to twenty-six when
-    /// they were added. They belong to THIS contract rather than to the role contract because the legacy
-    /// panel operated on the SIGNED-IN account and on nothing else -
-    /// <c>Website/admin/Users/MemberServices.ascx.vb</c> passes <c>UserInfo.UserID</c> at L150, L106, L125
-    /// and L413, and <c>PortalModuleBase.vb:L319-L323</c> resolves that as the current account - and
-    /// because the role resource's own membership actions are gated on tenant administration and so could
-    /// never admit that caller. Three of the five are not membership writes at all: the catalogue read, the
-    /// trial gate and the invitation-code redemption have no counterpart on the role contract. The two that
-    /// are writes still have one implementation, because the service delegates them, which is what the
-    /// delegation facts in this suite pin.
-    /// </para>
-    /// <para>
-    /// The twenty-seventh is <c>ListAccountChoicesAsync</c>, and it is a member of its own rather than an
-    /// argument on the listing for a reason a reader should not have to reconstruct. It serves an account
-    /// PICKER, which needs a key and two captions; the listing serves a GRID, whose row carries a postal
-    /// address, a telephone number, an electronic-mail address, two audit instants and four status flags, and
-    /// which performs four supporting reads to fill them. A picker built on the listing therefore moved every
-    /// one of those fields across the wire so that three could be rendered - measured on the role-assignment
-    /// screen, which may enumerate a tenant of up to a thousand accounts. Two projections, two members, and
-    /// no flag on one member deciding which of them a caller gets.
-    /// </para>
-    /// <para>
-    /// PRIV-01. The twenty-eighth is <c>ExportPersonalDataAsync</c>, and it is a member of its own rather than
-    /// a shape of the account read for the reason the finding that produced it names: portability is one
-    /// document assembled from three projections, and an argument on the detail read would have made the
-    /// account contract answer two different questions. It reveals nothing a caller of the three could not
-    /// already read, which is a constraint on it rather than a consequence - and it is the only read on this
-    /// contract that writes an audit record, because reading a subject's whole record out of the system is an
-    /// event whose actor is worth keeping.
-    /// </para>
+    /// Two of them are recent and both are named deliberately. <c>RequiresProfileCompletionAsync</c> lets
+    /// the sign-in path evaluate the legacy profile gate without the completeness rule acquiring a second
+    /// implementation. <c>ResetPasswordAsync</c> exists because the self-service credential change and the
+    /// administrative reset were once a single member that chose between them by reading a discriminator
+    /// out of the caller's own request body, which let the caller decide whether the current credential had
+    /// to be proved; they are two members now precisely so the two authorisation policies can differ, and
+    /// this inventory asserts that the split is still in place.
     /// </remarks>
     [Fact]
     public void UserContract_OffersExactlyTwentyEightNamedTenantScopedOperations()
@@ -325,9 +271,7 @@ public class UserServiceTests
         }
     }
 
-    /// <summary>
-    /// The service refuses to be constructed without every collaborator it depends on.
-    /// </summary>
+    /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -439,9 +383,7 @@ public class UserServiceTests
         });
     }
 
-    /// <summary>
-    /// Listing accounts requires a paging request.
-    /// </summary>
+    /// <summary>Listing accounts requires a paging request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListUsers_RequiresAPagingRequest()
@@ -453,8 +395,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Malformed paging is refused as a request fault rather than as an outcome, because coordinates outside
-    /// the permitted range are a caller error rather than a state the tenant can be in.
+    /// Malformed paging is refused as a request fault rather than as an outcome, because coordinates
+    /// outside the permitted range are a caller error rather than a state the tenant can be in.
     /// </summary>
     /// <param name="pageIndex">The page index to submit.</param>
     /// <param name="pageSize">The page size to submit.</param>
@@ -492,22 +434,8 @@ public class UserServiceTests
     /// <param name="field">A field name a caller might reach for.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The shared request validator applies the union of every collection's sortable set, so each of
-    /// these names passes it. Each is nonetheless unhonourable HERE, and for a measured reason. The
-    /// creation instant, the last sign-in instant, the approval flag and the lock flag are read from the
-    /// external membership store AFTER the page has been taken, so ordering by one of them would sort
-    /// page two among itself and leave the collection order untouched - not an ordering at all. The
-    /// remaining names belong to other collections entirely. Refusing says so; accepting and then
-    /// ignoring would hand back a page the caller could not account for and could not detect.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this listing is NOT orderless, and an earlier revision of this fact said it was. The
-    /// mapped columns of the entity the query pages over can be ordered by the store, so they are
-    /// honoured rather than refused; the companion fact below asserts the accepted half of the same
-    /// vocabulary, so the declared set and the ordering the repository actually applies cannot drift
-    /// apart in either direction.
-    /// </para>
+    /// The shared request validator applies the union of every collection's sortable set, so each of these
+    /// names passes it. Each is nonetheless unhonourable HERE, and for a measured reason.
     /// </remarks>
     [Theory]
     [InlineData("CreatedDate")]
@@ -550,17 +478,13 @@ public class UserServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Every ordering the store can honour is accepted and passed through to it verbatim.
-    /// </summary>
+    /// <summary>Every ordering the store can honour is accepted and passed through to it verbatim.</summary>
     /// <param name="field">A mapped column of the entity the listing pages over.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The companion of the refusal above, and the reason the pair exists: the declared set and the
     /// ordering the repository applies are two independently editable places, so widening one without the
     /// other would either advertise an ordering that is silently discarded or refuse one that works.
-    /// Every name below is honoured by the repository's own ordering member, so each must reach it - which
-    /// is asserted by pinning the argument rather than merely by the call succeeding.
     /// </remarks>
     [Theory]
     [InlineData("UserId")]
@@ -600,16 +524,11 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A request that names no ordering is answered normally, so the refusal above is scoped to an
-    /// explicit preference and does not make the listing unusable.
+    /// A request that names no ordering is answered normally, so the refusal above is scoped to an explicit
+    /// preference and does not make the listing unusable.
     /// </summary>
     /// <param name="sortBy">The absent-or-blank sort field to submit.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The three spellings are the ones the request contract itself treats as "no preference expressed",
-    /// and the refusal is keyed to that same test rather than to a second interpretation of it - so a
-    /// caller who sends an empty sort parameter is not asked to justify a field it never named.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -699,8 +618,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Two filters at once are refused, because the store applies one and a caller would not be able to tell
-    /// which.
+    /// Two filters at once are refused, because the store applies one and a caller would not be able to
+    /// tell which.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -815,9 +734,7 @@ public class UserServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A search term of only white space is treated as absent.
-    /// </summary>
+    /// <summary>A search term of only white space is treated as absent.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListUsers_TreatsAWhitespaceSearchTermAsAbsent()
@@ -935,18 +852,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the per-row read this replaces ran AFTER the database had already windowed the page, so the
-    /// very windowing that made the listing bounded was followed by a sequence of reads bounded only by the
-    /// requested page size. The address and telephone columns are enabled by default, so the DEFAULT
-    /// configuration was the expensive one; nothing had to be misconfigured for a page of a hundred accounts
-    /// to cost a hundred round trips.
-    /// </para>
-    /// <para>
-    /// The fact measures the count AND the argument: one call, carrying the tenant scope and precisely the
-    /// accounts the page returned. A batched read that fetched more accounts than the page holds would pass a
-    /// count assertion while re-introducing the over-fetch in a different shape.
-    /// </para>
+    /// The per-row read this replaces ran AFTER the database had already windowed the page, so the very
+    /// windowing that made the listing bounded was followed by a sequence of reads bounded only by the
+    /// requested page size.
     /// </remarks>
     [Fact]
     public async Task ListUsers_ReadsTheWholePageProfileValuesInOneCallKeyedOnThePagesOwnAccounts()
@@ -1002,8 +910,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A request that asks for no page size receives an unpaged answer; a paged request keeps the store's own
-    /// coordinates.
+    /// A request that asks for no page size receives an unpaged answer; a paged request keeps the store's
+    /// own coordinates.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1037,29 +945,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this asserts server-side data MINIMISATION, and it deliberately reverses an intermediate
-    /// revision that projected every column as stored and left the hiding to the client. Two things settle
-    /// it against that revision. Withholding is what the tenant's own configuration asks for, so a row that
-    /// carries a column the tenant has switched off has been over-fetched whatever the client then does with
-    /// it; and client-side hiding is not minimisation at all, because the payload still crossed the API
-    /// boundary and anything that reads the response - a log, a proxy cache, a browser extension, the next
-    /// developer - reads the PII with it.
-    /// </para>
-    /// <para>
-    /// The objection the earlier revision raised - that a withheld value is indistinguishable from an absent
-    /// one - is real but answered, and answered without keeping the value: the flags governing this are
-    /// published verbatim by the membership-settings read, which a client must already have performed in
-    /// order to know which columns to render, so "blank because withheld" and "blank because unrecorded" are
-    /// always separable by the caller. The privileged single-account reads are unaffected and remain the way
-    /// to obtain a withheld value deliberately.
-    /// </para>
-    /// <para>
-    /// The two profile-backed columns are withheld one step earlier, by not being FETCHED - which is what the
-    /// <c>Times.Never()</c> verifications at the end measure, on both the batched listing read and the
-    /// single-account read. The row-level withholding still covers them, so a later change to the fetch gate
-    /// cannot leak them.
-    /// </para>
+    /// This asserts server-side data MINIMISATION, and it deliberately reverses an intermediate revision
+    /// that projected every column as stored and left the hiding to the client. Two things settle it
+    /// against that revision.
     /// </remarks>
     [Fact]
     public async Task ListUsers_WithholdsEveryColumnTheTenantHidesAndSkipsTheirReads()
@@ -1165,21 +1053,6 @@ public class UserServiceTests
     /// call, so no second tenant read is issued for one column.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// ⚠ WHAT THIS PINS IS AN ABSENCE, WHICH IS WHY THE CONTROL MATTERS. A detail read used to issue its own
-    /// <c>Portals</c> round trip for <c>AdministratorId</c> alone, once per account opened, when the value was
-    /// already sitting in the call-scoped tenant snapshot the container hands over for free. The verification
-    /// is <c>Times.Never</c>, so it would pass against a service that never needed the value at all - the
-    /// projected capability is therefore asserted alongside it, proving the value was obtained rather than
-    /// skipped.
-    /// </para>
-    /// <para>
-    /// The account under test IS the designated administrator, so the capability it publishes is the negative
-    /// one. That is the harder direction to reach by accident: a service that silently lost the value would
-    /// report the account as removable, which is the defect the projection exists to prevent.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task GetUser_ReadsTheDesignatedAdministratorFromTheCallScopedTenantFacts()
     {
@@ -1201,18 +1074,15 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A snapshot describing a DIFFERENT tenant is not trusted, so the designated administrator is read from
-    /// persistence for the tenant actually being acted on.
+    /// A snapshot describing a DIFFERENT tenant is not trusted, so the designated administrator is read
+    /// from persistence for the tenant actually being acted on.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// ⚠ THE CORRECTNESS HALF OF THE OPTIMISATION, AND THE REASON THE TENANT IS COMPARED AT ALL. The snapshot
-    /// describes the tenant the REQUEST was addressed to, which is not always the tenant the call acts on: a
-    /// host-level caller may name any portal it administers, which is precisely why the identifier arrives as
-    /// an argument. Reading <c>AdministratorId</c> off a snapshot for another portal would publish one
-    /// tenant's protected account against another tenant's account, so a mismatch must fall through. Minus one
-    /// and zero are both genuine portal keys, so the comparison is equality and never positivity - the
-    /// snapshot here names a real neighbouring tenant rather than an impossible one.
+    /// ⚠ THE CORRECTNESS HALF OF THE OPTIMISATION, AND THE REASON THE TENANT IS COMPARED AT ALL. The
+    /// snapshot describes the tenant the REQUEST was addressed to, which is not always the tenant the call
+    /// acts on: a host-level caller may name any portal it administers, which is precisely why the
+    /// identifier arrives as an argument.
     /// </remarks>
     [Fact]
     public async Task GetUser_IgnoresASnapshotDescribingAnotherTenant()
@@ -1236,15 +1106,15 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Outside a request scope the tenant facts are unresolved, so the designated administrator is read from
-    /// persistence and the holder is never dereferenced.
+    /// Outside a request scope the tenant facts are unresolved, so the designated administrator is read
+    /// from persistence and the holder is never dereferenced.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The holder's contract states that reading its current snapshot before the tenant has been settled
     /// THROWS, so a background caller - or any unit test - must fall through rather than fault. This is the
-    /// default the harness reports, and it is asserted explicitly because it is the path every other case in
-    /// this file silently depends on.
+    /// default the harness reports, and it is asserted explicitly because it is the path every other case
+    /// in this file silently depends on.
     /// </remarks>
     [Fact]
     public async Task GetUser_FallsBackToPersistenceWhenNoTenantHasBeenResolved()
@@ -1264,9 +1134,7 @@ public class UserServiceTests
         harness.PortalContext.VerifyGet(holder => holder.Current, Times.Never());
     }
 
-    /// <summary>
-    /// Creating an account requires a request.
-    /// </summary>
+    /// <summary>Creating an account requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateUser_RequiresARequest()
@@ -1278,8 +1146,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An account with no name or no address is refused before anything is read, because both are columns the
-    /// row cannot be written without.
+    /// An account with no name or no address is refused before anything is read, because both are columns
+    /// the row cannot be written without.
     /// </summary>
     /// <param name="omission">Which of the two to leave blank.</param>
     /// <param name="expectedCode">The failure code the service is measured to report.</param>
@@ -1315,9 +1183,7 @@ public class UserServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// An account cannot be created in a tenant that does not exist.
-    /// </summary>
+    /// <summary>An account cannot be created in a tenant that does not exist.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateUser_RefusesAnUnknownTenant()
@@ -1402,8 +1268,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A configured requirement for non-alphanumeric characters is enforced, and is skipped entirely when the
-    /// requirement is nothing — which is what the legacy deployment configured.
+    /// A configured requirement for non-alphanumeric characters is enforced, and is skipped entirely when
+    /// the requirement is nothing — which is what the legacy deployment configured.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1432,8 +1298,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A configured strength rule is applied, and a rule that cannot be applied refuses the credential rather
-    /// than admitting it, because failing open would silently drop the requirement.
+    /// A configured strength rule is applied, and a rule that cannot be applied refuses the credential
+    /// rather than admitting it, because failing open would silently drop the requirement.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1461,8 +1327,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An account name held elsewhere in the installation is refused, and the reason distinguishes an account
-    /// that is already a member of this tenant from one that merely holds the name.
+    /// An account name held elsewhere in the installation is refused, and the reason distinguishes an
+    /// account that is already a member of this tenant from one that merely holds the name.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1495,19 +1361,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. Four checks run before this insert and none can close the window in front of it:
-    /// <c>IX_Users</c> is unique over the account name, so two requests carrying the same name arriving
-    /// together all read "not taken" and the loser's insert is refused by the index. Left untranslated the
-    /// provider fault reached the transport, which references neither the mapper nor the database client by
-    /// design, and was answered 500 - a server fault reported for a store that kept exactly one account.
-    /// </para>
-    /// <para>
-    /// The registered-in-this-portal code is returned, which is the code the FIRST of those checks emits:
-    /// by the time the loser is refused, the winner has created the account AND registered it in this
-    /// tenant, so that is precisely the state the loser now faces. Reporting it identically means a caller
-    /// cannot tell a race from an ordinary second attempt, nor should it need to.
-    /// </para>
+    /// Four checks run before this insert and none can close the window in front of it: <c>IX_Users</c> is
+    /// unique over the account name, so two requests carrying the same name arriving together all read "not
+    /// taken" and the loser's insert is refused by the index.
     /// </remarks>
     [Fact]
     public async Task CreateUser_RefusesAnAccountNameTakenBetweenTheChecksAndTheCommit()
@@ -1647,15 +1503,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A committed creation is recorded on the audit trail under the legacy event name, with the operator as
-    /// the actor and the new account as the subject.
+    /// A committed creation is recorded on the audit trail under the legacy event name, with the operator
+    /// as the actor and the new account as the subject.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The event name is asserted as a LITERAL rather than through the published constant. The constant
-    /// exists so the wording cannot drift from the legacy event-log vocabulary at
-    /// <c>EventLogController.vb:L39</c>; comparing it against itself would let a rename pass unnoticed.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_RecordsTheLegacyUserCreatedAuditEvent()
     {
@@ -1680,8 +1531,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A creation whose credential the store refuses records nothing, so a record never describes an account
-    /// that was withdrawn again.
+    /// A creation whose credential the store refuses records nothing, so a record never describes an
+    /// account that was withdrawn again.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1702,15 +1553,6 @@ public class UserServiceTests
     /// required and no account is left that cannot sign in.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, deliberately. The earlier revision committed the
-    /// account, its membership and its automatic enrolments and then deleted them again in a second commit
-    /// when the credential store refused - a routine that could fail for the same reason the credential write
-    /// did, and that could not run at all if the process were terminated between the two commits. Both
-    /// outcomes left an account that could never be signed in to. The account and its credential are now
-    /// written inside ONE transaction, so the reversal is the store's own rollback: the correct assertion is
-    /// therefore that no compensating write was issued at all, and that no commit was taken.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_RollsBackWhenTheCredentialIsRefused()
     {
@@ -1739,36 +1581,14 @@ public class UserServiceTests
 
     /// <summary>
     /// A credential store failure the classifier attributes to the store rolls the transaction back and is
-    /// reported as a provider error in fixed wording, without letting the exception escape as a five-hundred.
+    /// reported as a provider error in fixed wording, without letting the exception escape as a
+    /// five-hundred.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE CLASSIFIER IS ARRANGED RATHER THAN ASSUMED, and that is the point of the fact. The guard now absorbs
-    /// only a failure the Domain classifier POSITIVELY attributes to the store, so a test that simulates a store
-    /// failure has to say so - and the production classifier deliberately answers <see langword="false"/> for a
-    /// bare <see cref="TimeoutException"/>, because a timeout with no provider fault beneath it is not evidence
-    /// that the database is unreachable.
-    /// </para>
-    /// <para>
     /// The published message no longer carries the exception type name. A caller can do nothing with a type
-    /// name, and it is the exception's own shape rather than authored text, so publishing it disclosed which
-    /// client library and which failure mode a write had hit to whoever asked. The type is recorded for the log
-    /// by the global handler, which is where a type name belongs.
-    /// </para>
-    /// <para>
-    /// AND THE CAUGHT TYPE IS RECORDED PRIVATELY RATHER THAN PUBLISHED, which is the other half of the same
-    /// finding. THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES. The earlier revision required the failure
-    /// message to end in the CLR type name of whatever the credential store threw, and the account
-    /// endpoints hand a failed <c>Result</c>'s message straight to the caller as the
-    /// <c>ProblemDetails.detail</c>. An unauthenticated registration attempt therefore learned which
-    /// component had failed and, by repetition, could map the deployment's internals - and a
-    /// provider-specific type name leaks the storage technology to a caller who has no business knowing it.
-    /// The type is still needed, but by the operator: it is now recorded on the private diagnostics channel,
-    /// whose reason-code contract is exactly a short stable token such as a type name. Both halves are
-    /// asserted here, because a fix that merely deleted the type name would pass the caller-facing check and
-    /// silently destroy the only clue to which store refused the write.
-    /// </para>
+    /// name, and it is the exception's own shape rather than authored text, so publishing it disclosed
+    /// which client library and which failure mode a write had hit to whoever asked.
     /// </remarks>
     [Fact]
     public async Task CreateUser_RollsBackAndKeepsTheFaultKindOffTheCallerFacingResult()
@@ -1812,18 +1632,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A credential failure the classifier does NOT attribute to the store is allowed to surface rather than
-    /// being reported to the caller as a store fault.
+    /// A credential failure the classifier does NOT attribute to the store is allowed to surface rather
+    /// than being reported to the caller as a store fault.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the half of the narrowing that has teeth. The guard used to admit every exception that was not a
-    /// cancellation, so a null argument, a mis-registered collaborator or an invalid operation raised by our own
-    /// code was converted into "the credential store could not be written" - a programming fault inside this
-    /// request reported as an external store fault, with the report pointing away from the thing that needed
-    /// fixing. Such a failure now reaches the global handler, whose job is to report an unexpected fault as one.
-    /// The transaction is still abandoned as the exception unwinds, so nothing is left half-created.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_LetsAnUnclassifiedFailureSurface()
     {
@@ -1846,24 +1658,7 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The defect this pins was an account nobody could reach. Every read of the column normalises the value it
-    /// is GIVEN - <c>UserRepository.GetByUsernameAsync</c> and <c>UsernameExistsAsync</c> both compute
-    /// <c>Trim().ToLowerInvariant()</c> before comparing - while nothing normalised the value being WRITTEN.
-    /// SQL Server ignores trailing spaces when comparing strings and does not ignore leading ones, so a
-    /// submitted <c>" grace"</c> was stored verbatim and no later lookup for <c>"grace"</c> could match it: the
-    /// account existed, occupied the name, could not sign in, and did not appear in the administration screens.
-    /// </para>
-    /// <para>
-    /// Both the uniqueness READS and the stored ROW are asserted, because the fix is that they use ONE value. A
-    /// guard that asks about a different string from the one the write stores is not a guard - it was the reason
-    /// the name looked free.
-    /// </para>
-    /// <para>
-    /// Case is deliberately NOT folded: <c>dbo.Users.Username</c> is what the screens display and the legacy
-    /// stored the operator's own casing. Case-insensitive matching is already provided by the reads and by the
-    /// database collation.
-    /// </para>
+    /// The defect this pins was an account nobody could reach.
     /// </remarks>
     [Fact]
     public async Task CreateUser_CanonicalisesTheSubmittedAccountName()
@@ -1916,8 +1711,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A created account records its creation and credential moments and is not locked, and both caches that
-    /// could hold a stale answer are discarded.
+    /// A created account records its creation and credential moments and is not locked, and both caches
+    /// that could hold a stale answer are discarded.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1940,11 +1735,6 @@ public class UserServiceTests
     /// can withhold the affordance rather than offering a command the server refuses.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy grid decided this in markup, at
-    /// <c>Website/admin/Users/Users.ascx.vb:L691-L692</c>. The capability now travels on the row, because
-    /// the client cannot know which account a tenant designates as its administrator without being told.
-    /// </remarks>
     [Fact]
     public async Task ListUsers_PublishesWhetherEachAccountMayBeRemoved()
     {
@@ -1974,8 +1764,8 @@ public class UserServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The deletion capability needs one fact about the tenant, and a listing renders up to a hundred rows.
-    /// Reading per row would turn one query into a hundred; reading for an empty page would spend a query to
-    /// decide nothing. Both are asserted because both are silent regressions.
+    /// Reading per row would turn one query into a hundred; reading for an empty page would spend a query
+    /// to decide nothing.
     /// </remarks>
     [Fact]
     public async Task ListUsers_ReadsTheTenantOncePerPageAndNotAtAllForAnEmptyOne()
@@ -2016,8 +1806,8 @@ public class UserServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The capability is advisory - the operation itself re-checks - so an unreadable tenant row must not
-    /// fail the listing. It must also not be read as "everybody is protected", which would leave an operator
-    /// with a grid on which nothing can be removed and no explanation.
+    /// fail the listing. It must also not be read as "everybody is protected", which would leave an
+    /// operator with a grid on which nothing can be removed and no explanation.
     /// </remarks>
     [Fact]
     public async Task ListUsers_ProtectsNoAccountWhenTheTenantRowIsAbsentOrDesignatesNobody()
@@ -2051,13 +1841,6 @@ public class UserServiceTests
     /// only to an edited one.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy editor did this at <c>Website/admin/Users/User.ascx.vb:L212</c>, where
-    /// <c>CreateUser()</c> calls <c>UpdateDisplayName()</c> as its first statement. An earlier revision of
-    /// this service applied the format on update alone, so a tenant with a configured format got a formatted
-    /// name on every edit and an unformatted one on every creation - the same account presenting two ways
-    /// depending on which screen last touched it.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_AppliesTheTenantsDisplayNameFormat()
     {
@@ -2080,20 +1863,10 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>UserInfo.UpdateDisplayName</c> (<c>Library/Components/Users/UserInfo.vb:L358-L368</c>)
-    /// substitutes <c>Me.UserID.ToString()</c> for <c>[USERID]</c>, and <c>User.ascx.vb:L212</c> called it
-    /// BEFORE <c>AddUser</c> - while the property still held the legacy absent marker. Every account a
-    /// tenant created under such a format therefore stored the literal text "-1" as its display name, for
-    /// every account. The identifier does not exist until the insert commits, so the only position at which
-    /// the token can name the account it belongs to is after that commit. The divergence is recorded in
-    /// MIGRATION_NOTES.md.
-    /// </para>
-    /// <para>
-    /// The second commit is asserted, and asserted to fall BEFORE the credential write, because both writes
-    /// belong to the one transaction that publishes the account: a formatted name that could not be stored
-    /// must take the account with it rather than leaving one behind unformatted.
-    /// </para>
+    /// <c>UserInfo.UpdateDisplayName</c> substitutes <c>Me.UserID.ToString()</c> for <c>[USERID]</c>, and
+    /// <c>User.ascx.vb:L212</c> called it BEFORE <c>AddUser</c> - while the property still held the legacy
+    /// absent marker. Every account a tenant created under such a format therefore stored the literal text
+    /// "-1" as its display name, for every account.
     /// </remarks>
     [Fact]
     public async Task CreateUser_ResolvesTheIdentifierTokenFromTheKeyTheInsertIssued()
@@ -2126,11 +1899,6 @@ public class UserServiceTests
     /// write, and neither does a format whose tokens resolve to exactly what was submitted.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The two cases share a fact because they share the consequence being measured: one commit rather than
-    /// two. A second round trip that changes nothing is a cost every creation would pay for a value the
-    /// caller already supplied.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_IssuesNoSecondWriteWhenTheFormatChangesNothing()
     {
@@ -2215,8 +1983,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The submitted names and address are applied, and a display name that was left out is derived from the
-    /// two given names.
+    /// The submitted names and address are applied, and a display name that was left out is derived from
+    /// the two given names.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2237,8 +2005,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A tenant that configured a display-name format has it applied over whatever was submitted, because the
-    /// format is a tenant-wide presentation rule rather than a per-account choice.
+    /// A tenant that configured a display-name format has it applied over whatever was submitted, because
+    /// the format is a tenant-wide presentation rule rather than a per-account choice.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2285,8 +2053,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The computed-width guard is inclusive: a value that occupies all 128 UTF-16 code units of the
-    /// column is valid and is committed.
+    /// The computed-width guard is inclusive: a value that occupies all 128 UTF-16 code units of the column
+    /// is valid and is committed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2308,8 +2076,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A tenant with no account-management module instance has no display-name format, so the submitted name
-    /// stands rather than the update failing.
+    /// A tenant with no account-management module instance has no display-name format, so the submitted
+    /// name stands rather than the update failing.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2345,8 +2113,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A conflict wrapped in another exception is still recognised, because the store may surface it through
-    /// a wrapper rather than directly.
+    /// A conflict wrapped in another exception is still recognised, because the store may surface it
+    /// through a wrapper rather than directly.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2361,9 +2129,7 @@ public class UserServiceTests
         outcome.Reason!.Code.Should().Be(PersistenceConflictCode);
     }
 
-    /// <summary>
-    /// A fault that is not a conflict is not absorbed, because retrying would not help.
-    /// </summary>
+    /// <summary>A fault that is not a conflict is not absorbed, because retrying would not help.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateUser_DoesNotAbsorbAnUnrelatedFault()
@@ -2397,9 +2163,7 @@ public class UserServiceTests
         harness.InvalidatedPortalIds.Should().Equal(new[] { PortalId });
     }
 
-    /// <summary>
-    /// Deleting an unknown account is refused.
-    /// </summary>
+    /// <summary>Deleting an unknown account is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteUser_RefusesAnUnknownAccount()
@@ -2453,8 +2217,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The host-account rule is checked before the administrator rule, so the reason a caller is given names
-    /// the stronger protection.
+    /// The host-account rule is checked before the administrator rule, so the reason a caller is given
+    /// names the stronger protection.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2518,14 +2282,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A committed removal is recorded under the legacy event name, carrying the two facts the legacy record
-    /// carried - the account name and the account identifier - plus which arm of the removal ran.
+    /// A committed removal is recorded under the legacy event name, carrying the two facts the legacy
+    /// record carried - the account name and the account identifier - plus which arm of the removal ran.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy call site is <c>UserController.vb:L240</c>:
-    /// <c>AddLog("Username", objUser.Username, _portalSettings, objUser.UserID, EventLogType.USER_DELETED)</c>.
-    /// </remarks>
     [Fact]
     public async Task DeleteUser_RecordsTheLegacyUserDeletedAuditEvent()
     {
@@ -2549,26 +2309,15 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A committed removal is recorded even when the post-commit cache maintenance fails, because the account
-    /// is gone either way.
+    /// A committed removal is recorded even when the post-commit cache maintenance fails, because the
+    /// account is gone either way.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to be the last statement in the member, behind
-    /// three cache evictions, the last of which was at the time an AWAITED call observing the cancellation
-    /// token and is now the delegated synchronous call the permission contract owns. A
-    /// caller who disconnected in the moment after the commit therefore had the account deleted - permanently,
-    /// with its memberships, assignments, grants and credential - and NOTHING in the trail said so: the token
-    /// was signalled, the eviction threw, the exception left the member and the record was never reached.
-    /// </para>
-    /// <para>
     /// Deleting an account is the least reversible thing this service does and the likeliest subject of a
     /// later question, so its record is the last that may depend on the caller still being connected. The
     /// exception is still allowed to escape, deliberately: cache maintenance that did not happen is a real
-    /// condition and swallowing it would leave stale grants served from memory. What changed is only that the
-    /// history is written first.
-    /// </para>
+    /// condition and swallowing it would leave stale grants served from memory.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_RecordsTheRemovalEvenWhenThePostCommitCacheMaintenanceFails()
@@ -2606,13 +2355,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An operation this entry point does not perform is refused by name rather than silently treated as the
-    /// one it does. THE RESET DISCRIMINATOR IS AMONG THEM, and that is the security assertion of this fact:
-    /// the self-service change and the administrative reset were once one member that read this discriminator
-    /// to decide whether the current credential had to be proved, so a caller who could reach the endpoint
-    /// could skip that proof by naming the other operation in its own request body. Refusing it here means
-    /// the decision belongs to the endpoint - and therefore to the endpoint's authorisation policy - and can
-    /// no longer be chosen by the caller.
+    /// An operation this entry point does not perform is refused by name rather than silently treated as
+    /// the one it does.
     /// </summary>
     /// <param name="operation">The operation to submit.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -2700,9 +2444,7 @@ public class UserServiceTests
         wasReset.IsSuccess.Should().BeTrue(wasReset.Reason?.ToString());
     }
 
-    /// <summary>
-    /// Each entry point matches its own operation without regard to case.
-    /// </summary>
+    /// <summary>Each entry point matches its own operation without regard to case.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CredentialWrite_MatchesItsOwnOperationWithoutRegardToCase()
@@ -2729,9 +2471,7 @@ public class UserServiceTests
         wasReset.IsSuccess.Should().BeTrue(wasReset.Reason?.ToString());
     }
 
-    /// <summary>
-    /// A request requires a payload.
-    /// </summary>
+    /// <summary>A request requires a payload.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ChangePassword_RequiresARequest()
@@ -2742,9 +2482,7 @@ public class UserServiceTests
             () => harness.Service.ChangePasswordAsync(PortalId, UserId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// The administrative reset requires a payload for the same reason.
-    /// </summary>
+    /// <summary>The administrative reset requires a payload for the same reason.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ResetPassword_RequiresARequest()
@@ -2756,8 +2494,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An administrative reset is refused when the deployment switched resets off, and is refused before the
-    /// account is even read.
+    /// An administrative reset is refused when the deployment switched resets off, and is refused before
+    /// the account is even read.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2866,9 +2604,7 @@ public class UserServiceTests
         weak.Reason!.Message.Should().Be("The credential must be at least 40 characters long.");
     }
 
-    /// <summary>
-    /// A change requires the current credential and refuses an incorrect one.
-    /// </summary>
+    /// <summary>A change requires the current credential and refuses an incorrect one.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ChangePassword_RequiresTheCurrentCredential()
@@ -2897,9 +2633,8 @@ public class UserServiceTests
 
     /// <summary>
     /// The administrative reset does not ask for the current credential at all, which is what makes it
-    /// administrative - and is precisely why its endpoint requires administration of the account's own portal
-    /// rather than mere authentication. The absent credential check is compensated by an authorisation check,
-    /// and this fact together with the refusal above is what proves the two can no longer be confused.
+    /// administrative - and is precisely why its endpoint requires administration of the account's own
+    /// portal rather than mere authentication.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2997,20 +2732,10 @@ public class UserServiceTests
     /// <param name="operation">The operation to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-02. The write is a compare-and-swap over the representation this request read, so
-    /// "nothing was written" has a cause the boolean it replaced could not express. Both causes previously
-    /// arrived here as <c>false</c> and were reported identically as a store refusal, which was wrong in two
-    /// directions at once: an operator investigating a store fault was sent after a healthy store, and a caller
-    /// whose decision had been made against a credential that is no longer in force was told to retry an
-    /// operation that would keep failing for as long as it kept re-submitting the same stale premise.
-    /// </para>
-    /// <para>
     /// The distinct code is deliberate and it is not an oracle: reaching this path already requires having
-    /// proved the current credential, or the authority to reset it. Both operations are asserted because the
-    /// reset path does not present a current credential at all, so it is the one where a lost race is most
-    /// likely - an administrator resetting an account while its owner changes its own credential.
-    /// </para>
+    /// proved the current credential, or the authority to reset it. Both operations are asserted because
+    /// the reset path does not present a current credential at all, so it is the one where a lost race is
+    /// most likely - an administrator resetting an account while its owner changes its own credential.
     /// </remarks>
     [Theory]
     [InlineData(ChangePasswordRequest.OperationChange)]
@@ -3040,8 +2765,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A successful change hashes the new credential, records the moment on the loaded row, and discards the
-    /// account's cache.
+    /// A successful change hashes the new credential, records the moment on the loaded row, and discards
+    /// the account's cache.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3083,14 +2808,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A credential change is refused to every caller but the account that owns it, and is refused before the
-    /// account is read.
+    /// A credential change is refused to every caller but the account that owns it, and is refused before
+    /// the account is read.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Verifying the current credential, which the change branch does, is proof of POSSESSION and not of
-    /// AUTHORITY: it establishes that the caller knows the credential, so an administrator acting on somebody
-    /// else's account has no business submitting one and uses the reset operation instead.
+    /// AUTHORITY: it establishes that the caller knows the credential, so an administrator acting on
+    /// somebody else's account has no business submitting one and uses the reset operation instead.
     /// </remarks>
     [Fact]
     public async Task ChangePassword_RefusesAChangeAimedAtAnAccountThatIsNotTheCallers()
@@ -3163,8 +2888,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An administrative reset is refused to a caller whose assignment to the tenant's administrator role has
-    /// lapsed, and permitted to one whose assignment is in force.
+    /// An administrative reset is refused to a caller whose assignment to the tenant's administrator role
+    /// has lapsed, and permitted to one whose assignment is in force.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
@@ -3202,8 +2927,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// An administrative reset is refused when the tenant designates no administrator role, because an unset
-    /// designation is a configuration gap and a gap must not grant.
+    /// An administrative reset is refused when the tenant designates no administrator role, because an
+    /// unset designation is a configuration gap and a gap must not grant.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3225,8 +2950,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A host account may reset a credential in a tenant it holds no membership of, because installation-wide
-    /// authority is read from its own stored row rather than from a tenant assignment.
+    /// A host account may reset a credential in a tenant it holds no membership of, because
+    /// installation-wide authority is read from its own stored row rather than from a tenant assignment.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3323,8 +3048,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A transition against another administrator's account is permitted, so the self rule is genuinely about
-    /// the acting account rather than about administrators in general.
+    /// A transition against another administrator's account is permitted, so the self rule is genuinely
+    /// about the acting account rather than about administrators in general.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3431,29 +3156,15 @@ public class UserServiceTests
         outcome.Reason!.Message.Should().Be($"Account {UserId} is already {expectedWording}.");
     }
 
-    /// <summary>
-    /// A credential change ends every session the account holds, for both operations.
-    /// </summary>
+    /// <summary>A credential change ends every session the account holds, for both operations.</summary>
     /// <param name="operation">The operation named on the request.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The obligation is stated on the contract in terms rather than left to judgement: a credential changed
-    /// because it may have been compromised, or reset because its holder lost it, is of no use to whoever had
-    /// it - but a refresh token issued under the old credential keeps yielding fresh access tokens
-    /// indefinitely, so a change that left one exchangeable would not end the session it was performed to
-    /// end. The reset case matters most: it ends the sessions of the account being reset, not the
-    /// administrator's own.
-    /// </para>
-    /// <para>
-    /// MIGRATION: SEC-02. IT SWEEPS TWICE, AND THE COUNT IS THE ASSERTION. It previously swept once, before
-    /// the write, which is the ordering that keeps a failed revocation from leaving a replaced credential with
-    /// live sessions. What one sweep cannot reach is a sign-in already in flight: such a request can mint its
-    /// family in the interval between the sweep and the write committing, and that family is then younger than
-    /// the only sweep that ever ran. Repeating the sweep after the write catches exactly that family, and the
-    /// sign-in path closes the mirror-image case by re-reading the credential after it issues. Asserting the
-    /// order and the count together is what stops either sweep from being deleted as a duplicate of the other.
-    /// </para>
+    /// The obligation is stated on the contract in terms rather than left to judgement: a credential
+    /// changed because it may have been compromised, or reset because its holder lost it, is of no use to
+    /// whoever had it - but a refresh token issued under the old credential keeps yielding fresh access
+    /// tokens indefinitely, so a change that left one exchangeable would not end the session it was
+    /// performed to end.
     /// </remarks>
     [Theory]
     [InlineData(ChangePasswordRequest.OperationChange)]
@@ -3481,19 +3192,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-02. The companion of the pre-write ordering test below, and it answers the question that
-    /// test does not: what happens when the FIRST sweep succeeds, the write lands, and the second sweep cannot
-    /// be persisted. Reporting success there would be the precise falsehood the ordering rules exist to
-    /// prevent - the credential has been replaced, and sessions minted against the old one may still be
-    /// exchangeable - so the operation is reported as failed even though the write itself happened.
-    /// </para>
-    /// <para>
-    /// The residual is stated plainly rather than hidden: the credential HAS changed when this failure is
-    /// reported, so the caller's retry finds the swap refusing as superseded rather than replacing anything a
-    /// second time. That is the correct outcome for a caller that must not be told the sessions are gone when
-    /// they may not be, and it is why the refusal names a dependency outage rather than a bad request.
-    /// </para>
+    /// The companion of the pre-write ordering test below, and it answers the question that test does not:
+    /// what happens when the FIRST sweep succeeds, the write lands, and the second sweep cannot be
+    /// persisted.
     /// </remarks>
     [Fact]
     public async Task ChangePassword_WhenLingeringSessionsCannotBeEnded_ReportsTheFailure()
@@ -3522,17 +3223,7 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The ordering assertion is the substance of this test, not the failure code. Ending the sessions first
-    /// and failing leaves an account signed out of sessions it may simply re-establish, which costs its holder
-    /// an inconvenience; writing the credential first and then failing to end them would report the operation
-    /// as failed while the credential had in fact been replaced and every session was still live - a
-    /// falsehood to the caller and the exact exposure the revocation exists to close.
-    /// </para>
-    /// <para>
-    /// The empty hash list is what proves the order, because it can only be empty if the write was never
-    /// reached.
-    /// </para>
+    /// The ordering assertion is the substance of this test, not the failure code.
     /// </remarks>
     [Fact]
     public async Task ChangePassword_WhenTheSessionsCannotBeEnded_LeavesTheCredentialUnchanged()
@@ -3550,17 +3241,15 @@ public class UserServiceTests
             "the credential write sits after the revocation, so a refused revocation must not reach it");
     }
 
-    /// <summary>
-    /// Withdrawing an approval ends every session the account holds; granting one ends none.
-    /// </summary>
+    /// <summary>Withdrawing an approval ends every session the account holds; granting one ends none.</summary>
     /// <param name="isApproved">The approval state requested.</param>
     /// <param name="expectedRevocations">How many accounts should have their sessions ended.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The asymmetry is deliberate and is stated on the contract: withdrawal ends the account's right to sign
-    /// in, so leaving it holding exchangeable refresh tokens would let it keep obtaining access tokens after
-    /// the withdrawal; granting takes nothing away, so ending a session because an account gained a right
-    /// would be gratuitous.
+    /// The asymmetry is deliberate and is stated on the contract: withdrawal ends the account's right to
+    /// sign in, so leaving it holding exchangeable refresh tokens would let it keep obtaining access tokens
+    /// after the withdrawal; granting takes nothing away, so ending a session because an account gained a
+    /// right would be gratuitous.
     /// </remarks>
     [Theory]
     [InlineData(false, 1)]
@@ -3602,14 +3291,12 @@ public class UserServiceTests
         harness.ApprovalWrites.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Deleting an account ends every session it held, before anything is removed.
-    /// </summary>
+    /// <summary>Deleting an account ends every session it held, before anything is removed.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// A refresh token outliving the account it names is the worst of the three cases the obligation covers:
-    /// the account is gone, so nothing remains for an administrator to inspect or disable, and yet the token
-    /// would still be exchanged for access tokens asserting an identity that no longer exists.
+    /// A refresh token outliving the account it names is the worst of the three cases the obligation
+    /// covers: the account is gone, so nothing remains for an administrator to inspect or disable, and yet
+    /// the token would still be exchanged for access tokens asserting an identity that no longer exists.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_EndsEverySessionTheAccountHeld()
@@ -3625,16 +3312,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A deletion ERASES the account's session records, across every tenant when the account row itself goes.
+    /// A deletion ERASES the account's session records, across every tenant when the account row itself
+    /// goes.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// PRIV-02. REVOCATION IS NOT DELETION, AND ONLY THE FIRST USED TO HAPPEN. Ending the sessions STAMPS each
-    /// record so it can no longer be redeemed, which is right for a sign-out because the stamped record is what
-    /// makes a later replay of that family recognisable. It is wrong once the account is gone: each record keeps
-    /// the token digest and the subject identifiers, so a deleted account went on being described in the session
-    /// store until its family ceiling elapsed. The erasure is the second step, and the account here belongs
-    /// nowhere else, so the scope names no tenant.
+    /// PRIV-02. REVOCATION IS NOT DELETION, AND ONLY THE FIRST USED TO HAPPEN. Ending the sessions STAMPS
+    /// each record so it can no longer be redeemed, which is right for a sign-out because the stamped
+    /// record is what makes a later replay of that family recognisable.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_ErasesTheSessionRecordsOfAnAccountItRemovedOutright()
@@ -3654,16 +3339,13 @@ public class UserServiceTests
             "and the records are then ERASED across every tenant, because the account row itself has gone");
     }
 
-    /// <summary>
-    /// A deletion that only removes a MEMBERSHIP erases the session records of that tenant alone.
-    /// </summary>
+    /// <summary>A deletion that only removes a MEMBERSHIP erases the session records of that tenant alone.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// PRIV-02. THE SCOPE IS THE WHOLE POINT OF THIS FACT. The account survives because it still belongs to
-    /// another tenant, and the sessions it holds there are legitimate - so an erasure that reached every tenant
-    /// would sign it out of a tenant it is still a member of, turning a data-retention fix into an availability
-    /// defect. The revocation above is deliberately unchanged: it has always been account-wide, because an
-    /// account whose membership of a tenant is withdrawn must not keep exchanging tokens minted under it.
+    /// another tenant, and the sessions it holds there are legitimate - so an erasure that reached every
+    /// tenant would sign it out of a tenant it is still a member of, turning a data-retention fix into an
+    /// availability defect.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_ErasesOnlyTheDepartedTenantsRecordsForAnAccountItKeeps()
@@ -3683,16 +3365,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A deletion whose session records cannot be erased still succeeds, and records that the erasure is owed.
+    /// A deletion whose session records cannot be erased still succeeds, and records that the erasure is
+    /// owed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// PRIV-02. THE ASYMMETRY WITH THE REVOCATION ABOVE IS DELIBERATE, AND BOTH DIRECTIONS ARE ASSERTED IN THIS
-    /// SUITE. A revocation that fails abandons the deletion, because nothing has been removed yet and the
-    /// account can be left whole. An erasure that fails cannot do that: it runs AFTER the commit, so the account
-    /// is already gone and reporting failure would tell a caller to retry an operation that has irreversibly
-    /// happened. What is honest is to succeed and record that the records were not erased - they are still
-    /// revoked, so nothing is exchangeable, and the scheduled reclamation removes them in any case.
+    /// PRIV-02. THE ASYMMETRY WITH THE REVOCATION ABOVE IS DELIBERATE, AND BOTH DIRECTIONS ARE ASSERTED IN
+    /// THIS SUITE. A revocation that fails abandons the deletion, because nothing has been removed yet and
+    /// the account can be left whole.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_WhenTheSessionRecordsCannotBeErased_StillSucceedsAndRecordsTheOmission()
@@ -3715,9 +3395,7 @@ public class UserServiceTests
             "an operator has to be able to see that the erasure is still owed");
     }
 
-    /// <summary>
-    /// A deletion whose session records ARE erased says so on its audit record.
-    /// </summary>
+    /// <summary>A deletion whose session records ARE erased says so on its audit record.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteUser_RecordsThatTheSessionRecordsWereErased()
@@ -3733,15 +3411,13 @@ public class UserServiceTests
         record.Properties["SessionRecordsErased"].Should().Be("True");
     }
 
-    /// <summary>
-    /// A deletion whose sessions cannot be ended removes nothing at all.
-    /// </summary>
+    /// <summary>A deletion whose sessions cannot be ended removes nothing at all.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The revocation is the first destructive step precisely so that this is possible: every guard has
     /// passed, so the deletion was going to be attempted, and nothing has yet been removed, so a refusal
-    /// leaves the account wholly intact rather than half dismantled. Placing it after the cascade would mean
-    /// reporting failure over an account whose grants, assignments and credential had already gone.
+    /// leaves the account wholly intact rather than half dismantled. Placing it after the cascade would
+    /// mean reporting failure over an account whose grants, assignments and credential had already gone.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_WhenTheSessionsCannotBeEnded_RemovesNothing()
@@ -3768,14 +3444,6 @@ public class UserServiceTests
     /// reason rather than a reason of its own.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The cascade stages its removals into the same unit of work as everything below it, and the commit is
-    /// still ahead when it answers, so abandoning here leaves the account whole. Swallowing the refusal
-    /// would be the one genuinely bad outcome available: the account row would be committed as deleted
-    /// while its grants stayed in place, and a later account reusing the identifier would inherit them.
-    /// The reason is propagated unchanged because the cascade knows why it refused and this service does
-    /// not - restating it as a generic account failure would discard the only useful diagnostic.
-    /// </remarks>
     [Fact]
     public async Task DeleteUser_WhenThePermissionCascadeRefuses_RemovesNothingAndPropagatesTheReason()
     {
@@ -3813,9 +3481,8 @@ public class UserServiceTests
     /// <remarks>
     /// The credential is the one write in the cascade that leaves the unit of work, so it is the one whose
     /// refusal cannot be undone by simply not committing. Discarding its answer made an unreachable
-    /// membership store look exactly like a completed removal, and the account row was then removed anyway -
-    /// leaving a credential no administrative screen can reach and no later deletion will revisit. Refusing
-    /// before the removal is committed is what keeps the two consistent.
+    /// membership store look exactly like a completed removal, and the account row was then removed anyway
+    /// - leaving a credential no administrative screen can reach and no later deletion will revisit.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_WhenTheCredentialCannotBeRemoved_LeavesTheAccountIntact()
@@ -3832,22 +3499,18 @@ public class UserServiceTests
         harness.RemovedUsers.Should().BeEmpty();
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
 
-        // Nothing is committed and the scope is disposed, so the grant cascade the permission service staged
-        // earlier in this same transaction is rolled back with everything else. That is the whole point of
-        // the enclosing transaction: before it existed the cascade committed on its own, so this refusal
-        // reported failure over an account that was intact but had lost every grant it held.
+        // Nothing is committed and the scope is disposed, so the grant cascade the permission service
+        // staged earlier in this same transaction is rolled back with everything else.
         harness.Transaction.Verify(t => t.CommitAsync(It.IsAny<CancellationToken>()), Times.Never());
         harness.Transaction.Verify(t => t.DisposeAsync(), Times.Once());
     }
 
-    /// <summary>
-    /// The whole deletion cascade is published by ONE commit inside ONE transaction.
-    /// </summary>
+    /// <summary>The whole deletion cascade is published by ONE commit inside ONE transaction.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// Four stores are written - both grant tables through the permission contract, the assignment table, the
-    /// membership table and the account row through the repositories, and the external credential store - and
-    /// the contract promises all or none. The assertion that makes that true is this one: exactly one
+    /// Four stores are written - both grant tables through the permission contract, the assignment table,
+    /// the membership table and the account row through the repositories, and the external credential store
+    /// - and the contract promises all or none. The assertion that makes that true is this one: exactly one
     /// transaction, exactly one flush inside it, and exactly one commit.
     /// </remarks>
     [Fact]
@@ -3878,20 +3541,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE DEFECT THIS PINS. Five writes make up a deletion - the account's direct grants, its role
-    /// assignments, its tenant membership, its credential in the external membership store, and the account
-    /// row - and they cannot be one <c>SaveChanges</c>, because the credential is written through its own
-    /// statement outside the mapped model. An earlier revision had no enclosing scope AND delegated the
-    /// permission step to the member that commits on its own, so the grant removal became durable before
-    /// anything after it: a credential removal that then failed left the account intact with its grants
-    /// already destroyed, and this method reported that the account had been left alone.
-    /// </para>
-    /// <para>
-    /// So the oracle is threefold and each part is load-bearing: exactly one scope is opened, it is committed
-    /// exactly once, and the permission contract is asked for STAGING - never for the committing sibling,
-    /// which the unit of work would in any case refuse to nest a scope inside.
-    /// </para>
+    /// So the oracle is threefold and each part is load-bearing: exactly one scope is opened, it is
+    /// committed exactly once, and the permission contract is asked for STAGING - never for the committing
+    /// sibling, which the unit of work would in any case refuse to nest a scope inside.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_RunsTheWholeCascadeInOneTransactionAndStagesTheGrantRemoval()
@@ -3934,10 +3586,8 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The credential is the one write that leaves the mapped model, so its refusal is the sharpest case: the
-    /// grants and assignments have already been staged by the time it answers. Leaving the scope uncommitted
-    /// is what undoes them, which is why the abstraction declares no rollback member - the safe outcome is
-    /// what disposal does by default, including on a path whose author did not think about failure.
+    /// The credential is the one write that leaves the mapped model, so its refusal is the sharpest case:
+    /// the grants and assignments have already been staged by the time it answers.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_WhenTheCredentialCannotBeRemoved_RollsTheTransactionBackAndEvictsNothing()
@@ -3969,15 +3619,13 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Requiring a credential change ends no session, which is a deliberate omission rather than an oversight.
+    /// Requiring a credential change ends no session, which is a deliberate omission rather than an
+    /// oversight.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This operation demands a new credential at the next sign-in without replacing the current one, so
-    /// nothing an existing session holds has been invalidated and the account may still sign in. The standing
-    /// requirement travels on every subsequent exchange, because the sign-in service re-reads the credential
-    /// advisories on each one, so the client is told to act on it without being signed out first. The three
-    /// operations that DO end sessions are the ones the token contract names, and this is not among them.
+    /// nothing an existing session holds has been invalidated and the account may still sign in.
     /// </remarks>
     [Fact]
     public async Task RequirePasswordChange_EndsNoSession()
@@ -3991,9 +3639,7 @@ public class UserServiceTests
         harness.RevokedSessionUserIds.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Setting approval refuses an unknown account and an account that holds no credential.
-    /// </summary>
+    /// <summary>Setting approval refuses an unknown account and an account that holds no credential.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task SetUserApproval_RefusesAnUnknownAccountAndANoCredentialAccount()
@@ -4015,9 +3661,7 @@ public class UserServiceTests
         noCredential.Reason!.Message.Should().Be($"Account {UserId} holds no credential.");
     }
 
-    /// <summary>
-    /// A store that reports the account away between the read and the write is reported as absent.
-    /// </summary>
+    /// <summary>A store that reports the account away between the read and the write is reported as absent.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task SetUserApproval_ReportsAnAccountTheStoreLosesBetweenReadAndWrite()
@@ -4096,17 +3740,9 @@ public class UserServiceTests
 
     /// <summary>
     /// A tenant with no account-management module instance reads the legacy defaults, marked as unstored,
-    /// rather than reporting an absence - because a tenant is allowed not to have one and its settings still
-    /// apply.
+    /// rather than reporting an absence - because a tenant is allowed not to have one and its settings
+    /// still apply.
     /// </summary>
-    /// <remarks>
-    /// The assertion changed with the behaviour, and the reason is worth keeping: an absent value here was
-    /// translated by the API surface into <c>404 Not Found</c>, which is untrue for a tenant that exists and
-    /// which runtime testing showed put a screen-level "not found" alert above four healthy screens. The
-    /// legacy consumers of the legacy null applied exactly these defaults, so returning them is the
-    /// behaviour-preserving answer; <see cref="MembershipSettingsDto.IsStored"/> carries the fact a caller
-    /// previously had to infer from the status line.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetMembershipSettings_ReadsTheDefaultsWhenTheTenantHasNoAccountModule()
@@ -4180,8 +3816,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A redirect page recorded as the out-of-range sentinel is read back as no redirect at all, which is how
-    /// the legacy screen recorded "no page chosen".
+    /// A redirect page recorded as the out-of-range sentinel is read back as no redirect at all, which is
+    /// how the legacy screen recorded "no page chosen".
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4244,13 +3880,11 @@ public class UserServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// C-03: a required declaration the account has not answered makes the profile incomplete.
-    /// </summary>
+    /// <summary>C-03: a required declaration the account has not answered makes the profile incomplete.</summary>
     /// <remarks>
-    /// This is <c>ProfileController.ValidateProfile</c> (L305-L319): the walk reports invalid at the first
-    /// declaration that is required and whose value is empty. An account with NO stored answers at all is the
-    /// case a newly created account presents, and it must be reported incomplete rather than complete.
+    /// This is <c>ProfileController.ValidateProfile</c>: the walk reports invalid at the first declaration
+    /// that is required and whose value is empty. An account with NO stored answers at all is the case a
+    /// newly created account presents, and it must be reported incomplete rather than complete.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4272,26 +3906,6 @@ public class UserServiceTests
     /// <summary>
     /// C-03: a required declaration answered with whitespace is ANSWERED, and an empty answer is not.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The legacy rule is <c>ProfileController.vb</c> <c>ValidateProfile</c>:
-    /// <c>If propertyDefinition.Required And propertyDefinition.PropertyValue = Null.NullString</c>, and
-    /// <c>Null.vb</c> declares <c>NullString</c> as the EMPTY STRING (Rule T7). A stored answer of a single
-    /// space is not the empty string, so the legacy rule was satisfied by it and the account signed in.
-    /// </para>
-    /// <para>
-    /// An earlier revision of this fact asserted the opposite and cited the same legacy line for it, reading
-    /// "cannot distinguish blank from absent" as licence to treat whitespace as absent. That is a POLICY
-    /// preference rather than parity, and the cost of imposing it here falls on the accounts least able to
-    /// escape it: an existing account whose stored answer is a space is refused entry to the very form it
-    /// would have to use to correct the answer, and is told nothing about which field is at fault. Whether a
-    /// space is a satisfactory answer belongs to the per-property validation expression the definition already
-    /// carries; this gate only asks whether an answer EXISTS.
-    /// </para>
-    /// <para>
-    /// Both halves are asserted together so the empty case cannot be lost while restoring the whitespace one.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task RequiresProfileCompletion_TreatsWhitespaceAsAnsweredAndEmptyAsUnanswered()
@@ -4319,9 +3933,7 @@ public class UserServiceTests
         empty.Value.Should().BeTrue("an empty answer is exactly what the legacy rule refused");
     }
 
-    /// <summary>
-    /// C-03: an answered required declaration makes the profile complete.
-    /// </summary>
+    /// <summary>C-03: an answered required declaration makes the profile complete.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task RequiresProfileCompletion_ReportsFalseWhenEveryRequiredAnswerIsPresent()
@@ -4339,9 +3951,7 @@ public class UserServiceTests
         outcome.Value.Should().BeFalse();
     }
 
-    /// <summary>
-    /// C-03: an unanswered declaration that is NOT required leaves the profile complete.
-    /// </summary>
+    /// <summary>C-03: an unanswered declaration that is NOT required leaves the profile complete.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task RequiresProfileCompletion_IgnoresDeclarationsThatAreNotRequired()
@@ -4361,11 +3971,12 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// C-03: a tenant that does not require a valid profile at sign-in is not asked about completeness at all.
+    /// C-03: a tenant that does not require a valid profile at sign-in is not asked about completeness at
+    /// all.
     /// </summary>
     /// <remarks>
-    /// The setting is consulted FIRST and short-circuits, which is what keeps a tenant that has switched the
-    /// gate off from paying for the declaration read on every sign-in.
+    /// The setting is consulted FIRST and short-circuits, which is what keeps a tenant that has switched
+    /// the gate off from paying for the declaration read on every sign-in.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4389,14 +4000,9 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// C-03: a tenant with no settings source falls back to the measured default, which requires the profile.
+    /// C-03: a tenant with no settings source falls back to the measured default, which requires the
+    /// profile.
     /// </summary>
-    /// <remarks>
-    /// Measured rather than guessed: <c>GetUserSettings</c> returned nothing for such a tenant,
-    /// <c>UserModuleBase.GetSetting</c> therefore yielded the key's own default, and that default is
-    /// <see langword="true"/> (<c>UserModuleBase.vb</c> L175-L177). Skipping the gate instead would silently
-    /// disable it for exactly the tenants whose configuration is least complete.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task RequiresProfileCompletion_AppliesTheDefaultWhenTheTenantHasNoSettingsSource()
@@ -4502,7 +4108,8 @@ public class UserServiceTests
 
     /// <summary>
     /// A redirect page is tenant data, not merely a syntactically valid integer. A page belonging to
-    /// another portal receives the same non-enumerating answer as an unknown page, and no setting is staged.
+    /// another portal receives the same non-enumerating answer as an unknown page, and no setting is
+    /// staged.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4517,11 +4124,10 @@ public class UserServiceTests
             .Setup(tabs => tabs.GetByIdAsync(pageId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Tab { TabId = pageId, PortalId = otherPortalId });
 
-        // MIGRATION: RE-POINTED FROM THE READ PROJECTION ONTO THE WRITE SHAPE. This fact was written against
-        // an overload taking MembershipSettingsDto - the shape this surface RETURNS - while the write had
-        // already been split onto UpdateMembershipSettingsRequest, which is the only shape an endpoint binds.
-        // The rule, the refusal and the "nothing staged" assertions are unchanged; only the request type and
-        // the reason code follow the surviving surface.
+        // RE-POINTED FROM THE READ PROJECTION ONTO THE WRITE SHAPE. This fact was written against an
+        // overload taking MembershipSettingsDto - the shape this surface RETURNS - while the write had
+        // already been split onto UpdateMembershipSettingsRequest, which is the only shape an endpoint
+        // binds.
         Result outcome = await harness.Service.UpdateMembershipSettingsAsync(
             PortalId,
             new UpdateMembershipSettingsRequest { RedirectAfterLogin = pageId },
@@ -4609,13 +4215,6 @@ public class UserServiceTests
     /// </summary>
     /// <param name="mutate">Applies one out-of-range value to an otherwise valid request.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy screen constrained these values through its CHOICE OF CONTROL - a drop-down
-    /// bound to an enumeration cannot submit a member the enumeration does not have, and a page picker bound
-    /// to the portal's pages cannot offer another tenant's page (UserSettings.ascx.vb:L58-L104). None of that
-    /// constraint survives a JSON body, so what the control expressed implicitly is stated explicitly here.
-    /// Before these rules existed every one of the twenty-three values reached the store unchecked.
-    /// </remarks>
     [Theory]
     [MemberData(nameof(OutOfRangeMembershipSettings))]
     public async Task UpdateMembershipSettings_RefusesAValueOutsideItsRange(
@@ -4647,8 +4246,6 @@ public class UserServiceTests
         Harness harness = Harness.Ready();
         harness.AddMembershipSettingsSource();
 
-        // A real page, owned by a DIFFERENT tenant. This is the case a range rule cannot catch and the one
-        // the legacy page picker made unreachable by construction.
         harness.Tabs
             .Setup(tabs => tabs.GetByIdAsync(500, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Tab { TabId = 500, PortalId = PortalId + 1, TabName = "Another tenant's page" });
@@ -4675,9 +4272,7 @@ public class UserServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// A null redirect member is the legitimate "no redirect" answer and is not looked up at all.
-    /// </summary>
+    /// <summary>A null redirect member is the legitimate "no redirect" answer and is not looked up at all.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Absence is null and only null. The page identity seeds at ZERO, so zero is a legitimate page: a
@@ -4711,11 +4306,6 @@ public class UserServiceTests
     /// An electronic-mail validation expression that cannot be compiled is refused rather than stored.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the one setting whose stored value is later EXECUTED, by the registration and profile
-    /// validators. Storing an uncompilable expression would therefore leave every subsequent submission
-    /// failing inside a validator with no field to name, so the failure belongs to the request that stored it.
-    /// </remarks>
     [Fact]
     public async Task UpdateMembershipSettings_RefusesAnUnusableEmailExpression()
     {
@@ -4738,18 +4328,9 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the
-    /// submitted format against the stored one and, when they differed, called
-    /// <c>UserController.UpdateDisplayNames</c> (<c>Library/Components/Users/UserController.vb:L1259-L1268</c>)
-    /// to walk the tenant's accounts applying it. The legacy ran that walk on a BACKGROUND THREAD and told
-    /// the operator nothing; here it is part of the write and the count is answered. The divergence is
-    /// recorded in MIGRATION_NOTES.md.
-    /// </para>
-    /// <para>
-    /// The per-account cache is keyed by username rather than by tenant, so the tenant-wide eviction does not
-    /// reach it - each rewritten account is therefore evicted by name, which the last assertion measures.
-    /// </para>
+    /// Reproduces <c>Website/admin/Users/UserSettings.ascx.vb:L175-L182</c>, which compared the submitted
+    /// format against the stored one and, when they differed, called
+    /// <c>UserController.UpdateDisplayNames</c> to walk the tenant's accounts applying it.
     /// </remarks>
     [Fact]
     public async Task UpdateMembershipSettings_RewritesEveryAccountWhenTheFormatChanges()
@@ -4831,16 +4412,8 @@ public class UserServiceTests
         cleared.InvalidatedUsers.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// The format comparison is ordinal, so a change of case is a change of format.
-    /// </summary>
+    /// <summary>The format comparison is ordinal, so a change of case is a change of format.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The value is a TEMPLATE rather than prose. <c>UserInfo.UpdateDisplayName</c> substitutes the
-    /// upper-case token names literally (<c>Library/Components/Users/UserInfo.vb:L358-L368</c>), so
-    /// "[firstname]" is not a differently-spelled "[FIRSTNAME]" - it is a format that substitutes nothing and
-    /// renders the bracketed text. Two spellings are therefore two policies, and the sweep must run.
-    /// </remarks>
     [Fact]
     public async Task UpdateMembershipSettings_ComparesTheFormatOrdinally()
     {
@@ -4862,9 +4435,7 @@ public class UserServiceTests
         account.DisplayName.Should().Be("[firstname]", "an unrecognised token is not a token");
     }
 
-    /// <summary>
-    /// The reported number counts names that CHANGED, not accounts examined.
-    /// </summary>
+    /// <summary>The reported number counts names that CHANGED, not accounts examined.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// An operator reads this number as "how much of my tenant did this alter". Counting accounts examined
@@ -4901,8 +4472,8 @@ public class UserServiceTests
     /// <remarks>
     /// A host account belongs to no single tenant - it is read without a tenant scope
     /// (<c>03.03.03.SqlDataProvider:L74-L83</c> established the host scope as a SQL NULL portal) - so one
-    /// tenant's presentation policy has no business rewriting its name. The read is unpaged because the sweep
-    /// is tenant-wide by definition; paging it would only decide how many round trips it took.
+    /// tenant's presentation policy has no business rewriting its name. The read is unpaged because the
+    /// sweep is tenant-wide by definition; paging it would only decide how many round trips it took.
     /// </remarks>
     [Fact]
     public async Task UpdateMembershipSettings_SweepsTheTenantsAccountsUnpagedAndExcludesHostAccounts()
@@ -4941,10 +4512,10 @@ public class UserServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// Storing a policy that cannot be applied to every account would leave the tenant in a state where each
-    /// subsequent edit of the offending account is refused by the same width guard - a policy that silently
-    /// breaks the accounts it governs. The failure names the first account that overflows, which is the one
-    /// an operator needs in order to understand the refusal.
+    /// Storing a policy that cannot be applied to every account would leave the tenant in a state where
+    /// each subsequent edit of the offending account is refused by the same width guard - a policy that
+    /// silently breaks the accounts it governs. The failure names the first account that overflows, which
+    /// is the one an operator needs in order to understand the refusal.
     /// </remarks>
     [Fact]
     public async Task UpdateMembershipSettings_RefusesTheWholeWriteWhenTheFormatOverflowsForAnyAccount()
@@ -5013,7 +4584,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The out-of-range cases exercised by <see cref="UpdateMembershipSettings_RefusesAValueOutsideItsRange"/>.
+    /// The out-of-range cases exercised by <see
+    /// cref="UpdateMembershipSettings_RefusesAValueOutsideItsRange"/>.
     /// </summary>
     /// <returns>One mutation per bounded member, above and below where both bounds exist.</returns>
     public static TheoryData<Action<UpdateMembershipSettingsRequest>> OutOfRangeMembershipSettings()
@@ -5033,8 +4605,8 @@ public class UserServiceTests
         };
 
     /// <summary>
-    /// Reading a profile reports absence for an unknown account, and otherwise reports one entry per declared
-    /// property whether or not the account recorded a value for it.
+    /// Reading a profile reports absence for an unknown account, and otherwise reports one entry per
+    /// declared property whether or not the account recorded a value for it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5094,22 +4666,6 @@ public class UserServiceTests
     /// per-property visibility, in both states, taking the enabled default when the tenant stored nothing.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// ⚠ THIS FACT IS PUBLISHED HERE BECAUSE THE ONLY OTHER PLACE IT COULD BE READ FROM IS
-    /// ADMINISTRATOR-ONLY. <c>GET api/v1/users/settings</c> carries
-    /// <c>PolicyNames.PortalAdministrator</c>, and the caller who needs this answer is by construction an
-    /// ordinary account holder looking at their own profile. Measured against the running API, such a
-    /// caller was answered <c>403 auth.not_permitted</c>, so the per-property visibility affordance could
-    /// never be offered to the one person the legacy rule offers it to
-    /// (<c>Website/admin/Users/Profile.ascx.vb:L58-L63</c>), however the tenant had configured it.
-    /// </para>
-    /// <para>
-    /// BOTH STATES ARE ASSERTED, not only the stored <c>false</c>: a projection that dropped the member
-    /// entirely would satisfy a case asserting only the default, because the DTO's own initialiser is
-    /// <c>true</c>. The stored <c>false</c> is what proves the settings source is actually consulted.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task GetProfile_PublishesTheTenantsVisibilityAffordanceDecision()
     {
@@ -5133,8 +4689,8 @@ public class UserServiceTests
         on.Value!.DisplayVisibilityEnabled.Should().BeTrue();
 
         // NOTHING STORED AT ALL, which is the state most tenants are in. The fallback is the same
-        // MembershipSettingsDto initialiser the settings endpoint itself falls back to, so the two
-        // readers cannot disagree about a tenant that has configured nothing.
+        // MembershipSettingsDto initialiser the settings endpoint itself falls back to, so the two readers
+        // cannot disagree about a tenant that has configured nothing.
         Harness storedNothing = Harness.Ready();
 
         Result<UserProfileDto?> unstored = await storedNothing.Service
@@ -5150,12 +4706,6 @@ public class UserServiceTests
     /// independent: one settings member does not stand in for the other.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// They are two members of one settings source and are read together in one round trip, which is why
-    /// this case exists: reading them together makes it cheap to derive one from the other by accident, and
-    /// they answer different questions. <c>Profile_DefaultVisibility</c> decides what an unrecorded value
-    /// is set to; <c>Profile_DisplayVisibility</c> decides whether the holder may change it.
-    /// </remarks>
     [Fact]
     public async Task GetProfile_KeepsTheVisibilityAffordanceApartFromTheDefaultVisibility()
     {
@@ -5174,7 +4724,8 @@ public class UserServiceTests
     }
     /// <summary>
     /// PRIV-01: the export composes the three things the installation holds about one account within one
-    /// tenant - the account row, its profile and its role assignments - and stamps the instant it was taken.
+    /// tenant - the account row, its profile and its role assignments - and stamps the instant it was
+    /// taken.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5219,8 +4770,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// PRIV-01: an account the addressed tenant does not hold reports absence rather than an empty document,
-    /// and nothing is recorded, because nothing was exported.
+    /// PRIV-01: an account the addressed tenant does not hold reports absence rather than an empty
+    /// document, and nothing is recorded, because nothing was exported.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5263,17 +4814,10 @@ public class UserServiceTests
     /// </summary>
     /// <returns>Nothing; this is a static shape assertion.</returns>
     /// <remarks>
-    /// <para>
     /// An allowlist rather than a substring search, because the account projection legitimately carries
     /// <c>MustChangePassword</c> and <c>LastPasswordChangeDate</c> - facts ABOUT a credential that disclose
     /// nothing OF it - so a rule keyed on the word would reject the correct shape and would have to be
     /// weakened until it caught nothing.
-    /// </para>
-    /// <para>
-    /// The forbidden set below is therefore exact names that would carry a secret VALUE. It is asserted
-    /// against every type in the exported graph, so a member added to any of them later fails here rather
-    /// than shipping a secret to whoever asks for their own data.
-    /// </para>
     /// </remarks>
     [Fact]
     public void ExportPersonalData_CarriesAClosedSetOfMembersAndNoSecret()
@@ -5362,8 +4906,8 @@ public class UserServiceTests
 
     /// <summary>
     /// PRIV-01: an export an administrator takes over somebody else's account and one the account holder
-    /// takes over their own are different events, and after the fact nothing but this property distinguishes
-    /// them.
+    /// takes over their own are different events, and after the fact nothing but this property
+    /// distinguishes them.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5411,11 +4955,7 @@ public class UserServiceTests
             Times.Never);
     }
 
-
-
-    /// <summary>
-    /// Writing a profile requires a payload, and an unknown account is refused.
-    /// </summary>
+    /// <summary>Writing a profile requires a payload, and an unknown account is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateProfile_RequiresAPayloadAndRefusesAnUnknownAccount()
@@ -5548,13 +5088,6 @@ public class UserServiceTests
     /// </summary>
     /// <param name="submittedValue">The value to submit, or null to omit the property entirely.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The whitespace case used to be a third row here and has moved to its own fact below, because the write
-    /// rule and the sign-in completeness rule must agree and the legacy authority for both is one line -
-    /// <c>ProfileController.vb</c> <c>ValidateProfile</c> comparing the answer against <c>Null.NullString</c>,
-    /// which is the EMPTY STRING. A write rule stricter than the completeness rule refuses an answer that
-    /// would have satisfied sign-in.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -5578,21 +5111,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A required property answered with whitespace is accepted and stored exactly as submitted, matching the
-    /// rule the sign-in completeness gate applies.
+    /// A required property answered with whitespace is accepted and stored exactly as submitted, matching
+    /// the rule the sign-in completeness gate applies.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// Parity with <c>ProfileController.vb</c> <c>ValidateProfile</c>, which compares the answer against
-    /// <c>Null.NullString</c> - the empty string - so a single space satisfied the legacy rule.
-    /// </para>
-    /// <para>
     /// The two rules are asserted to agree because disagreement is harmful in EITHER direction. A stricter
-    /// write rule refuses an answer that would have let the account sign in; a laxer one stores an answer that
-    /// will lock the account out on its next sign-in, in front of a form that cannot show it why. Whether a
-    /// space is satisfactory belongs to the property's own validation expression.
-    /// </para>
+    /// write rule refuses an answer that would have let the account sign in; a laxer one stores an answer
+    /// that will lock the account out on its next sign-in, in front of a form that cannot show it why.
     /// </remarks>
     [Fact]
     public async Task UpdateProfile_AcceptsAWhitespaceAnswerForARequiredProperty()
@@ -5616,7 +5142,8 @@ public class UserServiceTests
 
     /// <summary>
     /// Writing a profile is a replacement rather than a merge: a submitted property is written, a property
-    /// that was stored and not submitted is removed, and a submitted property that was never stored is added.
+    /// that was stored and not submitted is removed, and a submitted property that was never stored is
+    /// added.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -5639,10 +5166,6 @@ public class UserServiceTests
         harness.ValuesByUserId[UserId]
             .Single(value => value.PropertyDefinitionId == StreetPropertyId)
             .PropertyValue.Should().Be("Fleet Street");
-        // The omitted City answer is BLANKED rather than deleted - the legacy write path had no
-        // delete for a value row, and clearing was an upsert carrying an empty value. Both stored
-        // rows are therefore staged as updates, and the one that was dropped from the submission
-        // reads back empty.
         harness.UpdatedValues.Select(value => value.PropertyDefinitionId)
             .Should().BeEquivalentTo(new[] { StreetPropertyId, CityPropertyId });
         harness.UpdatedValues.Single(value => value.PropertyDefinitionId == CityPropertyId)
@@ -5676,15 +5199,13 @@ public class UserServiceTests
         written.PropertyValue.Should().BeNull();
         written.PropertyText.Should().Be(oversize);
 
-        // The entity derives nothing, so the effective value is the coalesce the legacy read
-        // procedure performs - the bounded column when it is not null, the overflow column
-        // otherwise. Asserted here in that order to prove the row round-trips the whole value.
+        // The entity derives nothing, so the effective value is the coalesce the legacy read procedure
+        // performs - the bounded column when it is not null, the overflow column otherwise. Asserted here
+        // in that order to prove the row round-trips the whole value.
         (written.PropertyValue ?? written.PropertyText).Should().Be(oversize);
     }
 
-    /// <summary>
-    /// A value that exactly fills the column stays in it, so the boundary is inclusive.
-    /// </summary>
+    /// <summary>A value that exactly fills the column stays in it, so the boundary is inclusive.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateProfile_KeepsAValueThatExactlyFillsTheColumn()
@@ -5729,9 +5250,7 @@ public class UserServiceTests
         (stored.PropertyValue ?? stored.PropertyText).Should().Be("Fleet Street");
     }
 
-    /// <summary>
-    /// A successful profile write commits once and discards the account's cache.
-    /// </summary>
+    /// <summary>A successful profile write commits once and discards the account's cache.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateProfile_CommitsOnceAndDiscardsTheAccountCache()
@@ -5890,18 +5409,6 @@ public class UserServiceTests
         outcome.Value.Should().BeTrue();
     }
 
-    // =============================================================================================
-    // MEMBER SERVICES. Replaces Website/admin/Users/MemberServices.ascx.vb - the self-service role
-    // subscription panel. Five operations, three per-row predicates and one invitation code.
-    //
-    // WHAT THESE FACTS OWN, AND WHAT THEY DELIBERATELY DO NOT. The account service owns the GATES and the
-    // catalogue projection; the role service owns the assignment itself, including the expiry derivation
-    // from the role's trial and billing terms, the protected bounds and the expire-rather-than-delete
-    // retention. So these facts assert which gate fired, what the catalogue said, and whether the delegate
-    // was asked and with what - never a derived date, which would be asserting a mock's own arithmetic.
-    // The derivation is pinned by the role suite against the real implementation.
-    // =============================================================================================
-
     /// <summary>The published service the catalogue facts below are built around.</summary>
     private const int FreeServiceRoleId = 40;
 
@@ -5918,11 +5425,6 @@ public class UserServiceTests
     /// The catalogue is the tenant's PUBLIC roles, whether or not the account holds them, and every row
     /// carries the three predicates the legacy grid bound.
     /// </summary>
-    /// <remarks>
-    /// The legacy data source selects <c>where R.PortalId = @PortalId and R.IsPublic = 1</c>
-    /// (<c>04.06.00.SqlDataProvider:L993-L1013</c>) and annotates each row with the account's own expiry and
-    /// assignment key, so an offer not taken up appears exactly as one that has been.
-    /// </remarks>
     [Fact]
     public async Task ListMemberServices_PublishesEveryPublicRoleWithThisAccountsOwnState()
     {
@@ -5956,10 +5458,9 @@ public class UserServiceTests
     /// </summary>
     /// <remarks>
     /// The terminal statement wrapped each in <c>case when convert(int, R.ServiceFee) &lt;&gt; 0 …</c>, and
-    /// <c>convert(int, …)</c> truncates - so a service priced at 0.50 came back with a null fee and an empty
-    /// frequency, which the screen rendered as "Free" while the subscription still refused to complete
-    /// without payment. The stored value is published instead, which keeps this contract in agreement with
-    /// the role listing and is recorded as a presentation divergence.
+    /// <c>convert(int, …)</c> truncates - so a service priced at 0.50 came back with a null fee and an
+    /// empty frequency, which the screen rendered as "Free" while the subscription still refused to
+    /// complete without payment.
     /// </remarks>
     [Fact]
     public async Task ListMemberServices_PublishesASubUnitFeeRatherThanSuppressingItAsFree()
@@ -5982,11 +5483,6 @@ public class UserServiceTests
     /// The command label is the legacy <c>ServiceText</c> ladder: subscribe, unsubscribe, or renew once the
     /// subscription has lapsed.
     /// </summary>
-    /// <remarks>
-    /// <c>MemberServices.ascx.vb:L288-L305</c>. The lapsed arm is guarded by
-    /// <c>Not Null.IsNull(expiryDate)</c>, so a subscription with no expiry never reads as lapsed however
-    /// old it is - a perpetual membership is not an expired one.
-    /// </remarks>
     [Theory]
     [InlineData(false, null, MemberServiceActions.Subscribe)]
     [InlineData(true, null, MemberServiceActions.Unsubscribe)]
@@ -6020,11 +5516,6 @@ public class UserServiceTests
     /// A paid service is offered only when the tenant has a payment processor account, which is the second
     /// arm of the legacy subscribe predicate.
     /// </summary>
-    /// <remarks>
-    /// <c>ShowSubscribe</c> at <c>MemberServices.ascx.vb:L307-L323</c>. The row is still LISTED either way -
-    /// dropping it would silently erase a tenant's paid offering - and the payment flag says why this
-    /// application cannot complete it.
-    /// </remarks>
     [Theory]
     [InlineData(null, false)]
     [InlineData("", false)]
@@ -6047,11 +5538,6 @@ public class UserServiceTests
     }
 
     /// <summary>A trial already consumed is no longer offered.</summary>
-    /// <remarks>
-    /// <c>ShowTrial</c>'s final test, <c>(objUserRole Is Nothing) OrElse (Not objUserRole.IsTrialUsed)</c>
-    /// (<c>MemberServices.ascx.vb:L336</c>). The flag is a nullable bit, and an absent value reads as "not
-    /// used" - which is the collapse that expression performed.
-    /// </remarks>
     [Theory]
     [InlineData(null, true)]
     [InlineData(false, true)]
@@ -6088,13 +5574,6 @@ public class UserServiceTests
     /// <summary>
     /// The tenant's own switch refuses every one of the five operations, and it defaults to ENABLED.
     /// </summary>
-    /// <remarks>
-    /// <c>DisplayServices</c> at <c>ManageUsers.ascx.vb:L61-L66</c> hid the whole tab when
-    /// <c>Profile_ManageServices</c> was off, and in Web Forms an unrendered control was an unreachable
-    /// handler - so the setting WAS the enforcement. An HTTP resource has no tab to hide, so it becomes a
-    /// refusal. The default when nothing is stored is true (<c>UserModuleBase.vb:L146-L147</c>), and a
-    /// tenant with no account module at all reads as enabled rather than as broken.
-    /// </remarks>
     [Fact]
     public async Task MemberServices_AreRefusedEntirelyWhenTheTenantHasSwitchedThemOff()
     {
@@ -6156,12 +5635,6 @@ public class UserServiceTests
     /// Subscribing delegates the write, and submits NO date, so the role service's own derivation governs
     /// both bounds.
     /// </summary>
-    /// <remarks>
-    /// The legacy path reached <c>UpdateUserRole(portalId, userId, roleId, cancel)</c>
-    /// (<c>RoleController.vb:L489</c>), which takes no date arguments at all; the seven-argument overload
-    /// that stores a caller's dates verbatim was the administration screen's member. Leaving both request
-    /// members absent is precisely what selects the derivation inside the delegate.
-    /// </remarks>
     [Fact]
     public async Task SubscribeToService_DelegatesTheAssignmentAndSubmitsNoBound()
     {
@@ -6183,11 +5656,6 @@ public class UserServiceTests
     }
 
     /// <summary>Renewing a lapsed subscription is the SAME operation, reached at the same address.</summary>
-    /// <remarks>
-    /// The legacy grid bound <c>ServiceText</c> to both the link's text and its <c>CommandName</c>, and the
-    /// dispatcher sent the subscribe and renew names to one member (<c>:L440-L442</c>). The delegate is
-    /// idempotent in the same way: it revises the expiry rather than failing.
-    /// </remarks>
     [Fact]
     public async Task SubscribeToService_RenewsALapsedSubscriptionThroughTheSameOperation()
     {
@@ -6207,14 +5675,9 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A service that charges a fee is refused on BOTH the subscribe and the cancel path, because the legacy
-    /// cancel path shared the subscribe gate.
+    /// A service that charges a fee is refused on BOTH the subscribe and the cancel path, because the
+    /// legacy cancel path shared the subscribe gate.
     /// </summary>
-    /// <remarks>
-    /// <c>Subscribe(roleID, cancel)</c> tests the fee once and branches on <c>cancel</c> only inside the
-    /// payment redirect, appending <c>&amp;cancel=1</c> at <c>MemberServices.ascx.vb:L115</c>. AAP 0.2.2.4
-    /// excludes sales administration, so neither direction can be completed here.
-    /// </remarks>
     [Fact]
     public async Task SubscribeAndCancel_RefuseAServiceThatWouldRequirePayment()
     {
@@ -6231,15 +5694,7 @@ public class UserServiceTests
         harness.DelegatedRemovals.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// An ABSENT fee is read as no fee, which the legacy comparison could not do.
-    /// </summary>
-    /// <remarks>
-    /// <c>RoleInfo.ServiceFee</c> was a non-nullable <c>Single</c>, so a stored <c>NULL</c> arrived through
-    /// <c>Null.SetNull</c> as <c>Single.MinValue</c> - not zero - and <c>objRole.ServiceFee = 0.0</c> was
-    /// therefore FALSE for a role with no fee at all, handing such a role to the payment page. Reading
-    /// absence as "no fee" is the Rule T7 translation and matches the role service's own cancellation test.
-    /// </remarks>
+    /// <summary>An ABSENT fee is read as no fee, which the legacy comparison could not do.</summary>
     [Fact]
     public async Task SubscribeToService_TreatsAnAbsentFeeAsNoFee()
     {
@@ -6290,11 +5745,6 @@ public class UserServiceTests
     }
 
     /// <summary>Cancelling delegates the removal and passes its outcome through unchanged.</summary>
-    /// <remarks>
-    /// The delegate decides between withdrawing the row and back-dating its expiry to retain a consumed paid
-    /// trial (<c>RoleController.vb:L494-L496</c>), and reports which as a reason on the successful outcome.
-    /// That reason survives this boundary, so a caller can still say which happened.
-    /// </remarks>
     [Fact]
     public async Task CancelService_DelegatesTheRemovalAndPreservesItsReportedOutcome()
     {
@@ -6316,7 +5766,8 @@ public class UserServiceTests
     /// <summary>The delegate's own refusals reach the caller unchanged.</summary>
     /// <remarks>
     /// Not holding the service, and holding one that may not be withdrawn at all, are the delegate's rules
-    /// and are not restated here: the codes travel through so the API edge answers 404 and 403 respectively.
+    /// and are not restated here: the codes travel through so the API edge answers 404 and 403
+    /// respectively.
     /// </remarks>
     [Fact]
     public async Task CancelService_SurfacesTheDelegatesOwnRefusalsWithoutRewritingThem()
@@ -6342,11 +5793,6 @@ public class UserServiceTests
     /// A trial is performable on a PAID service whose trial is free, which the subscription itself is not -
     /// the two gates genuinely differ.
     /// </summary>
-    /// <remarks>
-    /// Subscribing requires a zero SERVICE fee (<c>MemberServices.ascx.vb:L105</c>) while trialling requires
-    /// a zero TRIAL fee (<c>:L124</c>). That difference is why the two are separate operations rather than
-    /// one that reads a discriminator out of a body.
-    /// </remarks>
     [Fact]
     public async Task StartServiceTrial_SucceedsOnAPaidServiceThatCannotBeSubscribedTo()
     {
@@ -6364,14 +5810,12 @@ public class UserServiceTests
         harness.DelegatedAssignments[0].RoleId.Should().Be(PaidServiceRoleId);
     }
 
-    /// <summary>
-    /// Every reason a trial is unavailable answers ONE code, and none of them reaches a write.
-    /// </summary>
+    /// <summary>Every reason a trial is unavailable answers ONE code, and none of them reaches a write.</summary>
     /// <remarks>
     /// The four conditions are <c>ShowTrial</c>'s own: the service charges nothing and so has nothing to
-    /// trial, its trial itself carries a fee, or this account has already consumed it - plus the unpublished
-    /// case asserted separately. Distinguishing them would tell a caller which of a tenant's commercial
-    /// terms it had guessed wrong about.
+    /// trial, its trial itself carries a fee, or this account has already consumed it - plus the
+    /// unpublished case asserted separately. Distinguishing them would tell a caller which of a tenant's
+    /// commercial terms it had guessed wrong about.
     /// </remarks>
     [Fact]
     public async Task StartServiceTrial_RefusesEveryUnavailableTrialUnderOneCode()
@@ -6405,12 +5849,6 @@ public class UserServiceTests
     /// An invitation code searches EVERY role of the tenant, published or not, free or not, and enrols the
     /// account in every one that bears it.
     /// </summary>
-    /// <remarks>
-    /// The legacy handler read <c>GetPortalRoles(PortalSettings.PortalId)</c> at
-    /// <c>MemberServices.ascx.vb:L407</c> and applied neither the public test nor the fee test the grid's own
-    /// commands applied - an invitation code IS the bypass for an unpublished service - and its loop had no
-    /// early exit, so one code legitimately enrols an account in several services.
-    /// </remarks>
     [Fact]
     public async Task RedeemServiceCode_EnrolsEveryRoleBearingTheCodeIncludingUnpublishedAndPaidOnes()
     {
@@ -6444,8 +5882,7 @@ public class UserServiceTests
     /// <remarks>
     /// <c>objRole.RSVPCode = code</c> (<c>:L411</c>) is a Visual Basic string equality in memory and the
     /// file declares no <c>Option Compare Text</c>, so it compared byte for byte. Widening it would let a
-    /// code match a role its issuer did not intend. The empty-code guard is load-bearing for the same
-    /// reason: an absent stored code reached that comparison as the EMPTY STRING.
+    /// code match a role its issuer did not intend.
     /// </remarks>
     [Theory]
     [InlineData("founders-2026")]
@@ -6474,11 +5911,7 @@ public class UserServiceTests
     /// </summary>
     /// <remarks>
     /// The legacy guard <c>If code &lt;&gt; ""</c> (<c>:L403</c>) did nothing at all for an empty box and
-    /// posted no message, so an account could not tell a rejected code from an unread one. The guard itself
-    /// could not be dropped: an absent <c>Roles.RSVPCode</c> reached the comparison as
-    /// <c>Null.NullString</c>, the empty string, so without it an empty submission would have enrolled the
-    /// account in every codeless role in the tenant. The service repeats the validator's rule so it holds
-    /// for a caller that reached it without the pipeline.
+    /// posted no message, so an account could not tell a rejected code from an unread one.
     /// </remarks>
     [Theory]
     [InlineData(null)]
@@ -6500,12 +5933,6 @@ public class UserServiceTests
     }
 
     /// <summary>A refusal on one match abandons the redemption rather than reporting a partial success.</summary>
-    /// <remarks>
-    /// A caller told "you were enrolled in these two" when a third was refused has no way to learn about the
-    /// third, so the failure surfaces. Matches already committed stand, exactly as the legacy loop's
-    /// per-iteration writes did, and a retry is idempotent for them because the delegate revises an existing
-    /// membership rather than failing on it.
-    /// </remarks>
     [Fact]
     public async Task RedeemServiceCode_AbandonsTheRedemptionWhenAMatchIsRefused()
     {
@@ -6529,16 +5956,6 @@ public class UserServiceTests
     /// A failed redemption leaves a record, and the record does not contain the code that was submitted.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// SEC: BOTH HALVES OF THIS ARE THE FIX. The legacy handler answered a miss with an on-screen sentence and
-    /// wrote nothing at all (<c>MemberServices.ascx.vb:L427</c>), so an installation could be guessed at
-    /// indefinitely and leave no trace for an operator to notice; a bounded window limits the RATE of guessing
-    /// but a bounded-and-patient attempt is still invisible without this record. The second half matters just
-    /// as much: writing the guess into the trail would turn the trail into a list of near-miss codes for
-    /// whoever can read it, which is a worse exposure than the silence it replaces. The assertion therefore
-    /// sweeps every key, every value and the resource identifier rather than naming one field, so a later
-    /// property carrying the submission fails here rather than shipping.
-    /// </remarks>
     [Fact]
     public async Task RedeemServiceCode_RecordsAFailedAttemptAndNeverTheSubmittedCode()
     {
@@ -6567,16 +5984,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A successful redemption leaves a record naming the MECHANISM, and it does not contain the code either.
+    /// A successful redemption leaves a record naming the MECHANISM, and it does not contain the code
+    /// either.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// A role obtained by code is a membership grant, which is the kind of change the legacy register audits
-    /// everywhere else; without this record the only trace of HOW a membership arrived was the assignment
-    /// itself, which looks identical to one an administrator made. The count is recorded because one code
-    /// legitimately grants several services - the legacy loop had no early exit - and the code that granted
-    /// them is withheld here for exactly the reason it is withheld on the failure path.
-    /// </remarks>
     [Fact]
     public async Task RedeemServiceCode_RecordsTheGrantAndNeverTheSubmittedCode()
     {
@@ -6605,17 +6016,9 @@ public class UserServiceTests
         AssertCarriesNoCode(record, InvitationCode);
     }
 
-    /// <summary>
-    /// Asserts that a record carries a code in no field a reader of the trail can see.
-    /// </summary>
+    /// <summary>Asserts that a record carries a code in no field a reader of the trail can see.</summary>
     /// <param name="record">The record to sweep.</param>
     /// <param name="code">The code that must not appear.</param>
-    /// <remarks>
-    /// Swept rather than named field by field, because the exposure being prevented is the code REACHING the
-    /// trail at all - through a property added later, through the resource identifier, or through a key rather
-    /// than a value. The comparison is case-insensitive so a normalised copy is caught as well as a verbatim
-    /// one.
-    /// </remarks>
     private static void AssertCarriesNoCode(AuditEvent record, string code)
     {
         record.ResourceId.Should().NotContain(code, "the resource identifier names the account, not the guess");
@@ -6635,9 +6038,7 @@ public class UserServiceTests
     /// <remarks>
     /// The two paths open that scope through DIFFERENT members, and the difference is the point. Creation
     /// may be composed inside a wider operation - installing a tenant creates its administrator - so it
-    /// JOINS an ambient scope when one exists. Deletion is a top-level operation whose whole cascade must be
-    /// atomic, and every write inside it stages rather than commits, so it BEGINS its own scope: the unit of
-    /// work refuses to nest, which is what proves no suboperation is committing underneath it.
+    /// JOINS an ambient scope when one exists.
     /// </remarks>
     [Fact]
     public async Task AccountCreationAndDeletion_UseOneOuterTransactionBoundaryEach()
@@ -6689,8 +6090,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The declaration catalogue is read through the cache under a tenant-keyed name, with a lifetime scaled
-    /// by the configured multiplier, and is read straight through when caching is disabled.
+    /// The declaration catalogue is read through the cache under a tenant-keyed name, with a lifetime
+    /// scaled by the configured multiplier, and is read straight through when caching is disabled.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -6716,8 +6117,8 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The catalogue is ordered by the display order the tenant chose, falling back to the identifier so the
-    /// order is total.
+    /// The catalogue is ordered by the display order the tenant chose, falling back to the identifier so
+    /// the order is total.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -6767,9 +6168,7 @@ public class UserServiceTests
         withdrawn.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// A declaration that exists in this tenant and was not withdrawn is projected.
-    /// </summary>
+    /// <summary>A declaration that exists in this tenant and was not withdrawn is projected.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetProfilePropertyDefinition_ProjectsADeclarationOfThisTenant()
@@ -6787,18 +6186,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// The single read passes the tenant it was given straight through, so the first tenant an
-    /// installation has - the one keyed -1 - reads its own declaration and not the host scope's.
+    /// The single read passes the tenant it was given straight through, so the first tenant an installation
+    /// has - the one keyed -1 - reads its own declaration and not the host scope's.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this replaces an assertion that encoded a measured defect. The service used to reach a
-    /// repository that rewrote a requested portal of -1 into a <c>PortalID IS NULL</c> predicate, so a
-    /// declaration physically owned by the tenant keyed -1 read as an absence while the host scope's rows
-    /// were served in its place. Because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
-    /// (<c>01.00.00.SqlDataProvider:L77</c>), that tenant is a real one, and the scope it names is passed
-    /// through unaltered by every layer.
-    /// </remarks>
     [Fact]
     public async Task GetProfilePropertyDefinition_PassesTheFirstTenantKeyThroughUnaltered()
     {
@@ -6839,14 +6230,6 @@ public class UserServiceTests
     /// than filing the declaration into the host scope.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the create half of the same defect. The mapper used to rewrite an incoming -1 into a
-    /// null scope, reproducing <c>AddPropertyDefinition</c>'s <c>GetNull</c> wrapper
-    /// (<c>SqlDataProvider.vb:L1021</c>). Since <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
-    /// (<c>01.00.00.SqlDataProvider:L77</c>), that filed a real tenant's declaration where the same
-    /// tenant's scoped read could never find it, so a create and the read after it disagreed. This asserts
-    /// the stored scope on the staged entity, which is the only place the disagreement is visible.
-    /// </remarks>
     [Fact]
     public async Task CreateProfilePropertyDefinition_StoresTheFirstTenantKeyRatherThanTheHostScope()
     {
@@ -6894,9 +6277,7 @@ public class UserServiceTests
         harness.AddedDefinitions.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A name the tenant already declares is refused.
-    /// </summary>
+    /// <summary>A name the tenant already declares is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateProfilePropertyDefinition_RefusesADuplicateName()
@@ -6921,16 +6302,14 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A property name declared between the check and the commit is refused with exactly the answer the check
-    /// gives, and the catalogue cache is left alone because nothing was written.
+    /// A property name declared between the check and the commit is refused with exactly the answer the
+    /// check gives, and the catalogue cache is left alone because nothing was written.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6. <c>IX_ProfilePropertyDefinition</c> is unique over
-    /// <c>(PortalID, ModuleDefID, PropertyName)</c>, so two requests declaring the same property in the same
-    /// tenant arriving together both read "not declared" and the loser's insert is refused by the index rather
-    /// than by the read. The same code and the same wording as the check are returned, because the loser
-    /// faces precisely the state the check describes.
+    /// <c>IX_ProfilePropertyDefinition</c> is unique over <c>(PortalID, ModuleDefID, PropertyName)</c>, so
+    /// two requests declaring the same property in the same tenant arriving together both read "not
+    /// declared" and the loser's insert is refused by the index rather than by the read.
     /// </remarks>
     [Fact]
     public async Task CreateProfilePropertyDefinition_RefusesANameDeclaredBetweenTheCheckAndTheCommit()
@@ -6953,19 +6332,10 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A declaration is created against the tenant from the route, is not withdrawn, and the catalogue cache
-    /// is discarded so the new property becomes visible.
+    /// A declaration is created against the tenant from the route, is not withdrawn, and the catalogue
+    /// cache is discarded so the new property becomes visible.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this test previously submitted a CONFLICTING owning portal on the body and asserted that the
-    /// route won. It can no longer do so, because the create contract carries no portal member at all - the
-    /// tenant is a parameter beside the request. That is a stronger guarantee than the one the withdrawn line
-    /// asserted: the route cannot be overridden because there is nothing to override it with, and
-    /// <c>ProfileDefinitionWriteContractValidatorTests.NeitherWriteContract_AdvertisesAMemberItCannotHonour</c>
-    /// is the standing proof that the member has not been re-added. The tenant assertion below is retained
-    /// because it is what proves the parameter is actually the value written.
-    /// </remarks>
     [Fact]
     public async Task CreateProfilePropertyDefinition_CreatesAgainstTheRoutesTenantAndDiscardsTheCatalogue()
     {
@@ -7000,10 +6370,7 @@ public class UserServiceTests
     /// MIGRATION: THE WITHDRAWN CASE IS THE REGRESSION. This member's guard tested only existence and
     /// tenancy, while the single read beside it also tested withdrawal, so a declaration the contract
     /// refused to SHOW stayed editable through this one - and the contract exposes no member that reads or
-    /// restores a withdrawn declaration, so the asymmetry had no recycle-bin behind it. The withdrawn case is
-    /// asserted alongside the other two, and against the SAME failure code, because a caller must not be
-    /// able to tell the three apart: distinguishing them would confirm that a declaration exists in a tenant
-    /// the caller cannot read.
+    /// restores a withdrawn declaration, so the asymmetry had no recycle-bin behind it.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -7087,9 +6454,6 @@ public class UserServiceTests
         Harness harness = Harness.Ready();
         harness.LookupDefinition = Definition(StreetPropertyId, "Street");
 
-        // The name IS held - by the very declaration being edited. The exclusion is therefore a real
-        // identifier comparison rather than a flag: the lookup answers with the declaration, and the
-        // service permits the write because the holder is the row it is editing.
         harness.DefinitionNameOwnerId = StreetPropertyId;
 
         Result<ProfilePropertyDefinitionDto> permitted = await harness.Service
@@ -7120,9 +6484,7 @@ public class UserServiceTests
         refused.Reason!.Code.Should().Be(ProfileDefinitionDuplicateNameCode);
     }
 
-    /// <summary>
-    /// A competing write on a declaration is reported as a conflict to retry.
-    /// </summary>
+    /// <summary>A competing write on a declaration is reported as a conflict to retry.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateProfilePropertyDefinition_ReportsACompetingWriteAsAConflict()
@@ -7145,17 +6507,15 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A rename onto a name declared between the check and the commit is reported as the duplicate it is, and
-    /// NOT as a stale read.
+    /// A rename onto a name declared between the check and the commit is reported as the duplicate it is,
+    /// and NOT as a stale read.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6, and the distinction is the point. This member already reported a competing write as
-    /// a conflict to retry, which is the right answer for a row that changed underneath - but it is the wrong
-    /// answer for a name another request took, because reloading and resubmitting the same rename will be
-    /// refused again for ever. The two outcomes carry different codes so the caller can rename in one case and
-    /// reload in the other, and the duplicate arm is placed FIRST in the service so a duplicate can never be
-    /// absorbed by the concurrency arm.
+    /// And the distinction is the point. This member already reported a competing write as a conflict to
+    /// retry, which is the right answer for a row that changed underneath - but it is the wrong answer for
+    /// a name another request took, because reloading and resubmitting the same rename will be refused
+    /// again for ever.
     /// </remarks>
     [Fact]
     public async Task UpdateProfilePropertyDefinition_ReportsANameTakenDuringTheWriteAsADuplicateNotAStaleRead()
@@ -7184,16 +6544,8 @@ public class UserServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A successful change applies the submitted shape and discards the catalogue cache.
-    /// </summary>
+    /// <summary>A successful change applies the submitted shape and discards the catalogue cache.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The submitted visibility is <see langword="false"/> WITH the property left optional, deliberately, so
-    /// this fact measures the visibility the caller asked for. The required-implies-visible coercion is
-    /// asserted by its own fact below; combining the two here would have made this one pass for the wrong
-    /// reason and hidden which rule produced the stored value.
-    /// </remarks>
     [Fact]
     public async Task UpdateProfilePropertyDefinition_AppliesTheShapeAndDiscardsTheCatalogue()
     {
@@ -7231,20 +6583,6 @@ public class UserServiceTests
     /// </summary>
     /// <param name="submittedVisibility">The visibility the caller submitted.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The legacy rule, and both legacy write members opened with it verbatim -
-    /// <c>ProfileController.vb</c> <c>AddPropertyDefinition</c> and <c>UpdatePropertyDefinition</c> each begin
-    /// <c>If definition.Required Then definition.Visible = True</c> - so "required and not visible" was a
-    /// combination neither verb could store.
-    /// </para>
-    /// <para>
-    /// It matters beyond tidiness. The profile form renders the VISIBLE properties, so a required-but-invisible
-    /// property is one the account must answer and is never shown; the completeness gate then refuses every
-    /// sign-in that account attempts, with no field on screen to correct. The <see langword="true"/> case is
-    /// included so the coercion cannot be mistaken for the flag being ignored.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -7280,9 +6618,8 @@ public class UserServiceTests
     /// MIGRATION: THE WITHDRAWN CASE IS THE REGRESSION, AND THIS IS THE VERB WHERE IT MATTERED MOST. This
     /// guard tested only existence and tenancy while the read paths also tested withdrawal, so the one
     /// operation reachable on a declaration the contract refused to show was the destructive one - and
-    /// removal here is physical, discarding every stored answer with it, so it destroyed data no caller could
-    /// have inspected first. The assertion checks the staged removal did not happen as well as the reported
-    /// code, because a refusal that still removed the row would satisfy the code alone.
+    /// removal here is physical, discarding every stored answer with it, so it destroyed data no caller
+    /// could have inspected first.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -7343,10 +6680,10 @@ public class UserServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
 
-        // The declaration is withdrawn by identifier, matching the legacy procedure, and its two
-        // recorded answers travel with it: FK_UserProfile_ProfilePropertyDefinition is declared
-        // ON DELETE CASCADE and the repository loads the answers before staging the removal, so the
-        // service issues no per-answer deletion of its own and none is asserted here.
+        // The declaration is withdrawn by identifier, matching the legacy procedure, and its two recorded
+        // answers travel with it: FK_UserProfile_ProfilePropertyDefinition is declared ON DELETE CASCADE
+        // and the repository loads the answers before staging the removal, so the service issues no
+        // per-answer deletion of its own and none is asserted here.
         harness.DeletedDefinitionIds.Should().Equal(new[] { StreetPropertyId });
         definition.ProfileValues.Should().HaveCount(2);
         harness.UpdatedValues.Should().BeEmpty();
@@ -7379,13 +6716,6 @@ public class UserServiceTests
     /// <param name="portalId">The tenant the request was addressed to.</param>
     /// <param name="administratorId">The account the tenant designates, or <see langword="null"/>.</param>
     /// <returns>An immutable snapshot of the call's tenant facts.</returns>
-    /// <remarks>
-    /// A mock rather than the real accessor because the type implementing this contract is
-    /// <see langword="internal"/> to the Infrastructure assembly by design - no other assembly may construct
-    /// a snapshot, which is what makes the facts of a call unforgeable in production. Only the two members the
-    /// service reads are given values; the rest are left at their defaults, so a service that started reading
-    /// another member would be visible here as a default rather than as a plausible value.
-    /// </remarks>
     private static IPortalContext TenantFacts(int portalId, int? administratorId)
     {
         var facts = new Mock<IPortalContext>(MockBehavior.Loose);
@@ -7395,9 +6725,7 @@ public class UserServiceTests
         return facts.Object;
     }
 
-    /// <summary>
-    /// Builds the account fixture the store returns.
-    /// </summary>
+    /// <summary>Builds the account fixture the store returns.</summary>
     /// <param name="userId">The account identifier.</param>
     /// <param name="username">The account name.</param>
     /// <returns>An account row.</returns>
@@ -7411,9 +6739,7 @@ public class UserServiceTests
         Email = Email,
     };
 
-    /// <summary>
-    /// Builds a profile-value row.
-    /// </summary>
+    /// <summary>Builds a profile-value row.</summary>
     /// <param name="profileId">The row identifier.</param>
     /// <param name="userId">The owning account.</param>
     /// <param name="propertyDefinitionId">The declaration the value belongs to.</param>
@@ -7435,9 +6761,7 @@ public class UserServiceTests
             LastUpdatedDate = Now.AddDays(-1),
         };
 
-    /// <summary>
-    /// Builds a profile-property declaration.
-    /// </summary>
+    /// <summary>Builds a profile-property declaration.</summary>
     /// <param name="propertyDefinitionId">The declaration identifier.</param>
     /// <param name="propertyName">The declared name.</param>
     /// <param name="viewOrder">The declared display order.</param>
@@ -7456,9 +6780,7 @@ public class UserServiceTests
             IsVisible = true,
         };
 
-    /// <summary>
-    /// Builds the module definition that membership settings are stored against.
-    /// </summary>
+    /// <summary>Builds the module definition that membership settings are stored against.</summary>
     /// <returns>A module definition row.</returns>
     private static ModuleDefinition AccountsDefinition() => new()
     {
@@ -7467,9 +6789,7 @@ public class UserServiceTests
         DesktopModuleId = 1,
     };
 
-    /// <summary>
-    /// Builds a well-formed account-creation request.
-    /// </summary>
+    /// <summary>Builds a well-formed account-creation request.</summary>
     /// <returns>A creation request.</returns>
     private static CreateUserRequest ValidCreateRequest() => new()
     {
@@ -7483,9 +6803,7 @@ public class UserServiceTests
         Authorize = true,
     };
 
-    /// <summary>
-    /// Builds a well-formed account-update request.
-    /// </summary>
+    /// <summary>Builds a well-formed account-update request.</summary>
     /// <returns>An update request.</returns>
     private static UpdateUserRequest ValidUpdateRequest() => new()
     {
@@ -7495,9 +6813,7 @@ public class UserServiceTests
         Email = "grace.hopper@example.com",
     };
 
-    /// <summary>
-    /// Builds a well-formed credential-change request.
-    /// </summary>
+    /// <summary>Builds a well-formed credential-change request.</summary>
     /// <returns>A credential-change request.</returns>
     private static ChangePasswordRequest ValidChangeRequest() => new()
     {
@@ -7509,7 +6825,8 @@ public class UserServiceTests
 
     /// <summary>
     /// Gives the harness the caller the named operation is available to, so a theory that exercises both
-    /// operations states the authority each one needs instead of quietly relying on one caller passing both.
+    /// operations states the authority each one needs instead of quietly relying on one caller passing
+    /// both.
     /// </summary>
     /// <param name="harness">The harness to configure.</param>
     /// <param name="operation">The operation the theory case submits, in whatever spelling it submits it.</param>
@@ -7539,12 +6856,7 @@ public class UserServiceTests
     /// <param name="request">The submitted credential change.</param>
     /// <returns>The outcome the entry point reported.</returns>
     /// <remarks>
-    /// MIGRATION: the two operations are two MEMBERS, not one member switching on the submitted
-    /// discriminator. Whether the current credential is verified is now the entry point's answer rather than
-    /// the caller's, which is what stops a caller from selecting the branch that skips verification; the
-    /// discriminator survives only as a cross-check, and naming the operation the other member performs is
-    /// refused rather than obeyed. A theory that submitted "reset" to the change member would therefore be
-    /// asserting the cross-check rather than the reset behaviour it means to assert, so it dispatches here.
+    /// The two operations are two MEMBERS, not one member switching on the submitted discriminator.
     /// </remarks>
     private static Task<Result> PerformCredentialWriteAsync(
         Harness harness,
@@ -7554,9 +6866,7 @@ public class UserServiceTests
             ? harness.Service.ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None)
             : harness.Service.ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
 
-    /// <summary>
-    /// Builds a declaration payload.
-    /// </summary>
+    /// <summary>Builds a declaration payload.</summary>
     /// <param name="propertyName">The declared name.</param>
     /// <returns>A declaration payload.</returns>
     private static CreateProfilePropertyDefinitionRequest DefinitionRequest(string propertyName) => new()
@@ -7571,12 +6881,6 @@ public class UserServiceTests
     /// </summary>
     /// <param name="propertyName">The property name to submit.</param>
     /// <returns>An update request.</returns>
-    /// <remarks>
-    /// MIGRATION: the two verbs bind two request types because the terminal procedures honour different
-    /// member sets - the insert declares a module-definition key that the update does not - so the two
-    /// builders exist rather than one. They are otherwise identical, which is what keeps a test that asserts
-    /// the same behaviour on both paths comparing like with like.
-    /// </remarks>
     private static UpdateProfilePropertyDefinitionRequest DefinitionUpdate(string propertyName) => new()
     {
         PropertyName = propertyName,
@@ -7584,9 +6888,7 @@ public class UserServiceTests
         Visible = true,
     };
 
-    /// <summary>
-    /// Builds a profile submission from a set of declaration identifiers and values.
-    /// </summary>
+    /// <summary>Builds a profile submission from a set of declaration identifiers and values.</summary>
     /// <param name="properties">The identifier and value pairs to submit.</param>
     /// <returns>A profile submission.</returns>
     private static UserProfileDto Profile(params (int PropertyDefinitionId, string Value)[] properties) => new()
@@ -7608,9 +6910,7 @@ public class UserServiceTests
     /// </summary>
     private sealed class DbUpdateConcurrencyException : Exception
     {
-        /// <summary>
-        /// Initialises a new instance of the <see cref="DbUpdateConcurrencyException"/> class.
-        /// </summary>
+        /// <summary>Initialises a new instance of the <see cref="DbUpdateConcurrencyException"/> class.</summary>
         public DbUpdateConcurrencyException()
             : base("a competing write was detected")
         {
@@ -7710,10 +7010,6 @@ public class UserServiceTests
             Tokens = new Mock<ITokenService>(MockBehavior.Loose);
             StoreFailures = new Mock<IStoreFailureClassifier>(MockBehavior.Loose);
 
-            // The private diagnostics channel. It is recorded rather than merely stubbed because the
-            // assertions have to prove WHERE the caught exception type went once it stopped going to the
-            // caller: a fix that simply dropped the type would satisfy the caller-facing assertion and
-            // lose the operator's only clue about which store failed.
             Diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Loose);
             DiagnosedOccurrences = [];
             Diagnostics
@@ -7728,19 +7024,16 @@ public class UserServiceTests
 
             Transaction = new Mock<ITransactionScope>(MockBehavior.Loose);
 
-            // ⚠ UNRESOLVED BY DEFAULT, WHICH IS THE HONEST DEFAULT FOR A UNIT TEST. A unit test runs outside
-            // any request scope, so no middleware has settled the tenant facts - and the holder's contract
-            // says reading Current before that point throws. Every case in this file therefore takes the
-            // persistence fall-back, exactly as it did before the holder existed, and the two cases that
-            // exercise the fast path opt into it explicitly.
+            // ⚠ UNRESOLVED BY DEFAULT, WHICH IS THE HONEST DEFAULT FOR A UNIT TEST. A unit test runs
+            // outside any request scope, so no middleware has settled the tenant facts - and the holder's
+            // contract says reading Current before that point throws.
             PortalContext = new Mock<IPortalContextHolder>(MockBehavior.Loose);
             PortalContext.SetupGet(holder => holder.IsResolved).Returns(false);
 
             // Both account-lifecycle workflows open ONE explicit transaction - creation so that the account
             // row and its external credential are published together, deletion so that the grant cascade,
-            // the assignments, the membership, the account row and the credential removal are all-or-nothing.
-            // Loose behaviour would hand back a null scope and the await-using would dereference it, so this
-            // stub is required rather than decorative.
+            // the assignments, the membership, the account row and the credential removal are
+            // all-or-nothing.
             UnitOfWork
                 .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
@@ -7795,8 +7088,8 @@ public class UserServiceTests
         public Mock<IModuleDefinitionRepository> ModuleDefinitions { get; }
 
         /// <summary>
-        /// The page repository, read only to prove that a membership-settings redirect target belongs to the
-        /// tenant being written.
+        /// The page repository, read only to prove that a membership-settings redirect target belongs to
+        /// the tenant being written.
         /// </summary>
         public Mock<ITabRepository> Tabs { get; }
 
@@ -7823,65 +7116,46 @@ public class UserServiceTests
         public Mock<ITokenService> Tokens { get; }
 
         /// <summary>
-        /// Classifies a caught failure as the store's. Loose by default, which answers <c>false</c> for every
-        /// exception, so the account-creation guard absorbs nothing unless a test says the store failed - which
-        /// is the shape of the production rule rather than a convenience.
+        /// Classifies a caught failure as the store's. Loose by default, which answers <c>false</c> for
+        /// every exception, so the account-creation guard absorbs nothing unless a test says the store
+        /// failed - which is the shape of the production rule rather than a convenience.
         /// </summary>
         public Mock<IStoreFailureClassifier> StoreFailures { get; }
-        /// <summary>
-        /// The tenant-facts holder the detail read consults before falling back to a portal read.
-        /// </summary>
-        /// <remarks>
-        /// Reports itself UNRESOLVED unless a case says otherwise, so the fall-back is the default path and
-        /// the fast path has to be asked for. See <see cref="Harness"/>'s constructor for why.
-        /// </remarks>
+        /// <summary>The tenant-facts holder the detail read consults before falling back to a portal read.</summary>
         public Mock<IPortalContextHolder> PortalContext { get; }
         /// <summary>
         /// A failure raised by the POST-COMMIT grant-cache eviction, or <see langword="null"/> for none.
         /// </summary>
         /// <remarks>
-        /// The eviction is the last step after the commit, so it is the one piece of
-        /// post-commit maintenance a disconnecting caller can make fail. This knob exists so an assertion can
-        /// prove that the audit record of a completed deletion no longer depends on it.
+        /// The eviction is the last step after the commit, so it is the one piece of post-commit
+        /// maintenance a disconnecting caller can make fail. This knob exists so an assertion can prove
+        /// that the audit record of a completed deletion no longer depends on it.
         /// </remarks>
         public Exception? GrantCacheEvictionFault { get; set; }
 
         /// <summary>The private diagnostics recorder.</summary>
         public Mock<ISecurityDiagnostics> Diagnostics { get; }
 
-        /// <summary>
-        /// Every occurrence the service recorded privately, in the order it recorded them.
-        /// </summary>
+        /// <summary>Every occurrence the service recorded privately, in the order it recorded them.</summary>
         public List<(SecurityDiagnosticEvent Occurrence, int? PortalId, int? UserId, string? ReasonCode)>
             DiagnosedOccurrences
         { get; }
 
-
-        /// <summary>
-        /// Accounts whose sessions the service asked to have ended, in the order it asked.
-        /// </summary>
+        /// <summary>Accounts whose sessions the service asked to have ended, in the order it asked.</summary>
         public List<int> RevokedSessionUserIds { get; }
 
-        /// <summary>
-        /// Whether the token store can end an account's sessions. Defaults to true.
-        /// </summary>
+        /// <summary>Whether the token store can end an account's sessions. Defaults to true.</summary>
         public bool SessionsRevoked { get; set; } = true;
 
-        /// <summary>
-        /// The scopes the service asked the token store to ERASE, in the order it asked.
-        /// </summary>
+        /// <summary>The scopes the service asked the token store to ERASE, in the order it asked.</summary>
         /// <remarks>
         /// PRIV-02. Distinct from <see cref="RevokedSessionUserIds"/> because revocation and erasure are
-        /// different operations with different consequences: a revoked record is retained so that a replay of
-        /// its family stays recognisable, and an erased one is gone. The tenant half of the tuple is what
-        /// distinguishes an account removed outright - which erases across every tenant - from one retained
-        /// because it belongs to another, which may only erase within the tenant it left.
+        /// different operations with different consequences: a revoked record is retained so that a replay
+        /// of its family stays recognisable, and an erased one is gone.
         /// </remarks>
         public List<(int UserId, int? PortalId)> PurgedSessionScopes { get; } = [];
 
-        /// <summary>
-        /// Whether the token store can erase an account's session records. Defaults to true.
-        /// </summary>
+        /// <summary>Whether the token store can erase an account's session records. Defaults to true.</summary>
         public bool SessionRecordsErased { get; set; } = true;
 
         /// <summary>
@@ -7889,17 +7163,12 @@ public class UserServiceTests
         /// store whose behaviour is governed solely by <see cref="SessionsRevoked"/>.
         /// </summary>
         /// <remarks>
-        /// Needed because a credential write now sweeps the account's sessions TWICE - once before the write
-        /// and once after it - so "the store refuses" is no longer one situation. A test that has to
-        /// distinguish the first sweep failing from the second failing sets this rather than the flag, and the
-        /// two failures have deliberately different consequences: the first abandons the operation with the
-        /// credential untouched, the second reports a failure over a credential that has already been replaced.
+        /// Needed because a credential write now sweeps the account's sessions TWICE - once before the
+        /// write and once after it - so "the store refuses" is no longer one situation.
         /// </remarks>
         public int? SessionRevocationsBeforeFailure { get; set; }
 
-        /// <summary>
-        /// Whether the credential store can remove an account's credential. Defaults to true.
-        /// </summary>
+        /// <summary>Whether the credential store can remove an account's credential. Defaults to true.</summary>
         public bool CredentialRemoved { get; set; } = true;
 
         public PasswordPolicyOptions PasswordPolicy { get; }
@@ -7930,8 +7199,7 @@ public class UserServiceTests
         /// The tenant's PUBLIC roles - the member-services catalogue, which the subscribable-role read
         /// returns. Kept separate from <see cref="AutoAssigned"/>, which publishes the tenant's whole role
         /// set to the auto-enrolment read, so a test can describe a published service without also making
-        /// it auto-assigned at account creation. A role placed in either list resolves through the
-        /// by-identifier lookup.
+        /// it auto-assigned at account creation.
         /// </summary>
         public List<Role> PublishedServices { get; }
 
@@ -7942,9 +7210,7 @@ public class UserServiceTests
         /// </summary>
         public List<(int PortalId, int RoleId, RoleAssignmentRequest Request)> DelegatedAssignments { get; }
 
-        /// <summary>
-        /// Every removal the account service delegated to the role service, in order.
-        /// </summary>
+        /// <summary>Every removal the account service delegated to the role service, in order.</summary>
         public List<(int PortalId, int RoleId, int UserId)> DelegatedRemovals { get; }
 
         /// <summary>
@@ -7953,9 +7219,7 @@ public class UserServiceTests
         /// </summary>
         public Result DelegatedAssignmentResult { get; set; } = Result.Success();
 
-        /// <summary>
-        /// What the delegated removal answers. Successful by default.
-        /// </summary>
+        /// <summary>What the delegated removal answers. Successful by default.</summary>
         public Result DelegatedRemovalResult { get; set; } = Result.Success();
 
         public List<ProfilePropertyDefinition> Definitions { get; }
@@ -8012,14 +7276,14 @@ public class UserServiceTests
         public int Commits { get; private set; }
 
         /// <summary>
-        /// The key the store issues to a newly added account when the first commit lands, or
-        /// <see langword="null"/> to leave added accounts keyless.
+        /// The key the store issues to a newly added account when the first commit lands, or <see
+        /// langword="null"/> to leave added accounts keyless.
         /// </summary>
         /// <remarks>
-        /// Models the one property of a real store that a mocked repository otherwise loses: an identity key
-        /// does not exist until the insert commits. The display-name format may substitute the account's
-        /// identifier, so a test measuring WHEN the format is applied needs the key to appear at the same
-        /// moment it appears in production. Null by default, so every existing fact is untouched.
+        /// Models the one property of a real store that a mocked repository otherwise loses: an identity
+        /// key does not exist until the insert commits. The display-name format may substitute the
+        /// account's identifier, so a test measuring WHEN the format is applied needs the key to appear at
+        /// the same moment it appears in production.
         /// </remarks>
         public int? IssuedUserIdOnCommit { get; set; }
 
@@ -8091,17 +7355,15 @@ public class UserServiceTests
         public List<int> InvalidatedProfileDefinitionsPortalIds { get; }
 
         /// <summary>
-        /// Reads the declaration the harness holds for an identifier, so a test can sharpen one rule without
-        /// rebuilding the whole catalogue.
+        /// Reads the declaration the harness holds for an identifier, so a test can sharpen one rule
+        /// without rebuilding the whole catalogue.
         /// </summary>
         /// <param name="propertyDefinitionId">The declaration identifier.</param>
         /// <returns>The declaration.</returns>
         public ProfilePropertyDefinition DefinitionFor(int propertyDefinitionId)
             => Definitions.Single(definition => definition.PropertyDefinitionId == propertyDefinitionId);
 
-        /// <summary>
-        /// Reads the settings the harness holds against a module instance.
-        /// </summary>
+        /// <summary>Reads the settings the harness holds against a module instance.</summary>
         /// <param name="moduleId">The module instance.</param>
         /// <returns>The settings.</returns>
         public List<ModuleSetting> ModuleSettingsFor(int moduleId)
@@ -8131,8 +7393,8 @@ public class UserServiceTests
         /// <returns>The published role, so a test may adjust its terms.</returns>
         /// <remarks>
         /// The billing terms are the ones portal provisioning gives a tenant's own system roles, a monthly
-        /// frequency with a period, so the role is realistic rather than minimal. The fee is explicitly zero
-        /// rather than absent, because a test that needs absence says so.
+        /// frequency with a period, so the role is realistic rather than minimal. The fee is explicitly
+        /// zero rather than absent, because a test that needs absence says so.
         /// </remarks>
         public Role PublishFreeService()
         {
@@ -8162,7 +7424,8 @@ public class UserServiceTests
         /// <returns>The published role, so a test may adjust its terms.</returns>
         /// <remarks>
         /// The tenant is also given a payment-processor account, because <c>ShowSubscribe</c>'s second arm
-        /// requires one before a paid offer is presented at all; a test asserting the absent case clears it.
+        /// requires one before a paid offer is presented at all; a test asserting the absent case clears
+        /// it.
         /// </remarks>
         public Role PublishPaidServiceWithFreeTrial()
         {
@@ -8187,14 +7450,14 @@ public class UserServiceTests
         }
 
         /// <summary>
-        /// Adds a role the tenant does NOT publish but which bears an invitation code, which is the only way
-        /// an account can reach it.
+        /// Adds a role the tenant does NOT publish but which bears an invitation code, which is the only
+        /// way an account can reach it.
         /// </summary>
         /// <returns>The role, so a test may adjust its terms.</returns>
         /// <remarks>
-        /// Placed in the tenant's whole-role list rather than in the published catalogue, so it is invisible
-        /// to the catalogue read and to the by-identifier lookup's publication test while remaining
-        /// resolvable - which is exactly the state the legacy invitation-code search operated on.
+        /// Placed in the tenant's whole-role list rather than in the published catalogue, so it is
+        /// invisible to the catalogue read and to the by-identifier lookup's publication test while
+        /// remaining resolvable - which is exactly the state the legacy invitation-code search operated on.
         /// </remarks>
         public Role PublishPrivateInvitationOnlyService()
         {
@@ -8216,9 +7479,7 @@ public class UserServiceTests
             return role;
         }
 
-        /// <summary>
-        /// Records that the account under test already holds a service.
-        /// </summary>
+        /// <summary>Records that the account under test already holds a service.</summary>
         /// <param name="roleId">The role the service is expressed as.</param>
         /// <param name="expiry">When the subscription lapses, or <see langword="null"/> for never.</param>
         /// <param name="trialUsed">
@@ -8238,9 +7499,7 @@ public class UserServiceTests
             });
         }
 
-        /// <summary>
-        /// Records a stored setting against the account-management module instance.
-        /// </summary>
+        /// <summary>Records a stored setting against the account-management module instance.</summary>
         /// <param name="settingName">The setting name.</param>
         /// <param name="settingValue">The setting value.</param>
         public void StoreSetting(string settingName, string settingValue)
@@ -8260,15 +7519,9 @@ public class UserServiceTests
         }
 
         /// <summary>
-        /// Makes the acting caller the account under test, signed in against the tenant under test — which is
-        /// what a self-service credential change requires.
+        /// Makes the acting caller the account under test, signed in against the tenant under test — which
+        /// is what a self-service credential change requires.
         /// </summary>
-        /// <remarks>
-        /// This is deliberately NOT the harness default. Most members of this service are administrative and
-        /// refuse a transition an administrator aimed at their own account, so a harness that silently made the
-        /// caller the account under test would make those refusals fire everywhere and hide what each test
-        /// meant to measure. The acting caller is therefore stated by the tests that depend on one.
-        /// </remarks>
         public void ActAsTheAccountOwner()
         {
             CallerUserId = UserId;
@@ -8280,11 +7533,9 @@ public class UserServiceTests
         /// test, whose own stored row carries the installation-wide super-user flag.
         /// </summary>
         /// <remarks>
-        /// The flag is placed on the STORED ROW rather than on the caller's claims, because the service reads
-        /// authority from the database for exactly the reason a token cannot be trusted for it: a token is
-        /// minted at sign-in and cannot observe an account demoted since. A host account is read without a
-        /// tenant scope, so it is published through <see cref="CallerAccount"/> rather than through
-        /// <see cref="LookupUser"/>, which continues to describe the account under test.
+        /// The flag is placed on the STORED ROW rather than on the caller's claims, because the service
+        /// reads authority from the database for exactly the reason a token cannot be trusted for it: a
+        /// token is minted at sign-in and cannot observe an account demoted since.
         /// </remarks>
         public void ActAsAHostAccount()
         {
@@ -8303,10 +7554,10 @@ public class UserServiceTests
         /// it: an in-force assignment to the role the tenant's own <c>AdministratorRoleId</c> column names.
         /// </summary>
         /// <remarks>
-        /// Authority is conferred by ROLE KEY and judged AT AN INSTANT, never by role name, because no unique
-        /// constraint on <c>Roles.RoleName</c> exists anywhere in the upgrade scripts and the stock name names
-        /// a different row in every portal. The assignment is left open-ended so it is in force at the clock
-        /// the harness publishes.
+        /// Authority is conferred by ROLE KEY and judged AT AN INSTANT, never by role name, because no
+        /// unique constraint on <c>Roles.RoleName</c> exists anywhere in the upgrade scripts and the stock
+        /// name names a different row in every portal. The assignment is left open-ended so it is in force
+        /// at the clock the harness publishes.
         /// </remarks>
         public void ActAsAPortalAdministrator()
         {
@@ -8330,8 +7581,8 @@ public class UserServiceTests
 
         /// <summary>
         /// Builds a harness whose world is consistent: an existing tenant holding one account with a
-        /// credential that is present, approved and unlocked, a declared profile catalogue, and a store that
-        /// accepts every write.
+        /// credential that is present, approved and unlocked, a declared profile catalogue, and a store
+        /// that accepts every write.
         /// </summary>
         /// <returns>A wired harness.</returns>
         public static Harness Ready()
@@ -8450,7 +7701,8 @@ public class UserServiceTests
                 {
                     // The EXPECTATION is recorded as well as the hash, because the compare-and-swap is the
                     // whole of what the credential write now guarantees: a test that only observed the hash
-                    // could not tell a conditional replacement from the unconditional overwrite this replaced.
+                    // could not tell a conditional replacement from the unconditional overwrite this
+                    // replaced.
                     harness.SetPasswordHashes.Add(hash);
                     harness.SetPasswordExpectations.Add(expected);
                     return Task.FromResult(harness.PasswordWritten);
@@ -8494,10 +7746,7 @@ public class UserServiceTests
                             : Result.Success());
                 });
 
-            // PRIV-02. Erasure succeeds by default and records its scope, so a fact can assert that the
-            // deletion path erased the session records rather than merely revoking them - and can assert WHICH
-            // scope it used, which is the part that distinguishes an account removed outright from one that
-            // still belongs to another tenant.
+            // PRIV-02.
             harness.Tokens
                 .Setup(t => t.PurgeAccountSessionRecordsAsync(
                     It.IsAny<int>(),
@@ -8534,21 +7783,11 @@ public class UserServiceTests
                         return null;
                     }
 
-                    // MIGRATION: the scope is matched EXACTLY, as the repository now matches it. This
-                    // double previously recognised -1 as a request for the SQL-null host rows, which
-                    // reproduced the defect the repository carried: dbo.Portals.PortalID is
-                    // IDENTITY(-1, 1) (01.00.00.SqlDataProvider:L77), so -1 is the first real tenant of
-                    // an installation and addresses its own rows. null is the host scope and nothing
-                    // else is.
                     bool inScope = definition.PortalId == portalId;
 
                     return inScope ? definition : null;
                 });
 
-            // The name lookup answers with the DECLARATION, as the legacy provider member did, so a
-            // caller editing a declaration can tell a real clash from the row it is already editing.
-            // DefinitionNameOwnerId names which declaration currently holds the submitted name, and
-            // null leaves the name free.
             harness.Profiles
                 .Setup(p => p.GetDefinitionByNameAsync(
                     It.IsAny<int?>(),
@@ -8573,10 +7812,6 @@ public class UserServiceTests
                         ? values.ToList()
                         : []);
 
-            // The batched read serves the SAME stored world as the single-account read above, so a listing
-            // and a detail read of the same account cannot disagree about what it holds. Requested
-            // identifiers are de-duplicated and an account holding nothing contributes no row, which is how
-            // the repository answers: absence is an empty contribution rather than a placeholder row.
             harness.Profiles
                 .Setup(p => p.GetProfileValuesAsync(
                     It.IsAny<int?>(),
@@ -8606,8 +7841,6 @@ public class UserServiceTests
                     return Task.CompletedTask;
                 });
 
-            // An answer the submitted set omits is BLANKED through the update member rather than
-            // deleted, because no legacy member ever removed a UserProfile row.
             harness.Profiles
                 .Setup(p => p.UpdateProfileValueAsync(
                     It.IsAny<UserProfileValue>(),
@@ -8649,9 +7882,6 @@ public class UserServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(true);
 
-            // Removal is addressed by identifier, matching the legacy procedure, and the answers
-            // recorded against the declaration cascade inside the repository rather than being
-            // removed one at a time by the service.
             harness.Profiles
                 .Setup(p => p.DeleteDefinitionAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Returns((int propertyDefinitionId, CancellationToken _) =>
@@ -8660,16 +7890,6 @@ public class UserServiceTests
                     return Task.CompletedTask;
                 });
 
-            // The auto-assignment set is now selected by the service from the portal's own roles, which
-            // is what the legacy caller did over GetPortalRoles - the membership provider had no
-            // auto-assigned procedure. The harness therefore publishes the portal's roles and lets the
-            // service apply the flag, so AutoAssigned still describes the world the test intends.
-            //
-            // It returns the tenant's WHOLE role set, which is both lists, because the real repository
-            // filters on the portal alone - `Where(r => r.PortalId == portalId)`. That matters for the
-            // invitation-code redemption, whose legacy handler read the same member and deliberately
-            // searched published and unpublished roles alike; a stub answering only one list would have made
-            // a published role unreachable by code and hidden the difference.
             harness.Roles
                 .Setup(r => r.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.AutoAssigned.Concat(harness.PublishedServices).ToList());
@@ -8694,10 +7914,6 @@ public class UserServiceTests
                 })
                 .Returns(Task.CompletedTask);
 
-            // The member-services catalogue read. The contract's own remarks state that the account
-            // argument neither widens nor narrows the set - it identifies whose subscription state the
-            // caller will pair with these roles - so the harness ignores it too, exactly as the real
-            // repository does.
             harness.Roles
                 .Setup(r => r.GetSubscribableRolesAsync(
                     It.IsAny<int>(),
@@ -8729,8 +7945,6 @@ public class UserServiceTests
             // rules - the expiry derivation, the protected bounds, the expire-rather-than-delete retention
             // and the two protected refusals all live on the role service - so what these record is that it
             // asks, with exactly which arguments, and that it never asks when its own gate refuses first.
-            // Asserting the derived dates here would be asserting a mock's own arithmetic, which is why the
-            // facts below assert the CALL and the role suite asserts the outcome.
             harness.RoleService
                 .Setup(r => r.AssignUserToRoleAsync(
                     It.IsAny<int>(),
@@ -8756,24 +7970,9 @@ public class UserServiceTests
                 });
 
             // MIGRATION: the account's direct grants live in two tables and the legacy provider declared
-            //            two members to clear them - DeleteModulePermissionsByUserID, reached from
-            //            ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
-            //            TabPermissionController.vb:L209. The service under test no longer issues those two
-            //            table deletes itself: it asks the permission contract that owns both tables to
-            //            release the account, so what is stubbed and recorded here is that single request.
-            //            That both tables are in fact cleared, and that grants held THROUGH A ROLE are left
-            //            alone, is that contract's guarantee and is asserted against its own implementation
-            //            rather than restated against a mock here - a mock cannot verify a promise it makes
-            //            up. What these tests own is that the account service asks exactly once, for
-            //            exactly the tenant and account being deleted, and abandons the deletion when the
-            //            answer is a refusal.
-            //
-            //            THE MEMBER ASKED FOR IS THE STAGE-ONLY ONE, and that is a correctness property
-            //            rather than a naming detail. The whole cascade runs inside one transaction, so a
-            //            permission step that committed on its own would make the grant removal durable
-            //            ahead of everything after it - and a credential removal failing afterwards would
-            //            then leave an account intact but stripped of its grants, while this method reported
-            //            that the account had been left alone.
+            // two members to clear them - DeleteModulePermissionsByUserID, reached from
+            // ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
+            // TabPermissionController.vb:L209.
             harness.Permissions
                 .Setup(p => p.StageUserPermissionRemovalAsync(
                     It.IsAny<int>(),
@@ -8784,13 +7983,10 @@ public class UserServiceTests
                     harness.CascadedUserPermissions.Add((portalId, userId));
                     return harness.CascadeResult;
                 });
-            // THE GRANT-CACHE EVICTION IS ALSO WHERE A POST-COMMIT MAINTENANCE FAILURE IS INJECTED, and it is
-            // this call because it is the LAST step after the commit: a fault raised here leaves the deletion
-            // committed and the audit record already written, which is precisely the ordering the delete fact
-            // asserts. The eviction is delegated to the permission contract and is SYNCHRONOUS, so the fault
-            // is thrown from the callback rather than returned on a faulted task - a member that accepts no
-            // cancellation token cannot be made to observe one. The registration is still recorded first, so a
-            // fault does not hide the fact that the eviction was reached.
+            // THE GRANT-CACHE EVICTION IS ALSO WHERE A POST-COMMIT MAINTENANCE FAILURE IS INJECTED, and it
+            // is this call because it is the LAST step after the commit: a fault raised here leaves the
+            // deletion committed and the audit record already written, which is precisely the ordering the
+            // delete fact asserts.
             harness.Permissions
                 .Setup(p => p.InvalidateUserPermissionCaches())
                 .Callback(() =>

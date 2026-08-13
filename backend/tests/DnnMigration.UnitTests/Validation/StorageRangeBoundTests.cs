@@ -17,19 +17,8 @@ namespace DnnMigration.UnitTests.Validation;
 /// unrepresentable read position reaching a reader.
 /// </summary>
 /// <remarks>
-/// <para>
 /// A security review found that every validator treated the CLR type as a sufficient bound although the
-/// stored domain is narrower. Each rule asserted here refuses a value the type accepts and the column
-/// cannot hold, and each is asserted AT its boundary in both directions - the last storable value must
-/// pass and the first unstorable one must fail - because a rule proven only far outside its limit does not
-/// say where the limit is.
-/// </para>
-/// <para>
-/// Every failure is also asserted to name the member a caller SUBMITTED. That is not incidental: an
-/// earlier revision of these rules was written over the unwrapped optional value, which made the framework
-/// report the field as <c>ServiceFee.Value</c>, so the key in the <c>errors</c> payload stopped matching
-/// the key the caller had sent. Asserting the name is what keeps that regression from returning.
-/// </para>
+/// stored domain is narrower.
 /// </remarks>
 public class StorageRangeBoundTests
 {
@@ -39,20 +28,13 @@ public class StorageRangeBoundTests
     private static readonly decimal PastTheCurrencyCeiling =
         SqlServerRange.MaximumMoney + 0.0001m;
 
-    /// <summary>
-    /// The perpetual expiry a role's one-off term stores, which every date rule must admit.
-    /// </summary>
+    /// <summary>The perpetual expiry a role's one-off term stores, which every date rule must admit.</summary>
     private static readonly DateTime PerpetualExpiry = new(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
     /// A page request whose index and size multiply past the addressable range is refused, naming the page
     /// index.
     /// </summary>
-    /// <remarks>
-    /// Neither member is individually out of range - the size is within the permitted maximum and the index
-    /// is a positive integer - so this is reachable only as a cross-field rule, which is why it is stated
-    /// over the request rather than over either member.
-    /// </remarks>
     [Fact]
     public void PagedRequest_WhoseOffsetIsUnrepresentable_IsRefused()
     {
@@ -66,9 +48,7 @@ public class StorageRangeBoundTests
             "the offset is reported against the index, which is the member a caller can lower");
     }
 
-    /// <summary>
-    /// An ordinary page request is untouched by the offset rule.
-    /// </summary>
+    /// <summary>An ordinary page request is untouched by the offset rule.</summary>
     /// <param name="pageIndex">The requested page.</param>
     /// <param name="pageSize">The requested page size.</param>
     [Theory]
@@ -85,11 +65,6 @@ public class StorageRangeBoundTests
     /// A role fee past the currency ceiling is refused on both the create and the update path, and the
     /// failure names the fee itself.
     /// </summary>
-    /// <remarks>
-    /// Both paths are asserted together because they were unequal before this work: the create path had a
-    /// lower bound and no upper one, and the update path had no validator at all, so the same amount was
-    /// refused, stored or faulted depending only on which verb a caller used.
-    /// </remarks>
     [Fact]
     public void RoleFees_PastTheCurrencyCeiling_AreRefusedOnBothPaths()
     {
@@ -157,19 +132,6 @@ public class StorageRangeBoundTests
     /// A role period that is not strictly positive is refused on both paths where a recurring cycle is
     /// declared, with the legacy wording.
     /// </summary>
-    /// <remarks>
-    /// This is the ONLY bound the legacy screen declared on either period - <c>valBillingPeriod2</c> at
-    /// <c>editroles.ascx</c> L114 and <c>valTrialPeriod2</c> at L146, both greater than zero - and it is
-    /// asserted on both verbs because both write the same columns.
-    /// <para>
-    /// A CYCLE IS DECLARED HERE DELIBERATELY. Zero alongside a real frequency is the value the legacy
-    /// validator existed to refuse, because a cycle of zero units can never advance an expiry date. Zero
-    /// alongside NO cycle is a different value with a different meaning - it is what the portal template's
-    /// own roles carry and what the read projection reports - and is admitted; that half is asserted by
-    /// <see cref="RolePeriodOfZero_WithNoCycleDeclared_IsAcceptedOnBothPaths"/>. A negative period is
-    /// refused whatever the frequency, which the second case here covers with no frequency at all.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(0, BillingFrequency.Month)]
     [InlineData(-1, BillingFrequency.Month)]
@@ -199,14 +161,6 @@ public class StorageRangeBoundTests
     /// A role period of zero is accepted on both paths when no recurring cycle is declared beside it, so a
     /// role the portal template created can be read and written back unchanged.
     /// </summary>
-    /// <remarks>
-    /// THE ASYMMETRY THIS CLOSES WAS MEASURED. The template's roles are created with both periods at zero
-    /// beside a frequency of <c>N</c>, and the read projection reports those columns faithfully as Rule T7
-    /// requires - so runtime testing read a role, echoed the response back verbatim, and was refused
-    /// <c>400</c> naming both period members. No consumer could carry out a read-modify-write of any role
-    /// the template had created. Both spellings of "no cycle" are asserted: the explicit <c>None</c>
-    /// frequency the read emits, and an absent frequency, which the contract also reads as no cycle.
-    /// </remarks>
     [Theory]
     [InlineData(BillingFrequency.None)]
     [InlineData(null)]
@@ -232,26 +186,9 @@ public class StorageRangeBoundTests
     }
 
     /// <summary>
-    /// EVERY positive role period is accepted on both paths, including the largest an <c>int</c> column
-    /// can hold.
+    /// EVERY positive role period is accepted on both paths, including the largest an <c>int</c> column can
+    /// hold.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A net-new ten-thousand-unit ceiling stood on both role validators and refused a band of values the
-    /// legacy application accepted: the columns are plain <c>int</c>
-    /// (<c>01.00.08.SqlDataProvider</c> L6829 and <c>01.00.05.SqlDataProvider</c> L2754), the legacy
-    /// screen bounded each period only below, and the terminal <c>UpdateRole</c> procedure bounds neither.
-    /// This fact is what keeps the ceiling from returning.
-    /// </para>
-    /// <para>
-    /// Nothing is left unprotected by its removal. The period drives the offset arithmetic that derives a
-    /// membership expiry, and <c>RoleService.DeriveAssignmentDates</c> routes every offset through its
-    /// clamping helpers, so a period large enough to overflow that arithmetic yields the storable bound
-    /// rather than a wrapped or faulted date. That is asserted for <see cref="int.MaxValue"/> itself by
-    /// <c>RoleServiceTests.Assign_ClampsATermThatOutrunsTheStoredCalendar</c>, which is why this fact can
-    /// admit the value without leaving the outcome unexamined.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(1)]
     [InlineData(12)]
@@ -277,9 +214,7 @@ public class StorageRangeBoundTests
             .IsValid.Should().BeTrue();
     }
 
-    /// <summary>
-    /// A membership window date outside the stored calendar is refused, naming the date submitted.
-    /// </summary>
+    /// <summary>A membership window date outside the stored calendar is refused, naming the date submitted.</summary>
     [Fact]
     public void RoleAssignmentDates_OutsideTheStoredCalendar_AreRefused()
     {
@@ -299,12 +234,6 @@ public class StorageRangeBoundTests
     /// A membership assignment carrying the preserved perpetual expiry is accepted, and so is one carrying
     /// neither date.
     /// </summary>
-    /// <remarks>
-    /// The perpetual value is an ordinary stored instant that a legacy reader expects verbatim, so a rule
-    /// refusing it would break the contract it was added to defend. Absence is accepted because an absent
-    /// effective date means "already in force" and an absent expiry means "derive one from the role's own
-    /// terms" - both real states.
-    /// </remarks>
     [Fact]
     public void RoleAssignmentDates_AdmitThePerpetualValueAndAbsence()
     {
@@ -322,25 +251,6 @@ public class StorageRangeBoundTests
     /// <summary>
     /// A membership window whose start follows its end IS refused, because the legacy screen refused it.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// AN EARLIER REVISION OF THIS FACT ASSERTED THE OPPOSITE, on the stated ground that "the legacy screen
-    /// declared no ordering validator". That ground is false, and the reason it was believed is worth
-    /// recording so it is not believed again: <c>Website/admin/Security/securityroles.ascx</c> writes its
-    /// tags in LOWER CASE, so a case-sensitive search for <c>CompareValidator</c> finds nothing while
-    /// <c>comparevalidator</c> finds three. L47 declares <c>valDates</c> with
-    /// <c>operator="GreaterThan"</c>, <c>controltovalidate="txtExpiryDate"</c> and
-    /// <c>controltocompare="txtEffectiveDate"</c>, and its message reads "Expiry Date must be Greater than
-    /// Effective Date". The ordering rule is therefore measured legacy behaviour, and reproducing it is
-    /// required by the migration discipline rather than a change of policy.
-    /// </para>
-    /// <para>
-    /// Strictly greater, matching the operator: a window that opens and closes at the same instant is a
-    /// membership never in force, and the legacy screen refused it too. The rule fires only when both dates
-    /// are present, which is the ASP.NET comparison validator's own behaviour - it treats an empty control as
-    /// valid - so an open-ended window in either direction stays legal, as the two facts above assert.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void RoleAssignmentDates_AreComparedToOneAnotherAsTheLegacyScreenComparedThem()
         => new RoleAssignmentRequestValidator().Validate(new RoleAssignmentRequest
@@ -350,9 +260,7 @@ public class StorageRangeBoundTests
             ExpiryDate = new DateTime(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc),
         }).IsValid.Should().BeFalse();
 
-    /// <summary>
-    /// A portal fee past the currency ceiling is refused even though it satisfies the digit count.
-    /// </summary>
+    /// <summary>A portal fee past the currency ceiling is refused even though it satisfies the digit count.</summary>
     /// <remarks>
     /// This is the narrow band the precision rule alone left open. Nineteen digits with four decimals admit
     /// fifteen leading digits of any magnitude, so an amount above the currency ceiling and below a
@@ -371,9 +279,7 @@ public class StorageRangeBoundTests
             failure => failure.PropertyName == nameof(UpdatePortalRequest.HostFee));
     }
 
-    /// <summary>
-    /// A portal fee at the currency ceiling is accepted.
-    /// </summary>
+    /// <summary>A portal fee at the currency ceiling is accepted.</summary>
     [Fact]
     public void PortalHostFee_AtTheCurrencyCeiling_IsAccepted()
         => new UpdatePortalRequestValidator()
@@ -428,10 +334,7 @@ public class StorageRangeBoundTests
     /// The count is asserted, not merely the presence, and that is the load-bearing half. The create
     /// validator had registered the identical storage-range rule for each date property THREE TIMES, so one
     /// unstorable value produced three indistinguishable failures naming the same property - a validation
-    /// response repeating itself for no reason a client could interpret. A containment assertion is blind to
-    /// that, which is why it survived: it passes with one failure and with three. Rule-level cascade stops
-    /// at the first failing validator WITHIN a rule and does nothing about duplicate rule declarations, so
-    /// nothing else in the pipeline collapsed them either.
+    /// response repeating itself for no reason a client could interpret.
     /// </remarks>
     [Fact]
     public void ModuleTermDates_OutsideTheStoredCalendar_AreRefusedExactlyOnce()
@@ -477,25 +380,7 @@ public class StorageRangeBoundTests
             "the create path bounds the closing term too, and bounds it once");
     }
 
-    /// <summary>
-    /// One unstorable module term date produces exactly ONE failure, on each write path.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: THE CREATE VALIDATOR DECLARED THIS PAIR OF RULES THREE TIMES OVER, so a single unstorable
-    /// date produced three identical failures under one member name. FluentValidation does not deduplicate
-    /// rules that judge the same member with the same predicate, and this project's validation filter records
-    /// every failure into the published error map - so the caller received the same sentence three times and
-    /// could not tell whether three distinct rules had been broken or one had been declared three times.
-    /// </para>
-    /// <para>
-    /// Asserted by COUNT rather than by containment, deliberately: the sibling fact above already proves the
-    /// rule fires, and a containment assertion passes just as happily against three copies as against one.
-    /// The count is what makes a re-duplication visible. Both paths are held to it because the duplication
-    /// existed on only one of them, and a fact written against the offender alone would not stop the other
-    /// from acquiring it.
-    /// </para>
-    /// </remarks>
+    /// <summary>One unstorable module term date produces exactly ONE failure, on each write path.</summary>
     [Fact]
     public void OneUnstorableModuleTermDate_ProducesExactlyOneFailure()
     {
@@ -526,11 +411,6 @@ public class StorageRangeBoundTests
     /// <summary>
     /// Both module term properties carry the storage bound on both paths, and each carries it once.
     /// </summary>
-    /// <remarks>
-    /// The sibling fact above submits one unstorable date at a time; this one submits both together, so a
-    /// rule that had been declared for one property and duplicated for the other cannot hide behind the
-    /// single-property case. Two failures is the whole expectation: one per property, no more.
-    /// </remarks>
     [Fact]
     public void ModuleTermDates_CarryTheStorageBoundOncePerProperty()
     {
@@ -560,9 +440,7 @@ public class StorageRangeBoundTests
             new[] { nameof(UpdateModuleRequest.StartDate), nameof(UpdateModuleRequest.EndDate) });
     }
 
-    /// <summary>
-    /// Module term dates are deliberately still not compared to one another.
-    /// </summary>
+    /// <summary>Module term dates are deliberately still not compared to one another.</summary>
     /// <remarks>
     /// The legacy validators on both boxes were format checks alone, so an ordering rule would be a new
     /// restriction on callers. Asserted so that adding one is visibly a decision.
@@ -580,23 +458,6 @@ public class StorageRangeBoundTests
     /// A page term date outside the stored calendar is refused, and the pair is NOT compared - the same
     /// treatment the module's term dates receive immediately above.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// AN EARLIER REVISION OF THIS FACT ALSO REQUIRED THE PAIR TO BE ORDERED, and the ordering half has been
-    /// withdrawn rather than the whole fact deleted. The representability bound stands, and it is the half
-    /// that matters here: it moves a refusal the provider already performed - as a server fault naming no
-    /// field - to the edge, where it names the member. It changes no outcome, only the shape of one.
-    /// </para>
-    /// <para>
-    /// The ordering rule did change an outcome, and measurement does not support it. The page-administration
-    /// screen declares the two date boxes with a rendered width and no <c>ControlToCompare</c> anywhere, so a
-    /// reversed pair was a submission the legacy screen accepted and stored. That is a legacy defect, and the
-    /// migration discipline requires it to be recorded rather than corrected: identical inputs must produce
-    /// identical outcomes. The asymmetry with the module rule above therefore disappears, which is the more
-    /// defensible position of the two - the same kind of value is judged the same way on both surfaces.
-    /// Recorded in MIGRATION_NOTES.md.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void PageTermDates_AreBoundedAndNotCompared()
     {
@@ -619,9 +480,7 @@ public class StorageRangeBoundTests
             "the legacy screen declared no comparison between the two, so a reversed pair was storable");
     }
 
-    /// <summary>
-    /// A page carrying one term date and not the other is accepted.
-    /// </summary>
+    /// <summary>A page carrying one term date and not the other is accepted.</summary>
     /// <remarks>
     /// The ordering rule must not become a rule demanding the pair: a page with a start and no end runs
     /// indefinitely, and one with an end and no start has always been running.
@@ -646,9 +505,7 @@ public class StorageRangeBoundTests
         new UpdateTabRequestValidator().Validate(request).IsValid.Should().BeTrue();
     }
 
-    /// <summary>
-    /// Builds a portal update that satisfies every rule except the one under test.
-    /// </summary>
+    /// <summary>Builds a portal update that satisfies every rule except the one under test.</summary>
     /// <param name="fee">The hosting fee to submit.</param>
     /// <returns>The request.</returns>
     private static UpdatePortalRequest ValidPortalUpdate(decimal? fee = null) => new()

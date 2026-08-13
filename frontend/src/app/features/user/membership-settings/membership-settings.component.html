@@ -1,101 +1,4 @@
-<!--
-  THE TENANT'S ACCOUNT ADMINISTRATION SETTINGS SCREEN.
-
-  Every bindable name below is declared by the paired component class and nothing
-  else: this template introduces no member, no wording key and no piece of state of
-  its own. The workspace compiles templates with strict checking, so a reference to
-  a member the class does not declare is a build failure rather than a blank on the
-  screen, and that is deliberately the only contract this file has.
-
-  MIGRATION: the transformation plan derives this screen from THREE legacy controls
-  and NEITHER OF THE OTHER TWO IS RENDERED HERE. The reasons differ and are recorded
-  on the paired class in full; they are repeated here because they are the single most
-  load-bearing fact about this markup - a later reader will otherwise look for nine
-  read-only membership fields, four account commands and a services grid that are
-  deliberately absent.
-    * `Website/admin/Users/Membership.ascx` is twenty-eight lines and is a
-      read-only PER-ACCOUNT panel, not a tenant policy screen. Its editor is
-      declared in view mode and its four commands - authorise, unauthorise, unlock
-      and force a password change, every one of them declared with validation
-      switched off - act on ONE account. The decisive proof is
-      `Website/admin/Users/manageusers.ascx` L59 to L63, which hosts the account
-      editor and the membership panel SIDE BY SIDE inside one row: the panel is
-      part of the account detail screen, so its fields and commands belong on the
-      account form and none of them is rendered here.
-    * `Website/admin/Users/MemberServices.ascx` is seventy-seven lines of role
-      subscription - a help paragraph, an invitation code box with a subscribe
-      command, and a seven column services grid carrying a trial command. IT IS
-      RENDERED HERE, as this screen's last section, by the sibling component in this
-      folder. Two earlier revisions of this note are withdrawn: the first said "none
-      of it has an endpoint in this API, so there is nothing for a screen to call",
-      which was true of the API as it then stood and is not now; the second said the
-      panel was reached at `/users/{userId}/services` and then that the address AND
-      the panel were withdrawn, which left five published endpoints and five store
-      operations with no consumer anywhere in the workspace. Mounting it here adds no
-      address - AAP 0.4.4 freezes the route table at twenty-five screens - and
-      withdraws no capability, which is what AAP 0.5.1.8 means by three legacy
-      screens consolidated into this feature. The paired class records what the
-      consolidation costs, and `MIGRATION_NOTES.md` carries the divergence.
-  This screen therefore derives from `Website/admin/Users/UserSettings.ascx` and the
-  account policy contract for everything ABOVE that final section.
-
-  MIGRATION: EVERY STRING RENDERED HERE IS INTERPOLATED PLAIN TEXT, and that is a
-  security boundary rather than a preference. Measured across the thirty-seven
-  in-scope resource files, seventy-six values carry a raw markup tag and one carries
-  a live remote script element, and twenty-nine values open with break markup. The
-  tags are stored escaped, so a naive search returns nothing and would wrongly clear
-  the risk. No trusted-markup binding, no sanitiser and no bypass appears in this
-  file, and the shared field component resolves interior break markup before any
-  value reaches a binding. The legacy application reached the same conclusion by
-  hand at `Website/admin/Security/AccessDenied.ascx.vb` L43, which encodes an
-  untrusted message before displaying it.
-
-  MIGRATION: localisation is not ported. The legacy control resolved every string
-  through its own resource file, and the measured in-scope legacy code performs
-  forty-eight such lookups. None is reproduced: no translation runtime is in the
-  pinned dependency set, so the wording arrives already resolved from the paired
-  class, which recovered it from the eighty-four entry resource file. That file is
-  the authority and the markup attribute is not, proven twice on this very screen -
-  the markup headings read "Provider Settings" and "Password Settings" while the
-  resource values the page actually rendered read "Membership Provider Settings" and
-  "Password Aging Settings".
-
-  MIGRATION: the legacy layout was tables. `UserSettings.ascx` L6 opens
-  `table width="450"` and L12, L35 and L58 nest three more inside it, and the
-  in-scope screens carry sixty-eight layout table attributes against only eight real
-  data grids. Not one table element appears here: there is no tabular data on this
-  screen, so the arrangement is grid and flex in the paired stylesheet. The two
-  spacer rows at L29 and L52, each a table cell whose only content was a ten pixel
-  height, are inter-section spacing expressed as content; they become a spacing
-  token gap in that stylesheet and no empty element is emitted for them.
-
-  MIGRATION: no value in this file is styled here. The template carries no inline
-  style attribute, no colour, no length and no font, and no legacy class name - the
-  legacy vocabulary that carried this screen's appearance does not exist in the
-  target. Class names below are structural hooks for the paired stylesheet, which
-  resolves every one of them to a design token.
--->
-
-<!--
-  The page title and the one companion action.
-
-  The title is the recovered control title. The shared header owns the page's single
-  top level heading, so nothing here emits a second one, and it strips its own title
-  attribute so the wording can never become a native tooltip.
-
-  MIGRATION: the subtitle is a net addition and is reported as one. The legacy page
-  chrome gave this control no subtitle to render. It names the scope of what is being
-  edited, which matters on a screen whose settings are tenant wide rather than per
-  account, and it is authored on the paired class rather than here so that all
-  wording has one home.
-
-  MIGRATION: the companion link's wording is RECOVERED rather than invented. This
-  screen's own resource file has no action entry at all; the profile properties
-  action is `ManageProfile.Action` in `Website/admin/Users/Users.ascx.resx` and in
-  the sibling account management resource file, where it sat in the same action menu
-  as the entry that led to this screen. It is a link rather than a command because
-  it navigates and changes nothing.
--->
+<!-- The page title and the one companion action. -->
 <app-page-header [title]="text.title" [subtitle]="text.subtitle">
   <a class="page-action membership-settings__header-action" [routerLink]="profileDefinitionsPath">
     Manage Profile Properties
@@ -103,101 +6,21 @@
 </app-page-header>
 
 <!--
-  The failure surface, rendered UNCONDITIONALLY and deliberately so.
-
-  The shared banner keeps its announcement region in the document at all times and
-  guards only the contents, which is what lets assistive technology observe the
-  region before anything arrives in it; wrapping the element in a condition here
-  would defeat that by inserting the region and its text in the same pass. The
-  banner shows nothing at all while the bound document is absent, so this costs no
-  pixels.
-
-  MIGRATION: severity is NOT decided here, and that is the point of passing the
-  whole document down. A permission refusal must read as a WARNING rather than an
-  error - `Website/admin/Security/AccessDenied.ascx.vb` L42 to L45 rendered its
-  denial at the legacy yellow warning style in BOTH of its branches, and the
-  measured legacy severity vocabulary is twenty-seven red errors, twenty-one yellow
-  warnings and twelve green confirmations. The shared banner already resolves a
-  refusal to its warning band and a rate limited refusal to its calmest band, so
-  deciding again here would create a second authority free to disagree with it.
-
-  MIGRATION: success is not rendered on this screen. The legacy page showed nothing
-  on success - it redirected straight back to the account listing - so the
-  confirmation is announced through the shared notification channel at the success
-  severity by the paired class, which is the target equivalent of the legacy green
-  confirmation style.
+  The shared banner keeps its announcement region in the document at all times and guards only the
+  contents, which is what lets assistive technology observe the region before anything arrives in it;
+  wrapping the element in a condition here would defeat that by inserting the region and its text in the
+  same pass.
 -->
 <app-error-banner [problem]="problem()" />
 
-<!--
-  The transport failure, for the case the banner cannot cover.
-
-  A failure that never reached the API carries no problem document, so the banner
-  would render nothing and the screen would look as though the save had simply been
-  ignored. The paired class resolves this to null whenever the banner has something
-  to show, so the two can never appear together.
-
-  This is the ONLY announcement region this file emits, and it does not duplicate the
-  banner's: the two are mutually exclusive by construction, so exactly one of them
-  ever carries text. It is declared with the alert role alone rather than with an
-  explicit live region attribute, because a save that failed is the direct result of
-  the reader's own action and must be discoverable without moving focus.
--->
+<!-- The transport failure, for the case the banner cannot cover. -->
 @if (failureMessage(); as message) {
   <p class="membership-settings__transport-failure" role="alert">{{ message }}</p>
 }
 
 <!--
-  The tenant stores no account policy, so there is nothing to read and nowhere to write.
-
-  ⚠ THIS REPLACES A BANNER THAT SAID THE WRONG THING. This state previously arrived as a recorded
-  failure and rendered through the banner above as "Not Found / The requested resource does not
-  exist. / Reference: <correlation guid>" with a retry affordance - alarming, unactionable, and
-  wrong on all three counts: nothing is missing that was asked for, nothing can be retried into
-  existence, and the reference invites a support conversation about a correctly functioning tenant.
-
-  ⚠ NOT AN ERROR ROLE, DELIBERATELY. It is a stable, expected configuration state rather than
-  something that went wrong, so it is a plain note. It carries no live region either: it is present
-  on arrival rather than appearing in response to an action, so the heading and this note are read
-  in document order by a reader arriving at the screen.
-
-  MIGRATION: NET-NEW WORDING, with no legacy counterpart, and the absence of one is explained by
-  the legacy topology rather than by an omission. The legacy screen read its settings from the
-  "User Accounts" module instance on the admin page - `UserSettings.ascx.vb:L106` through
-  `UserController.GetUserSettings` - and that instance was installed with the portal, so the screen
-  could assume it and never needed to describe its absence. It DID tolerate absence silently
-  (`UserController.vb:L656-L671` returns Nothing and the consumers fell back to defaults), which is
-  exactly what the account listing now does; only this screen, which must WRITE, has to say so. The
-  sentence names the module by the same name the server's own refusal names, so an operator reading
-  either arrives at the same remedy.
--->
-<!--
-  THE PROVENANCE DISCLOSURE — #6.
-  Says whether the values below are a policy this site STORED or the platform defaults it falls
-  back to. Every control renders a value either way and a rendered value looks identical either
-  way, so without this sentence an operator cannot tell somebody's decision from nobody's, and
-  cannot tell whether pressing Update will CHANGE a policy or CREATE one.
-  ⚠ NOT AN ALERT, AND NOT A LIVE REGION. This is steady-state information about what is on screen,
-  not the outcome of anything the reader just did, so announcing it would interrupt for no event.
-  It is a plain paragraph placed immediately before the form it describes, which is where a reader
-  moving through the document in order meets it before the first control. The two announcement
-  regions on this screen — the shared banner and the transport-failure paragraph above — stay the
-  only ones this file emits.
-  The state is also carried as a data attribute so the paired stylesheet can distinguish the two
-  without matching on wording, and so a specification can assert which of the two is showing
-  without reading English.
-
-  ⚠ THIS ANNOTATION IS COMMENTED, AND THE OPENING DELIMITER ABOVE EXISTS BECAUSE IT ONCE DID NOT.
-  The preceding block's closing delimiter sat above this paragraph rather than below it, so all 1101
-  characters of the note rendered as an unwrapped text node directly beneath this component - 14px,
-  present in the accessibility tree, read out to a screen reader, and sitting immediately above the
-  one sentence on this screen that is genuinely addressed to an operator. Every annotation in this
-  file is enclosed by its own pair of delimiters for exactly this reason: a note sharing a comment
-  with the note before it inherits that note's closing delimiter, and a template comment fails
-  SILENTLY - it renders rather than erroring, so no build and no type-check reports it.
-  For the same reason NO annotation in this file writes a closing delimiter inside its prose, not
-  even quoted: a comment ends at the FIRST such sequence whatever surrounds it, so describing one
-  literally would sever the comment at that word and render everything after it.
+  THE PROVENANCE DISCLOSURE — #6. Says whether the values below are a policy this site STORED or the
+  platform defaults it falls back to.
 -->
 @if (provenanceNotice(); as notice) {
   <p class="membership-settings__provenance" [attr.data-provenance]="valueProvenance()">
@@ -206,21 +29,17 @@
 }
 @if (loading()) {
   <!--
-    The policy is being read. The label is what makes the indicator announce
-    anything at all - the shared indicator exposes its status role only while it has
-    label text - and the wording comes from the paired class.
+    The policy is being read. The label is what makes the indicator announce anything at all - the
+    shared indicator exposes its status role only while it has label text - and the wording comes from
+    the paired class.
   -->
   <app-loading-spinner [label]="text.loadingLabel" />
 } @else if (unconfigured()) {
   <!--
-    Ordered BEFORE the form and in place of it, which is the whole reason this is a branch of the
-    same chain rather than a note sitting above one: a form of twenty-three controls that provably
-    cannot be saved is a trap, and a note beside it would contradict itself by showing settings
-    while saying there are none to show. The two facts - explain the state, withhold the form - are
-    one decision and are expressed in one construct so they cannot drift apart.
-
-    The paired class refuses the command for this same state, so the button is unreachable by any
-    route even if this branch were ever reordered.
+    Ordered BEFORE the form and in place of it, which is the whole reason this is a branch of the same
+    chain rather than a note sitting above one: a form of twenty-three controls that provably cannot be
+    saved is a trap, and a note beside it would contradict itself by showing settings while saying there
+    are none to show.
   -->
   <p class="membership-settings__unconfigured">
     This site has no “User Accounts” module, which is where account settings are stored, so there
@@ -229,80 +48,14 @@
   </p>
 } @else {
   <!--
-    The form replaces the indicator rather than sitting beside it, so the seated
-    defaults are never on screen while the tenant's real policy is still in flight.
-    The control values survive the swap because the form group is a field on the
-    paired class, not something this template owns: a failed save re-renders this
-    block with everything the reader typed still in place, which is exactly what the
-    paired class relies on when it leaves a rejected submission for correction.
-
-    MIGRATION: nothing here is posted back and nothing is serialised into the
-    document. The legacy control rebuilt its editors on every postback and carried
-    their state in the page's hidden view state; the policy is held once, in the
-    account store, and reaches this form through the paired class.
+    The form replaces the indicator rather than sitting beside it, so the seated defaults are never on
+    screen while the tenant's real policy is still in flight.
   -->
   <form class="membership-settings" [formGroup]="form" (ngSubmit)="submit()">
     <!--
-      THE SURVIVING SECTION.
-
-      MIGRATION: the legacy screen declared THREE sections - more than any other
-      in-scope screen - and ONE survives.
-        1. "Membership Provider Settings" is DROPPED. Its ten provider fields are
-           absent from the policy contract, and the legacy screen's own help text
-           explains why they were never editable: it states that the default
-           provider requires editing a configuration file, so the settings cannot be
-           updated there. That file does not exist in the target - provider
-           declarations became typed server side options - so the legacy sentence is
-           not merely unhelpful, it is false, and it is deliberately not rendered
-           anywhere. Host level administration is out of scope as well.
-        2. "Password Aging Settings" is DROPPED, and this is a REVERSE DRIFT report
-           rather than a preference: the policy contract carries no expiry member and
-           no expiry reminder member, so there is nothing to render. Consequence
-           worth recording: the two legacy help values for those fields contain the
-           misspellings that a faithful port would have had to preserve, and the
-           rule that an expiry of zero means the password never expires likewise has
-           no field to attach to here. Both are reported rather than absorbed.
-        3. "User Accounts Settings" survives and is the whole of this screen. It was
-           the only section the legacy markup left editable.
-
-      MIGRATION: the legacy section head becomes a native disclosure, and this is a
-      structural decision with three reasons. The shared component library is closed
-      at ten members and contains no collapsible section, so no eleventh is invented.
-      The paired class exposes no collapse state and must not be edited from here, so
-      a scripted toggle would have to lie about its own state. And a native
-      disclosure needs neither: it collapses without script, its summary is in the
-      tab order and is operated by both Enter and Space, and the shared reset already
-      gives every summary the workspace focus ring. It is open on arrival because all
-      three legacy sections were declared expanded.
-
-      MIGRATION: the legacy toggle was withdrawn from the tab order with a negative
-      tab index at `Website/controls/sectionheadcontrol.ascx` L3, so it was operable
-      by pointer only. That defect is deliberately REVERSED here rather than
-      reproduced. Reversing it costs nothing visually, which is why the precedence
-      order permits it.
-
-      The expanded state is bound from the element itself and resynchronised by its
-      own toggle event, so the announced state cannot drift from the rendered one. A
-      static value would be wrong the moment a reader collapsed the section.
-
-      MIGRATION: the legacy control drew a horizontal rule under its title. No rule
-      element is emitted; separation is a token driven border in the paired
-      stylesheet.
-
-      The heading is nested inside the summary, which is the one place a heading is
-      permitted there, so the section keeps its place in the document outline
-      directly under the page heading with no level skipped.
-
-      STYLING CONTRACT for the paired stylesheet, recorded here because the markup
-      cannot express it and runtime inspection proved it necessary. A summary is
-      display list-item by default and a heading is a block, so an UNSTYLED summary
-      puts the native disclosure marker alone on one line and drops the heading to the
-      next. The section summary therefore needs a flex or grid arrangement so the
-      marker and the heading share a row, with the heading's own block behaviour
-      neutralised. The heading is kept rather than reduced to a span because the
-      outline position is an accessibility gain and accessibility outranks visual
-      continuity in the governing precedence order. No length, colour or literal is
-      written here for it: every value belongs to that stylesheet, resolved to a token.
+      MIGRATION: the legacy toggle was withdrawn from the tab order with a negative tab index at
+      `Website/controls/sectionheadcontrol.ascx` L3, so it was operable by pointer only. That defect is
+      deliberately REVERSED here rather than reproduced.
     -->
     <details
       class="membership-settings__section"
@@ -318,64 +71,7 @@
       </summary>
 
       <div class="membership-settings__section-body">
-        <!--
-          THE NINE ACCOUNT LISTING COLUMN SWITCHES.
-
-          Grouped in their own field set so the cluster carries an accessible name of
-          its own rather than nine unrelated switches in a row, and iterated in one
-          pass over the list the paired class publishes. That list is ordered as the
-          legacy routine that filled in a missing key ordered them
-          (`Library/Components/Users/UserModuleBase.vb` L98 to L124), so an
-          administrator finds the switches where they have always been. Tracking is
-          by the control name, which is the stable identity here; the position is not.
-
-          MIGRATION: these nine are what make the account listing's columns tenant
-          configurable, so they reach further than this screen - the listing reads the
-          same policy.
-
-          MIGRATION: there is no switch for the sign-in name column and none is
-          invented. The legacy routine defines exactly these nine and the sign-in name
-          is not among them, so that column is always shown.
-
-          MIGRATION: the nine carry NO help text, and the omission is a measured
-          reduction rather than an oversight. Every one of their legacy help values is
-          its own label with the trailing colon removed - the address switch's help
-          reads "Show Address Column" against the label "Show Address Column:" - and
-          that holds for all nine without exception. A disclosure whose contents
-          repeat the label beside it adds a control to operate and tells a reader
-          nothing, so the help input is left unbound and the shared field renders no
-          disclosure for it. No information is lost, because none was ever carried.
-
-          MIGRATION: the labels are passed EXACTLY as the resource file wrote them,
-          trailing colon included. The shared field owns label punctuation and removes
-          one trailing colon itself, so removing it here as well would strip a colon
-          the resource file did not have. Measured across the one hundred and
-          eighty-six in-scope legacy labels, the colon was carried on the label
-          declaration forty times, omitted one hundred and thirty-three times and
-          baked into the resource value on the rest, which is why one component owns
-          the rule.
-
-          MIGRATION: the legacy inter-control spacing was content - seventy literal
-          non-breaking space entities across the in-scope admin markup, one of them on
-          this screen between the two commands. Not one is reproduced: spacing is a
-          token driven gap in the paired stylesheet.
-
-          The requirement marker is DERIVED from the control's own validators rather
-          than asserted here, so the marker a reader sees and the rule that would
-          reject a submission cannot disagree. It resolves to false for all nine
-          today; binding it uniformly is what keeps that true if a validator is ever
-          added.
-        -->
         <fieldset class="membership-settings__columns">
-          <!--
-            LEVEL THREE, NOT TWO, AND THE NESTING IS WHY. This field set sits INSIDE the accounts
-            section whose summary already carries the level-two heading, so a second `<h2>` here
-            would flatten a parent and its child onto the same level and tell a reader navigating
-            by heading that the two are siblings. The outline is page `<h1>`, section `<h2>`, this
-            `<h3>`, with no level skipped in either direction. The shared rule in `_forms.scss`
-            styles a legend heading at any level identically, so the level is chosen for the
-            outline alone and costs nothing visually.
-          -->
           <legend class="membership-settings__columns-legend"><h3>{{ text.columnsHeading }}</h3></legend>
 
           @for (field of columnFields; track field) {
@@ -398,59 +94,15 @@
         </fieldset>
 
         <!--
-          THE REMAINING FOURTEEN SETTINGS, in the order the legacy routine declared
-          them (`Library/Components/Users/UserModuleBase.vb` L126 to L190): the listing
-          presentation, then the profile defaults, then the three destinations, then
-          the security group. The order is preserved because it is the order an
-          administrator has always read them in.
-
-          MIGRATION: the legacy editor rendered its fields in HASH TABLE enumeration
-          order, which is not a defined order at all, so there was no stable legacy
-          sequence to reproduce. The declaration order of the routine that supplied
-          the defaults is the closest thing to an authored order the legacy code has,
-          and it is what is used.
-
-          EVERY control is wrapped by the shared field component. Nothing on this
-          screen is a bare control, per the design system rule that a raw element is
-          not used where a shared component covers the need; the only bare commands in
-          this file are the two form level ones, which are not fields.
-
-          MIGRATION: none of these fields declared a validator in the legacy markup -
-          there is not one validator across its seventy-four lines and no error style
-          on any of its three editors, because the excluded settings editor validated
-          internally and reported however it chose. The messages surfaced below are the
-          server's own rules resolved by the paired class, and no business rule is
-          invented here. The bounds advertised to the browser are attribute bindings
-          rather than property bindings on purpose: a property binding would register a
-          SECOND validator directive alongside the one the paired class already
-          declares, so the same rule would be applied twice and could be worded two
-          different ways.
-
-          MIGRATION: the caller decides WHEN a message appears, which the paired class
-          settles by returning null while a control is untouched or valid. Every legacy
-          validator in scope was declared to render dynamically - thirty-five of
-          thirty-five - so a message appears only once there is something to say. There
-          is no summary surface: zero validation summaries exist across the
-          thirty-nine in-scope screens, so the field's own message region is the only
-          error surface this UI has and a message dropped there is a message nobody
-          sees.
+          THE REMAINING FOURTEEN SETTINGS, in the order the legacy routine declared them: the listing
+          presentation, then the profile defaults, then the three destinations, then the security group.
+          The order is preserved because it is the order an administrator has always read them in.
         -->
 
         <!--
-          MIGRATION: the display mode is an integer drawn from a legacy enumeration
-          that was NOT ported as a named type - the contract publishes it as a plain
-          integer - so the choices come from a frozen list on the paired class whose
-          ordinals are the legacy ones. The option value is bound through the forms
-          value binding rather than the plain attribute, which is what keeps a NUMBER a
-          number: the plain attribute would send the digits as text and the contract
-          would reject them.
-
-          MIGRATION: two of this selector's three choices had NO label in the legacy
-          resource file, and one of the two is the shipped default. The file supplies
-          only "First Letter". Wording for the other two is authored on the paired
-          class and both gaps are reported.
-
-          The label carries no trailing colon, exactly as the resource value has it.
+          MIGRATION: the display mode is an integer drawn from a legacy enumeration that was NOT ported
+          as a named type - the contract publishes it as a plain integer - so the choices come from a
+          frozen list on the paired class whose ordinals are the legacy ones.
         -->
         <app-form-field
           [label]="labelFor('displayMode')"
@@ -471,11 +123,7 @@
           </select>
         </app-form-field>
 
-        <!--
-          The pager switch. The label keeps its question mark, which is the legacy
-          wording and which the shared field preserves - it removes a trailing colon
-          only.
-        -->
+        <!-- The pager switch. -->
         <app-form-field
           class="form-field--inline"
           [label]="labelFor('displaySuppressPager')"
@@ -493,17 +141,7 @@
           />
         </app-form-field>
 
-        <!--
-          The page size. A GENUINE COUNT, so zero is not "unset" here either - it is a
-          value the range rule refuses, and it is refused by the range rule rather than
-          by the required rule precisely because the framework tests emptiness by
-          length and null rather than by truthiness. The bounds mirror the server's own
-          and both come from the paired class; the lower one is not written as a
-          literal anywhere.
-
-          The legacy default is ten, and it is seated by the paired class from the
-          shared page size constant rather than restated here.
-        -->
+        <!-- The page size. -->
         <app-form-field
           [label]="labelFor('recordsPerPage')"
           [for]="controlId('recordsPerPage')"
@@ -522,27 +160,7 @@
           />
         </app-form-field>
 
-        <!--
-          The profile visibility default. Same arrangement as the display mode: a
-          legacy enumeration published as a plain integer, choices from a frozen list
-          on the paired class, ordinals unchanged.
-
-          WHERE THIS SETTING TAKES EFFECT: it is the visibility a profile value that has
-          NEVER BEEN SET reads as, and it is applied SERVER-SIDE - the account resource
-          reads this policy and stamps it onto every unset value and every declaration it
-          projects. That reproduces both legacy consumers exactly:
-          `Library/Components/Users/Profile/ProfilePropertyDefinition.vb` L348-L359 seeded a
-          new declaration's visibility from it, and
-          `Library/Components/Users/Profile/ProfileController.vb` L109-L112 stamped it onto
-          every declaration it read back. Nothing on this side re-derives it, which is what
-          stops a second opinion about it existing.
-
-          MIGRATION: two of these three choices had no label in the legacy resource
-          file either, and again one of the two is the shipped default - the file
-          supplies only "Members Only". Both authored labels are reported as gaps.
-
-          The label carries no trailing colon, as the resource value has it.
-        -->
+        <!-- The profile visibility default. -->
         <app-form-field
           [label]="labelFor('profileDefaultVisibility')"
           [for]="controlId('profileDefaultVisibility')"
@@ -579,26 +197,6 @@
           />
         </app-form-field>
 
-        <!--
-          MIGRATION: this switch GOVERNS A REAL BEHAVIOUR, and an earlier revision of this
-          note said otherwise - that "the legacy services panel it would reveal on the
-          profile screen has no endpoint in this API, so the setting is stored and
-          honoured by whatever renders that profile". That is withdrawn. The account
-          resource publishes five self-service endpoints, and EVERY ONE OF THEM CHECKS
-          THIS SETTING on the server: a tenant that clears it makes each of them refuse
-          with its own reason rather than merely hiding a screen. It governs those
-          endpoints, and the panel that calls them is THE LAST SECTION OF THIS SCREEN -
-          so the switch and the behaviour it governs are read and exercised in one place.
-          Clearing it does not hide that panel: the panel's own requests are refused by
-          the server and it renders the refusal in the server's words.
-
-          The enforcement is deliberately the server's and not this client's. The legacy
-          container folded the setting into a tab's visibility, which a client can only
-          approximate; a copy of the rule here would be a second opinion about it, and the
-          panel below cannot read this policy for itself in any case - the policy endpoint
-          is gated on tenant administration, and the panel is written to serve an account
-          holder rather than an administrator.
-        -->
         <app-form-field
           class="form-field--inline"
           [label]="labelFor('profileManageServices')"
@@ -616,55 +214,6 @@
           />
         </app-form-field>
 
-        <!--
-          THE THREE DESTINATIONS, grouped and iterated exactly as the legacy screen
-          grouped them - it attached a page chooser to each of the three
-          (`Website/admin/Users/UserSettings.ascx.vb` L80 to L82). Tracked by the
-          control name, which is the stable identity.
-
-          ⚠ WHERE THESE THREE TAKE EFFECT, AND WHERE THEY DO NOT. Each names a
-          DOTNETNUKE PAGE, and this application renders no DotNetNuke page: page
-          rendering - skins, containers, the whole server-rendered page surface - is
-          excluded by AAP 0.2.2.2 and 0.2.2.4, and the page resource in this API is
-          deliberately narrow, offering a tenant's page list and one page's detail and
-          nothing that renders one. So a destination recorded here is not somewhere this
-          console can send anybody, and no screen in it consults these three.
-
-          THAT IS NOT A GAP, BECAUSE THE POLICY HAS A LIVE CONSUMER. The migration is
-          side by side (AAP 0.1.1): the DotNetNuke application remains deployed and it
-          reads all three - `Website/admin/Authentication/Login.ascx.vb` L147-L177 after a
-          sign-in, `Website/admin/Users/ManageUsers.ascx.vb` L80-L98 after a
-          registration, and `Library/Components/Authentication/AuthenticationController.vb`
-          L251-L270 after a sign-out. This console is the screen that MAINTAINS that
-          policy, exactly as it maintains every other member of it; what it does not do is
-          act on it, and it does not pretend to. Recorded in `MIGRATION_NOTES.md`.
-
-          A further reason the after-registration destination has no local consumer even in
-          principle: this application has no self-registration flow at all. The account
-          form is administrative, and no register route exists in the closed route set.
-
-          MIGRATION: a page CHOOSER is not offered and a page identifier is taken
-          instead. The reason is a dependency boundary rather than a preference: the
-          page lookup a chooser would need is not among this screen's declared
-          dependencies, so there is no list to populate one from without reaching
-          outside them. Reported as a deliberate reduction.
-
-          MIGRATION: ZERO IS A REAL PAGE and must never be read as "unset". The page
-          table's identity seeds at zero, which is exactly why the contract's floor is
-          zero rather than one. An EMPTY field is the only expression of "no redirect",
-          and it renders empty because the control's value is null - never because a
-          number was tested for truthiness. Nothing in this file compares a value
-          against zero or against the legacy marker for a missing integer.
-
-          MIGRATION: the legacy routine defaulted all three to MINUS ONE, its whole
-          codebase marker for "no integer". The target models them as nullable page
-          identifiers and REFUSES a negative one, so null is the translation of that
-          same state rather than a loss of it, and minus one is never sent. The floor
-          advertised below comes from the paired class and mirrors the server's rule;
-          the message that appears when it is breached says in words that an empty
-          field means no redirect, so the meaning is carried by text rather than left
-          to be inferred from a blank.
-        -->
         @for (field of redirectFields; track field) {
           <app-form-field
             [label]="labelFor(field)"
@@ -684,32 +233,7 @@
           </app-form-field>
         }
 
-        <!--
-          The address validation expression.
-
-          MIGRATION: rendered as a plain multi-line box, which is a documented
-          functional reduction AND the legacy author's own stated intent. Rich text
-          editing is out of scope because the legacy editor provider is excluded, and
-          `Website/admin/Users/UserSettings.ascx.vb` L83 carries a COMMENTED OUT
-          multi-line editor for exactly this field, so a multi-line box is what the
-          legacy code was reaching for. No editor library is introduced. The shared
-          field's multi-line arrangement is asked for by the modifier class it exposes
-          on its own host, so nothing here reaches into that component to restyle it,
-          and the block size is left to the paired stylesheet rather than expressed as
-          a length in this markup.
-
-          MIGRATION: the value is OPAQUE TEXT. It is a pattern, and nothing here
-          compiles it, executes it or matches anything against it - evaluating a stored
-          pattern in the browser would hand a setting the ability to hang the page. The
-          only rule applied before the server sees it is a length bound, which comes
-          from the paired class.
-
-          MIGRATION: an unset text setting arrives as an EMPTY STRING rather than as
-          null, because the contract serialises nulls instead of omitting members and
-          the legacy marker for a missing string was the empty string. Empty and null
-          therefore render identically here, which they do because the control's value
-          type admits neither distinction.
-        -->
+        <!-- The address validation expression. -->
         <app-form-field
           class="form-field--multiline"
           [label]="labelFor('securityEmailValidation')"
@@ -730,14 +254,8 @@
         </app-form-field>
 
         <!--
-          MIGRATION: registration is out of scope as a flow, and this switch is still
-          rendered because the policy contract carries it. What is NOT reproduced is the
-          legacy screen's rule that hid twelve of these fields - this one among them -
-          when the screen was reached through the host menu
-          (`Website/admin/Users/UserSettings.ascx.vb` L87 to L100). The context that
-          rule applied to is out of scope: host level administration is excluded, this
-          screen is reached only as a tenant administrator, and in that context the
-          legacy screen showed everything. Nothing here is conditionally hidden.
+          MIGRATION: registration is out of scope as a flow, and this switch is still rendered because
+          the policy contract carries it.
         -->
         <app-form-field
           class="form-field--inline"
@@ -757,14 +275,8 @@
         </app-form-field>
 
         <!--
-          MIGRATION: this field's help text reads "before be logged in", which is
-          ungrammatical and is the shipped legacy wording. It is PRESERVED verbatim by
-          the paired class and rendered unaltered here, because correcting it would
-          change text an existing administrator recognises for no behavioural gain.
-
-          MIGRATION: this switch defaults to TRUE while its registration counterpart
-          above defaults to FALSE. That is measured, not a transcription slip, and the
-          two are deliberately not made consistent.
+          This field's help text reads "before be logged in", which is ungrammatical and is the shipped
+          legacy wording.
         -->
         <app-form-field
           class="form-field--inline"
@@ -788,21 +300,8 @@
         </app-form-field>
 
         <!--
-          The account selection control used by the role management screen.
-
-          MIGRATION: both of this selector's labels are SHARED resource keys - the
-          legacy file gave "Combo Box" and "Text Box" no owner, so the same two strings
-          served wherever a chooser or box decision appeared, and only "First Letter"
-          belongs to the display mode alone.
-
-          MIGRATION: the legacy default for this setting was DATA DEPENDENT - it chose
-          the box over the chooser once a tenant held more than a thousand accounts
-          (`Library/Components/Users/UserModuleBase.vb` L179 to L183). That threshold is
-          not reproduced and deliberately not: it requires counting the tenant's
-          accounts, which is a server side question, and the server settled it the same
-          way by defaulting to the chooser without counting anything.
-
-          The label carries no trailing colon, as the resource value has it.
+          MIGRATION: the legacy default for this setting was DATA DEPENDENT - it chose the box over the
+          chooser once a tenant held more than a thousand accounts.
         -->
         <app-form-field
           [label]="labelFor('securityUsersControl')"
@@ -824,29 +323,9 @@
         </app-form-field>
 
         <!--
-          The display name format.
-
-          MIGRATION: OPAQUE TEXT. The legacy help text names bracketed substitution
-          tokens and they are described rather than made to work: token replacement is
-          an excluded subsystem, so the value is stored and forwarded unchanged and this
-          screen expands nothing. Spell checking is switched off for the same reason it
-          is on the pattern above - the value is not prose.
-
-          MIGRATION: the final sentence of that help text is a genuine CROSS SCREEN
-          constraint rather than advice - a tenant that sets a format makes the display
-          name uneditable on the account form - and it is reported as affecting that
-          screen. Nothing is enforced from here.
-
-          ⚠ CHANGING THIS VALUE RENAMES EVERY ACCOUNT IN THE TENANT. The legacy save
-          started a background thread that rewrote every account's display name whenever
-          this format changed (`Website/admin/Users/UserSettings.ascx.vb` L175 to L182),
-          and told the operator nothing about it. The rewrite is still NOT attempted from
-          the browser, and must not be - it is a bulk write across a whole tenant, which
-          belongs behind an endpoint rather than in a page that can be closed halfway
-          through. It is performed by the SERVER inside the same transaction as this
-          policy write, and the endpoint answers with the number of accounts it renamed;
-          the confirmation shown on save reports that number. The help text above carries
-          the warning so it is read BEFORE the value is changed rather than after.
+          OPAQUE TEXT. The legacy help text names bracketed substitution tokens and they are described
+          rather than made to work: token replacement is an excluded subsystem, so the value is stored
+          and forwarded unchanged and this screen expands nothing.
         -->
         <app-form-field
           [label]="labelFor('securityDisplayNameFormat')"
@@ -869,56 +348,6 @@
       </div>
     </details>
 
-    <!--
-      THE TWO FORM COMMANDS.
-
-      MIGRATION: the legacy commands were IMAGE buttons - the update command carried
-      an add glyph and the cancel command a left arrow glyph
-      (`Website/admin/Users/UserSettings.ascx` L72 and L73). Neither raster asset is
-      referenced: the only static binary in scope is the site icon, so both are text
-      commands. No image, no glyph reference and no background asset appears in this
-      file.
-
-      MIGRATION: the cancel command declared validation SWITCHED OFF, so it is declared
-      as a plain button and never as a submit. Abandoning a half filled form must not
-      first be told the form is half filled, and the paired class holds up its end -
-      its cancel path marks nothing touched, recomputes no validity and consults the
-      form's validity not at all. It stays operable while a save is in flight, because
-      it is the reader's way out and the legacy command was never withheld either.
-
-      MIGRATION: BOTH legacy commands navigated away - the cancel handler and the
-      update handler both ended in a redirect back to the account listing - so leaving
-      the reader on this screen after either would be the divergence, not the
-      navigation. Both destinations are the paired class's business; this file only
-      raises the events.
-
-      MIGRATION: the legacy redirects carried the listing's search text forward through
-      the query string and that is not reproduced. It cannot be: the legacy handler read
-      it from the request that had just posted back, and there is no postback here. The
-      listing holds its own search in the account store and still has it.
-
-      MIGRATION: the update command is not gated by a client side permission check, and
-      the omission is deliberate rather than an oversight. The permission directive is
-      not among this component's declared dependencies, so it is not reachable from
-      this template, and gating here would be advisory in any case - the server is
-      authoritative and answers a caller without permission with a refusal, which the
-      shared banner then presents at its warning band.
-
-      Submission is refused while the policy is being read or written, and the refusal
-      is a correctness measure rather than a courtesy: until the tenant's policy has
-      been applied to this form the controls still hold seated defaults, and submitting
-      those would overwrite a live policy with values nobody chose.
-
-      STYLING CONTRACT for the paired stylesheet, recorded because runtime inspection
-      showed the consequence of its absence. The action row needs a flex arrangement
-      with a spacing token gap: unstyled it is a block, so the two commands render
-      flush against one another with no separation at all, which is the same defect the
-      legacy markup papered over with a literal non-breaking space between them. The
-      primary modifier on the submit command likewise needs a visual treatment of its
-      own, since both commands otherwise compute identically and the primary action is
-      indistinguishable from the one that abandons the form. Neither is expressible
-      here: the template carries no length, no colour and no spacing value.
-    -->
     <div class="membership-settings__actions">
       <button
         class="membership-settings__action membership-settings__action--primary"
@@ -934,37 +363,11 @@
       </button>
 
       @if (saving()) {
-        <!--
-          The write in flight. Announced rather than merely drawn, which is what the
-          label buys: the shared indicator exposes its status role only while it has
-          label text.
-        -->
+        <!-- The write in flight. -->
         <app-loading-spinner size="small" [label]="text.savingLabel" />
       }
     </div>
   </form>
 }
 
-<!--
-  THE CONSOLIDATED SELF-SERVICE SUBSCRIPTION PANEL.
-
-  MIGRATION: `Website/admin/Users/MemberServices.ascx` - the third of the three legacy
-  controls the transformation plan consolidates into this feature (AAP 0.5.1.8). It is
-  rendered HERE and nowhere else: AAP 0.4.4 freezes the console's route table at
-  twenty-five addresses and names no member-services address, so the panel has no
-  address of its own and is mounted rather than routed. The paired class records the two
-  withdrawn arrangements this replaces - a twenty-sixth route, and the deletion that
-  followed it - and what the consolidation costs.
-
-  OUTSIDE THE POLICY FORM, DELIBERATELY. The panel carries a form of its own for the
-  invitation code, and a nested form element is invalid markup that browsers silently
-  discard - the inner controls would be adopted by the outer form and the code would be
-  submitted with the tenant's policy. It is also independent of the policy read: it is
-  rendered whether or not that read has settled, because its own request is separate.
-
-  THE SUBJECT ACCOUNT IS THE CALLER'S OWN, and null until the session resolves one. The
-  panel is what decides what to render for each of those states; this screen decides only
-  which account it is about. Every one of the panel's five endpoints is gated on account
-  ownership server-side, so nothing here can reach another account's subscriptions.
--->
 <app-member-services [accountId]="ownAccountId()" />

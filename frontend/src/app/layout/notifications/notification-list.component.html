@@ -1,47 +1,6 @@
-<!--
-  THE APPLICATION'S NOTIFICATION SURFACE.
+<!-- THE APPLICATION'S NOTIFICATION SURFACE. -->
 
-  Renders the queue the notification service publishes: one row per entry, each stating its
-  severity as a word, its already-composed sentence, and a control that removes it.
-
-  Every value arrives ready to render. Nothing is computed here — no severity rule, no string
-  work, no truthiness test and no ordering decision — because the service composes the message
-  and chooses the severity, and its order is the order the operator caused the outcomes in.
-
-  Every string is placed with escaping interpolation and NOTHING is bound as markup. A message
-  can originate in a server problem document whose wording descends from legacy resource files
-  in which raw markup is commonplace, so a value still carrying a tag renders as visible, inert
-  text and creates no element.
--->
-
-<!--
-  A PERSISTENT live region: the element is always in the document and only its contents change.
-  A region inserted at the same moment as its first message is announced inconsistently across
-  screen readers, and the first message is the one that matters — so the `@for` is INSIDE the
-  region and never wrapped around it.
-
-  `role="status"` carries the announcement semantics; `aria-live` and `aria-atomic` state the
-  same values that role already implies, so the behaviour is legible to a reader of this
-  template and cannot shift with a browser's role mapping. Polite, not assertive: an
-  announcement here reports the outcome of something the operator just did and must not
-  interrupt them mid-sentence. `aria-atomic="false"` is deliberate and is the opposite of the
-  error banner's choice — entries arrive one at a time and each is its own announcement, so
-  re-announcing the whole queue every time one is appended would read old messages out again.
-
-  While the queue is empty the region paints nothing: the stylesheet gives it no padding, no
-  border and no background, and an empty element with no content resolves to zero height.
-
-  ⚠ THE REGION IS TAKEN OUT OF FLOW BY ITS OWN STYLESHEET, and the reason is measured rather
-  than aesthetic: in flow each entry cost 42 pixels and pushed everything below it down, so
-  nine of them moved the page's heading from y=83 to y=515 - 49 per cent of a 900-pixel
-  viewport spent on notification chrome, and every measurement of the screen underneath
-  invalidated. It stays HERE in the markup, first inside the main region, so its position in
-  the accessibility tree and in the tab order is unchanged; only its painting is lifted out.
-
-  ⚠ ONLY THE NEWEST FEW ENTRIES ARE RENDERED, and how many are not is STATED rather than
-  swallowed. A surface that quietly hides messages cannot be told apart from one that loses
-  them. Every queued entry remains in the service, so nothing is destroyed by being off screen.
--->
+<!-- A PERSISTENT live region: the element is always in the document and only its contents change. -->
 <div
   class="notification-list"
   role="status"
@@ -51,57 +10,23 @@
 >
   @for (entry of visibleEntries(); track entry.id) {
     <!--
-      Tracked by the service's own identifier, which it documents as never reissued for the
-      lifetime of the service — not even after a dismissal or a clear. Tracking by the message
-      text instead would collapse two identical announcements into one rendered row and silently
-      drop a message the application deliberately raised twice.
-
-      ⚠ THE PRECEDING SENTENCE USED TO CLAIM THE SERVICE "EXPLICITLY DOES NOT DE-DUPLICATE", AND IT
-      DOES. `notify` collapses an entry that repeats the newest one on every stored member — severity,
-      composed message, reference, navigation opinion and lifetime opinion — replacing it rather than
-      appending. What it does NOT collapse is a repeat that is not ADJACENT, or one differing in any of
-      those members, and either is reachable: two screens reporting the same refusal with a different
-      support reference, or one entry raised to survive a redirect beside one that is not. So identical
-      rendered text still reaches this loop as separate entries, the tracking argument above still holds
-      in full, and only the claim about the service was wrong.
-
-      The severity is a data attribute rather than a class list because the band is a four-way
-      state, not four independent booleans: one binding cannot leave two bands applied at once,
-      and it states the state in the same form as the shared primitives' own `data-severity`.
+      Tracked by the service's own identifier, which it documents as never reissued for the lifetime of
+      the service — not even after a dismissal or a clear.
     -->
     <div class="notification-list__item" [attr.data-severity]="entry.severity">
       <!--
-        The severity as a WORD. Not decoration: it is the cue that makes the band perceivable
-        without perceiving the colour, and it is read out with the message.
+        The severity as a WORD. Not decoration: it is the cue that makes the band perceivable without
+        perceiving the colour, and it is read out with the message.
       -->
       <p class="notification-list__severity">{{ labelFor(entry.severity) }}</p>
 
-      <!--
-        The sentence. Guaranteed by the service to carry visible text — it refuses a blank or
-        whitespace-only message outright — so no emptiness guard is written here.
-      -->
+      <!-- The sentence. -->
       <p class="notification-list__message">{{ entry.message }}</p>
 
       <!--
-        The dismissal. A real `button` with an explicit `type`, so it is a tab stop, is operable
-        by Enter and Space without a key handler, and cannot submit a form it happens to be
-        rendered inside.
-
-        The visible glyph is a multiplication sign — the typographic character rather than the
-        letter x — and it is `aria-hidden`, because a screen reader announcing "multiplication
-        sign" says nothing useful. The accessible name comes from the label attribute instead,
-        so the control is announced by what it DOES.
-
-        ⚠ AND IT IS NOT THE ONLY WAY A MESSAGE LEAVES, WHICH THIS COMMENT USED TO DENY. It claimed
-        there is "deliberately no auto-dismiss timer anywhere in this surface", on the sound reasoning
-        that a person reading slowly, or reading with a screen reader, must not lose a message before
-        finishing it. This component arms exactly such timers — one eight-second countdown per
-        qualifying entry — and the reasoning above is what SHAPES them rather than forbidding them.
-        WHICH entries qualify is the whole of the protection: only a success or an advisory, or an
-        entry whose caller asked for a countdown, is ever retired on a timer, so an error or a warning
-        stays until it is dismissed; the countdown is suspended while a person is reading or operating
-        the region; and this button retires anything early. So the guarantee a reader needs holds, and
-        it holds for an operator who never reaches for the mouse.
+        The visible glyph is a multiplication sign — the typographic character rather than the letter x
+        — and it is `aria-hidden`, because a screen reader announcing "multiplication sign" says nothing
+        useful.
       -->
       <button
         type="button"
@@ -116,26 +41,18 @@
 
   @if (hiddenCount() > 0) {
     <!--
-      HOW MANY ARE NOT SHOWN. Rendered inside the live region, so it is announced with the
-      entries rather than as a separate interruption, and worded as a count rather than as an
-      affordance because there is nothing to activate: dismissing the entries above brings the
-      hidden ones into view.
-
-      The number is interpolated into a sentence rather than assembled from fragments, so there
-      is exactly one string to read and nothing for the template compiler's whitespace handling
-      to collapse into the wrong shape.
+      HOW MANY ARE NOT SHOWN. Rendered inside the live region, so it is announced with the entries
+      rather than as a separate interruption, and worded as a count rather than as an affordance because
+      there is nothing to activate: dismissing the entries above brings the hidden ones into view.
     -->
     <p class="notification-list__overflow">{{ hiddenCount() }} earlier not shown</p>
   }
 
   @if (canClearAll()) {
     <!--
-      CLEARING EVERYTHING AT ONCE. Offered only from the second entry onwards - with one message
-      on screen the per-entry control is already the shorter route - and rendered LAST so it can
-      never sit between two messages or move one under a reader who is mid-sentence.
-
-      A real `button` with an explicit type, and its visible word IS its accessible name, so no
-      label attribute is needed and none is added.
+      CLEARING EVERYTHING AT ONCE. Offered only from the second entry onwards - with one message on
+      screen the per-entry control is already the shorter route - and rendered LAST so it can never sit
+      between two messages or move one under a reader who is mid-sentence.
     -->
     <button type="button" class="notification-list__clear-all" (click)="clearAll()">
       {{ clearAllLabel }}

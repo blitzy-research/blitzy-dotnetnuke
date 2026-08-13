@@ -13,23 +13,9 @@ namespace DnnMigration.IntegrationTests.Api;
 /// deployment whose declared store is not the store it runs never serves a request.
 /// </summary>
 /// <remarks>
-/// <para>
 /// WHY THIS SUITE IS SEPARATE FROM THE UNIT FACTS. A unit suite already proves the check itself - what it
-/// accepts, what it refuses, and that a store registered after <c>AddInfrastructure</c> replaces the shipped
-/// one. What no unit fact can prove is that anything CALLS it. The check is an explicit statement in
-/// <c>Program.cs</c> rather than a hosted service or an options validator, for reasons argued at its
-/// declaration, and an explicit call is exactly the kind of thing a later edit removes without any test
-/// noticing. These facts build the real host and depend on its refusal.
-/// </para>
-/// <para>
-/// WHAT THE CHECK PROTECTS. This solution's refresh-token store keeps its state in the API process, because
-/// AAP rule T4 forbids adding a table to the existing DotNetNuke schema, AAP 0.6 freezes a dependency
-/// inventory with no distributed-cache client, and AAP 0.9.3 reproduces a two-service container topology
-/// verbatim. A deployment needing cross-process refresh continuity therefore registers its own
-/// <c>IRefreshTokenStore</c> and declares <c>RefreshTokenStore:Provider=External</c>. The failure worth
-/// preventing is the half-done version of that: the declaration made, the registration forgotten, and the
-/// deployment scaled out in the belief that refresh state is shared.
-/// </para>
+/// accepts, what it refuses, and that a store registered after <c>AddInfrastructure</c> replaces the
+/// shipped one. What no unit fact can prove is that anything CALLS it.
 /// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
@@ -53,13 +39,10 @@ public sealed class RefreshTokenStoreTopologyContractTests
     public RefreshTokenStoreTopologyContractTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// Declaring the shipped store explicitly starts and serves, which is the control for the refusals below.
+    /// Declaring the shipped store explicitly starts and serves, which is the control for the refusals
+    /// below.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Without it, every refusal below could be produced by the harness rather than by the check, and the
-    /// suite would pass while asserting nothing about the setting.
-    /// </remarks>
     [Fact]
     public async Task DeclaringTheShippedStoreStartsAndServes()
     {
@@ -80,11 +63,6 @@ public sealed class RefreshTokenStoreTopologyContractTests
     /// <summary>
     /// Declaring a deployment-supplied store without registering one stops the host before it serves.
     /// </summary>
-    /// <remarks>
-    /// The whole point of the mechanism, exercised end to end: the declaration is made in configuration, no
-    /// replacement is registered, and the process refuses to come up rather than quietly running the store it
-    /// was told it was not running.
-    /// </remarks>
     [Fact]
     public void DeclaringAnExternalStoreWithoutRegisteringOneStopsTheHost()
     {
@@ -103,11 +81,6 @@ public sealed class RefreshTokenStoreTopologyContractTests
     }
 
     /// <summary>An unrecognised provider name stops the host before it serves.</summary>
-    /// <remarks>
-    /// A typo is the likeliest way a deployment ends up believing it configured a shared store. The name is
-    /// one this build could never resolve, so admitting it would mean silently running the process-local store
-    /// under a configuration that says otherwise.
-    /// </remarks>
     [Fact]
     public void AnUnrecognisedProviderNameStopsTheHost()
     {
@@ -120,12 +93,13 @@ public sealed class RefreshTokenStoreTopologyContractTests
     }
 
     /// <summary>
-    /// A capacity below the deployment floor stops the host, rather than being discovered by a signed-out user.
+    /// A capacity below the deployment floor stops the host, rather than being discovered by a signed-out
+    /// user.
     /// </summary>
     /// <remarks>
-    /// The floor is host policy: below roughly a thousand tracked generations a single active caller can evict
-    /// its own refresh family, so a small number configured with good intentions would produce apparently
-    /// random sign-outs. It is refused while the host starts, where an operator is looking.
+    /// The floor is host policy: below roughly a thousand tracked generations a single active caller can
+    /// evict its own refresh family, so a small number configured with good intentions would produce
+    /// apparently random sign-outs. It is refused while the host starts, where an operator is looking.
     /// </remarks>
     [Fact]
     public void ACapacityBelowTheDeploymentFloorStopsTheHost()
@@ -142,19 +116,6 @@ public sealed class RefreshTokenStoreTopologyContractTests
     /// Builds a host inside the current environment scope and returns the whole failure it produced.
     /// </summary>
     /// <returns>The exception chain rendered as one string.</returns>
-    /// <remarks>
-    /// <para>
-    /// The chain is flattened rather than one exception type being asserted, deliberately. A refusal raised
-    /// while the test host's entry point is running reaches this caller through the hosting infrastructure,
-    /// which is free to wrap it, and the property under test is that the deployment does not start and is told
-    /// why - not which wrapper carried the message. Asserting the wrapper would make these facts fragile
-    /// against a runtime patch while proving nothing extra.
-    /// </para>
-    /// <para>
-    /// The client is requested rather than only the factory being constructed, because a
-    /// <c>WebApplicationFactory</c> composes nothing until its server is needed.
-    /// </para>
-    /// </remarks>
     private static string FailureOfStartingAHost()
     {
         Exception? failure = Record.Exception(() =>
@@ -184,9 +145,9 @@ public sealed class RefreshTokenStoreTopologyContractTests
     /// <param name="settings">The variables this fact sets.</param>
     /// <returns>The complete environment a host must be built under.</returns>
     /// <remarks>
-    /// The shared configuration is carried wholesale because the refusal under test must be the ONLY reason the
-    /// host declines to start: without the run's connection string and signing secret, every fact here would
-    /// pass on a different failure entirely.
+    /// The shared configuration is carried wholesale because the refusal under test must be the ONLY reason
+    /// the host declines to start: without the run's connection string and signing secret, every fact here
+    /// would pass on a different failure entirely.
     /// </remarks>
     private IReadOnlyDictionary<string, string?> Overrides(
         params (string Key, string Value)[] settings)
@@ -203,13 +164,9 @@ public sealed class RefreshTokenStoreTopologyContractTests
     }
 
     /// <summary>
-    /// A host of this suite's own, so the shared fixture's host is never rebuilt under a broken configuration.
+    /// A host of this suite's own, so the shared fixture's host is never rebuilt under a broken
+    /// configuration.
     /// </summary>
-    /// <remarks>
-    /// It carries no customisation beyond the environment name: the point of these facts is that the
-    /// PRODUCTION composition root refuses, so anything this host changed about that composition would weaken
-    /// the evidence.
-    /// </remarks>
     private sealed class TopologyHost : WebApplicationFactory<Program>
     {
         /// <inheritdoc />

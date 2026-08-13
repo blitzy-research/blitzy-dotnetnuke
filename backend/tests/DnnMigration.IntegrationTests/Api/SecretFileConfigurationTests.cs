@@ -12,17 +12,16 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: <c>docker/.env.example</c> told operators that Docker Swarm, Kubernetes or a managed secret
-/// store could deliver the connection string and the signing key as mounted files "without any code change",
-/// and no key-per-file configuration source was registered anywhere - so a <c>/run/secrets</c> mount was
-/// simply not read. The template described a capability the host did not have. The composition root now
-/// registers that source, and these facts pin the three properties a deployment relies on.
+/// <c>docker/.env.example</c> told operators that Docker Swarm, Kubernetes or a managed secret store could
+/// deliver the connection string and the signing key as mounted files "without any code change", and no
+/// key-per-file configuration source was registered anywhere - so a <c>/run/secrets</c> mount was simply
+/// not read. The template described a capability the host did not have.
 /// </para>
 /// <para>
-/// The provider is exercised directly rather than through the container's own start-up, because the property
-/// under test belongs to configuration composition: which key a file name becomes, and which source wins when
-/// two supply the same key. The composition root's registration - the directory it names, its optionality and
-/// its position last in the chain - is asserted in the same shape it is written there.
+/// The provider is exercised directly rather than through the container's own start-up, because the
+/// property under test belongs to configuration composition: which key a file name becomes, and which
+/// source wins when two supply the same key. The composition root's registration - the directory it names,
+/// its optionality and its position last in the chain - is asserted in the same shape it is written there.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -39,9 +38,9 @@ public sealed class SecretFileConfigurationTests : IDisposable
     /// <param name="fileName">The secret's file name, as an orchestrator mounts it.</param>
     /// <param name="expectedKey">The configuration key the application reads.</param>
     /// <remarks>
-    /// The double underscore is the whole point: it is the section separator in an environment variable name,
-    /// and the provider translates it identically, which is what makes "the same value, delivered differently"
-    /// true. The two keys exercised are exactly the two this API requires from a secret store.
+    /// The double underscore is the whole point: it is the section separator in an environment variable
+    /// name, and the provider translates it identically, which is what makes "the same value, delivered
+    /// differently" true. The two keys exercised are exactly the two this API requires from a secret store.
     /// </remarks>
     [Theory]
     [InlineData("Jwt__Secret", "Jwt:Secret")]
@@ -63,12 +62,6 @@ public sealed class SecretFileConfigurationTests : IDisposable
     }
 
     /// <summary>A trailing newline in the file does not become part of the secret.</summary>
-    /// <remarks>
-    /// Every editor, and every `echo` in an entrypoint, appends one. A signing key with a stray newline
-    /// would still be at least 32 bytes and would still pass validation, and would then produce tokens no
-    /// other instance could verify - a failure with no message attached to it. The provider trims the line
-    /// ending, and this pins that it does.
-    /// </remarks>
     [Fact]
     public void ATrailingNewlineIsNotPartOfTheSecret()
     {
@@ -87,8 +80,7 @@ public sealed class SecretFileConfigurationTests : IDisposable
     /// The direction is the deliberate one. A deployment mounts a secret precisely to stop the value
     /// appearing in an environment block that <c>docker inspect</c> can read, so an inherited variable of
     /// the same name must not silently defeat it - and the migration off environment delivery is then one
-    /// step (mount the file) rather than a cutover. The order asserted here is the order the composition
-    /// root writes: the key-per-file source is added AFTER the builder's own sources.
+    /// step (mount the file) rather than a cutover.
     /// </remarks>
     [Fact]
     public void AMountedSecretOutranksAnEnvironmentVariable()
@@ -131,11 +123,6 @@ public sealed class SecretFileConfigurationTests : IDisposable
     }
 
     /// <summary>The published contract for the mount point is the documented one.</summary>
-    /// <remarks>
-    /// Asserted because three artefacts quote these two strings - the composition root, the deployment
-    /// template and the README - and a rename that reached only one of them would leave a documented mount
-    /// point that nothing reads, which is the exact class of defect this work closed.
-    /// </remarks>
     [Fact]
     public void TheMountPointContractIsPublishedAsDocumented()
     {

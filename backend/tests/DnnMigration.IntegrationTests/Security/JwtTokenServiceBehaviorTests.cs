@@ -16,9 +16,7 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Security;
 
-/// <summary>
-/// Exercises the concrete minimal JWT implementation over a substituted durable refresh store.
-/// </summary>
+/// <summary>Exercises the concrete minimal JWT implementation over a substituted durable refresh store.</summary>
 [Trait("Category", "Integration")]
 public sealed class JwtTokenServiceBehaviorTests
 {
@@ -554,19 +552,11 @@ public sealed class JwtTokenServiceBehaviorTests
 
     /// <summary>Only a PROVEN retirement is reported as a completed revocation.</summary>
     /// <param name="outcome">The outcome the store reported.</param>
-    /// <remarks>
-    /// SEC-F2. These two outcomes are the only ones that prove the family is retired: the store either
-    /// retired it now or had retired it already. Both are idempotent successes, which is what lets a caller
-    /// retry a revocation safely.
-    /// </remarks>
     [Theory]
     [InlineData(RefreshTokenOutcome.Succeeded)]
     [InlineData(RefreshTokenOutcome.AlreadyRevoked)]
     public async Task Revoke_ProvenRetirementIsIdempotentSuccess(RefreshTokenOutcome outcome)
     {
-        // SEC-F2. Configured explicitly here rather than in the harness: the outcome translation reads the
-        // store's authority ONLY when the store reports an unmatched family, so a harness-wide setup would
-        // make every other test's VerifyAll fail on a member it never exercises.
         Harness harness = Harness.Ready();
         harness.Store
             .SetupGet(store => store.IsAuthoritativeAcrossReplicas)
@@ -584,13 +574,6 @@ public sealed class JwtTokenServiceBehaviorTests
 
     /// <summary>An unproven retirement is reported as a failure, not as a completed sign-out.</summary>
     /// <param name="outcome">The outcome the store reported.</param>
-    /// <remarks>
-    /// SEC-F2. Each of these used to be reported as a successful sign-out on the reading that a token the
-    /// store cannot honour is a token that cannot mint a successor. That reading holds only for a store
-    /// that sees every replica's families: a process-local store handed a session established elsewhere
-    /// answers <c>Unknown</c>, and reporting success there left the session live on the other instance
-    /// while the client discarded its only credential.
-    /// </remarks>
     [Theory]
     [InlineData(RefreshTokenOutcome.Unknown)]
     [InlineData(RefreshTokenOutcome.Expired)]
@@ -599,9 +582,6 @@ public sealed class JwtTokenServiceBehaviorTests
     [InlineData(RefreshTokenOutcome.ConcurrentUse)]
     public async Task Revoke_UnprovenRetirementIsReported(RefreshTokenOutcome outcome)
     {
-        // SEC-F2. Configured explicitly here rather than in the harness: the outcome translation reads the
-        // store's authority ONLY when the store reports an unmatched family, so a harness-wide setup would
-        // make every other test's VerifyAll fail on a member it never exercises.
         Harness harness = Harness.Ready();
         harness.Store
             .SetupGet(store => store.IsAuthoritativeAcrossReplicas)
@@ -618,11 +598,6 @@ public sealed class JwtTokenServiceBehaviorTests
     }
 
     /// <summary>An AUTHORITATIVE store that holds nothing has proved there is nothing left to retire.</summary>
-    /// <remarks>
-    /// SEC-F2. This is the one case in which "no such family" really is a completed sign-out, and it is why
-    /// the store publishes whether its state is shared: the deployment that configures a shared store gets
-    /// the permissive - and now correct - reading, and the one that does not, does not.
-    /// </remarks>
     [Fact]
     public async Task Revoke_UnknownFromAuthoritativeStoreIsSuccess()
     {
@@ -702,9 +677,6 @@ public sealed class JwtTokenServiceBehaviorTests
     [InlineData(RefreshTokenOutcome.AlreadyRevoked)]
     public async Task RevokeAll_ProvenRetirementIsIdempotentSuccess(RefreshTokenOutcome outcome)
     {
-        // SEC-F2. Configured explicitly here rather than in the harness: the outcome translation reads the
-        // store's authority ONLY when the store reports an unmatched family, so a harness-wide setup would
-        // make every other test's VerifyAll fail on a member it never exercises.
         Harness harness = Harness.Ready();
         harness.Store
             .SetupGet(store => store.IsAuthoritativeAcrossReplicas)
@@ -723,9 +695,9 @@ public sealed class JwtTokenServiceBehaviorTests
     /// <summary>An unproven account-wide retirement is reported rather than absorbed.</summary>
     /// <param name="outcome">The outcome the store reported.</param>
     /// <remarks>
-    /// SEC-F2. The callers that cascade an account or tenant removal distinguish this from an unreachable
-    /// store themselves - "nothing to end here" does not block a removal, an unanswerable store does - and
-    /// they can only do that because this contract stops collapsing the two into one success.
+    /// The callers that cascade an account or tenant removal distinguish this from an unreachable store
+    /// themselves - "nothing to end here" does not block a removal, an unanswerable store does - and they
+    /// can only do that because this contract stops collapsing the two into one success.
     /// </remarks>
     [Theory]
     [InlineData(RefreshTokenOutcome.Unknown)]
@@ -735,9 +707,6 @@ public sealed class JwtTokenServiceBehaviorTests
     [InlineData(RefreshTokenOutcome.ConcurrentUse)]
     public async Task RevokeAll_UnprovenRetirementIsReported(RefreshTokenOutcome outcome)
     {
-        // SEC-F2. Configured explicitly here rather than in the harness: the outcome translation reads the
-        // store's authority ONLY when the store reports an unmatched family, so a harness-wide setup would
-        // make every other test's VerifyAll fail on a member it never exercises.
         Harness harness = Harness.Ready();
         harness.Store
             .SetupGet(store => store.IsAuthoritativeAcrossReplicas)

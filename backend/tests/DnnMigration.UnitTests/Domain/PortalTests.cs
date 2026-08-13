@@ -14,55 +14,21 @@ namespace DnnMigration.UnitTests.Domain;
 /// envelope every portal listing is returned in.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The point of this suite is the sentinel boundary, not the property bag. <c>dbo.Portals.PortalID</c>
-/// is declared <c>IDENTITY(-1, 1)</c>, so the first tenant of an installation is numbered -1 and the
-/// second is numbered 0 - and -1 is simultaneously the value the legacy sentinel module used to mean
-/// "no value at all". Every assertion below that involves -1 or 0 exists to pin the decision that the
-/// domain treats both as ordinary identifiers, because a future refactor that "helpfully" reads -1 as
-/// absence would silently make the first tenant of every installation unaddressable.
-/// </para>
-/// <para>
-/// The sentinel matrix this file pins, value by value:
-/// <list type="bullet">
-/// <item><description>
-/// <c>-1</c> - a real <c>Portals.PortalID</c> and simultaneously the legacy <c>Null.NullInteger</c>.
-/// Accepted everywhere as an identifier; never absence.
-/// </description></item>
-/// <item><description>
-/// <c>0</c> - a real <c>Portals.PortalID</c>, carried by the portal a fresh installation ships with,
-/// and also <c>default(int)</c>. Never absence.
-/// </description></item>
-/// <item><description>
-/// <c>""</c> - the legacy <c>Null.NullString</c>. A stored empty string stays an empty string; nothing
-/// converts it to null.
-/// </description></item>
-/// <item><description>
-/// <c>DateTime.MinValue</c> - the legacy <c>Null.NullDate</c>. Now an ordinary date, distinct from the
-/// null that expresses absence.
-/// </description></item>
-/// <item><description>
-/// <c>Guid.Empty</c> - the legacy <c>Null.NullGuid</c>. The one sentinel that <em>is</em> rejected,
-/// and only because the backing column cannot produce it.
-/// </description></item>
-/// </list>
-/// </para>
-/// <para>
-/// Absence is expressed by a nullable type in every case - <c>PortalId?</c>, <c>DateTime?</c>,
-/// <c>EmailAddress?</c> - and never by a reserved value. That is Rule T7: the sentinels survive at the
-/// DTO and API boundary, where a legacy consumer can observe them, and nowhere else.
-/// </para>
-/// <para>
-/// <see cref="PagedResult{T}"/> is covered here rather than in a suite of its own because portal
-/// listing is the canonical paged read of the whole application, and because the type is a
-/// <c>Domain.Common</c> primitive rather than an Application concern.
-/// </para>
+/// The sentinel matrix this file pins, value by value: <list type="bullet"> <item><description> <c>-1</c> -
+/// a real <c>Portals.PortalID</c> and simultaneously the legacy <c>Null.NullInteger</c>. Accepted
+/// everywhere as an identifier; never absence. </description></item> <item><description> <c>0</c> - a real
+/// <c>Portals.PortalID</c>, carried by the portal a fresh installation ships with, and also
+/// <c>default(int)</c>. Never absence. </description></item> <item><description> <c>""</c> - the legacy
+/// <c>Null.NullString</c>. A stored empty string stays an empty string; nothing converts it to null.
+/// </description></item> <item><description> <c>DateTime.MinValue</c> - the legacy <c>Null.NullDate</c>.
+/// Now an ordinary date, distinct from the null that expresses absence. </description></item>
+/// <item><description> <c>Guid.Empty</c> - the legacy <c>Null.NullGuid</c>. The one sentinel that
+/// <em>is</em> rejected, and only because the backing column cannot produce it. </description></item>
+/// </list>.
 /// </remarks>
 public class PortalTests
 {
-    /// <summary>
-    /// The identity seed of <c>dbo.Portals</c>, which is also the legacy absent-integer marker.
-    /// </summary>
+    /// <summary>The identity seed of <c>dbo.Portals</c>, which is also the legacy absent-integer marker.</summary>
     /// <remarks>
     /// Measured at <c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77</c>,
     /// <c>[PortalID] [int] IDENTITY (-1, 1) NOT NULL</c>.
@@ -70,8 +36,8 @@ public class PortalTests
     private const int FirstIdentitySeed = -1;
 
     /// <summary>
-    /// The second identifier the portal table allocates, and the key of the portal a fresh
-    /// installation ships with.
+    /// The second identifier the portal table allocates, and the key of the portal a fresh installation
+    /// ships with.
     /// </summary>
     /// <remarks>
     /// The shipped row is identity-inserted at <c>01.00.00.SqlDataProvider:L7125</c>, so a guard of the
@@ -80,23 +46,13 @@ public class PortalTests
     /// </remarks>
     private const int SecondIdentityValue = 0;
 
-    /// <summary>
-    /// The handle of the portal a fresh installation ships with, taken verbatim from the seed row.
-    /// </summary>
-    /// <remarks>
-    /// <c>01.00.00.SqlDataProvider:L7125</c> supplies this literal for the <c>_default</c> portal, so it
-    /// is real production data rather than a value invented for a test.
-    /// </remarks>
+    /// <summary>The handle of the portal a fresh installation ships with, taken verbatim from the seed row.</summary>
     private const string ShippedDefaultPortalHandle = "57ad7180-c5e7-49f5-b282-c6475cdb7ee7";
 
     /// <summary>
-    /// Names that must never appear on an identity value object, because each would reintroduce a
-    /// reserved "no value" concept that the schema makes unsafe.
+    /// Names that must never appear on an identity value object, because each would reintroduce a reserved
+    /// "no value" concept that the schema makes unsafe.
     /// </summary>
-    /// <remarks>
-    /// Asserted by reflection rather than by review, so that adding one of them to
-    /// <see cref="PortalId"/> or <see cref="PortalGuid"/> fails the build instead of passing unnoticed.
-    /// </remarks>
     private static readonly string[] ForbiddenAbsenceMemberNames =
     [
         "None",
@@ -117,9 +73,7 @@ public class PortalTests
     // Portal aggregate - identity and equality
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The aggregate reports its primary key as its identity.
-    /// </summary>
+    /// <summary>The aggregate reports its primary key as its identity.</summary>
     [Fact]
     public void Identity_IsThePrimaryKey()
     {
@@ -128,9 +82,7 @@ public class PortalTests
         portal.Identity.Should().Be(42);
     }
 
-    /// <summary>
-    /// The negative identity seed is an identifier rather than an absence marker.
-    /// </summary>
+    /// <summary>The negative identity seed is an identifier rather than an absence marker.</summary>
     /// <param name="portalId">The identifier under test.</param>
     [Theory]
     [InlineData(FirstIdentitySeed)]
@@ -141,11 +93,7 @@ public class PortalTests
         Portal sameRow = NewPortal(portalId);
         Portal otherRow = NewPortal(portalId + 1);
 
-        // MIGRATION: identity-based comparison applies only once the persistence layer has declared
-        // the identity real. That declaration is what this test stands in for: every candidate
-        // "not saved yet" marker in this schema is a genuine key - the portal table seeds at -1 and
-        // the role, page and module tables at 0 - so an undeclared instance is compared by object
-        // reference instead, and two separately constructed instances are two different entities.
+        // Identity-based comparison applies only once the persistence layer has declared the identity real.
         portal.MarkIdentityPersisted();
         sameRow.MarkIdentityPersisted();
         otherRow.MarkIdentityPersisted();
@@ -155,18 +103,16 @@ public class PortalTests
         portal.Should().NotBe(otherRow);
     }
 
-    /// <summary>
-    /// Two instances carrying the same identity are the same entity.
-    /// </summary>
+    /// <summary>Two instances carrying the same identity are the same entity.</summary>
     [Fact]
     public void Equality_IsDecidedByIdentityAndNotByReference()
     {
         Portal left = NewPortal(7, "One");
         Portal right = NewPortal(7, "Another Name Entirely");
 
-        // MIGRATION: identity-based comparison applies only once the persistence layer has declared
-        // the identity real. Both operands need the declaration, not just one: a one-sided declaration
-        // leaves the pair unequal, which the dedicated test below pins.
+        // Identity-based comparison applies only once the persistence layer has declared the identity real.
+        // Both operands need the declaration, not just one: a one-sided declaration leaves the pair
+        // unequal, which the dedicated test below pins.
         left.MarkIdentityPersisted();
         right.MarkIdentityPersisted();
 
@@ -194,8 +140,8 @@ public class PortalTests
         role.Equals(portal).Should().BeFalse();
 
         // Hash codes are asserted only where the contract guarantees an answer: equal values must hash
-        // alike. Two unequal values are permitted to collide, so asserting they differ would be a test
-        // that is allowed to fail.
+        // alike. Two unequal values are permitted to collide, so asserting they differ would be a test that
+        // is allowed to fail.
         portal.GetHashCode().Should().Be(portal.GetHashCode(), "hashing is stable for one instance");
         role.GetHashCode().Should().Be(role.GetHashCode());
     }
@@ -204,9 +150,9 @@ public class PortalTests
     /// A portal and one of its aliases never compare equal, even when both keys are the same number.
     /// </summary>
     /// <remarks>
-    /// The exact-runtime-type comparison is what makes this hold. Both types close
-    /// <c>Entity&lt;int&gt;</c> over the same identity type, so without the type check an alias keyed 1
-    /// would equal a portal keyed 1 - and the two tables genuinely do share small key values.
+    /// The exact-runtime-type comparison is what makes this hold. Both types close <c>Entity&lt;int&gt;</c>
+    /// over the same identity type, so without the type check an alias keyed 1 would equal a portal keyed 1
+    /// - and the two tables genuinely do share small key values.
     /// </remarks>
     [Fact]
     public void Equality_DoesNotHoldBetweenAPortalAndItsAlias()
@@ -222,9 +168,7 @@ public class PortalTests
         alias.Equals(portal).Should().BeFalse();
     }
 
-    /// <summary>
-    /// The equality operators answer for a null operand without dereferencing it.
-    /// </summary>
+    /// <summary>The equality operators answer for a null operand without dereferencing it.</summary>
     [Fact]
     public void Equality_HandlesNullOperandsOnBothSides()
     {
@@ -237,14 +181,12 @@ public class PortalTests
         (absent == null).Should().BeTrue();
     }
 
-    /// <summary>
-    /// The untyped equality override refuses a null argument and anything that is not an entity.
-    /// </summary>
+    /// <summary>The untyped equality override refuses a null argument and anything that is not an entity.</summary>
     /// <remarks>
-    /// The null comparison is asserted last on purpose. Under nullable reference types the compiler
-    /// learns from an <c>Equals(null)</c> call - if the call could return true the receiver could be
-    /// null - so any dereference of <c>portal</c> placed after it is a compile error rather than a
-    /// warning, given that this solution treats warnings as errors.
+    /// The null comparison is asserted last on purpose. Under nullable reference types the compiler learns
+    /// from an <c>Equals(null)</c> call - if the call could return true the receiver could be null - so any
+    /// dereference of <c>portal</c> placed after it is a compile error rather than a warning, given that
+    /// this solution treats warnings as errors.
     /// </remarks>
     [Fact]
     public void Equality_UntypedOverrideRefusesNullAndForeignObjects()
@@ -261,17 +203,15 @@ public class PortalTests
     }
 
     /// <summary>
-    /// Until an identity is declared real, two separately constructed instances are two different
-    /// entities even when their keys agree - and the hash code an instance has already answered with
-    /// never changes afterwards.
+    /// Until an identity is declared real, two separately constructed instances are two different entities
+    /// even when their keys agree - and the hash code an instance has already answered with never changes
+    /// afterwards.
     /// </summary>
     /// <remarks>
-    /// These are the two halves of the arrangement that keeps this schema's seed values from being read
-    /// as absences. The portal table is declared <c>IDENTITY(-1, 1)</c>, so -1 is simultaneously a real
-    /// portal key and the legacy absent-integer marker; comparing raw keys immediately would make every
-    /// freshly constructed portal collide with the genuine portal identified by -1. The latch matters for
-    /// the opposite direction: an entity that has already been hashed into a set must not change its
-    /// equality class when a key is assigned later, or the set loses the entry.
+    /// These are the two halves of the arrangement that keeps this schema's seed values from being read as
+    /// absences. The portal table is declared <c>IDENTITY(-1, 1)</c>, so -1 is simultaneously a real portal
+    /// key and the legacy absent-integer marker; comparing raw keys immediately would make every freshly
+    /// constructed portal collide with the genuine portal identified by -1.
     /// </remarks>
     [Fact]
     public void Equality_IsReferenceBasedUntilTheIdentityIsDeclaredPersisted()
@@ -306,10 +246,10 @@ public class PortalTests
     /// value.
     /// </summary>
     /// <remarks>
-    /// This is the positive statement of why no <c>IsTransient</c>, <c>IsNew</c> or
-    /// <c>Identity == default</c> test exists anywhere in the model. Both -1 and 0 are real keys in this
-    /// schema, so there is no value left over to mean "not written yet"; the flag carries that fact
-    /// instead, and it is asserted here for both collision values.
+    /// This is the positive statement of why no <c>IsTransient</c>, <c>IsNew</c> or <c>Identity ==
+    /// default</c> test exists anywhere in the model. Both -1 and 0 are real keys in this schema, so there
+    /// is no value left over to mean "not written yet"; the flag carries that fact instead, and it is
+    /// asserted here for both collision values.
     /// </remarks>
     /// <param name="portalId">The identifier under test.</param>
     [Theory]
@@ -334,9 +274,7 @@ public class PortalTests
     // Portal aggregate - shape and the sentinel boundary
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// A newly constructed aggregate exposes empty collections rather than null ones.
-    /// </summary>
+    /// <summary>A newly constructed aggregate exposes empty collections rather than null ones.</summary>
     [Fact]
     public void NavigationCollections_AreInitialisedRatherThanNull()
     {
@@ -351,14 +289,8 @@ public class PortalTests
     }
 
     /// <summary>
-    /// An empty navigation collection means the portal has no such rows, never that they were not
-    /// loaded.
+    /// An empty navigation collection means the portal has no such rows, never that they were not loaded.
     /// </summary>
-    /// <remarks>
-    /// Which end a query populated is the repository's decision, so load state is deliberately not
-    /// discoverable from the entity. This test pins the only guarantee the entity does make: the
-    /// collection is a real, mutable collection that reports what it holds.
-    /// </remarks>
     [Fact]
     public void NavigationCollections_ReportWhatTheyHold()
     {
@@ -373,9 +305,7 @@ public class PortalTests
         portal.Modules.Should().BeEmpty("adding an alias says nothing about any other relationship");
     }
 
-    /// <summary>
-    /// The discriminator columns are modelled as named enumerations rather than bare integers.
-    /// </summary>
+    /// <summary>The discriminator columns are modelled as named enumerations rather than bare integers.</summary>
     /// <remarks>
     /// The ordinals are persisted data that the legacy administration screens bound as a list index, so
     /// they are asserted individually. Renumbering or reordering a member would silently repoint every
@@ -395,15 +325,9 @@ public class PortalTests
     }
 
     /// <summary>
-    /// The discriminator values the shipped portal row carries resolve to named members, and their
-    /// ordinals survive the round trip.
+    /// The discriminator values the shipped portal row carries resolve to named members, and their ordinals
+    /// survive the round trip.
     /// </summary>
-    /// <remarks>
-    /// <c>01.00.00.SqlDataProvider:L7125</c> stores <c>UserRegistration = 2</c> and
-    /// <c>BannerAdvertising = 0</c>, so both numbers are live production data rather than defaults that
-    /// happen to be unused. Zero being a named member matters especially: it is the value an unset
-    /// enumeration field would also hold, so the enumeration has to mean something at zero.
-    /// </remarks>
     [Fact]
     public void Discriminators_MapTheShippedPortalRowValues()
     {
@@ -422,18 +346,10 @@ public class PortalTests
     /// Absence is a null, and every legacy sentinel that reaches a property is stored exactly as given.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the literal discharge of Rule T7. The legacy sentinel module represented an absent string
-    /// as the empty string and an absent integer as -1, and the shipped portal row proves both were
-    /// stored rather than merely computed: <c>01.00.00.SqlDataProvider:L7125</c> writes
-    /// <c>PayPalId = ''</c> and <c>HostFee = ''</c>. So nothing in the domain may translate
-    /// <c>""</c> into null, translate -1 into null, or translate a null back into either.
-    /// </para>
-    /// <para>
-    /// The properties are plain auto-properties, so this test is not looking for cleverness - it is
-    /// pinning the absence of it, which is exactly the kind of change a later refactor is tempted to
-    /// make.
-    /// </para>
+    /// This is the literal discharge of Rule T7. The legacy sentinel module represented an absent string as
+    /// the empty string and an absent integer as -1, and the shipped portal row proves both were stored
+    /// rather than merely computed: <c>01.00.00.SqlDataProvider:L7125</c> writes <c>PayPalId = ''</c> and
+    /// <c>HostFee = ''</c>.
     /// </remarks>
     [Fact]
     public void SentinelBoundary_AbsenceIsNullAndStoredValuesAreNotReinterpreted()
@@ -449,10 +365,8 @@ public class PortalTests
         portal.LogoFile = null;
         portal.LogoFile.Should().BeNull();
 
-        // MIGRATION: the legacy AdministratorId carried -1 to mean "nobody assigned". The column is
-        // nullable, so absence is now null - but -1 remains a storable integer and is never rewritten.
-        // A user identifier of -1 is not a portal identifier and carries no host-level meaning here;
-        // the point is only that the property does not edit what it is given.
+        // The legacy AdministratorId carried -1 to mean "nobody assigned". The column is nullable, so
+        // absence is now null - but -1 remains a storable integer and is never rewritten.
         portal.AdministratorId = null;
         portal.AdministratorId.Should().BeNull("absence is the null, not the -1");
 
@@ -469,23 +383,8 @@ public class PortalTests
     }
 
     /// <summary>
-    /// A portal that never expires says so with a null, and the legacy floor date is now an ordinary
-    /// date.
+    /// A portal that never expires says so with a null, and the legacy floor date is now an ordinary date.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy property was a non-nullable date, so a SQL null arrived as
-    /// <c>DateTime.MinValue</c> - the <c>Null.NullDate</c> sentinel - and "never expires" was
-    /// indistinguishable from "expired in year one". The shipped portal row stores
-    /// <c>ExpiryDate = NULL</c> at <c>01.00.00.SqlDataProvider:L7125</c>, so the ambiguous case is the
-    /// common one. Absence is now the null and the floor date is just a date.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy null test compared only the date part, so any time on the floor date also
-    /// read as absent. Nothing here truncates a time component, which is asserted below because a
-    /// well-meaning "normalisation" would quietly restore the old behaviour.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void SentinelBoundary_ExpiryDateExpressesNeverExpiresAsNull()
     {
@@ -510,16 +409,6 @@ public class PortalTests
     /// The host fee is an exact decimal, so an amount round trips without the drift a binary float
     /// introduces.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy property was a <c>Single</c>. The column disagreed with it and the column
-    /// is the authority: it began as <c>nvarchar(10) NULL</c>
-    /// (<c>01.00.00.SqlDataProvider:L89</c>, which is why the shipped row stores the empty string) and
-    /// was rebuilt as <c>money NOT NULL</c> during a temporary-table swap at
-    /// <c>01.00.05.SqlDataProvider:L1377</c>, the data carried across by
-    /// <c>CONVERT(money, HostFee)</c>. That rebuild is invisible to a search for <c>ALTER TABLE</c>,
-    /// which is why the type was verified from the swap rather than from the alterations. Recorded in
-    /// MIGRATION_NOTES.md under the exact-decimal correction.
-    /// </remarks>
     [Fact]
     public void SentinelBoundary_HostFeeIsAnExactDecimal()
     {
@@ -545,23 +434,15 @@ public class PortalTests
     }
 
     /// <summary>
-    /// The portal a fresh installation ships with is representable in full, exactly as the seed row
-    /// stores it.
+    /// The portal a fresh installation ships with is representable in full, exactly as the seed row stores
+    /// it.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// Every value below is copied verbatim from the identity-insert at
-    /// <c>01.00.00.SqlDataProvider:L7123-L7128</c>, which is the strongest single test in this file:
-    /// it is real shipped data rather than a constructed example, and it exercises the two collision
-    /// values together - the row is keyed 0 and its administrator role is keyed 0 - alongside a null
-    /// expiry, an empty-string fee and a concrete handle.
-    /// </para>
-    /// <para>
-    /// The row's <c>PortalAlias</c> and <c>UploadDirectory</c> columns are deliberately not asserted:
-    /// neither survives to the terminal schema, so neither is a member of this entity. The fee is
-    /// asserted as zero rather than as an empty string because the column was rebuilt to
-    /// <c>money</c>, and the conversion of that stored empty string is what produces zero.
-    /// </para>
+    /// <c>01.00.00.SqlDataProvider:L7123-L7128</c>, which is the strongest single test in this file: it is
+    /// real shipped data rather than a constructed example, and it exercises the two collision values
+    /// together - the row is keyed 0 and its administrator role is keyed 0 - alongside a null expiry, an
+    /// empty-string fee and a concrete handle.
     /// </remarks>
     [Fact]
     public void ShippedDefaultPortal_IsRepresentableExactlyAsSeeded()
@@ -609,32 +490,7 @@ public class PortalTests
         new PortalId(shipped.PortalId).Value.Should().Be(0);
     }
 
-    /// <summary>
-    /// The members the legacy class computed rather than stored are absent from the entity.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The legacy <c>PortalInfo</c> was filled from a view, so five of its 39 properties came from joins
-    /// and subqueries - <c>Email</c>, <c>SuperTabId</c>, <c>AdministratorRoleName</c>,
-    /// <c>RegisteredRoleName</c> and <c>Version</c> - and three more were not data at all.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>Users</c> and <c>Pages</c> were lazy getters that opened a database connection on
-    /// read, each guarded by <c>&lt; 0</c> so that any negative value triggered a reload. A property
-    /// that performs I/O violates both the rule that all data access goes through a repository
-    /// interface and the rule that every I/O-bound member is asynchronous, so neither can exist here;
-    /// both are Application-layer projections instead.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>HomeDirectoryMapPath</c> resolved a physical path through the file-system
-    /// subsystem and the static globals module, both of which are out of scope. Path resolution belongs
-    /// to the hosting environment abstraction, so the entity carries the stored relative directory only.
-    /// </para>
-    /// <para>
-    /// Asserted by reflection so that reinstating any of them - the natural instinct when porting the
-    /// legacy class property by property - fails the build.
-    /// </para>
-    /// </remarks>
+    /// <summary>The members the legacy class computed rather than stored are absent from the entity.</summary>
     /// <param name="memberName">The legacy member that must not exist on the entity.</param>
     [Theory]
     [InlineData("Email")]
@@ -652,24 +508,12 @@ public class PortalTests
     }
 
     /// <summary>
-    /// The legacy XML serialisation attributes are dropped rather than translated, and no JSON
-    /// replacement is substituted.
+    /// The legacy XML serialisation attributes are dropped rather than translated, and no JSON replacement
+    /// is substituted.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy class was <c>&lt;XmlRoot("settings")&gt;</c> with an
-    /// <c>&lt;XmlElement&gt;</c> on 37 of its 39 properties and <c>&lt;XmlIgnore&gt;</c> on the other
-    /// two, because portal templates were serialised straight off the entity. The wire contract now
-    /// belongs to the Application DTOs, so the domain expresses no serialisation opinion at all - not
-    /// even a JSON one. The Domain project declares no package reference, which is what makes that a
-    /// compile-time fact rather than a convention.
-    /// </remarks>
     [Fact]
     public void Portal_CarriesNoSerialisationOrValidationAttributes()
     {
-        // Compiler-emitted attributes are excluded rather than asserted away. Enabling nullable
-        // reference types makes the compiler stamp NullableAttribute and NullableContextAttribute onto
-        // the type and onto every member with a reference-typed signature, so an unfiltered check would
-        // fail for a reason that has nothing to do with the legacy attributes this test is about.
         AuthoredAttributeNames(typeof(Portal).GetCustomAttributesData()).Should().BeEmpty(
             "the legacy XmlRoot attribute is dropped, not replaced");
 
@@ -685,8 +529,8 @@ public class PortalTests
     /// </summary>
     /// <remarks>
     /// <c>AuditableEntity&lt;TId&gt;</c> supplies a created and a last-updated timestamp for the tables
-    /// that genuinely carry them. <c>dbo.Portals</c> does not, so deriving from it would invent two
-    /// columns - which is why the base type is asserted rather than assumed.
+    /// that genuinely carry them. <c>dbo.Portals</c> does not, so deriving from it would invent two columns
+    /// - which is why the base type is asserted rather than assumed.
     /// </remarks>
     [Fact]
     public void Portal_IsNotAudited()
@@ -702,17 +546,12 @@ public class PortalTests
     // PortalAlias aggregate
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The alias entity carries exactly the three scalars the legacy class had, plus its owner.
-    /// </summary>
+    /// <summary>The alias entity carries exactly the three scalars the legacy class had, plus its owner.</summary>
     /// <remarks>
-    /// MIGRATION: the legacy <c>PortalAliasInfo</c> was three private fields behind three property
-    /// blocks - a portal key, an alias key and the host name - with no base class, no interface, no
-    /// attribute and no method. Three scalars is therefore the whole legacy contract rather than a
-    /// chosen subset of it, so any further data member here would be an invention. The legacy
-    /// <c>HTTPAlias</c> is spelled <c>HttpAlias</c> because that is the idiomatic C# rendering; the
-    /// column keeps its original upper-case spelling, which the persistence configuration states
-    /// explicitly rather than leaving to a convention match.
+    /// The legacy <c>PortalAliasInfo</c> was three private fields behind three property blocks - a portal
+    /// key, an alias key and the host name - with no base class, no interface, no attribute and no method.
+    /// Three scalars is therefore the whole legacy contract rather than a chosen subset of it, so any
+    /// further data member here would be an invention.
     /// </remarks>
     [Fact]
     public void PortalAlias_CarriesExactlyTheThreeLegacyScalarsAndItsOwner()
@@ -744,19 +583,11 @@ public class PortalTests
     /// The alias key seeds at one, so zero is not a stored alias key - the opposite of the portal key.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the clearest demonstration in the file that the sentinel decision is taken <b>per
-    /// column</b> and never globally. <c>dbo.PortalAlias.PortalAliasID</c> is declared
-    /// <c>IDENTITY(1, 1)</c> at <c>02.02.02.SqlDataProvider:L3805</c>, so no stored alias is keyed 0 or
-    /// -1, whereas the <c>PortalID</c> the same row carries is drawn from an
-    /// <c>IDENTITY(-1, 1)</c> column and legitimately is.
-    /// </para>
-    /// <para>
-    /// The conclusion drawn from that is deliberately narrow. A conventional seed is <b>not</b> licence
-    /// to read 0 as "unsaved", because persisted state is declared through the entity base rather than
-    /// inferred from any value - so the two keys differ in which values occur in data, and agree
-    /// completely in how absence is expressed.
-    /// </para>
+    /// This is the clearest demonstration in the file that the sentinel decision is taken <b>per column</b>
+    /// and never globally. <c>dbo.PortalAlias.PortalAliasID</c> is declared <c>IDENTITY(1, 1)</c> at
+    /// <c>02.02.02.SqlDataProvider:L3805</c>, so no stored alias is keyed 0 or -1, whereas the
+    /// <c>PortalID</c> the same row carries is drawn from an <c>IDENTITY(-1, 1)</c> column and legitimately
+    /// is.
     /// </remarks>
     [Fact]
     public void PortalAlias_KeySeedsAtOneWhileThePortalKeyItCarriesDoesNot()
@@ -779,15 +610,12 @@ public class PortalTests
             "persistence is declared for the alias exactly as it is for the portal");
     }
 
-    /// <summary>
-    /// The host name is nullable and is stored exactly as written.
-    /// </summary>
+    /// <summary>The host name is nullable and is stored exactly as written.</summary>
     /// <remarks>
     /// The column is <c>nvarchar(200)</c> with no <c>NOT NULL</c> clause and no later alteration, so the
-    /// CLR type follows it. Nothing here trims, lower-cases, strips a port or substitutes an empty
-    /// string for a null: normalising a submitted value belongs to the Application layer and
-    /// case-insensitive comparison to the column's collation, so the stored value stays the one the
-    /// schema holds.
+    /// CLR type follows it. Nothing here trims, lower-cases, strips a port or substitutes an empty string
+    /// for a null: normalising a submitted value belongs to the Application layer and case-insensitive
+    /// comparison to the column's collation, so the stored value stays the one the schema holds.
     /// </remarks>
     [Fact]
     public void PortalAlias_HostNameIsNullableAndStoredVerbatim()
@@ -805,28 +633,11 @@ public class PortalTests
             "an empty alias is distinct from an absent one; the legacy sentinel conflated them");
     }
 
-    /// <summary>
-    /// Matching an incoming host name to a tenant is not a member of the alias entity.
-    /// </summary>
+    /// <summary>Matching an incoming host name to a tenant is not a member of the alias entity.</summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the alias story has two stages and only the second is current. The earliest
-    /// resolution procedure, <c>GetPortalSettings</c> at
-    /// <c>01.00.00.SqlDataProvider:L4569-L4600</c>, selected the lowest portal key whose alias column
-    /// satisfied a <b>substring containment</b> predicate, so a fragment of one tenant's alias could
-    /// resolve to another tenant. Neither that procedure nor the column it read survives: the procedure
-    /// was dropped at <c>02.02.00.SqlDataProvider:L267</c> and the column at
-    /// <c>02.02.02.SqlDataProvider:L3925-L3926</c>. The terminal procedures compare whole values, so
-    /// <b>exact matching is preserved legacy behaviour rather than a change to it</b>.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the genuine divergence is that the terminal lookup still collapsed multiple
-    /// candidates with <c>min(PortalId)</c>, and the replacement refuses an ambiguous host instead of
-    /// silently serving whichever tenant was created first. Both points are recorded in
-    /// MIGRATION_NOTES.md. Resolution lives in the alias repository and the tenant-resolution
-    /// middleware, so this suite asserts only that the entity stays free of any comparable member -
-    /// which is what keeps that record the single place the behaviour is decided.
-    /// </para>
+    /// MIGRATION: the genuine divergence is that the terminal lookup still collapsed multiple candidates
+    /// with <c>min(PortalId)</c>, and the replacement refuses an ambiguous host instead of silently serving
+    /// whichever tenant was created first. Both points are recorded in MIGRATION_NOTES.md.
     /// </remarks>
     [Fact]
     public void PortalAlias_DoesNotResolveHostNamesItself()
@@ -849,13 +660,11 @@ public class PortalTests
     // PortalId - the anchor invariant of this suite
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The identity wrapper carries every integer through unchanged, sentinel values included.
-    /// </summary>
+    /// <summary>The identity wrapper carries every integer through unchanged, sentinel values included.</summary>
     /// <remarks>
-    /// The whole range is covered because the column is <c>int NOT NULL</c>: every value an
-    /// <see cref="int"/> can hold is a value the column can hold, so there is genuinely nothing for this
-    /// type to reject and the boundaries are asserted to prove no guard was added at them.
+    /// The whole range is covered because the column is <c>int NOT NULL</c>: every value an <see
+    /// cref="int"/> can hold is a value the column can hold, so there is genuinely nothing for this type to
+    /// reject and the boundaries are asserted to prove no guard was added at them.
     /// </remarks>
     /// <param name="value">The identifier under test.</param>
     [Theory]
@@ -877,23 +686,12 @@ public class PortalTests
         identifier.ToString().Should().Be(value.ToString(CultureInfo.InvariantCulture));
     }
 
-    /// <summary>
-    /// The negative identity seed is a real, addressable portal identifier and never an absence.
-    /// </summary>
+    /// <summary>The negative identity seed is a real, addressable portal identifier and never an absence.</summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this is the collision the whole design turns on. <c>dbo.Portals.PortalID</c> is
-    /// declared <c>IDENTITY(-1, 1) NOT NULL</c> at <c>01.00.00.SqlDataProvider:L77</c>, so -1 is the
-    /// first key the table allocates - while the legacy sentinel module defined its absent-integer
-    /// marker as -1 as well, and its null test reported <b>every</b> integer -1 as absent. Shipped
-    /// legacy code relied on that overlap in the opposite direction, passing -1 as a portal identifier
-    /// to reach host-level rows.
-    /// </para>
-    /// <para>
-    /// So a guard of the form <c>value &lt; 0</c>, a reserved constant, or any reading of -1 as "no
-    /// portal" would make the first tenant of an installation unreachable. Recorded in
-    /// MIGRATION_NOTES.md; asserted here so the decision cannot be quietly reversed.
-    /// </para>
+    /// This is the collision the whole design turns on. <c>dbo.Portals.PortalID</c> is declared
+    /// <c>IDENTITY(-1, 1) NOT NULL</c> at <c>01.00.00.SqlDataProvider:L77</c>, so -1 is the first key the
+    /// table allocates - while the legacy sentinel module defined its absent-integer marker as -1 as well,
+    /// and its null test reported <b>every</b> integer -1 as absent.
     /// </remarks>
     [Fact]
     public void PortalIdValueObject_TreatsMinusOneAsARealIdentifier()
@@ -911,15 +709,12 @@ public class PortalTests
             "the default of the wrapper is 0, which is a different real portal");
     }
 
-    /// <summary>
-    /// Zero is a real portal identifier, and is also the value of a defaulted wrapper.
-    /// </summary>
+    /// <summary>Zero is a real portal identifier, and is also the value of a defaulted wrapper.</summary>
     /// <remarks>
     /// The portal a fresh installation ships with is identity-inserted with key 0 at
     /// <c>01.00.00.SqlDataProvider:L7125</c>, and that key is a live foreign key from the per-portal
     /// membership table. A guard of the form <c>value == 0</c> or <c>value &lt;= 0</c> would therefore
-    /// reject the default portal of every installation. That <c>default(PortalId)</c> also holds 0 is
-    /// stated here rather than hidden, because it is the reason 0 can never serve as an "unset" marker.
+    /// reject the default portal of every installation.
     /// </remarks>
     [Fact]
     public void PortalIdValueObject_TreatsZeroAsARealIdentifier()
@@ -936,13 +731,11 @@ public class PortalTests
         shippedDefaultPortal.Should().Be(default(PortalId));
     }
 
-    /// <summary>
-    /// Absence of a portal is expressed by a nullable wrapper and by nothing else.
-    /// </summary>
+    /// <summary>Absence of a portal is expressed by a nullable wrapper and by nothing else.</summary>
     /// <remarks>
-    /// This is the constructive half of the rule the two tests above state negatively. Because the
-    /// nullable wrapper is a distinct type, the compiler forces a caller to unwrap before comparing,
-    /// which is what makes "absent" impossible to confuse with any identifier - including -1.
+    /// This is the constructive half of the rule the two tests above state negatively. Because the nullable
+    /// wrapper is a distinct type, the compiler forces a caller to unwrap before comparing, which is what
+    /// makes "absent" impossible to confuse with any identifier - including -1.
     /// </remarks>
     [Fact]
     public void PortalIdValueObject_ExpressesAbsenceOnlyAsANullableWrapper()
@@ -960,14 +753,12 @@ public class PortalTests
         absent.Should().NotBe(hostScope);
     }
 
-    /// <summary>
-    /// The identity wrapper declares no absence member and no reserved instance.
-    /// </summary>
+    /// <summary>The identity wrapper declares no absence member and no reserved instance.</summary>
     /// <remarks>
-    /// Asserted by reflection because the prohibition is the type's entire purpose and a future edit
-    /// adding a convenience <c>None</c> would compile perfectly well. The same guard is applied to the
-    /// handle wrapper, which reaches the opposite conclusion about its own sentinel and so must be held
-    /// to the rule just as firmly.
+    /// Asserted by reflection because the prohibition is the type's entire purpose and a future edit adding
+    /// a convenience <c>None</c> would compile perfectly well. The same guard is applied to the handle
+    /// wrapper, which reaches the opposite conclusion about its own sentinel and so must be held to the
+    /// rule just as firmly.
     /// </remarks>
     [Fact]
     public void PortalIdValueObject_DeclaresNoAbsenceMember()
@@ -976,15 +767,7 @@ public class PortalTests
         AssertDeclaresNoAbsenceMember(typeof(PortalGuid));
     }
 
-    /// <summary>
-    /// Both conversions are explicit, so wrapping and unwrapping an identifier is always visible.
-    /// </summary>
-    /// <remarks>
-    /// Asserted through reflection rather than by attempting an implicit conversion in source, because
-    /// the latter would be a compile error and this solution treats warnings as errors - a test that
-    /// cannot be written is not a test. An implicit conversion would let any integer in scope become a
-    /// portal key silently, which is the substitution error the type exists to prevent.
-    /// </remarks>
+    /// <summary>Both conversions are explicit, so wrapping and unwrapping an identifier is always visible.</summary>
     [Fact]
     public void PortalIdValueObject_ExposesNoImplicitConversion()
     {
@@ -1001,9 +784,7 @@ public class PortalTests
     // PortalGuid - the one sentinel that is rejected, and why that is legitimate here
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The handle wrapper accepts a real value through every entry point it offers.
-    /// </summary>
+    /// <summary>The handle wrapper accepts a real value through every entry point it offers.</summary>
     [Fact]
     public void PortalGuid_AcceptsARealHandleThroughEveryEntryPoint()
     {
@@ -1025,14 +806,7 @@ public class PortalTests
         tried.Should().Be(constructed);
     }
 
-    /// <summary>
-    /// The handle of the portal a fresh installation ships with parses and round trips.
-    /// </summary>
-    /// <remarks>
-    /// The literal is the one stored by the seed row at <c>01.00.00.SqlDataProvider:L7125</c>, so this
-    /// asserts against real shipped data. Its canonical text form round trips, which is what lets the
-    /// handle travel through configuration and log output without being reformatted.
-    /// </remarks>
+    /// <summary>The handle of the portal a fresh installation ships with parses and round trips.</summary>
     [Fact]
     public void PortalGuid_ParsesTheShippedDefaultPortalHandle()
     {
@@ -1046,17 +820,10 @@ public class PortalTests
         tried.Should().Be(handle);
     }
 
-    /// <summary>
-    /// The handle wrapper rejects the all-zero value, which is the legacy absence sentinel.
-    /// </summary>
+    /// <summary>The handle wrapper rejects the all-zero value, which is the legacy absence sentinel.</summary>
     /// <remarks>
-    /// MIGRATION: this is the one place a legacy sentinel is refused rather than carried, and the
-    /// asymmetry with <see cref="PortalId"/> is deliberate. It is legitimate here only because the
-    /// column cannot produce the value: <c>Portals.GUID</c> is
-    /// <c>uniqueidentifier NOT NULL CONSTRAINT DF_Portals_GUID DEFAULT newid()</c> at
-    /// <c>01.00.00.SqlDataProvider:L93</c>, and <c>newid()</c> never emits the all-zero GUID. The
-    /// integer key has no such escape - -1 is both its sentinel and a real row - so the same reasoning
-    /// must not be copied across. The refusal is explicit and reasoned, never implicit.
+    /// This is the one place a legacy sentinel is refused rather than carried, and the asymmetry with <see
+    /// cref="PortalId"/> is deliberate.
     /// </remarks>
     [Fact]
     public void PortalGuid_RejectsTheAllZeroSentinel()
@@ -1095,10 +862,10 @@ public class PortalTests
     /// accepts a null reference without complaint.
     /// </summary>
     /// <remarks>
-    /// The parameter is declared nullable so that a null case can be supplied at all: the analyser
-    /// rejects a null literal passed to a non-nullable test parameter, and this solution treats
-    /// warnings as errors. Absent, empty and malformed text are all failures here - the distinction
-    /// between them exists only on the throwing overload, which has a message in which to express it.
+    /// The parameter is declared nullable so that a null case can be supplied at all: the analyser rejects
+    /// a null literal passed to a non-nullable test parameter, and this solution treats warnings as errors.
+    /// Absent, empty and malformed text are all failures here - the distinction between them exists only on
+    /// the throwing overload, which has a message in which to express it.
     /// </remarks>
     /// <param name="candidate">The text under test, which may be absent.</param>
     [Theory]
@@ -1124,21 +891,9 @@ public class PortalTests
     /// comparable, hashable and printable.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: every struct carries an implicit parameterless constructor that C# does not allow a
-    /// type to suppress, so <c>default(PortalGuid)</c>, an unassigned field and a zero-initialised array
-    /// element all hold the all-zero GUID without passing the validating constructor. The invariant is
-    /// therefore enforced on the way <b>out</b> as well as on the way in: the two members that surrender
-    /// a value a persistence layer could store both refuse it, which is what stops a cast being the
-    /// loophole the property closed.
-    /// </para>
-    /// <para>
-    /// Equality, hashing and rendering stay total on purpose, and that division is the substance of this
-    /// test. None of the three yields a storable handle, and a rendering path that threw would break
-    /// logging and debugger display at exactly the moment someone is trying to establish what went
-    /// wrong - so a defaulted instance prints as thirty-two zeros, which is a truthful description of
-    /// what it holds.
-    /// </para>
+    /// Every struct carries an implicit parameterless constructor that C# does not allow a type to
+    /// suppress, so <c>default(PortalGuid)</c>, an unassigned field and a zero-initialised array element
+    /// all hold the all-zero GUID without passing the validating constructor.
     /// </remarks>
     [Fact]
     public void PortalGuid_DefaultedInstanceRefusesToSurrenderTheSentinel()
@@ -1168,16 +923,7 @@ public class PortalTests
     // EmailAddress
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// The local-part character class the legacy pattern allowed is preserved in full.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy class was wider than it looks and must stay that way. It admits an
-    /// <b>apostrophe</b>, so an address of the Irish surname form is valid and real accounts use one
-    /// today - narrowing it would deny access to users who can sign in now. It also admits <b>plus</b>,
-    /// so plus-addressing is accepted rather than rejected, along with dot, underscore, percent and
-    /// hyphen.
-    /// </remarks>
+    /// <summary>The local-part character class the legacy pattern allowed is preserved in full.</summary>
     /// <param name="candidate">The address under test.</param>
     [Theory]
     [InlineData("user@example.com")]
@@ -1197,20 +943,8 @@ public class PortalTests
     /// A final domain label longer than four letters is accepted, which the legacy pattern refused.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// MIGRATION: this is a deliberate, documented <b>loosening</b> and the one place in this file where
-    /// legacy behaviour is not preserved. The legacy clause constrained the final label to two-to-four
-    /// letters, so every modern top-level domain longer than four was rejected outright - a user whose
-    /// address ended in one could not register, could not have it corrected and could not be created by
-    /// an administrator. Carrying that forward would carry a defect rather than preserve behaviour, so
-    /// the limit is replaced by the standards-derived bound of two to sixty-three letters.
-    /// </para>
-    /// <para>
-    /// The precedent is the action plan's own treatment of the alias lookup: change the rule where
-    /// leaving it would cause real harm, and record the change. Recorded in MIGRATION_NOTES.md under the
-    /// email-validation section, which states the loosening and the three compensating tightenings
-    /// together. <b>This must not be narrowed back to four.</b>
-    /// </para>
+    /// legacy behaviour is not preserved.
     /// </remarks>
     /// <param name="candidate">The address under test.</param>
     [Theory]
@@ -1230,14 +964,6 @@ public class PortalTests
     /// The built-in accounts a fresh installation ships with carry unparseable addresses, and reporting
     /// that must not require catching an exception.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the seed data at <c>01.00.00.SqlDataProvider:L7205</c> onwards gives the built-in host
-    /// superuser the address <c>host</c> and the administrator the address <c>admin</c>. Neither has an
-    /// at-sign, a domain or a final label, so neither satisfies the legacy pattern either - the stored
-    /// data was already invalid against the rule the legacy screens applied. This is precisely why a
-    /// non-throwing factory has to exist: reading existing rows must be able to report an unusable value
-    /// without exceptions becoming control flow.
-    /// </remarks>
     /// <param name="shippedValue">The address as shipped in the seed data.</param>
     [Theory]
     [InlineData("host")]
@@ -1263,11 +989,10 @@ public class PortalTests
     /// reference.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy sentinel module represented an absent string as the <b>empty</b> string, so
-    /// a database null and a deliberately blank value were indistinguishable once read. Here the empty
-    /// string is simply invalid and absence is a null <c>EmailAddress</c>, which restores the
-    /// distinction the sentinel destroyed. The parameter is nullable so the null case can be supplied at
-    /// all under warnings-as-errors.
+    /// The legacy sentinel module represented an absent string as the <b>empty</b> string, so a database
+    /// null and a deliberately blank value were indistinguishable once read. Here the empty string is
+    /// simply invalid and absence is a null <c>EmailAddress</c>, which restores the distinction the
+    /// sentinel destroyed.
     /// </remarks>
     /// <param name="candidate">The text under test, which may be absent.</param>
     [Theory]
@@ -1289,15 +1014,7 @@ public class PortalTests
         absent.Should().BeNull("absence is a null EmailAddress, never an empty one");
     }
 
-    /// <summary>
-    /// Surrounding whitespace is trimmed and the original casing is kept.
-    /// </summary>
-    /// <remarks>
-    /// Trimming is a storage concern - a padded value is the same address - whereas case is information
-    /// the user supplied, and the local part of an address is case-sensitive by specification even though
-    /// no mail system in practice treats it so. Storing the value as given and comparing it
-    /// case-insensitively is what satisfies both facts at once.
-    /// </remarks>
+    /// <summary>Surrounding whitespace is trimmed and the original casing is kept.</summary>
     [Fact]
     public void EmailAddress_TrimsSurroundingWhitespaceAndPreservesCasing()
     {
@@ -1308,13 +1025,11 @@ public class PortalTests
         ((string)address).Should().Be("Mixed.Case@Example.COM");
     }
 
-    /// <summary>
-    /// Two addresses differing only in case are the same address, and they hash alike.
-    /// </summary>
+    /// <summary>Two addresses differing only in case are the same address, and they hash alike.</summary>
     /// <remarks>
     /// The agreement between equality and hashing is the substance here: a type that compared
-    /// case-insensitively while hashing case-sensitively would lose entries in every dictionary and set
-    /// it was placed in, which is the classic defect this asserts against.
+    /// case-insensitively while hashing case-sensitively would lose entries in every dictionary and set it
+    /// was placed in, which is the classic defect this asserts against.
     /// </remarks>
     [Fact]
     public void EmailAddress_ComparesCaseInsensitivelyAndHashesConsistently()
@@ -1334,26 +1049,11 @@ public class PortalTests
         // The stored values still differ, because comparison is case-insensitive and storage is not.
         lower.Value.Should().NotBe(upper.Value);
 
-        // The null comparison is asserted last on purpose. Under nullable reference types the compiler
-        // learns from an Equals(null) call - if the call could return true the receiver could be null -
-        // so any dereference of `lower` placed after it is a compile error rather than a warning, given
-        // that this solution treats warnings as errors.
+        // The null comparison is asserted last on purpose.
         lower.Equals(null).Should().BeFalse();
     }
 
-    /// <summary>
-    /// The address length is bounded by the width of the column that stores it.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the operative width is <b>256</b>, not the 100 of the original column. That original
-    /// <c>nvarchar(100)</c> was dropped outright by the nine-column drop at
-    /// <c>02.02.01.SqlDataProvider:L49-L50</c> when credentials moved into the externally installed
-    /// membership tables, and a replacement <c>Email nvarchar(256) NULL</c> was added at
-    /// <c>03.00.13.SqlDataProvider:L109-L110</c> and back-filled from the membership store. No later
-    /// script alters it. Because the terminal state of the upgrade chain is the authority rather than its
-    /// baseline, 256 is the correct bound and 100 is a superseded width. Recorded in
-    /// MIGRATION_NOTES.md.
-    /// </remarks>
+    /// <summary>The address length is bounded by the width of the column that stores it.</summary>
     [Fact]
     public void EmailAddress_IsBoundedByTheTerminalColumnWidth()
     {
@@ -1373,18 +1073,7 @@ public class PortalTests
             "257 characters cannot be stored");
     }
 
-    /// <summary>
-    /// Malformed addresses are refused, including the three shapes the legacy pattern let through.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: three of these are deliberate <b>tightenings</b> that pay for the loosened final-label
-    /// width, because a bound that admits them is not a bound: an empty domain label, a label longer
-    /// than sixty-three characters, and a domain longer than two hundred and fifty-three. None can
-    /// resolve in the domain name system, and the legacy pattern limited them only by the overall length
-    /// of the address. All three are recorded in MIGRATION_NOTES.md alongside the loosening. The
-    /// remaining cases are refusals the legacy pattern already made, including a final label containing
-    /// a digit, which is preserved rather than reconsidered.
-    /// </remarks>
+    /// <summary>Malformed addresses are refused, including the three shapes the legacy pattern let through.</summary>
     /// <param name="candidate">The malformed address under test.</param>
     [Theory]
     [InlineData("noatsign.com")]
@@ -1411,14 +1100,7 @@ public class PortalTests
         create.Should().Throw<DomainException>();
     }
 
-    /// <summary>
-    /// The oversized-label and oversized-domain bounds are enforced at their exact boundaries.
-    /// </summary>
-    /// <remarks>
-    /// Sixty-three characters is the per-label maximum the domain name system itself imposes, so a label
-    /// of exactly that length is legitimate and one character more is not. Asserting both sides of the
-    /// boundary is what distinguishes a bound from an accident.
-    /// </remarks>
+    /// <summary>The oversized-label and oversized-domain bounds are enforced at their exact boundaries.</summary>
     [Fact]
     public void EmailAddress_EnforcesTheDomainLabelBoundsAtTheirBoundaries()
     {
@@ -1436,33 +1118,14 @@ public class PortalTests
     /// of the overall address length.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Two hundred and fifty-three is the domain-name-system limit on a fully qualified domain, and it is
-    /// a genuinely separate bound from the two either side of it: every label below is well within
-    /// sixty-three characters, and both addresses are within the two-hundred-and-fifty-six-character
-    /// column width, so neither of those rules can be what decides these two cases. Without this
-    /// assertion the aggregate bound could be deleted outright and every other e-mail test would stay
-    /// green, because the per-label scan is bounded per label and the column check is bounded per address.
-    /// </para>
-    /// <para>
-    /// The construction is deliberate rather than incidental. The address is <c>x@</c> plus the domain, so
-    /// the accepted case measures 255 characters and the refused case measures exactly 256 — the largest
-    /// value the column guard admits. That is what makes the refusal attributable to the domain bound
-    /// alone: one character more anywhere would have been refused by the column width first, and the test
-    /// would then prove nothing about the domain.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this bound replaces nothing in the legacy pattern, which limited the domain only through
-    /// the overall address length and so accepted a domain that could never resolve. It is recorded in
-    /// MIGRATION_NOTES.md alongside the other e-mail tightenings.
-    /// </para>
+    /// Two hundred and fifty-three is the domain-name-system limit on a fully qualified domain, and it is a
+    /// genuinely separate bound from the two either side of it: every label below is well within
+    /// sixty-three characters, and both addresses are within the two-hundred-and-fifty-six-character column
+    /// width, so neither of those rules can be what decides these two cases.
     /// </remarks>
     [Fact]
     public void EmailAddress_EnforcesTheWholeDomainBoundAtItsBoundary()
     {
-        // Three maximal labels and a final letters-only label sized to hit each bound exactly:
-        // 63 + 1 + 63 + 1 + 63 + 1 = 192 characters of prefix, leaving 61 for a 253-character domain and
-        // 62 for a 254-character one.
         string labelPrefix = string.Join(".", Enumerable.Repeat(new string('a', 63), 3)) + ".";
         string domainAtTheBound = labelPrefix + new string('b', 61);
         string domainPastTheBound = labelPrefix + new string('b', 62);
@@ -1490,16 +1153,8 @@ public class PortalTests
     }
 
     /// <summary>
-    /// A domain label beginning with a hyphen is still accepted, exactly as the legacy pattern accepted
-    /// it.
+    /// A domain label beginning with a hyphen is still accepted, exactly as the legacy pattern accepted it.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: a preserved legacy quirk, annotated in place and deliberately not fixed. The domain
-    /// name system forbids a label beginning with a hyphen, but the legacy character class plainly
-    /// permitted it and refusing it would be an unrequested tightening beyond the scope of the
-    /// final-label change. Minimal-change discipline says a discovered defect is annotated rather than
-    /// corrected unless it blocks delivery, and this one does not.
-    /// </remarks>
     [Fact]
     public void EmailAddress_PreservesTheLegacyHyphenLeadingLabelQuirk()
     {
@@ -1508,9 +1163,7 @@ public class PortalTests
         result!.Value.Should().Be("x@-a.com");
     }
 
-    /// <summary>
-    /// Both conversions exist, are explicit, and the inbound one applies the same validation.
-    /// </summary>
+    /// <summary>Both conversions exist, are explicit, and the inbound one applies the same validation.</summary>
     [Fact]
     public void EmailAddress_ExposesExplicitConversionsThatValidate()
     {
@@ -1530,13 +1183,6 @@ public class PortalTests
     /// The address type enforces no uniqueness, and could not: it has no asynchronous member and no
     /// repository dependency.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy membership provider was configured so that a duplicate address was
-    /// permitted, and that is preserved deliberately - enforcing uniqueness mid-migration would reject
-    /// existing rows that are already duplicated. A value object cannot answer a question about other
-    /// rows in any case, so the absence of an asynchronous or repository-taking member is asserted
-    /// structurally rather than left as an intention.
-    /// </remarks>
     [Fact]
     public void EmailAddress_EnforcesNoUniquenessAndTakesNoDependency()
     {
@@ -1559,14 +1205,7 @@ public class PortalTests
     // PagedResult - the envelope every portal listing is returned in
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// A paged listing reports the page it returned and the total behind it independently.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: this replaces the legacy paging idiom, in which a total row count was returned through
-    /// a by-reference argument alongside the page itself. The two facts now travel together in one value,
-    /// so a caller cannot receive one without the other.
-    /// </remarks>
+    /// <summary>A paged listing reports the page it returned and the total behind it independently.</summary>
     [Fact]
     public void PagedResult_ReportsThePageAndTheTotalIndependently()
     {
@@ -1582,9 +1221,7 @@ public class PortalTests
         page.HasNextPage.Should().BeTrue();
     }
 
-    /// <summary>
-    /// The page arithmetic divides exactly when the total is a multiple of the page size.
-    /// </summary>
+    /// <summary>The page arithmetic divides exactly when the total is a multiple of the page size.</summary>
     /// <param name="totalCount">The total behind the page.</param>
     /// <param name="pageSize">The page size.</param>
     /// <param name="expectedPages">The expected page count.</param>
@@ -1601,9 +1238,7 @@ public class PortalTests
         page.TotalPages.Should().Be(expectedPages);
     }
 
-    /// <summary>
-    /// The last page reports no successor and the first reports no predecessor.
-    /// </summary>
+    /// <summary>The last page reports no successor and the first reports no predecessor.</summary>
     [Fact]
     public void PagedResult_KnowsWhereItSitsInTheSequence()
     {
@@ -1620,9 +1255,7 @@ public class PortalTests
         beyond.HasNextPage.Should().BeFalse();
     }
 
-    /// <summary>
-    /// An unpaged listing declares itself unpaged and reports one page for any non-empty result.
-    /// </summary>
+    /// <summary>An unpaged listing declares itself unpaged and reports one page for any non-empty result.</summary>
     [Fact]
     public void PagedResult_Unpaged_ReportsEverythingAsASinglePage()
     {
@@ -1642,9 +1275,7 @@ public class PortalTests
         nothing.TotalPages.Should().Be(0, "an empty result has no pages at all, not one empty page");
     }
 
-    /// <summary>
-    /// The shared empty page is empty in every respect.
-    /// </summary>
+    /// <summary>The shared empty page is empty in every respect.</summary>
     [Fact]
     public void PagedResult_Empty_IsEmptyInEveryRespect()
     {
@@ -1659,13 +1290,7 @@ public class PortalTests
         empty.HasNextPage.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Constructing a page from impossible arguments is rejected rather than absorbed.
-    /// </summary>
-    /// <remarks>
-    /// These guards throw the framework's argument exceptions rather than a domain exception, because an
-    /// impossible page size is a programming fault at the call site rather than a violated business rule.
-    /// </remarks>
+    /// <summary>Constructing a page from impossible arguments is rejected rather than absorbed.</summary>
     [Fact]
     public void PagedResult_RejectsImpossibleArguments()
     {
@@ -1688,20 +1313,6 @@ public class PortalTests
     /// <summary>
     /// Three coordinates that individually look sane but contradict one another are rejected as well.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Each combination below describes an envelope no real query could have produced, and each would
-    /// otherwise be published as fact to a pager that trusts it — which is worse than throwing, because a
-    /// pager cannot detect that the totals it was handed are impossible. A page size of 0 declares an
-    /// unpaged set and therefore has no page coordinate to address; a page can never hold more records
-    /// than the whole set contains; and a paged read honours the page size it was given.
-    /// </para>
-    /// <para>
-    /// The offending parameter is asserted by name as well, because that name is the only thing telling a
-    /// caller which of the three coordinates it got wrong, and all three failures otherwise arrive as the
-    /// same exception type.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void PagedResult_RejectsContradictoryCoordinates()
     {
@@ -1735,21 +1346,6 @@ public class PortalTests
     /// The envelope snapshots the collection it was given, so a caller that keeps mutating its own list
     /// cannot change what has already been published.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A read-only interface is not an immutable collection: <c>List&lt;T&gt;</c> satisfies
-    /// <c>IReadOnlyList&lt;T&gt;</c> while remaining fully mutable through the reference its owner still
-    /// holds. Without a private copy, an envelope could report one total and then hand out a different
-    /// number of records — and the guards above, which measure the collection, would have measured
-    /// something other than what was eventually published.
-    /// </para>
-    /// <para>
-    /// Both factory methods are asserted, because they take the copy for different reasons. <c>Create</c>
-    /// copies before its remaining guards run, so the length the guards inspect is the length the finished
-    /// envelope reports. <c>Unpaged</c> derives the total from its copy, so the reported total and the
-    /// published records are guaranteed to agree.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void PagedResult_SnapshotsTheSuppliedCollection()
     {
@@ -1782,17 +1378,10 @@ public class PortalTests
     // Helpers
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Builds a minimally populated portal carrying the supplied identifier.
-    /// </summary>
+    /// <summary>Builds a minimally populated portal carrying the supplied identifier.</summary>
     /// <param name="portalId">The identifier to carry.</param>
     /// <param name="portalName">The display name.</param>
     /// <returns>The portal.</returns>
-    /// <remarks>
-    /// The non-nullable columns are populated so that an instance is realistic; the nullable ones are
-    /// deliberately left unset, because several assertions above depend on their being null until
-    /// something assigns them.
-    /// </remarks>
     private static Portal NewPortal(int portalId, string portalName = "Integration Portal") => new()
     {
         PortalId = portalId,
@@ -1809,9 +1398,7 @@ public class PortalTests
         UserQuota = 0,
     };
 
-    /// <summary>
-    /// Builds an alias row carrying the supplied keys and host name.
-    /// </summary>
+    /// <summary>Builds an alias row carrying the supplied keys and host name.</summary>
     /// <param name="portalAliasId">The alias key, which the schema seeds at one.</param>
     /// <param name="portalId">The portal key, which the schema seeds at minus one.</param>
     /// <param name="httpAlias">The host name, optionally with a port and a virtual path.</param>
@@ -1824,8 +1411,8 @@ public class PortalTests
     };
 
     /// <summary>
-    /// Asserts that a value object declares none of the members that would reintroduce a reserved
-    /// absence concept.
+    /// Asserts that a value object declares none of the members that would reintroduce a reserved absence
+    /// concept.
     /// </summary>
     /// <param name="valueObjectType">The value object to inspect.</param>
     private static void AssertDeclaresNoAbsenceMember(Type valueObjectType)
@@ -1843,15 +1430,13 @@ public class PortalTests
         }
     }
 
-    /// <summary>
-    /// Selects the attributes an author wrote, discarding the ones the compiler emits.
-    /// </summary>
+    /// <summary>Selects the attributes an author wrote, discarding the ones the compiler emits.</summary>
     /// <param name="attributes">The attribute data to filter.</param>
     /// <returns>The full names of the authored attributes, which should be none on a domain entity.</returns>
     /// <remarks>
     /// Enabling nullable reference types makes the compiler stamp its own attributes onto types and
-    /// members, and those are not the subject of any assertion here. The data-only overload is used so
-    /// that nothing is instantiated merely to read its name.
+    /// members, and those are not the subject of any assertion here. The data-only overload is used so that
+    /// nothing is instantiated merely to read its name.
     /// </remarks>
     private static IEnumerable<string> AuthoredAttributeNames(IList<CustomAttributeData> attributes)
     {
@@ -1875,9 +1460,7 @@ public class PortalTests
             .Select(property => property.Name);
     }
 
-    /// <summary>
-    /// Determines whether a property type is a relationship rather than a stored scalar.
-    /// </summary>
+    /// <summary>Determines whether a property type is a relationship rather than a stored scalar.</summary>
     /// <param name="propertyType">The property type to classify.</param>
     /// <returns><see langword="true"/> for a navigation; otherwise <see langword="false"/>.</returns>
     private static bool IsNavigation(Type propertyType)

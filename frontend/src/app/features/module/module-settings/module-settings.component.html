@@ -1,47 +1,9 @@
-<!--
-  The module settings screen, replacing Website/admin/Modules/modulesettings.ascx.
-
-  Load-bearing structure:
-
-    - Seven disclosure regions nested two levels deep, reproducing the legacy section-head hierarchy. The
-      three top-level heads carry --ruled for the legacy includerule="True"; the four nested regions carry
-      --nested on the SECTION, because the legacy indent sat outside the group.
-    - A closed region's CONTENTS are REMOVED, not hidden: [hidden] loses to .module-settings__body's own
-      display:grid, so hiding would not hide - and removal is also what keeps a closed region's controls
-      out of the tab order and out of the accessibility tree.
-    - ⚠ WHAT A CLOSED REGION STILL KEEPS IS ITS IDENTITY, which it previously did not. aria-controls was
-      published only while open, on the reasoning that a reference to an element outside the document is
-      worse than no reference - correct as far as it went, and it left the toggle stating a relationship in
-      one state and denying it in the other, which runtime testing measured and reported. Each region now
-      renders an EMPTY HIDDEN placeholder carrying its own identifier while closed, so the reference is
-      valid in both states and nothing about what is rendered, focusable or announced has changed.
-      aria-expanded remains the disclosure contract; aria-controls is the addition, not a replacement.
-      The placeholder deliberately carries the IDENTIFIER ALONE - no class, no role and no name. The body
-      class would reintroduce the display:grid that makes hiding fail; role="group" plus aria-labelledby
-      would declare a named region holding nothing, which is a worse answer to a reader following the
-      reference than a target the collapsed state legitimately excludes from the accessibility tree.
-      A closed region nested inside another closed region has neither head nor placeholder, which is
-      self-consistent: an absent toggle publishes no reference to dangle.
-    - MIGRATION: the four nested heads are disambiguated by description. The resource file gives them only
-      two distinct names, separable in the legacy source by resource keys that never reach a rendered page,
-      so each nested head points aria-describedby at its parent region's head and the accessible description
-      carries the parent's name. The duplication itself is preserved rather than renamed.
-    - Each field's messages live in ONE identified region named by that control's aria-describedby, client
-      reason first, emitted only when a message exists. A role="alert" region is announced once, so the
-      reason must stay reachable from the control afterwards.
-    - Every migrated string is INTERPOLATED from a component constant: templates compile with
-      preserveWhitespaces disabled, which would collapse the two spaces four legacy help strings carry after
-      a sentence period.
--->
 <app-page-header [title]="heading"></app-page-header>
 
 <!--
   The rejected-write surface: it renders the problem document the server sent, resolved to plain text by
-  core/utils/form-errors.util.ts, and nothing else. A refusal is announced as a warning-severity advisory
-  instead, on the legacy access-denied screen's precedent.
-
-  MIGRATION: net-new. Website/ declares no asp:ValidationSummary anywhere, so there is no predecessor to
-  port - the legacy screen showed each message beside its own field and summarised nothing.
+  core/utils/form-errors.util.ts, and nothing else. A refusal is announced as a warning-severity
+  advisory instead, on the legacy access-denied screen's precedent.
 -->
 <app-error-banner [problem]="problem()"></app-error-banner>
 
@@ -51,26 +13,12 @@
   <!--
     THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
     render nothing beneath it - which is what makes the refusal one statement rather than two.
-
-    Reaching this branch suppresses both empty states below and the form itself: a refusal is not an
-    absence, so neither "could not be found" nor "no settings are available" describes it, and a form
-    seeded from no module would offer a save the server has already said it will refuse.
-
-    ⚠ TWO PREDICATES, BECAUSE ONE REFUSAL WAS ABLE TO SLIP PAST THE OTHER. `readRefused()` asks what the
-    store's CURRENT failure is; `settingsRefused()` asks what THIS screen was told about the settings read
-    the form depends on. Measured on an administrative module: the module read answers 200, the settings
-    read answers 403, and the definition read answers 404 - and the 404 landed last, taking the store's
-    single failure slot and, through its own branch in `announce`, clearing the banner outright. What
-    rendered was a full editable form beneath no banner at all, because the absent-settings branch below
-    tests a value that falls back to the module record. Either predicate is now sufficient to withhold it.
-
-    MIGRATION: this is the legacy access-denied page's entire content - a heading and one
-    `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`) - and it is
-    the identical presentation the sibling module form and export screens now give the same status.
   -->
 } @else if (notFound()) {
-  <!-- An identifier that resolves to nothing is a legitimate state - a stale bookmark, or a module already
-       removed - and is reported as such rather than as an error. -->
+  <!--
+    An identifier that resolves to nothing is a legitimate state - a stale bookmark, or a module already
+    removed - and is reported as such rather than as an error.
+  -->
   <app-empty-state [message]="notFoundMessage"></app-empty-state>
 } @else if (settings === null) {
   <app-empty-state [message]="noModuleMessage"></app-empty-state>
@@ -112,12 +60,15 @@
             @if (isExpanded('details')) {
               <div [id]="sectionBodyId('details')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('details')">
                 <div class="module-settings__fields">
-                  <!-- The definition's name is shown, never edited: which definition a module instantiates
-                       is fixed when it is created. Rendered as a description list rather than a disabled
-                       input, because a disabled input suggests an edit that is merely unavailable. -->
-                  <!-- NO `for`, BECAUSE THERE IS NO CONTROL TO NAME. The shared field renders its caption
-                       as a `span` in that case and names the control group from it, so the read-only value
-                       still carries the field's name without a `label` element captioning nothing. -->
+                  <!--
+                    The definition's name is shown, never edited: which definition a module instantiates
+                    is fixed when it is created.
+                  -->
+                  <!--
+                    NO `for`, BECAUSE THERE IS NO CONTROL TO NAME. The shared field renders its caption
+                    as a `span` in that case and names the control group from it, so the read-only value
+                    still carries the field's name without a `label` element captioning nothing.
+                  -->
                   <app-form-field
                     #friendlyNameField
                     [label]="labels['friendlyName']"
@@ -127,17 +78,10 @@
                   </app-form-field>
 
                   <!--
-                    ⚠ INVALIDITY AND THE MESSAGE COME FROM ONE EXPRESSION, ON EVERY FIELD BELOW, AND THAT IS
-                    THE POINT. This screen used to publish a reference to a control's error region and never
-                    publish `aria-invalid` at all - nine controls and groups - so assistive technology was
-                    handed a message with nothing to attach it to. Where the flag WAS published it came from
-                    a DIFFERENT state than the message did: `touched && invalid` on the form control, which a
-                    server refusal neither touches nor invalidates. So a field could render a refusal from
-                    the server while reporting itself perfectly valid.
-                    Binding both from `messagesFor(...)` makes the two incapable of disagreeing: if there is
-                    a reason on screen the control says it is invalid, and if there is not it says it is
-                    valid. The client half still only appears once the control is touched, because that is
-                    the condition `clientMessage` applies, so nothing is announced before it is earned.
+                    ⚠ INVALIDITY AND THE MESSAGE COME FROM ONE EXPRESSION, ON EVERY FIELD BELOW, AND
+                    THAT IS THE POINT. This screen used to publish a reference to a control's error
+                    region and never publish `aria-invalid` at all - nine controls and groups - so
+                    assistive technology was handed a message with nothing to attach it to.
                   -->
                   <app-form-field
                     [label]="labels['moduleTitle']"
@@ -153,39 +97,25 @@
                       [attr.aria-invalid]="messagesFor('moduleTitle').length > 0"
                     />
 
-                    <!-- WHAT A BLANK HEADING MEANS, said where the decision is made. The heading is
-                         OPTIONAL on every tier - the legacy markup declared no presence validator on
-                         `txtTitle`, both server validators gate their only title rule on the value being
-                         non-empty, and the column is nullable - so leaving it blank is a legitimate
-                         choice rather than a mistake, and it is not refused. What was missing is that
-                         the choice had a consequence nobody stated: the module is then listed under its
-                         definition's name, which is what `ControlPanelBase.vb:192-196` did when it found
-                         `title = ""`.
-
-                         ⚠ PROJECTED INTO THE FIELD, NOT PLACED AFTER IT, and the distinction survives the
-                         conversion to the shared component. It is announced POLITELY and the shared field's
-                         own message region is an ASSERTIVE alert, so the two must stay separate elements
-                         with separate roles: folded into `messagesFor` this consequence would be announced
-                         as a refusal and would appear in the error region of a form that was accepted. -->
+                    <!--
+                      ⚠ PROJECTED INTO THE FIELD, NOT PLACED AFTER IT, and the distinction survives the
+                      conversion to the shared component.
+                    -->
                     @if (titleFallbackNotice !== null) {
                       <p class="module-settings__notice" aria-live="polite">{{ titleFallbackNotice }}</p>
                     }
                   </app-form-field>
 
-                  <!-- The permission grid itself is its own resource with its own screen; the inherit
-                       switch IS a column on the module, so it is kept here. --stacked because the legacy
-                       permissions region occupied the full width rather than a label/field pair. -->
-                  <!-- ⚠ THE CAPTION NAMES THE REGION AND THE SWITCH NAMES ITSELF, which is why this field
-                       declares no `for`. Two names are in play: 'Permissions' captions the whole region, and
-                       'Inherit View permissions from Page' names the one control in it. Pointing the field's
-                       `for` at the switch would replace the second with the first. The switch keeps its own
-                       wrapping `label`, so the shared field leaves it alone - it names only projected
-                       controls that are OTHERWISE UNNAMED - and the caption names the control group.
-
-                       This also collapses a two-field indirection the previous markup needed: the switch was
-                       described by the REGION's hint while reporting failures under its OWN control name, so
-                       the description had to be composed from two different field keys. The shared component
-                       owns both wirings, so the hint and the messages are simply this field's. -->
+                  <!--
+                    The permission grid itself is its own resource with its own screen; the inherit
+                    switch IS a column on the module, so it is kept here. --stacked because the legacy
+                    permissions region occupied the full width rather than a label/field pair.
+                  -->
+                  <!--
+                    ⚠ THE CAPTION NAMES THE REGION AND THE SWITCH NAMES ITSELF, which is why this field
+                    declares no `for`. Two names are in play: 'Permissions' captions the whole region,
+                    and 'Inherit View permissions from Page' names the one control in it.
+                  -->
                   <app-form-field
                     class="form-field--stacked"
                     [label]="labels['permissions']"
@@ -203,23 +133,10 @@
                     </label>
 
                       <!--
-                        THE KEYS THIS MODULE'S DEFINITION DECLARES: read-only, advisory, and rendered only
-                        when there is genuinely something to say.
-
                         The condition tests `!== null` AND a non-empty length because the two carry
-                        different meanings on the signal behind it: `null` is "not read" - the caller does
-                        not administer the tenant, or the read has not returned, or it failed - and an empty
-                        array is the answer "this definition declares none". Neither has anything to show,
-                        but only the second is an answer, and the signal's own note records the distinction
-                        so a future reader does not collapse them.
-
-                        ⚠ NOT A GATE AND NOT A GRID. This states the definition's VOCABULARY; it does not
-                        say what the caller holds, no control is enabled or disabled by it, and no
-                        submission consults it. Editing the grants themselves is a separate resource with
-                        its own screen, exactly as the note above this field records.
-
-                        `track key` is safe here because the catalogue answers a SET - the API composes it
-                        from distinct keys - so no duplicate can arrive to make the expression collide.
+                        different meanings on the signal behind it: `null` is "not read" - the caller
+                        does not administer the tenant, or the read has not returned, or it failed - and
+                        an empty array is the answer "this definition declares none".
                       -->
                       @if (definitionPermissionKeys(); as declaredKeys) {
                         @if (declaredKeys.length > 0) {
@@ -233,14 +150,14 @@
                           </p>
                         }
                       }
-
                   </app-form-field>
                 </div>
               </div>
             } @else {
-              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
               <div [id]="sectionBodyId('details')" hidden></div>
             }
           </section>
@@ -280,9 +197,7 @@
                     </select>
                   </app-form-field>
 
-                  <!-- `form-field--inline` keeps the caption beside the box at every width. A lone check
-                       box below its own caption reads as an orphaned control, which is the measured reason
-                       the shared component carries the variant. -->
+                  <!-- `form-field--inline` keeps the caption beside the box at every width. -->
                   <app-form-field
                     class="form-field--inline"
                     [label]="labels['allTabs']"
@@ -298,12 +213,11 @@
                     />
                   </app-form-field>
 
-                  <!-- rows="6" reproduces the legacy multi-line height, and `form-field--multiline` is
-                       what keeps the caption pinned to the top of a tall row rather than sitting on a
-                       baseline partway down it. That variant replaces this screen's own stacked treatment:
-                       the shared component declares no block size either, leaving the height to the `rows`
-                       attribute exactly as before. Rich-text editing remains a documented reduction - the
-                       legacy editor provider is out of scope, so this is a plain textarea. -->
+                  <!--
+                    rows="6" reproduces the legacy multi-line height, and `form-field--multiline` is
+                    what keeps the caption pinned to the top of a tall row rather than sitting on a
+                    baseline partway down it.
+                  -->
                   <app-form-field
                     class="form-field--multiline"
                     [label]="labels['header']"
@@ -366,17 +280,20 @@
                 </div>
               </div>
             } @else {
-              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
               <div [id]="sectionBodyId('security')" hidden></div>
             }
           </section>
         </div>
       } @else {
-        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
         <div [id]="sectionBodyId('moduleSettings')" hidden></div>
       }
     </section>
@@ -417,12 +334,10 @@
             @if (isExpanded('appearance')) {
               <div [id]="sectionBodyId('appearance')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('appearance')">
                 <div class="module-settings__fields">
-                  <!-- BOTH CHANNELS, and the history is why `messagesFor` combines them rather than the
-                       template choosing between them. This field once rendered server messages ALONE, which
-                       was invisible while it carried no client rule of its own; adding the containment rule
-                       made the gap reachable - a refused icon reference marked the control invalid and
-                       blocked the submit while saying nothing about why. Both channels now arrive as one
-                       list, so a field cannot be refused locally and stay silent. -->
+                  <!--
+                    BOTH CHANNELS, and the history is why `messagesFor` combines them rather than the
+                    template choosing between them.
+                  -->
                   <app-form-field
                     [label]="labels['iconFile']"
                     [help]="hints['iconFile']"
@@ -438,14 +353,6 @@
                     />
                   </app-form-field>
 
-                  <!-- A choice group's visible name is NOT a <label>: a label names one control, so
-                       pointing `for` at the first radio would name the group by side effect and make
-                       clicking its title select an option. This field therefore declares no `for`, which is
-                       what makes the shared component render its caption as a `span`, and the group is named
-                       from THAT caption through a template reference - `visibilityField.labelId()`. The
-                       reference is the same wiring the sibling create screen uses, so one pattern covers
-                       both. [value] rather than [ngValue]: RadioControlValueAccessor writes the numeric enum
-                       value through unchanged. -->
                   <app-form-field
                     #visibilityField
                     [label]="labels['visibility']"
@@ -459,13 +366,7 @@
                     >
                       @for (choice of visibilityChoices; track choice.value) {
                         <label [for]="choiceId('visibility', $index)">
-                          <!--
-                            The static `name` is not redundant beside `formControlName`. The reactive
-                            directive groups these inputs in the MODEL and writes no `name` attribute, so
-                            without one the browser sees three unrelated radios: arrow keys stop moving
-                            between the choices and each input takes its own tab stop. The value is the
-                            control's own name, so the two cannot drift apart.
-                          -->
+                          <!-- The static `name` is not redundant beside `formControlName`. -->
                           <input
                             type="radio"
                             name="visibility"
@@ -495,14 +396,6 @@
                     />
                   </app-form-field>
 
-                  <!--
-                    THE THREE-STATE CACHE RULE. The legacy screen hid the whole row when the DEFINITION's
-                    DefaultCacheTime was -1, meaning the definition records no default at all. A default of 0
-                    is a different fact: caching IS supported with a zero-second default, so the field shows.
-                    And this PLACEMENT's own cacheTime of 0 is a third legitimate stored value meaning "not
-                    cached". The three are never coalesced and falsiness never distinguishes them, because 0
-                    is falsy and is one of the two values that must survive.
-                  -->
                   @if (showCacheField()) {
                     <app-form-field
                       [label]="labels['cacheTime']"
@@ -510,13 +403,6 @@
                       [error]="messagesFor('cacheTime')"
                       [for]="controlId('cacheTime')"
                     >
-                      <!--
-                        A TEXT control, matching the legacy asp:textbox with maxlength="6", and validated by
-                        the integer data-type check rather than by a numeric control's own coercion. Holding
-                        it as text keeps the Option Strict coercion explicit: the legacy save used
-                        Int32.Parse rather than TryParse, so the parse and its failure are both handled in
-                        the component instead of disappearing into a value accessor.
-                      -->
                       <input
                         type="text"
                         inputmode="numeric"
@@ -530,9 +416,10 @@
                 </div>
               </div>
             } @else {
-              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
               <div [id]="sectionBodyId('appearance')" hidden></div>
             }
           </section>
@@ -587,17 +474,20 @@
                 </div>
               </div>
             } @else {
-              <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-                   states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-                   keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
               <div [id]="sectionBodyId('other')" hidden></div>
             }
           </section>
         </div>
       } @else {
-        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
         <div [id]="sectionBodyId('pageSettings')" hidden></div>
       }
     </section>
@@ -624,24 +514,26 @@
         >
           <p class="module-settings__intro">{{ intros['specificSettings'] }}</p>
 
-          <!-- The successor to the legacy per-module settings control panel. A definition that contributes
-               its own settings surface projects it here; the region is always rendered when open so the
-               operator can see that the module has none, which the legacy screen could not show. -->
-          <!-- ⚠ NOT AN `app-form-field`, DELIBERATELY. This is a projection slot for a surface this screen
-               knows nothing about: it has no caption, no help text, no control and no validation state, so
-               wrapping it in a field primitive would assert a label-and-control relationship that does not
-               exist. It kept the screen's own stacked-field classes only for its width, which the slot's own
-               full-width grid already supplies. -->
+          <!--
+            The successor to the legacy per-module settings control panel. A definition that contributes
+            its own settings surface projects it here; the region is always rendered when open so the
+            operator can see that the module has none, which the legacy screen could not show.
+          -->
+          <!--
+            ⚠ NOT AN `app-form-field`, DELIBERATELY. This is a projection slot for a surface this screen
+            knows nothing about: it has no caption, no help text, no control and no validation state, so
+            wrapping it in a field primitive would assert a label-and-control relationship that does not
+            exist.
+          -->
           <div class="module-settings__slot">
             <ng-content select="[moduleSpecificSettings]"></ng-content>
           </div>
 
-          <!-- WHAT THIS MODULE ACTUALLY HAS STORED. Read-only by design: the legacy placeholder hosted the
-               module's OWN settings control, and that control loader is out of scope, so there is no
-               bespoke editor to present and no way to know what a given key permits. Before this existed
-               the screen read both settings maps, wrote them back on every save, and displayed neither -
-               so a module carrying a 750-character stored value showed an empty panel. Values are rendered
-               through interpolation and are therefore text, never markup. -->
+          <!--
+            WHAT THIS MODULE ACTUALLY HAS STORED. Read-only by design: the legacy placeholder hosted the
+            module's OWN settings control, and that control loader is out of scope, so there is no
+            bespoke editor to present and no way to know what a given key permits.
+          -->
           @if (hasSpecificSettings) {
             <dl class="module-settings__stored">
               @for (row of specificSettingRows; track row.scope + '\u001f' + row.name) {
@@ -657,9 +549,11 @@
           }
         </div>
       } @else {
-        <!-- The region's identity, kept while it is closed so the toggle above can name it in both
-             states. Empty and hidden: the CONTENTS are still removed rather than hidden, which is what
-             keeps a closed region out of the tab order and its controls out of the accessibility tree. -->
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
         <div [id]="sectionBodyId('specificSettings')" hidden></div>
       }
     </section>
@@ -675,15 +569,12 @@
   </form>
 
   @if (removalPending) {
-    <!-- ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application
-       shows the SAME title, which the shared dialog declares as its default; binding one here is how
-       five different titles for one action came about - runtime testing found `Delete`,
-       `Confirm Delete`, `Delete Module`, `Delete Profile Property` and `Delete role group` across the
-       screens. The legacy had no title to preserve either: every in-scope delete confirmation was a
-       `window.confirm()` carrying the single shared string `DeleteItem`
-       (`Website/App_GlobalResources/SharedResources.resx` L120-L122), with no title at all. The
-       MESSAGE is still bound where a screen has its own legacy wording, because that wording is a
-       resource value this migration must preserve. -->
+    <!--
+      ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+      the SAME title, which the shared dialog declares as its default; binding one here is how five
+      different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+      `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+    -->
     <app-confirm-dialog
       [message]="deleteConfirmMessage()"
       [confirmLabel]="deleteConfirmLabel"

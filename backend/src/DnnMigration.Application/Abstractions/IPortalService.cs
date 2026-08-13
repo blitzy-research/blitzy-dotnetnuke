@@ -1,148 +1,3 @@
-// MIGRATION: This contract replaces the two legacy classes that between them owned the portal
-// aggregate and its aliases. PortalController, at Library/Components/Portal/PortalController.vb,
-// is 1,632 lines carrying 21 public members - 6 of them Shared (static) and 15 instance members.
-// PortalAliasController, at Library/Components/Portal/PortalAliasController.vb, is 102 lines
-// carrying a further 9, none of them Shared. Neither class was substitutable: an instance member
-// was reached through a directly constructed object and a Shared member through the type itself,
-// so no consumer could stand either aside for a test double. Both collapse into this single
-// injected abstraction, registered with a scoped lifetime as one of the seven services the
-// application layer contributes.
-//
-// MIGRATION: There is deliberately no separate alias service. An alias has no existence
-// independent of the portal that owns it - the owning column is declared NOT NULL with a
-// cascading foreign key - and the nested route these members serve,
-// /api/v1/portals/{portalId}/aliases, mirrors that ownership. Splitting the two apart would let a
-// caller modify an alias without ever naming the tenant it belongs to.
-//
-// MIGRATION: 1 of 15. Positional parameter lists become named request objects. CreatePortal at
-// PortalController.vb:L980 declared FIFTEEN positional parameters; UpdatePortalInfo at
-// PortalController.vb:L1568 declared TWENTY-SEVEN. Both counts were verified by reading the
-// signatures rather than taken on trust. Neither shape survives: creation takes
-// CreatePortalRequest and modification takes UpdatePortalRequest, so every value is named at the
-// call site, argument order stops being load-bearing, and adding a column becomes an additive
-// change to one type instead of a breaking change to every caller. A second legacy overload,
-// UpdatePortalInfo at PortalController.vb:L1524, accepted the persisted record itself and merely
-// unpacked it into the twenty-seven-argument form; it is folded into the same request object,
-// because no persisted record crosses this boundary in either direction.
-//
-// MIGRATION: 2 of 15. DeletePortal at PortalController.vb:L162 reported its outcome as a String -
-// empty meaning success, non-empty being a human-readable message already localised for display.
-// A caller therefore had to compare against text to learn whether the delete happened. That is
-// replaced by a Result. The rule the string carried is a genuine business rule and is preserved:
-// the legacy body first reads how many portals exist, proceeds only when more than one does, and
-// otherwise yields the shared message keyed LastPortal, whose wording is "You Can Not Delete The
-// Last Portal In Your Database".
-// MIGRATION: that wording is at Website/App_GlobalResources/SharedResources.resx:942. The rule
-// survives as the documented failure code portal.last_remaining. Per Rule T2 the decision is taken
-// inside the service; no member here reports a portal tally for a controller to interpret.
-//
-// MIGRATION: 3 of 15. Two untyped listing contracts become one paged envelope. GetPortals at
-// PortalController.vb:L1263 returned the non-generic collection type of the era, declaring no
-// element type and no grand total. GetPortalsByName at PortalController.vb:L262 returned the same
-// non-generic type and smuggled the grand total back through a by-reference Integer argument, so a
-// single call produced two answers that no type tied together. Both become
-// PagedResult<PortalListItemDto>, which carries the records and the total on one immutable value.
-// No by-reference and no output argument appears anywhere on this contract.
-//
-// MIGRATION: 4 of 15. The legacy "return everything, unpaged" convention was a negative page
-// index: GetPortalsByName at PortalController.vb:L262 tested for -1 and then rewrote its own
-// arguments to page 0 with a page size of Integer.MaxValue. That sentinel is not carried forward.
-// The unpaged case has its own named factory on the paged envelope, so the intent is stated rather
-// than encoded in a magic number, and negative page coordinates are rejected outright.
-//
-// MIGRATION: 5 of 15. Absence is a nullable type, never a numeric sentinel. The legacy null
-// contract at Library/Components/Shared/Null.vb:L41 defines its absent-Integer marker as -1, and
-// CreatePortal at PortalController.vb:L980 documents that same value as its failure return,
-// tested at L990. But the schema declares Portals.PortalID as IDENTITY (-1, 1) at
-// Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L77, so -1 is the seed and
-// the first identifier the column generates, while the shipped default portal row is inserted with an
-// explicit 0 at L7125. Both are real, addressable identifiers. Every optional identifier on this
-// contract is therefore a nullable Integer whose null means "not supplied"; no implementation may
-// coalesce -1 or 0 to null, and no consumer may read either value as meaning absent.
-//
-// MIGRATION: 6 of 15. GetCurrentPortalSettings at PortalController.vb:L1209 read the tenant from
-// MIGRATION: ambient per-request state, as one cast of HttpContext.Current.Items("PortalSettings"),
-// and is not ported. Tenant identity is supplied instead by the domain layer's immutable scoped
-// portal context, resolved once per request by the API layer's alias-resolution middleware.
-// Consequently no member below omits a portal identifier on the assumption that ambient state will
-// supply one.
-//
-// MIGRATION: 7 of 15. Four disc-measurement members are not ported, because file management is
-// beyond the migrated scope.
-// MIGRATION: GetPortalSpaceUsed at PortalController.vb:L1596 is additionally marked <Obsolete> in
-// MIGRATION: the source, superseded there by GetPortalSpaceUsedBytes, so omission rather than
-// translation of its optional parameter is the correct treatment.
-// MIGRATION: GetPortalSpaceUsedBytes at L1278 and L1296, and HasSpaceAvailable at L1323, all walk
-// the portal's files on disc.
-// The quota columns are a separate matter and DO survive: HostSpace, PageQuota and UserQuota are
-// stored values on the portal record - arguments 11, 12 and 13 of the twenty-seven-argument
-// update - and remain on the portal transfer objects. The stored limit is kept; only its
-// measurement against a file system is dropped.
-//
-// MIGRATION: 8 of 15. ProcessResourceFile at PortalController.vb:L1483 read a portal template's
-// MIGRATION: companion .resx resource file and is not ported, because the localisation mechanism
-// is not migrated. The legacy resource files are read as the authority for English wording and are
-// never executed as a resource pipeline, so no member here accepts or returns a resource
-// identifier.
-//
-// MIGRATION: 9 of 15. ParsePanes at PortalController.vb:L1624 took a document-object-model node
-// together with the untyped key-value collection type of the era. It is a template-parsing helper
-// that was public by accident rather than by design, and it does not appear on this contract: no
-// document type and no untyped collection is exposed here, and template parsing stays inside the
-// service implementation. What is deliberately deferred is named precisely - the standalone
-// re-application of a template to an EXISTING portal, the behaviour behind the legacy
-// Website/admin/Portal/Template.ascx.vb screen and the template step of SiteWizard.ascx.vb.
-// Template application at CREATION time is preserved and reachable, because CreatePortalRequest
-// already carries the template selection that ParseTemplate at PortalController.vb:L1360 consumed
-// on the one path the legacy signup screen ever triggered. A standalone member would additionally
-// require a template-merge mode type that the migration plan does not name and that no sibling
-// file is assigned to author, so declaring it here would leave a reference nothing can resolve.
-//
-// MIGRATION: 10 of 15. Portal creation becomes atomic. CreatePortal at PortalController.vb:L980
-// writes across the Portals, PortalAlias, Roles, Tabs and Modules tables in a sequence that is not
-// transactional across statements: a failure part-way through left a partially built tenant behind,
-// which is exactly why the legacy body accumulates a message string as it goes. The single create
-// member below commits once, through the domain layer's unit of work, so the tenant either exists
-// completely or not at all.
-//
-// MIGRATION: 11 of 15. Alias matching refuses ambiguity; exact matching itself is preserved, not
-// introduced. The EARLIEST tenant-resolution procedure GetPortalSettings, at
-// 01.00.00.SqlDataProvider:L4569-L4600, selected the lowest matching identifier using a substring
-// predicate that wrapped the supplied alias in wildcards, so an alias that was a substring of a
-// different tenant's alias could resolve to the wrong tenant - but that procedure was dropped at
-// 02.02.00.SqlDataProvider:L267 and the Portals.PortalAlias column it read was dropped at
-// 02.02.02.SqlDataProvider:L3925-L3926. The TERMINAL legacy lookups already compared whole values:
-// GetPortalAlias at 02.02.02.SqlDataProvider:L3846-L3856 and GetPortalByAlias at L3930-L3938 both
-// write HTTPAlias = @HTTPAlias. Every alias comparison behind this contract - the duplicate check on
-// add, and lookup - therefore reproduces terminal legacy behaviour. The one deliberate correction is
-// that a match yielding more than one candidate is refused rather than collapsed with min(PortalId),
-// which is where the latent multi-tenant defect actually survived to the end.
-//
-// MIGRATION: 12 of 15. The pre-generics alias collection wrapper produces no target type.
-// GetPortalAliasByPortalID at PortalAliasController.vb:L67 and GetPortalAliases at L86 both
-// returned it, and it is subsumed by a read-only generic sequence of alias transfer objects. Its
-// keyed-lookup behaviour is not reproduced either: it keyed entries by the lower-cased alias, which
-// is a caching concern rather than a contract.
-//
-// MIGRATION: 13 of 15. The fee clamps inside the role-creation step of portal creation, at
-// PortalController.vb:L395 and L398, are recorded here so the implementer cannot lose them. Each
-// reads CType(IIf(fee < 0, 0, fee), Single) and becomes Math.Max(fee, 0f). The substitution is
-// exact rather than merely close: IIf is a function and evaluates BOTH arms, whereas the C#
-// conditional operator short-circuits - but both arms here are side-effect-free literals, so no
-// observable behaviour changes. The clamp is a detail of the implementation, so it is documented
-// rather than exposed as a member.
-//
-// MIGRATION: 14 of 15. Expiry maintenance is omitted. DeleteExpiredPortals at
-// PortalController.vb:L156, GetExpiredPortals at L273 and UpdatePortalExpiry at L1495 exist to
-// service a background sweep; the scheduling subsystem they belong to is beyond the migrated
-// scope, and no endpoint or screen in the plan invokes them. Two further observations justify
-// dropping rather than porting them: DeleteExpiredPortals discards the outcome string of every
-// delete it attempts, so the last-portal rule was silently swallowed there; and UpdatePortalExpiry
-// inverts its own null test at L1502, converting the value it has just found to be null and
-// falling back to the current time only when a real date is present. That is a discovered legacy
-// defect, recorded rather than repaired. ExpiryDate itself survives as a stored value - argument 5
-// of the twenty-seven-argument update - and remains on the portal transfer objects.
-
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Portal;
 using DnnMigration.Domain.Common;
@@ -150,576 +5,224 @@ using DnnMigration.Domain.Common;
 namespace DnnMigration.Application.Abstractions;
 
 /// <summary>
-/// Application-layer contract for the portal aggregate - the multi-tenant site container - and for
-/// the aliases through which each tenant is reached.
+/// Application-layer contract for the portal aggregate - the multi-tenant site container - and for the
+/// aliases through which each tenant is reached.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Scope. This contract owns the tenant container itself: listing, reading, creating, modifying and
-/// removing a portal, projecting its configuration for display, and managing the host names bound
-/// to it. It is consumed by <c>PortalsController</c> at <c>/api/v1/portals</c> and by
-/// <c>PortalAliasesController</c> at <c>/api/v1/portals/{portalId}/aliases</c>, and it is
-/// implemented by <c>Application/Services/PortalService.cs</c>.
+/// removing a portal, projecting its configuration for display, and managing the host names bound to it.
 /// </para>
 /// <para>
-/// One outcome shape, everywhere. Every member returns <see cref="Result"/> or
-/// <see cref="Result{T}"/>. That uniformity is deliberate: a controller's whole job is to translate
-/// an outcome into a status code, and a surface that mixed a bare payload with a wrapped one would
-/// force the controller to branch on shape before it could even begin translating. It also gives a
-/// listing operation somewhere to report an invalid paging request, since the paged envelope's own
-/// factory throws on negative coordinates rather than reporting them.
-/// </para>
-/// <para>
-/// Absent is not failed. Every single-item member is typed <c>Result&lt;TDto?&gt;</c> with a
-/// nullable payload. A successful outcome carrying a <see langword="null"/> value means the record
-/// does not exist - which a controller renders as 404 - whereas a failed outcome means the
-/// operation could not be attempted. Collapsing the two would change branch outcomes, because the
-/// legacy readers signalled a missing row by returning nothing at all while signalling a refused
-/// operation through a message. A successful outcome may additionally carry an advisory reason
-/// without that implying failure.
-/// </para>
-/// <para>
-/// Failure codes. Expected failures are returned, never thrown, and each carries one of the
-/// following stable codes: <c>portal.not_found</c>, the named portal does not exist;
-/// <c>portal.last_remaining</c>, the delete was refused because one portal must survive;
-/// <c>portal.creation_failed</c>, creation could not be completed and nothing was committed;
-/// <c>portal.paging_invalid</c>, the supplied page coordinates are not usable;
-/// <c>portal.alias_not_found</c>, the named alias does not exist;
-/// <c>portal.alias_duplicate</c>, the submitted host name is already bound. There is deliberately
-/// no route-versus-payload mismatch code, for the reason given in the next paragraph. Unexpected
-/// faults are left to surface and are translated once, at the API edge.
-/// </para>
-/// <para>
-/// A route-supplied identifier is the ONLY place a subject is named, and no payload on this contract
-/// carries a copy of one. That is a deliberate property of the request types rather than an accident:
-/// <c>UpdatePortalRequest</c> declares no portal identifier, <c>CreatePortalRequest</c> declares no
-/// identifier at all, and the two alias request types carry the host name and nothing else. The
-/// hazard being closed is real - a payload identifier that an implementation trusted would let a
-/// caller edit another tenant's record by editing the body of a request it is otherwise entitled to
-/// make, and one that an implementation quietly discarded would commit a write the caller may never
-/// have asked for while obliging nobody to notice the disagreement. Both variants of the hazard need
-/// a second copy of the identifier to exist. Refusing a disagreement was considered and is
-/// implementable - <c>Api/Filters/FluentValidationActionFilter.cs</c> publishes every route value
-/// into the validation context's root data - but a rule guards only the requests that reach it,
-/// whereas a contract with no duplicate has nothing to disagree on any path. There is consequently
-/// no identifier comparison for any member below to perform, and none should be introduced without
-/// first reintroducing the duplicate it would guard. The same reasoning is recorded on the payload
-/// contracts themselves, so the two descriptions cannot drift apart.
-/// </para>
-/// <para>
-/// Configuration is columns, not a key-value bag. There is no <c>PortalSettings</c> table anywhere
-/// in the shipped schema and no key-value setting entity for a portal; <c>PortalSettingsDto</c> is
-/// a projection of stored columns on the portal record. This contract therefore exposes no
-/// setting-by-key reader or writer and no untyped string map of settings, and an implementer must
-/// not reintroduce one.
-/// </para>
-/// <para>
-/// Paging semantics are defined elsewhere. The meaning of a page index, the base it counts from,
-/// and how an unpaged answer is expressed all belong to <c>Domain/Common/PagedResult.cs</c> and are
-/// documented there. Nothing here restates them, so there is exactly one place to read them.
-/// </para>
-/// <para>
-/// Deliberately absent, with reasons. No member measures disc consumption, accepts a file-system
-/// path, processes a resource file, exposes a document node or an untyped collection, reports a
-/// portal tally, reads ambient request state, or services an expiry sweep. Each omission is
-/// recorded against the legacy member it retires in the migration notes at the head of this file.
-/// No member is synchronous, and none takes an output or by-reference argument.
-/// </para>
-/// <para>
-/// Implementer's checklist. Reach data only through the domain layer's repository abstractions -
-/// never a database context, a query root or SQL text. Commit a multi-table write once, through the
-/// unit of work. Compare aliases exactly. Keep the fee clamp described in the migration notes
-/// above. Cache behind the domain layer's cache abstraction, keeping the legacy key names, rather
-/// than exposing anything cache-shaped here. Return an empty sequence, never
-/// <see langword="null"/>, for a collection payload. Honour cancellation on every path.
+/// One outcome shape, everywhere. Every member returns <see cref="Result"/> or <see cref="Result{T}"/>.
 /// </para>
 /// </remarks>
 public interface IPortalService
 {
-    // MIGRATION: 15 of 15. The legacy name filter was a raw pattern. The GetPortalsByName
-    // procedure, added at 04.04.00.SqlDataProvider, matches with "WHERE PortalName LIKE
-    // @NameToMatch" and adds no wildcards of its own, so whatever the caller supplied was
-    // interpreted as a pattern by the database. Accepting a pattern from an HTTP caller is not
-    // carried forward: the filter below is a literal substring to be found, with pattern
-    // metacharacters escaped by the implementation. This is a deliberate divergence - it removes a
-    // caller's ability to inject matching syntax or to force a scan with a leading wildcard - and
-    // it is distinct from the alias change in note 11, which concerns exact host-name matching and
-    // not this search box.
+    // 15 of 15. The legacy name filter was a raw pattern.
 
-    /// <summary>
-    /// Lists portals, optionally narrowed by name, as one page of a larger set.
-    /// </summary>
-    /// <param name="request">
-    /// The page of records being asked for. Page coordinates that cannot be honoured are reported
-    /// as a failure rather than silently adjusted.
-    /// </param>
-    /// <param name="nameFilter">
-    /// An optional literal fragment of a portal's name. When <see langword="null"/>, empty or
-    /// white-space, no name narrowing is applied and every portal the caller may see is eligible.
-    /// The value is matched as literal text, not as a pattern.
-    /// </param>
+    /// <summary>Lists portals, optionally narrowed by name, as one page of a larger set.</summary>
+    /// <param name="request">The page of records being asked for.</param>
+    /// <param name="nameFilter">An optional literal fragment of a portal's name.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
-    /// <returns>
-    /// A successful outcome carrying one page of portals, which is empty when nothing matched.
-    /// Fails with <c>portal.paging_invalid</c> when the requested page coordinates are not usable.
-    /// </returns>
-    /// <remarks>
-    /// Consolidates the two legacy listing members: <c>GetPortals</c>
-    /// (<c>PortalController.vb:L1263</c>), which returned every portal, and
-    /// <c>GetPortalsByName</c> (<c>PortalController.vb:L262</c>), which returned a page and
-    /// reported the grand total through a by-reference argument. Omitting
-    /// <paramref name="nameFilter"/> reproduces the first; supplying it reproduces the second. An
-    /// empty page is a success, not a failure - a filter that matches nothing is a legitimate
-    /// answer. The page coordinates and the filter length are bounded by the shared
-    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
-    /// collection's sortable set because one request contract serves every listing. The sort field
-    /// is therefore bounded HERE, against <c>SortableFields.Portals</c> - exactly the set of arms
-    /// this listing's ordering expression honours - and an unrecognised field is reported as
-    /// <c>portal.paging_invalid</c>, alongside coordinates that are well formed yet still cannot be
-    /// honoured. Enforcing the narrow set at the point of dispatch rather than only at the API edge
-    /// binds every caller, including one that never passes through request validation.
-    /// </remarks>
+    /// <returns>A successful outcome carrying one page of portals, which is empty when nothing matched.</returns>
     Task<Result<PagedResult<PortalListItemDto>>> ListPortalsAsync(
         PagedRequest request,
         string? nameFilter = null,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads one portal in full.
-    /// </summary>
+    /// <summary>Reads one portal in full.</summary>
     /// <param name="portalId">Identifier of the portal to read.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome whose value is the portal, or a successful outcome whose value is
-    /// <see langword="null"/> when no portal carries that identifier. Absence is reported as
-    /// success with no value, never as a failure, so a caller can distinguish "there is no such
-    /// tenant" from "the lookup could not be performed".
+    /// A successful outcome whose value is the portal, or a successful outcome whose value is <see
+    /// langword="null"/> when no portal carries that identifier.
     /// </returns>
-    /// <remarks>
-    /// Replaces <c>GetPortal</c> (<c>PortalController.vb:L1224</c>), which returned nothing at all
-    /// for a missing row. Every value of <paramref name="portalId"/> is meaningful, including
-    /// negative values and zero, so an implementation must not short-circuit on a particular number
-    /// and must not treat one as a request for "no portal".
-    /// </remarks>
     Task<Result<PortalDetailDto?>> GetPortalAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Creates a portal together with the records a working tenant requires.
-    /// </summary>
+    /// <summary>Creates a portal together with the records a working tenant requires.</summary>
     /// <param name="request">The portal to create.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the created portal, including the identifier the database
-    /// assigned, so that a caller can answer 201 Created with a location for the new resource.
-    /// Fails with <c>portal.creation_failed</c> when the tenant could not be built, and with
-    /// <c>portal.alias_duplicate</c> when the requested host name is already bound to a portal.
+    /// A successful outcome carrying the created portal, including the identifier the database assigned, so
+    /// that a caller can answer 201 Created with a location for the new resource.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Replaces the fifteen-argument <c>CreatePortal</c> (<c>PortalController.vb:L980</c>). The
-    /// value is never <see langword="null"/> on success: a created portal always exists, so unlike
-    /// the read members this payload is non-nullable.
-    /// </para>
-    /// <para>
-    /// The write spans the <c>Portals</c>, <c>PortalAlias</c>, <c>Roles</c>, <c>Tabs</c> and
-    /// <c>Modules</c> tables and is committed exactly once through the domain layer's unit of work,
-    /// so a partially built tenant cannot be left behind. On failure nothing is committed, and the
-    /// failure code - not a returned identifier - reports what happened.
-    /// </para>
+    /// The write spans the <c>Portals</c>, <c>PortalAlias</c>, <c>Roles</c>, <c>Tabs</c> and <c>Modules</c>
+    /// tables and is committed exactly once through the domain layer's unit of work, so a partially built
+    /// tenant cannot be left behind. On failure nothing is committed, and the failure code - not a returned
+    /// identifier - reports what happened.
     /// </remarks>
     Task<Result<PortalDetailDto>> CreatePortalAsync(
         CreatePortalRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Modifies an existing portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal to modify, bound from the route. The legacy-compatible request also
-    /// carries the identifier, and its validator requires the two values to agree before the service is
-    /// invoked.
-    /// </param>
+    /// <summary>Modifies an existing portal.</summary>
+    /// <param name="portalId">Identifier of the portal to modify, bound from the route.</param>
     /// <param name="request">The values to store.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the stored portal, so that a caller can answer 200 OK with the
-    /// current state; or a successful outcome whose value is <see langword="null"/> when no portal
-    /// carries that identifier, which a caller renders as 404.
+    /// A successful outcome carrying the stored portal, so that a caller can answer 200 OK with the current
+    /// state; or a successful outcome whose value is <see langword="null"/> when no portal carries that
+    /// identifier, which a caller renders as 404.
     /// </returns>
-    /// <remarks>
-    /// Replaces both legacy update overloads: the twenty-seven-argument
-    /// <c>UpdatePortalInfo</c> (<c>PortalController.vb:L1568</c>) and the record-taking overload at
-    /// <c>L1524</c> that merely unpacked into it. The settings-specific member below exposes the same
-    /// business write through a route-owned request and returns the settings projection; both operations
-    /// share the mapper and guards so their behaviour cannot diverge.
-    /// </remarks>
     Task<Result<PortalDetailDto?>> UpdatePortalAsync(
         int portalId,
         UpdatePortalRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Removes a portal and the records that depend on it.
-    /// </summary>
+    /// <summary>Removes a portal and the records that depend on it.</summary>
     /// <param name="portalId">Identifier of the portal to remove.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
-    /// <returns>
-    /// A successful outcome when the portal was removed, which a caller answers as 204 No Content.
-    /// Fails with <c>portal.not_found</c> when no portal carries that identifier, and with
-    /// <c>portal.last_remaining</c> when removal was refused because an installation must retain at
-    /// least one portal.
-    /// </returns>
+    /// <returns>A successful outcome when the portal was removed, which a caller answers as 204 No Content.</returns>
     /// <remarks>
-    /// <para>
-    /// Replaces <c>DeletePortal</c> (<c>PortalController.vb:L162</c>), which reported an error
-    /// message string, and <c>DeletePortalInfo</c> (<c>PortalController.vb:L1191</c>), which
-    /// performed the database half of the same operation.
-    /// </para>
-    /// <para>
     /// The last-portal rule is decided inside the implementation and surfaced as
-    /// <c>portal.last_remaining</c>. This contract deliberately exposes no way to ask how many
-    /// portals exist, because that would move the decision into the caller.
-    /// </para>
-    /// <para>
-    /// No file-system location is accepted. The legacy member took a server path so it could delete
-    /// the tenant's folders; file management is beyond the migrated scope, so only the stored
-    /// records are removed and any on-disc residue is left for an operator to clear.
-    /// </para>
+    /// <c>portal.last_remaining</c>. This contract deliberately exposes no way to ask how many portals
+    /// exist, because that would move the decision into the caller.
     /// </remarks>
     Task<Result> DeletePortalAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads a portal's configuration, projected for display.
-    /// </summary>
+    /// <summary>Reads a portal's configuration, projected for display.</summary>
     /// <param name="portalId">Identifier of the portal whose configuration is wanted.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the configuration, or a successful outcome whose value is
-    /// <see langword="null"/> when no portal carries that identifier.
+    /// A successful outcome carrying the configuration, or a successful outcome whose value is <see
+    /// langword="null"/> when no portal carries that identifier.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Serves the dedicated configuration screen at <c>/portals/{portalId}/settings</c>, whose
-    /// legacy counterparts are <c>Website/admin/Portal/SiteSettings.ascx.vb</c> and the
-    /// configuration step of <c>SiteWizard.ascx.vb</c>.
-    /// </para>
-    /// <para>
-    /// This is a projection of stored columns on the portal record, not a bag of keyed values.
-    /// There is no <c>PortalSettings</c> table anywhere in the shipped schema - the schema defines
-    /// <c>ModuleSettings</c>, <c>HostSettings</c>, <c>TabModuleSettings</c> and
-    /// <c>ScheduleItemSettings</c>, and none for a portal - and the legacy type of the same name was
-    /// a per-request composite assembled in memory rather than a persisted record. An implementer
-    /// must therefore not add a setting-by-key reader or writer here.
-    /// </para>
-    /// <para>
-    /// Reading and writing share one resource URL and one projection, but configuration is still stored
-    /// on the portal row rather than in a separate settings table. The matching writer below applies the
-    /// same business guards and mapping as
-    /// <see cref="UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken)"/> while returning this
-    /// screen-shaped projection.
-    /// </para>
+    /// Reading and writing share one resource URL and one projection, but configuration is still stored on
+    /// the portal row rather than in a separate settings table. The matching writer below applies the same
+    /// business guards and mapping as <see cref="UpdatePortalAsync(int, UpdatePortalRequest,
+    /// CancellationToken)"/> while returning this screen-shaped projection.
     /// </remarks>
     Task<Result<PortalSettingsDto?>> GetPortalSettingsAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Replaces a portal's editable configuration and returns the updated settings projection.
-    /// </summary>
+    /// <summary>Replaces a portal's editable configuration and returns the updated settings projection.</summary>
     /// <param name="portalId">Identifier of the portal whose configuration is being replaced.</param>
     /// <param name="request">The complete editable state submitted by the settings screen.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the updated configuration, or a successful outcome whose value is
-    /// <see langword="null"/> when no portal carries that identifier.
+    /// A successful outcome carrying the updated configuration, or a successful outcome whose value is <see
+    /// langword="null"/> when no portal carries that identifier.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Serves <c>PUT /api/v1/portals/{portalId}/settings</c>, the write companion to
-    /// <see cref="GetPortalSettingsAsync(int, CancellationToken)"/> required by the frozen API contract.
-    /// The route is the sole portal identity; the body therefore carries no duplicate portal identifier.
-    /// </para>
-    /// <para>
-    /// This is not a key-value settings writer. It replaces the editable columns on the tracked
-    /// <c>Portal</c> aggregate, reproducing the one save operation in
-    /// <c>Website/admin/Portal/SiteSettings.ascx.vb</c>. Host-only fields and the designated
-    /// administrator are guarded exactly as they are on the general portal update path.
-    /// </para>
-    /// <para>
-    /// EVERY IDENTIFIER THE BODY CARRIES IS TENANT-SCOPED, on the same terms as
-    /// <see cref="UpdatePortalAsync(int, UpdatePortalRequest, CancellationToken)"/>: the designated
-    /// administrator must hold a membership row in the addressed portal, and each of the splash, home,
-    /// login and user pages must belong to it. A reference belonging to another tenant, or to nothing, is
-    /// refused with <c>portal.administrator_invalid</c> or <c>portal.tab_reference_invalid</c>, and a
-    /// legacy processor credential that is neither cleared nor expressed as a managed-secret reference is
-    /// refused with <c>portal.processor_reference_invalid</c>. An implementer must not relax this: the page
-    /// columns carry no foreign key in every supported schema, so the store will not refuse a foreign page
-    /// on its behalf.
-    /// </para>
-    /// <para>
     /// The guards, the reference validation and the write are ONE SERIALISABLE OPERATION. Judging ownership
     /// in one statement and writing in a later one would let a membership be withdrawn or a page removed in
-    /// between, storing the very reference the validation refuses. A write refused by the store as a lost
-    /// update is reported as <c>portal.concurrency_conflict</c>, indistinguishably from a stale
-    /// concurrency token, because from the caller's position they are the same event.
-    /// </para>
+    /// between, storing the very reference the validation refuses.
     /// </remarks>
     Task<Result<PortalSettingsDto?>> UpdatePortalSettingsAsync(
         int portalId,
         UpdatePortalSettingsRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Lists the accounts a portal may designate as its administrator.
-    /// </summary>
+    /// <summary>Lists the accounts a portal may designate as its administrator.</summary>
     /// <param name="portalId">Identifier of the portal whose candidates are wanted.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the candidates, or a successful outcome whose value is
-    /// <see langword="null"/> when no portal carries that identifier.
+    /// A successful outcome carrying the candidates, or a successful outcome whose value is <see
+    /// langword="null"/> when no portal carries that identifier.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Fills the administrator selector on the settings screen, reproducing
-    /// <c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>: the legacy screen asked the role
-    /// controller for the members of the portal's own administrator role, added one entry per member,
-    /// and pre-selected the entry matching the stored <c>AdministratorId</c>.
-    /// </para>
-    /// <para>
-    /// The candidates are keyed off the portal's <c>AdministratorRoleId</c> rather than off a literal
-    /// role name. The legacy member was name-keyed because its callers held names, and the legacy
-    /// screen passed <c>objPortal.AdministratorRoleName</c> - a value that comes from a join rather
-    /// than from a constant precisely because a tenant may rename the role. Resolving the name from
-    /// the stored key preserves that and cannot be defeated by a rename.
-    /// </para>
-    /// <para>
-    /// MIGRATION: UNPAGED, matching the legacy read. <c>GetUserRolesByRoleName</c> returned every
-    /// member as an untyped list and the selector held them all, so there is no page coordinate to
-    /// honour and no window a caller could mistake for the whole set. A portal's administrator role
-    /// is small by nature; the account listing, which is not, is paged.
-    /// </para>
-    /// <para>
-    /// An implementer must not widen this to every account in the portal. The write path already
-    /// guards the broader rule - the designated account must belong to the addressed portal - and a
-    /// wider list would offer accounts the legacy selector never offered, which is a change in
-    /// behaviour rather than a convenience.
-    /// </para>
+    /// An implementer must not widen this to every account in the portal. The write path already guards the
+    /// broader rule - the designated account must belong to the addressed portal - and a wider list would
+    /// offer accounts the legacy selector never offered, which is a change in behaviour rather than a
+    /// convenience.
     /// </remarks>
     Task<Result<IReadOnlyList<PortalAdministratorDto>?>> ListAdministratorCandidatesAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Lists the aliases bound to one portal, or every alias in the installation.
-    /// </summary>
+    /// <summary>Lists the aliases bound to one portal, or every alias in the installation.</summary>
     /// <param name="portalId">
-    /// Identifier of the portal whose aliases are wanted, or <see langword="null"/> to list every
-    /// alias across every portal.
+    /// Identifier of the portal whose aliases are wanted, or <see langword="null"/> to list every alias
+    /// across every portal.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the aliases, which is an empty sequence - never
-    /// <see langword="null"/> - when there are none. Fails with <c>portal.not_found</c> when a
-    /// portal identifier is supplied and no portal carries it.
+    /// A successful outcome carrying the aliases, which is an empty sequence - never <see langword="null"/>
+    /// - when there are none.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Consolidates three legacy readers: <c>GetPortalAliasArrayByPortalID</c>
-    /// (<c>PortalAliasController.vb:L44</c>), <c>GetPortalAliasByPortalID</c> (<c>L67</c>) and
-    /// <c>GetPortalAliases</c> (<c>L86</c>). The first two differed only in the collection type they
-    /// built from the same query, and the pre-generics wrapper the second returned has no successor
-    /// type.
-    /// </para>
-    /// <para>
-    /// The wildcard sentinel is gone. <c>GetPortalAliases</c> asked for every alias by delegating to
-    /// the by-portal reader with -1 as the portal identifier, a value the underlying procedure
-    /// treated as "match every row" - yet -1 is also a real portal identifier, because
-    /// <c>Portals.PortalID</c> seeds its identity at that value. Here the unfiltered case is
-    /// <see langword="null"/>, so it cannot collide with a genuine identifier.
-    /// </para>
+    /// The wildcard sentinel is gone. <c>GetPortalAliases</c> asked for every alias by delegating to the
+    /// by-portal reader with -1 as the portal identifier, a value the underlying procedure treated as
+    /// "match every row" - yet -1 is also a real portal identifier, because <c>Portals.PortalID</c> seeds
+    /// its identity at that value.
     /// </remarks>
     Task<Result<IReadOnlyList<PortalAliasDto>>> ListPortalAliasesAsync(
         int? portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads one alias of one portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against the
-    /// stored row's owner, for the reason set out in the remarks.
-    /// </param>
+    /// <summary>Reads one alias of one portal.</summary>
+    /// <param name="portalId">Identifier of the portal the alias must belong to.</param>
     /// <param name="portalAliasId">Identifier of the alias to read.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the alias, or a successful outcome whose value is
-    /// <see langword="null"/> when no alias carries that identifier within that portal.
+    /// A successful outcome carrying the alias, or a successful outcome whose value is <see
+    /// langword="null"/> when no alias carries that identifier within that portal.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Replaces <c>GetPortalAliasByPortalAliasID</c> (<c>PortalAliasController.vb:L63</c>) and
-    /// serves the single-alias edit screen, whose legacy counterpart is
-    /// <c>Website/admin/Portal/EditPortalAlias.ascx.vb</c>.
-    /// </para>
-    /// <para>
-    /// THE OWNING PORTAL IS REQUIRED EVEN THOUGH THE ALIAS KEY ALONE WOULD FIND THE ROW. The alias
-    /// identifier is a surrogate declared IDENTITY (1, 1), so it is unique across the installation and
-    /// a lookup by it needs nothing else - which is exactly the problem. Uniqueness makes the key
-    /// GUESSABLE across tenants: an earlier revision took the key alone, so a caller authorised over
-    /// one portal could read, rename and unbind any alias in the installation simply by counting
-    /// upwards, and renaming an alias re-points tenant resolution itself. The portal is therefore
-    /// supplied by the route and compared against the stored row's owner before anything is reported
-    /// or written. A mismatch reads as <c>portal.alias_not_found</c> rather than as a refusal, so the
-    /// member does not become an oracle for which alias keys exist in other tenants.
-    /// </para>
-    /// <para>
     /// THE PORTAL IS OPTIONAL, AND WHAT ITS ABSENCE MEANS IS THE WHOLE OF THE RULE. Supplying it scopes the
-    /// read or the write to that tenant and is what every portal-nested route does; omitting it declares that
-    /// the caller holds INSTALLATION-WIDE authority, which the three host-only routes establish through the
-    /// host-administrator policy before this member is reached. Absence is therefore not "unscoped by
-    /// oversight" - it is the alias-repair surface a host administrator needs in order to correct a binding
-    /// without first knowing which tenant owns it, and it is the same idiom
-    /// <see cref="ListPortalAliasesAsync"/> already uses for the same reason.
-    /// </para>
+    /// read or the write to that tenant and is what every portal-nested route does; omitting it declares
+    /// that the caller holds INSTALLATION-WIDE authority, which the three host-only routes establish
+    /// through the host-administrator policy before this member is reached.
     /// </remarks>
     Task<Result<PortalAliasDto?>> GetPortalAliasAsync(
         int? portalId,
         int portalAliasId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Binds a new alias to a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal to bind the alias to. It is supplied by the route and is the only
-    /// place a tenant is named on this call, so a caller cannot bind a host name to a tenant other
-    /// than the one addressed.
-    /// </param>
+    /// <summary>Binds a new alias to a portal.</summary>
+    /// <param name="portalId">Identifier of the portal to bind the alias to.</param>
     /// <param name="request">
-    /// The alias to bind, whose shape has already been checked by
-    /// <c>CreatePortalAliasRequestValidator</c>. It carries the host name and nothing else.
+    /// The alias to bind, whose shape has already been checked by <c>CreatePortalAliasRequestValidator</c>.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the stored alias, including the identifier the database
-    /// assigned, so that a caller can answer 201 Created with a location for the new resource. Fails
-    /// with <c>portal.not_found</c> when no portal carries that identifier, and with
-    /// <c>portal.alias_duplicate</c> when the host name is already bound.
+    /// A successful outcome carrying the stored alias, including the identifier the database assigned, so
+    /// that a caller can answer 201 Created with a location for the new resource.
     /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Two legacy entry points collapse here: <c>PortalAliasController.AddPortalAlias</c>
-    /// (<c>PortalAliasController.vb:L28</c>), which inserted unconditionally, and
-    /// <c>PortalController.AddPortalAlias</c> (<c>PortalController.vb:L935</c>), which first looked
-    /// the alias up and did nothing at all if it already existed.
-    /// </para>
-    /// <para>
-    /// That silent skip is not carried forward. A duplicate is reported as
-    /// <c>portal.alias_duplicate</c> rather than being absorbed, because a caller that asks to bind
-    /// a host name and receives success is entitled to conclude that its own request took effect.
-    /// The duplicate test compares host names exactly.
-    /// </para>
-    /// </remarks>
-    // MIGRATION: this member took the alias PROJECTION until the request contract below existed, and
-    // that shape could not express the write. The projection reports a nullable host name, because
-    // the column is nullable and a reader must represent what it finds, so nothing in the type system
-    // stopped an absent alias reaching this call; and it carried two identifiers - the alias's own,
-    // which the database assigns, and the owning portal's, which the route already fixes - both of
-    // which the documentation above had to declare ignored. A dedicated request type carries the one
-    // value a caller decides, so there is no longer anything to declare ignored and no way to submit
-    // a blank alias. Uniqueness is still the service's answer, because only the store knows what is
-    // already bound.
+    // This member took the alias PROJECTION until the request contract below existed, and that shape could
+    // not express the write.
     Task<Result<PortalAliasDto>> AddPortalAliasAsync(
         int portalId,
         CreatePortalAliasRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Modifies an existing alias.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against
-    /// the stored row's owner before the write, so an alias bound to another tenant cannot be renamed
-    /// through this member. See <see cref="GetPortalAliasAsync"/> for why the alias key alone is not
-    /// sufficient, which matters most here: renaming an alias re-points tenant resolution.
-    /// </param>
-    /// <param name="portalAliasId">
-    /// Identifier of the alias to modify. It is supplied by the route and is the only place an alias
-    /// is named on this call, so a caller cannot redirect the write onto a different alias.
-    /// </param>
+    /// <summary>Modifies an existing alias.</summary>
+    /// <param name="portalId">Identifier of the portal the alias must belong to.</param>
+    /// <param name="portalAliasId">Identifier of the alias to modify.</param>
     /// <param name="request">
     /// The values to store, whose shape has already been checked by
-    /// <c>UpdatePortalAliasRequestValidator</c>. It carries the host name and nothing else.
+    /// <c>UpdatePortalAliasRequestValidator</c>.
     /// </param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
     /// <returns>
-    /// A successful outcome carrying the alias as it now stands, so that a caller answers 200 OK with
-    /// the updated representation. Fails with <c>portal.alias_not_found</c> when no alias carries that
-    /// identifier <em>within that portal</em>, and with <c>portal.alias_duplicate</c> when the new
-    /// host name is already bound to another alias.
+    /// A successful outcome carrying the alias as it now stands, so that a caller answers 200 OK with the
+    /// updated representation.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Replaces <c>UpdatePortalAliasInfo</c> (<c>PortalAliasController.vb:L94</c>). An alias cannot
-    /// be moved between portals through this member: the owning portal is fixed when the alias is
-    /// bound, matching the legacy screen, which offered only the host name for editing.
-    /// </para>
-    /// <para>
     /// The stored row is returned rather than discarded because it carries facts a caller cannot
-    /// reconstruct from its own request. The decisive one is the current-alias flag: whether this row
-    /// is the alias the request itself resolved the tenant through is decided here, from the request's
-    /// own context, and nothing in the submitted contract implies it. The host name can differ too -
-    /// this member trims what it is given before writing it, so a caller that submitted surrounding
-    /// whitespace is told the spelling that was kept. It does NOT change case, and no other
-    /// transformation is applied. Returning the row costs nothing, because the entity is already
-    /// loaded and tracked by the time the write completes, and it removes the follow-up read the
-    /// caller would otherwise have to make.
-    /// </para>
+    /// reconstruct from its own request. The decisive one is the current-alias flag: whether this row is
+    /// the alias the request itself resolved the tenant through is decided here, from the request's own
+    /// context, and nothing in the submitted contract implies it.
     /// </remarks>
-    // MIGRATION: for the reason recorded on the create member, this member takes a request contract
-    // rather than the alias projection. The update path is where the shape gap mattered most: the
-    // legacy screen declared no validator over its one input and learned about a collision only by
-    // catching the exception the unique constraint raised, at EditPortalAlias.ascx.vb:L223-L228, so
-    // an unchecked value reached the store on every edit.
-    //
-    // MIGRATION: this member reports the stored alias rather than bare success, which aligns the
-    // update with the house contract for a modifying verb - POST answers 201 with the created
-    // representation, PUT answers 200 with the updated one, and only a genuinely bodyless command
-    // answers 204. UpdatePortalAsync and UpdatePortalSettingsAsync on this interface already carry a
-    // representation the same way; they differ only in expressing a missing row as a null value,
-    // whereas the alias members report it as portal.alias_not_found, which is the shape the alias
-    // failure codes were documented and tested against from the outset and is not disturbed here.
     Task<Result<PortalAliasDto>> UpdatePortalAliasAsync(
         int? portalId,
         int portalAliasId,
         UpdatePortalAliasRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Unbinds an alias from its portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the alias must belong to. Supplied by the route and compared against
-    /// the stored row's owner before the removal, so an alias bound to another tenant cannot be
-    /// unbound through this member - which would otherwise make that tenant unreachable.
-    /// </param>
+    /// <summary>Unbinds an alias from its portal.</summary>
+    /// <param name="portalId">Identifier of the portal the alias must belong to.</param>
     /// <param name="portalAliasId">Identifier of the alias to unbind.</param>
     /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
-    /// <returns>
-    /// A successful outcome when the alias was removed, which a caller answers as 204 No Content.
-    /// Fails with <c>portal.alias_not_found</c> when no alias carries that identifier within that
-    /// portal.
-    /// </returns>
-    /// <remarks>
-    /// Replaces <c>DeletePortalAlias</c> (<c>PortalAliasController.vb:L34</c>), which removed the
-    /// record whether or not it existed and reported nothing either way. Reporting
-    /// <c>portal.alias_not_found</c> lets a caller distinguish a removal it caused from one that had
-    /// already happened.
-    /// </remarks>
+    /// <returns>A successful outcome when the alias was removed, which a caller answers as 204 No Content.</returns>
     Task<Result> DeletePortalAliasAsync(
         int? portalId,
         int portalAliasId,

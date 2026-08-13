@@ -6,103 +6,31 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Mapping;
 
 /// <summary>
-/// Hand-written projections between the <see cref="Portal"/> aggregate and the portal transfer
-/// contracts, and between an inbound portal request and the aggregate it describes.
+/// Hand-written projections between the <see cref="Portal"/> aggregate and the portal transfer contracts,
+/// and between an inbound portal request and the aggregate it describes.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: replaces the reflection-driven hydrator <c>Library/Components/Shared/CBO.vb</c> for the
-/// portal slice. Nothing here reflects over a type, reads a column by string key or fills a
-/// collection by convention: every assignment is a named statement the compiler checks, so a renamed
-/// member is a build error rather than a silently absent value at run time. AAP 0.4.3 records the
-/// deliberate decision not to take a convention-based mapping dependency for exactly this reason.
+/// Six members of the legacy portal entity are not columns of the portal table, and every one of them
+/// arrives here as an explicit argument rather than being fetched.
 /// </para>
 /// <para>
-/// The projections are one-directional by intent. Reads flow entity to transfer contract; writes flow
-/// request to entity through <see cref="ToNewPortal"/> and <see cref="ApplyUpdate"/>. No member turns
-/// a response contract back into an entity, because no caller is entitled to post one.
-/// </para>
-/// <para>
-/// MIGRATION: six members of the legacy portal entity are not columns of the portal table, and every
-/// one of them arrives here as an explicit argument rather than being fetched. The member and page
-/// tallies were lazy getters that each performed a count when the backing field was negative; the two
-/// role names, the host-level root page and the administrator's electronic-mail address were resolved
-/// by the legacy read view through correlated sub-queries and a left outer join onto the account
-/// table. Passing them in is what keeps this type free of data access: no member below reaches a
-/// repository, opens a connection or performs work of any kind that could fail. The alternative -
-/// letting a mapper fetch what it lacks - is exactly the impurity the legacy hydrator exhibited, where
-/// filling one entity issued further queries mid-projection.
-/// </para>
-/// <para>
-/// MIGRATION: the portal key is carried through verbatim, and no member below treats any particular
-/// value of it as meaning "absent". Two facts make that mandatory rather than fastidious. The key
-/// column is declared as an identity seeded at minus one, so minus one names the host-level portal;
-/// and the legacy sentinel module used that same minus one as its integer null, so the legacy
-/// predicate that asked "is this value null" answered yes for a real portal. Zero is a real key too:
-/// the shipped installation script identity-inserts the default portal with a key of zero. There is
-/// therefore no comparison against zero, no comparison against minus one, no flooring of a key and no
-/// negative-argument guard on a key anywhere in this file. Absence of a portal is expressible only as
-/// a nullable key on some other record.
-/// </para>
-/// <para>
-/// MIGRATION: the legacy null sentinel for a string was the empty string rather than a null
-/// reference, which means an empty stored value and an absent one were indistinguishable once read.
-/// The projections below preserve whichever of the two the entity holds: an empty string is copied as
-/// an empty string and is never promoted to null, and a null is copied as null and is never demoted to
-/// an empty string. A consumer that still reads the legacy contract therefore sees what it saw before,
-/// and the one substitution that does occur - supplying an empty string where a request omitted a
-/// value for a column that cannot hold null - is stated at the member that performs it.
-/// </para>
-/// <para>
-/// MIGRATION: two members are renamed on the way across, and neither rename carries a semantic
-/// change. The handle column is spelled in full upper case in the schema and is exposed by the entity
-/// as <c>PortalGuid</c>, which the transfer contracts publish as <c>Guid</c>; and the legacy alias
-/// property spelled its protocol prefix in full upper case, which the entity and the contract both
-/// spell in title case. Both are handled by naming the C# members explicitly, which is why a rename
-/// cannot silently drop a value here the way a by-convention match could.
-/// </para>
-/// <para>
-/// MIGRATION: every serialisation decoration the legacy entity carried is dropped and replaced by
-/// nothing at all. The legacy type was annotated for XML serialisation so that portal templates could
-/// round-trip through it, with two members explicitly excluded from that document. No equivalent
-/// annotation appears here or on the contracts: the wire format belongs to the serialiser configured
-/// at the API edge, column binding belongs to the Infrastructure entity configuration, and constraint
-/// checking belongs to the validators.
-/// </para>
-/// <para>
-/// MIGRATION: there is no portal-settings entity to map, because the schema defines no such table.
-/// The 88-script upgrade chain creates keyed settings tables for modules, for placements, for the host
-/// and for scheduled items, and none for portals; the abstract data surface declares no member for one
-/// and the concrete provider invokes no procedure for one. The legacy type of that name was a
-/// per-request composite assembled into ambient request state, not a persisted aggregate. Portal
-/// configuration is columns on the portal row, which is why <see cref="ToSettings"/> is an ordinary
-/// column projection.
-/// </para>
-/// <para>
-/// MIGRATION: one latent defect in the legacy sentinel helper is recorded here and deliberately left
-/// unfixed, because correcting it would change behaviour this migration is required to preserve. Its
-/// type-directed overload mapped both the 32-bit and the 64-bit signed integer types onto the same
-/// 32-bit sentinel, so a 64-bit column could never have expressed absence correctly. Nothing in the
-/// portal slice is 64-bit, so the defect is unreachable from here; it is noted rather than repaired.
+/// The portal key is carried through verbatim, and no member below treats any particular value of it as
+/// meaning "absent". Two facts make that mandatory rather than fastidious.
 /// </para>
 /// </remarks>
 public static class PortalMappings
 {
-    /// <summary>
-    /// Projects a portal onto the row shape the portal list screen renders.
-    /// </summary>
+    /// <summary>Projects a portal onto the row shape the portal list screen renders.</summary>
     /// <param name="portal">The portal to project.</param>
     /// <param name="aliases">The host names bound to the portal, already ordered.</param>
     /// <param name="users">The portal's member tally.</param>
     /// <param name="pages">The portal's page tally.</param>
     /// <returns>The list row.</returns>
     /// <remarks>
-    /// MIGRATION: this row shape declares the hosting charge and the disc-space quota as required
-    /// values rather than optional ones, which matches the entity and the terminal columns exactly -
-    /// both are NOT NULL with a zero default constraint - so both copy straight across with no
-    /// coalescing and no widening. The detail and configuration contracts declare the same two members
-    /// as optional, and the reason for the asymmetry is recorded at those members. The tallies are
-    /// arguments because they are counts the read path computes, never columns of the portal row.
+    /// This row shape declares the hosting charge and the disc-space quota as required values rather than
+    /// optional ones, which matches the entity and the terminal columns exactly - both are NOT NULL with a
+    /// zero default constraint - so both copy straight across with no coalescing and no widening.
     /// </remarks>
     public static PortalListItemDto ToListItem(Portal portal, IReadOnlyList<string> aliases, int users, int pages)
     {
@@ -122,38 +50,34 @@ public static class PortalMappings
         };
     }
 
-    /// <summary>
-    /// Projects a portal onto the full detail contract.
-    /// </summary>
+    /// <summary>Projects a portal onto the full detail contract.</summary>
     /// <param name="portal">The portal to project, with its aliases loaded.</param>
     /// <param name="users">The portal's member tally.</param>
     /// <param name="pages">The portal's page tally.</param>
-    /// <param name="administratorRoleName">Name of the role named by the administrator role identifier, or <see langword="null"/> when it names none.</param>
-    /// <param name="registeredRoleName">Name of the role named by the registered-members role identifier, or <see langword="null"/> when it names none.</param>
-    /// <param name="administratorEmail">The designated administrator's electronic-mail address, or <see langword="null"/> when no administrator is designated.</param>
-    /// <param name="superTabId">Identifier of the host-level root page, or <see langword="null"/> when the installation has none.</param>
+    /// <param name="administratorRoleName">
+    /// Name of the role named by the administrator role identifier, or <see langword="null"/> when it names
+    /// none.
+    /// </param>
+    /// <param name="registeredRoleName">
+    /// Name of the role named by the registered-members role identifier, or <see langword="null"/> when it
+    /// names none.
+    /// </param>
+    /// <param name="administratorEmail">
+    /// The designated administrator's electronic-mail address, or <see langword="null"/> when no
+    /// administrator is designated.
+    /// </param>
+    /// <param name="superTabId">
+    /// Identifier of the host-level root page, or <see langword="null"/> when the installation has none.
+    /// </param>
     /// <param name="currentPortalAliasId">
-    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when
-    /// the request resolved no tenant. Forwarded to each projected alias; see
-    /// <see cref="ToDto(PortalAlias, int?)"/> for what it decides and why it has no default.
+    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when the
+    /// request resolved no tenant.
     /// </param>
     /// <returns>The detail contract.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the host-level root page is the same value for every portal in an installation. The
-    /// legacy read view resolved it with a sub-query that filtered the page table for rows belonging to
-    /// no portal and having no parent, so it never varied by portal even though it was published on
-    /// each portal's record. It is reproduced as an argument, with that oddity recorded rather than
-    /// tidied away, because a consumer reading the legacy contract expects to find it here.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the electronic-mail address on this contract is the designated administrator's
-    /// address, not an address of the portal. The portal table has no such column in any of the 88
-    /// upgrade scripts; the legacy read view produced it by joining the account table on the
-    /// administrator key, so a portal designating no administrator produced no address. That is why the
-    /// argument is optional, and why an absent administrator yields a null here rather than an empty
-    /// string.
-    /// </para>
+    /// The host-level root page is the same value for every portal in an installation. The legacy read view
+    /// resolved it with a sub-query that filtered the page table for rows belonging to no portal and having
+    /// no parent, so it never varied by portal even though it was published on each portal's record.
     /// </remarks>
     public static PortalDetailDto ToDetail(
         Portal portal,
@@ -175,16 +99,7 @@ public static class PortalMappings
             KeyWords = portal.KeyWords,
             FooterText = portal.FooterText,
 
-            // MIGRATION: both file members carry the raw stored value, and a caller must not assume it
-            // is a path. The legacy read path went through a view that rewrote each of them: where the
-            // stored value began with the literal marker "fileid", the view substituted the folder and
-            // name it found by matching that marker against the file table, and otherwise passed the
-            // value through. THAT MAKES A READ-THEN-WRITE ROUND TRIP DESTRUCTIVE: reading a resolved
-            // path and writing it back replaces the marker with the path and permanently severs the
-            // link to the file record, which cannot be reconstructed from the path alone. Resolution
-            // therefore does not happen here: the file subsystem is not part of this migration, and
-            // inventing a half-resolution in a projection is how that link would be lost. The same
-            // reasoning is why the update path stores whatever it is given, marker included.
+            // Both file members carry the raw stored value, and a caller must not assume it is a path.
             LogoFile = portal.LogoFile,
             BackgroundFile = portal.BackgroundFile,
             ExpiryDate = portal.ExpiryDate,
@@ -194,14 +109,7 @@ public static class PortalMappings
             AdministratorId = portal.AdministratorId,
             Email = administratorEmail,
 
-            // MIGRATION: the hosting terms are widened, never narrowed. Their type has disagreed with
-            // itself across three layers of the legacy stack: the entity property was single-precision
-            // floating point for the charge and a 32-bit integer for the space, the 27-argument save
-            // signature declared BOTH as double-precision floating point, and the terminal columns are
-            // money and int. The rule that settles it is that the schema and the entity win, so the
-            // entity holds an exact decimal and a plain integer, both required. This contract declares
-            // all four terms optional, so each widens implicitly on the outbound projection and
-            // nothing is lost. The reverse direction cannot be implicit and is handled where it occurs.
+            // The hosting terms are widened, never narrowed.
             HostFee = portal.HostFee,
             HostSpace = portal.HostSpace,
             PageQuota = portal.PageQuota,
@@ -226,15 +134,8 @@ public static class PortalMappings
             TimeZoneOffset = portal.TimeZoneOffset,
             HomeDirectory = portal.HomeDirectory,
 
-            // MIGRATION: the contract declares this member optional, which admits three states -
-            // absent, present but empty, and populated. This projection never yields the first of
-            // them. The entity's alias collection is documented as meaning "this portal has none"
-            // when it is empty and never "not loaded", because which navigation was loaded is the
-            // repository's decision and is not observable from a count. Materialising it here
-            // therefore reports what the aggregate actually says, and a caller reading an empty
-            // sequence may rely on the portal genuinely having no bound host name. The ordering is
-            // applied so the sequence is stable across calls; it is case-insensitive because a host
-            // name is.
+            // The contract declares this member optional, which admits three states absent, present but
+            // empty, and populated. This projection never yields the first of them.
             Aliases = portal.PortalAliases.OrderBy(alias => alias.HttpAlias, StringComparer.OrdinalIgnoreCase)
                                           .Select(alias => ToDto(alias, currentPortalAliasId))
                                           .ToList(),
@@ -250,28 +151,10 @@ public static class PortalMappings
     /// <returns>The token.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="portal"/> is null.</exception>
     /// <remarks>
-    /// <para>
-    /// ⚠ THE MEMBER ORDER IS PART OF THE CONTRACT. The token published by a read and the token verified by a
-    /// write are both produced here, so a reordering changes both together and stays self-consistent - but a
-    /// token already in a browser's hands would stop matching, and every open editor would be refused once.
-    /// Adding a member has the same effect. That is acceptable on a deployment boundary and must not be done
-    /// casually. This is the same rule the role token carries, stated the same way, because it is the same
-    /// hazard.
-    /// </para>
-    /// <para>
-    /// EVERY COLUMN THE UPDATE CAN REPLACE CONTRIBUTES, AND ONLY THOSE. The identifier does not: it addresses
-    /// the record rather than forming part of its state. Nor do the four columns no write path on this
-    /// contract touches - the tenant's globally unique identifier, its two stock role designations and its
-    /// administration page - because a token that moved for a reason the caller cannot have caused would
-    /// refuse a save that conflicted with nothing. The write-only payment credential is excluded for the
-    /// opposite reason: no read publishes it, so a caller could never hold a token that accounted for it, and
-    /// including it would make every token instantly stale.
-    /// </para>
-    /// <para>
-    /// The list is deliberately the same set of columns <see cref="ApplyUpdate"/> assigns, in the order that
-    /// member assigns them, so a future field added to the update path has one obvious place to be added here
-    /// and a reviewer can check the two against each other by reading down.
-    /// </para>
+    /// ⚠ THE MEMBER ORDER IS PART OF THE CONTRACT. The token published by a read and the token verified by
+    /// a write are both produced here, so a reordering changes both together and stays self-consistent -
+    /// but a token already in a browser's hands would stop matching, and every open editor would be refused
+    /// once. Adding a member has the same effect.
     /// </remarks>
     internal static string ConcurrencyTokenFor(Portal portal)
     {
@@ -305,29 +188,13 @@ public static class PortalMappings
             portal.HomeDirectory);
     }
 
-    /// <summary>
-    /// Projects a portal onto the configuration contract the settings screen renders.
-    /// </summary>
+    /// <summary>Projects a portal onto the configuration contract the settings screen renders.</summary>
     /// <param name="portal">The portal to project.</param>
     /// <returns>The configuration contract.</returns>
     /// <remarks>
-    /// <para>
-    /// This is a projection of stored columns, not a bag of keyed values: the shipped schema defines
-    /// no portal settings table, so there is nothing keyed to read. The evidence for that is
-    /// recorded on the type.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the payment-gateway credential is absent from this contract and from the detail
-    /// contract, and its absence is a decision rather than an omission. The legacy entity published it
-    /// as an ordinary serialised member, so it travelled into every portal template and back from
-    /// every settings screen in clear text. Neither response contract declares it, so no projection
-    /// here is even able to echo it; it can only be written, and only through the update path.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the two file members and the four hosting terms behave here exactly as they do on the
-    /// detail contract, for the reasons recorded there - the stored value is carried verbatim rather
-    /// than resolved, and the required entity values widen into optional contract members.
-    /// </para>
+    /// This is a projection of stored columns, not a bag of keyed values: the shipped schema defines no
+    /// portal settings table, so there is nothing keyed to read. The evidence for that is recorded on the
+    /// type.
     /// </remarks>
     public static PortalSettingsDto ToSettings(Portal portal)
     {
@@ -366,44 +233,17 @@ public static class PortalMappings
         };
     }
 
-    /// <summary>
-    /// Projects one bound host name onto its transfer contract.
-    /// </summary>
+    /// <summary>Projects one bound host name onto its transfer contract.</summary>
     /// <param name="alias">The alias to project.</param>
     /// <param name="currentPortalAliasId">
-    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when
-    /// the request resolved no tenant. Supplied by the caller because a mapper has no request to read:
-    /// see the migration note below for why the parameter is required rather than defaulted.
+    /// Surrogate key of the alias the CURRENT REQUEST resolved through, or <see langword="null"/> when the
+    /// request resolved no tenant.
     /// </param>
     /// <returns>The alias contract.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy alias entity declared three properties and no serialisation decoration of
-    /// any kind, so the stored half of this projection is a three-for-three copy with a single spelling
-    /// change: the legacy property spelled its protocol prefix in full upper case, and both the entity
-    /// and the contract spell it in title case. The host name is carried verbatim - neither trimmed,
-    /// lower-cased nor otherwise normalised - because normalising a stored value on the way to a reader
-    /// would report something the row does not contain, and tenant resolution matches on the stored
-    /// form. Normalisation on the way in belongs to the write path, which owns it. The owning portal key
-    /// is likewise copied as it stands, including the minus one that names the host-level portal.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the FOURTH member is computed, and it restores a legacy affordance rather than adding
-    /// one. <c>IsNotCurrent</c> at <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to L60 compared
-    /// each grid row's key against the alias the request itself arrived through and hid the edit
-    /// affordance on a match; <c>portalalias.ascx</c> L8 bound that answer to the hyperlink's
-    /// <c>Visible</c> property. The comparison is by KEY and not by host name because stored casing need
-    /// not match what a caller submitted - the legacy write path lower-cased on insert and update
-    /// (<c>PortalAliasController.vb</c> L31 and L97) while its reader assigned the property unchanged
-    /// (L75) - so a string comparison would need a casing rule of its own and become a second answer to
-    /// a question the resolver has already settled exactly.
-    /// </para>
-    /// <para>
     /// The parameter has no default. A default of <see langword="null"/> would make "no tenant resolved"
-    /// the value a caller gets by FORGETTING to supply the fact, which is the one mistake that must not
-    /// be silent: it reports every row as safe to edit, including the row that is not. Requiring it
-    /// makes every call site state which request it is projecting for.
-    /// </para>
+    /// the value a caller gets by FORGETTING to supply the fact, which is the one mistake that must not be
+    /// silent: it reports every row as safe to edit, including the row that is not.
     /// </remarks>
     public static PortalAliasDto ToDto(PortalAlias alias, int? currentPortalAliasId)
     {
@@ -416,11 +256,6 @@ public static class PortalMappings
             HttpAlias = alias.HttpAlias,
 
             // Equality against the resolved key, never a magnitude test and never a truthiness test.
-            // PortalAlias.PortalAliasID is IDENTITY (1, 1) so no legal key collides with the legacy
-            // absent-integer sentinel, but the discipline is applied anyway because the sibling keys on
-            // this contract - portal, role, page and module - are seeded at zero or minus one and are
-            // read by the same consumers. An unresolved request yields false on every row, which is the
-            // decided answer rather than a fallback: with no resolved alias, no row is the current one.
             IsCurrent = currentPortalAliasId is int resolved && resolved == alias.PortalAliasId,
         };
     }
@@ -433,27 +268,6 @@ public static class PortalMappings
     /// One assignment of the portal's administrator role, with its account materialised.
     /// </param>
     /// <returns>The selector entry.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces <c>Website/admin/Portal/SiteSettings.ascx.vb:L334</c>, which built each
-    /// entry as <c>New ListItem(objUser.FullName, objUser.UserID.ToString)</c> from a
-    /// <c>UserRoleInfo</c>. The full name it used is the display name the terminal membership statement
-    /// projects as <c>FullName</c>, so the text this entry carries is the text the legacy list showed.
-    /// </para>
-    /// <para>
-    /// The ACCOUNT is the source of every member, never the assignment. <c>UserRole.UserId</c> would
-    /// give the same key, but taking all three from one object is what makes it impossible for the key
-    /// and the names beside it to describe different people - and the assignment's own surrogate key
-    /// and its date bounds are deliberately not projected, because choosing an administrator does not
-    /// depend on when their membership of the role began or ends.
-    /// </para>
-    /// <para>
-    /// The materialised account is REQUIRED rather than tolerated. The membership read includes it, and
-    /// an assignment whose account failed to materialise is a broken read rather than an entry to
-    /// render with empty text - so this throws instead of offering a nameless choice the operator could
-    /// select.
-    /// </para>
-    /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="membership"/> is null.</exception>
     /// <exception cref="InvalidOperationException">
     /// The assignment's account was not materialised by the read that produced it.
@@ -475,8 +289,8 @@ public static class PortalMappings
     }
 
     /// <summary>
-    /// Builds a new portal aggregate from a creation request and the installation-wide defaults that
-    /// the legacy creation path read from host configuration.
+    /// Builds a new portal aggregate from a creation request and the installation-wide defaults that the
+    /// legacy creation path read from host configuration.
     /// </summary>
     /// <param name="request">The submitted creation request.</param>
     /// <param name="currency">Default currency code.</param>
@@ -486,37 +300,16 @@ public static class PortalMappings
     /// <param name="pageQuota">Default page quota.</param>
     /// <param name="userQuota">Default member quota.</param>
     /// <param name="siteLogHistory">Default site-log retention in days, or <see langword="null"/> for none.</param>
-    /// <param name="homeDirectory">The home directory to record, which may be empty when it is derived after the identifier is assigned.</param>
+    /// <param name="homeDirectory">
+    /// The home directory to record, which may be empty when it is derived after the identifier is
+    /// assigned.
+    /// </param>
     /// <returns>An unsaved portal aggregate.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces the private two-argument <c>CreatePortal</c> at
-    /// <c>Library/Components/Portal/PortalController.vb</c> lines 326 to 377, which seeded a new
-    /// portal from the host settings <c>DemoPeriod</c>, <c>HostFee</c>, <c>HostSpace</c>,
-    /// <c>PageQuota</c>, <c>UserQuota</c>, <c>SiteLogHistory</c> and <c>HostCurrency</c>. Reading
-    /// those settings is the caller's work; this member only records the values it is given, so it
-    /// stays free of data access and is directly testable.
-    /// </para>
-    /// <para>
-    /// MIGRATION: every host setting the legacy seeding path read was a string, and it treated an empty
-    /// one as zero by leaving its freshly declared local at zero. The shipped installation script shows
-    /// why that mattered: it identity-inserts the default portal with an EMPTY STRING supplied for the
-    /// hosting charge, into a column that a later upgrade converted to money. A real installation may
-    /// therefore hold values that look nothing like a charge. The empty-means-zero behaviour is
-    /// preserved by the caller reading the setting, and nothing here sanitises a stored value.
-    /// </para>
-    /// <para>
-    /// MIGRATION: EVERY MEMBER OF THIS FILE, INCLUDING THIS ONE, IS A PURE FUNCTION OF ITS ARGUMENTS.
-    /// The portal handle is deliberately NOT generated here. An earlier revision called
-    /// <c>Guid.NewGuid()</c> for it, which made this the one mapper whose output varied between two
-    /// identical calls and therefore the one mapper a test could not assert on completely. Generation is
-    /// left to the store, which is where the schema already puts it: the column carries
-    /// <c>DF_Portals_GUID DEFAULT (newid())</c> (<c>01.00.05:L1404</c>, re-asserted at
-    /// <c>03.01.01:L1133</c>), and the entity configuration mirrors that default, so an aggregate whose
-    /// handle is left at its type default has a real handle generated for it during the insert rather
-    /// than the all-zero sentinel. Nothing here reads a clock, a counter, a random source or any other
-    /// ambient state.
-    /// </para>
+    /// Every host setting the legacy seeding path read was a string, and it treated an empty one as zero by
+    /// leaving its freshly declared local at zero. The shipped installation script shows why that mattered:
+    /// it identity-inserts the default portal with an EMPTY STRING supplied for the hosting charge, into a
+    /// column that a later upgrade converted to money.
     /// </remarks>
     public static Portal ToNewPortal(
         CreatePortalRequest request,
@@ -539,17 +332,6 @@ public static class PortalMappings
             Currency = currency,
             ExpiryDate = expiryDate,
 
-            // MIGRATION: the hosting charge and the three allowances are carried through EXACTLY as
-            // supplied, with no floor and no coercion of any kind. The legacy creation path is
-            // unambiguous about this: PortalController.vb:L326-L375 reads each of these from an
-            // installation-wide host setting and hands the parsed value straight to the insert at L369
-            // without comparing it to anything. An earlier revision of this mapper floored all four at
-            // zero, borrowing the IIf guards at PortalController.vb:L395 and L398 - but those guards
-            // construct a RoleInfo, not a portal, and they clamp a role's service and trial FEES while
-            // a portal template creates its roles. Applying a role rule to a portal column changed which
-            // values an installation could store, in a mapper that is required to be mechanical, so the
-            // floors are removed. The role-fee floor itself is unaffected and stays where the legacy put
-            // it, on the role path.
             HostFee = hostFee,
             HostSpace = hostSpace,
             PageQuota = pageQuota,
@@ -563,60 +345,13 @@ public static class PortalMappings
         };
     }
 
-    /// <summary>
-    /// Applies a submitted update to a tracked portal aggregate.
-    /// </summary>
+    /// <summary>Applies a submitted update to a tracked portal aggregate.</summary>
     /// <param name="portal">The tracked portal to modify.</param>
     /// <param name="request">The submitted values.</param>
     /// <remarks>
-    /// <para>
-    /// The portal's own identifier is never taken from the request. The request does carry one - it is
-    /// argument 1 of the replaced signature and the first member of the contract - but this member does
-    /// not read it and never assigns it: the route segment the service was given is authoritative, and
-    /// the registered request validator has already refused any body that disagrees with it. A caller
-    /// therefore cannot retarget the write at another tenant, and the aggregate's key cannot be altered
-    /// by an update at all.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy save path compiled with strictness disabled and relied on coercions that
-    /// C# rejects. Each is made explicit here rather than left implicit. A blank monetary or quota box
-    /// left its local at zero rather than at the absent-number sentinel, so an absent value is stored
-    /// as zero and not as a database null; the four page references and the retention period did use
-    /// the sentinel, so an absent value there remains absent. The disc-space and member-quota locals
-    /// were declared as floating-point values despite addressing integer columns and were silently
-    /// truncated at the procedure boundary, which is why the modern members are integers and no
-    /// truncation can occur.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the four required numeric columns are the one place a null must be substituted rather
-    /// than propagated, because none of them can hold one. The terminal schema declares the hosting
-    /// charge as money NOT NULL with a zero default constraint and the disc-space, page and member
-    /// quotas as int NOT NULL with the same, so an omitted term is recorded as zero. That is not an
-    /// invention: the legacy save signature took all four by value and its callers declared each local
-    /// at zero before conditionally overwriting it, so an omitted term already reached the database as
-    /// zero. Zero is a meaningful value for each of them - it waives the charge and lifts the
-    /// corresponding limit - which is why an authorisation rule, not this member, decides whether the
-    /// caller was entitled to submit it.
-    /// </para>
-    /// <para>
-    /// MIGRATION: NO FLOOR IS APPLIED TO THE CHARGE OR TO ANY ALLOWANCE. The legacy save path compared
-    /// them to nothing: <c>SiteSettings.ascx.vb:L705-L751</c> parses each box into a local and
-    /// <c>L772-L780</c> passes it straight through, and <c>sitesettings.ascx</c> declares no
-    /// <c>GreaterThanEqual</c> validator on any of the four - measurably unlike
-    /// <c>editroles.ascx:L94-L96</c> and <c>:L126-L128</c>, which do bound a role's fees. An earlier
-    /// revision floored all four here by reusing the role-fee guard from
-    /// <c>PortalController.vb:L395,L398</c>, but that guard clamps a <c>RoleInfo</c> while a portal
-    /// template creates its roles; it is not a portal rule. Reusing it changed which values an
-    /// installation could store, inside a mapper that must stay mechanical, so it is removed. Submitted
-    /// values reach the columns exactly as bound, and a negative submission is stored as the legacy
-    /// stored it.
-    /// </para>
-    /// <para>
     /// MIGRATION: plaintext processor credentials are no longer accepted or stored. The legacy
-    /// ProcessorPassword column carries an opaque managed-secret reference and the request uses an
-    /// explicit three-state update: null keeps, empty clears, and a non-empty reference replaces.
-    /// No response projection carries the reference.
-    /// </para>
+    /// ProcessorPassword column carries an opaque managed-secret reference and the request uses an explicit
+    /// three-state update: null keeps, empty clears, and a non-empty reference replaces.
     /// </remarks>
     public static void ApplyUpdate(Portal portal, IPortalSettingsUpdateRequest request)
     {
@@ -638,9 +373,8 @@ public static class PortalMappings
         portal.PaymentProcessor = request.PaymentProcessor;
         portal.ProcessorUserId = request.ProcessorUserId;
 
-        // MIGRATION: null is the explicit keep operation. Empty clears the reference to SQL NULL, while
-        // a non-empty, validator-approved secret:// value replaces it. The referenced credential never
-        // crosses this boundary.
+        // Null is the explicit keep operation. Empty clears the reference to SQL NULL, while a non-empty,
+        // validator-approved secret:// value replaces it.
         if (request.ProcessorCredentialReference is not null)
         {
             portal.ProcessorCredentialReference = request.ProcessorCredentialReference.Length == 0
@@ -663,52 +397,20 @@ public static class PortalMappings
         portal.HomeDirectory = request.HomeDirectory ?? string.Empty;
     }
 
-    /// <summary>
-    /// Clamps a ROLE's monetary fee so that a negative submission is stored as zero.
-    /// </summary>
+    /// <summary>Clamps a ROLE's monetary fee so that a negative submission is stored as zero.</summary>
     /// <param name="fee">The submitted fee.</param>
     /// <returns>The fee, never below zero.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces the two clamps inside the role-creation step of portal creation at
-    /// <c>Library/Components/Portal/PortalController.vb</c> lines 395 and 398, each of which read
-    /// <c>CType(IIf(fee &lt; 0, 0, fee), Single)</c>. The legacy conditional was a function and so
-    /// evaluated both arms, whereas the C# conditional operator short-circuits; both arms there are
-    /// side-effect-free literals, so this substitution changes no observable behaviour.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE CLAMP APPLIES TO A ROLE FEE AND TO NOTHING ELSE. The clamped operand at both
-    /// legacy lines is a <c>RoleInfo</c>, so the only faithful consumers are the role paths -
-    /// <c>RoleMappings</c>, which applies it to a role's service and trial fees, and the stock-role
-    /// construction inside portal creation. It is deliberately NOT applied to a portal's hosting charge
-    /// or to any portal allowance: the legacy portal save path compared none of them to anything, and
-    /// an earlier revision that reused this floor for them altered which values an installation could
-    /// store. The member stays here, beside the portal mappings, only because it is where the legacy
-    /// lines it reproduces live; it is a role rule, and the summary says so.
-    /// </para>
-    /// </remarks>
     public static decimal ClampFee(decimal fee) => fee < 0m ? 0m : fee;
 
-    // MIGRATION: THERE IS NO QUOTA FLOOR, and its absence is recorded here so that a later reader does
-    //   not restore one as an oversight. An earlier revision published a ClampQuota member alongside
-    //   ClampFee and applied it to the disc-space allowance and the page and member quotas. No legacy
-    //   line authorises it: the only clamps in the legacy portal lifecycle are the two role-fee guards
-    //   that ClampFee reproduces, the portal creation path passes its host-setting allowances to the
-    //   insert untouched (PortalController.vb:L369), and the save path passes the submitted ones
-    //   untouched (SiteSettings.ascx.vb:L772-L780) over markup that declares no lower-bound validator on
-    //   any of them. The member was therefore a rule this migration invented, applied by a mapper the
-    //   plan requires to be mechanical, and it is removed rather than documented. Allowances now reach
-    //   their columns exactly as submitted.
-
     /// <summary>
-    /// The default culture code a new portal carries, matching the column default the 02.02.00
-    /// upgrade script installed.
+    /// The default culture code a new portal carries, matching the column default the 02.02.00 upgrade
+    /// script installed.
     /// </summary>
     private const string DefaultLanguageCode = "en-US";
 
     /// <summary>
-    /// The default offset from co-ordinated universal time, in minutes, matching the column default
-    /// the 02.02.00 upgrade script installed.
+    /// The default offset from co-ordinated universal time, in minutes, matching the column default the
+    /// 02.02.00 upgrade script installed.
     /// </summary>
     private const int DefaultTimeZoneOffsetMinutes = -8;
 }

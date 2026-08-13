@@ -1,73 +1,3 @@
-/**
- * Specification for {@link UserListComponent} — the User Accounts listing at `/users`.
- *
- * ## WHY THIS FILE CARRIES MORE WEIGHT THAN AN ORDINARY SPECIFICATION
- *
- * It is the ONLY route by which `user-list.component.ts` receives gated type-checking.
- * `tsconfig.app.json` declares `files: ["src/main.ts"]` and type-checks by IMPORT GRAPH, so a screen
- * nothing imports is silently unchecked by `ng build`; `tsconfig.spec.json` includes every
- * specification under `src` with `types: ["jasmine"]`, which is what pulls the component and its
- * template into a compilation at all. A weak specification here means an unchecked component, so
- * every branch of the screen is driven rather than merely instantiated.
- *
- * ## HOW IT IS DRIVEN
- *
- *   - Mounted as the standalone unit it is, with the REAL {@link UserStore} pinned to each case's
- *     injector and every request answered through `HttpTestingController`. The component ISSUES NO
- *     REQUEST OF ITS OWN — Minimal Change Clause item 5 confines transport to the store and its
- *     service — so each assertion below travels through the real store, the real transport, the real
- *     endpoint table and the real decoders. A double in any of those positions would have proved the
- *     double instead of the screen.
- *   - `NotificationService.notify` is spied and called through, because the removal outcome is
- *     reported through it rather than rendered.
- *   - No router is spied. Every cross-screen movement this screen offers is a LINK, and a link is
- *     asserted as an address.
- *   - `AuthStore` is replaced by a one-member double, described where it is declared.
- *
- * ## THE FACTS THAT SHAPE EVERY CASE
- *
- * ⚠ ARRIVAL IS THREE REQUESTS IN A FIXED ORDER, AND THE MIDDLE ONE IS CHAINED. `ngOnInit` calls
- * `initialise()` then `loadProfileDefinitions()`, so `GET /api/v1/users/settings` and
- * `GET /api/v1/profile-definitions` are both pending immediately, while `GET /api/v1/users` is issued
- * only once the POLICY has answered — the page size is a per-tenant setting
- * (`Website/admin/Users/Users.ascx.vb` L116 reads `Records_PerPage`), so the listing cannot be
- * requested correctly before it is known. A case that expects the listing first finds nothing.
- *
- * ⚠ THE WIRE PAGE INDEX IS ZERO-BASED AND NO ARITHMETIC EXISTS ON EITHER SIDE OF IT. The legacy screen
- * ran both bases at once — L51 seeded a one-based `CurrentPage` while L265, L269, L271 and L274 each
- * passed `CurrentPage - 1` — and the reconciliation now lives inside the shared pager, whose `page`
- * input is zero-based and whose `pageChange` output emits a zero-based index. VERIFIED, not assumed:
- * `pagination.component.ts` states "the boundary is ZERO-BASED and the display is ONE-BASED", so the
- * screen binds and forwards the wire's own base unchanged.
- *
- * ⚠ THE SEARCH TERM TRAVELS RAW. All three legacy modes appended a single trailing `%` SERVER-SIDE
- * (`SearchText + "%"` at L269, L271 and L274), so the match is a STARTS-WITH and the client sends
- * exactly what was typed.
- *
- * ⚠ THE FOUR SEARCH STATES ARE DISTINCT. `"None"` (L266) means issue NO QUERY AT ALL; `"All"`
- * (L264-L265) means a paged, unfiltered query; the two account axes and the open profile axis each
- * carry their own filter members. Absence is expressed by OMITTING a parameter, never by sending a
- * reserved word.
- *
- * ⚠ REMOVAL PRESERVES THE PAGE WHILE SEARCH RESETS IT. `grdUsers_DeleteCommand` (L646-L669) re-bound
- * the grid without touching `CurrentPage`, whereas a new search reset it at L631 and the letter strip
- * forced page one through `FilterURL(Container.DataItem,"1")` (`users.ascx` L16). The asymmetry is
- * real behaviour and is asserted in both directions.
- *
- * ## EFFECT DRAINING
- *
- * The removal outcome is reported from a component `effect`. The draining call used below is
- * `TestBed.flushEffects()`, and that choice was VERIFIED against the installed framework rather than
- * assumed: `flushEffects(): void` is declared on the `TestBed` interface in
- * `node_modules/@angular/core/testing/index.d.ts` at version 19.2.25, and `TestBed.tick()` does NOT
- * exist in this version. Nothing here uses a timer of any kind.
- *
- * ## WHAT IS DELIBERATELY NOT ASSERTED
- *
- * Interceptor headers. `Authorization` and `X-Correlation-Id` are attached by interceptors wired in
- * `app.config.ts`, and `provideHttpClientTesting()` installs none of them, so asserting either would
- * be asserting a fiction.
- */
 import { signal } from '@angular/core';
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -75,20 +5,6 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { Router, provideRouter } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
-/*
- * Imported as an INJECTION TOKEN TO REPLACE, never as a contract consumed. Three of this screen's
- * affordances are gated on the SERVER'S administration verdict, the component reads exactly one
- * projection off this store to obtain it, and the real store derives that projection from a held
- * session this specification has no business fabricating. The sibling listing and form
- * specifications replace it the same way.
- *
- * ⚠ THE PROJECTION REPLACED HERE CHANGED, AND THE CHANGE IS THE POINT. It used to be
- * `permissions()` — the four persisted permission keys — because the three affordances were gated
- * with the shared directive on the key `EDIT`. Those keys are grants held against MODULE and TAB
- * records and cannot express the `PortalAdministrator` policy the account endpoints declare, so the
- * gate is now `holdsPortalAdministration()`, which republishes
- * `CurrentUserDto.IsPortalAdministrator`.
- */
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
 import { UserStore } from '../../../core/state/user.store';
@@ -102,60 +18,34 @@ import type { ApiResponse, PagedResponse } from '../../../core/models/paged-resu
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { MembershipSettings, UserListItem } from '../../../core/models/user.model';
 
-// =====================================================================================================
 // ADDRESSES
-//
-// ⚠ ROOT-RELATIVE, AND THAT IS THE ONLY CORRECT SHAPE HERE. The `test` target declares no
-// `fileReplacements`, so a specification compiles against the PRODUCTION environment, whose
-// `apiBaseUrl` is the relative `'/api/v1'` — the proxy serves the application and the API on one
-// origin, and an absolute base would resolve only inside the container network. No absolute origin
-// appears anywhere in this file, and the workspace's environment module is deliberately NOT imported:
-// an address asserted from the same constant the code builds it from asserts nothing.
-// =====================================================================================================
 
 const USERS_URL = '/api/v1/users';
 
 /**
- * The body-bound account search.
- *
- * ⚠ THE LISTING NOW HAS TWO ADDRESSES, AND WHICH ONE IS USED IS A PRIVACY DECISION RATHER THAN A
- * ROUTING ONE. A search by account name, address or profile property names a person, and a query
- * parameter travels in the REQUEST TARGET — recorded by the browser's history, by every forward and
- * reverse proxy's access log, by the server's access log and by any URL-sampling telemetry, all of
- * which sit at an END of the encrypted channel rather than in the middle of it. That is CWE-598, and
- * HTTPS does not address it. Such a search goes here, in a body. The unfiltered listing and the
- * pager, which carry page coordinates, an ordering and at most an approval state, name nobody and
- * stay on the cacheable `GET`.
- *
- * This screen does nothing to obtain that: it asks the shared account transport, which chooses the
- * address from the query. The cases below therefore claim reads through {@link expectListRead}, which
- * accepts either, and read their values through {@link paramOf} — which reads a body member when the
- * request carried one. What the screen SENDS is its own business and is asserted here; WHERE the
- * value travels is the transport's and is asserted exhaustively in `core/services/user.service.spec`.
- * One case below pins the boundary from this side too, so a regression cannot be invisible here.
+ * The body-bound account search. ⚠ THE LISTING NOW HAS TWO ADDRESSES, AND WHICH ONE IS USED IS A PRIVACY
+ * DECISION RATHER THAN A ROUTING ONE. A search by account name, address or profile property names a
+ * person, and a query parameter travels in the REQUEST TARGET — recorded by the browser's history, by
+ * every forward and reverse proxy's access log, by the server's access log and by any URL-sampling
+ * telemetry, all of which sit at an END of the encrypted channel rather than in the middle of it.
  */
 const USERS_SEARCH_URL = '/api/v1/users/search';
 const MEMBERSHIP_SETTINGS_URL = '/api/v1/users/settings';
 const PROFILE_DEFINITIONS_URL = '/api/v1/profile-definitions';
 
-/** The removal address of one account. The identifier is interpolated exactly as given. */
+/** The removal address of one account. */
 function userUrl(userId: number): string {
   return `${USERS_URL}/${userId}`;
 }
 
-// =====================================================================================================
 // THE WIRE VOCABULARY
-//
-// Spelled out as constants so a rename on either side of the contract fails here rather than
-// silently changing which parameter a case inspects.
-// =====================================================================================================
 
 const PAGE_INDEX_PARAM = 'pageIndex';
 const PAGE_SIZE_PARAM = 'pageSize';
 /** Address parameter carrying the search term, shared with the other three listings. */
 const FILTER_QUERY_KEY = 'filter';
 
-/** Address parameter carrying the search axis. This listing's own. */
+/** Address parameter carrying the search axis. */
 const SEARCH_BY_QUERY_KEY = 'searchby';
 
 /** Address parameter carrying the page, counted from ONE, shared with the other three listings. */
@@ -166,13 +56,7 @@ const EMAIL_PARAM = 'email';
 const PROFILE_PROPERTY_NAME_PARAM = 'profilePropertyName';
 const PROFILE_PROPERTY_VALUE_PARAM = 'profilePropertyValue';
 
-/**
- * The generic free-text parameter the paging contract publishes for OTHER listings.
- *
- * Named here only so its ABSENCE from every account request can be asserted. The account listing
- * carries four named prefix filters instead, and a term arriving under this name would be a
- * substring match against a screen whose legacy behaviour is a starts-with.
- */
+/** The generic free-text parameter the paging contract publishes for OTHER listings. */
 const GENERIC_QUERY_PARAM = 'query';
 
 /** Every filter name the account listing can legitimately carry. */
@@ -184,11 +68,8 @@ const SEARCH_PARAMS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Parameter names that would betray a paging model this contract does not use.
- *
- * The envelope carries a total and a zero-based index, which is offset paging — the model the legacy
- * pager consumed. A cursor, a continuation token, a link relation or a skip/take pair would each be a
- * different model wearing the same clothes, and none is detectable from a passing listing assertion.
+ * Parameter names that would betray a paging model this contract does not use. The envelope carries a
+ * total and a zero-based index, which is offset paging — the model the legacy pager consumed.
  */
 const FOREIGN_PAGING_PARAMS: readonly string[] = Object.freeze([
   'cursor',
@@ -203,30 +84,13 @@ const FOREIGN_PAGING_PARAMS: readonly string[] = Object.freeze([
   'page',
 ]);
 
-// =====================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
-//
-// ⚠ THE RESOURCE VALUE IS THE AUTHORITY, NEVER THE MARKUP ATTRIBUTE. `Users.ascx.vb` L585 ran
-// `Localization.LocalizeDataGrid`, which rewrote every heading from the resource file at run time, so
-// five of the `headertext` values in `users.ascx` are CONTRADICTED by `Users.ascx.resx` and the
-// resource file wins. Each of those five is marked below. Taking the markup attribute would have
-// produced five wrong headings that no compiler could have caught.
-// =====================================================================================================
 
 const PAGE_TITLE = 'User Accounts';
 const ADD_USER_LABEL = 'Add New User';
 const MEMBERSHIP_SETTINGS_LABEL = 'User Settings';
 const PROFILE_DEFINITIONS_LABEL = 'Manage Profile Properties';
 const SEARCH_FIELD_CAPTION = 'Search by';
-/**
- * ⚠ U-M13 — 'Search accounts' UNTIL THIS FINDING. The old wording promised a search OF the account,
- * anywhere in it; the match is a STARTS-WITH — `Website/admin/Users/Users.ascx.vb` L269, L271 and L274
- * each append one TRAILING wildcard and nothing leading, and the endpoint reproduces that appending.
- * An operator working from the old promise would read `smith` failing to find `johnsmith` as missing
- * data rather than as the rule. It names no FIELD, deliberately: the axis is an open set chosen in the
- * selector beside the box, so naming one here would contradict the selector for two of its three kinds
- * of entry.
- */
 const SEARCH_PLACEHOLDER = 'Begins with';
 const RETRY_LABEL = 'Try again';
 
@@ -236,40 +100,40 @@ const EDIT_COMMAND_LABEL = 'Edit';
 /** `Users.ascx.resx` `Delete.Text`, present locally. */
 const DELETE_COMMAND_LABEL = 'Delete';
 
-/** `Users.ascx.resx` `UserRoles.Text` — keyed by the legacy COMMAND NAME, which is why it is not "User Roles". */
+/**
+ * `Users.ascx.resx` `UserRoles.Text` — keyed by the legacy COMMAND NAME, which is why it is not "User
+ * Roles".
+ */
 const MANAGE_ROLES_COMMAND_LABEL = 'Manage Roles';
 
-/** `SharedResources.resx` `DeleteItem.Text`, reached from `Users.ascx.vb` L523. */
 const REMOVAL_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
-/** `Users.ascx.resx` `UserDeleted.Text`, reported at `Users.ascx.vb` L655 at the success severity. */
 const USER_DELETED_MESSAGE = 'User Deleted Successfully';
 
-/** `SharedResources.resx` `UserDeleteError.Text`, reported at L657. Another three-level fall-through. */
+/** `SharedResources.resx` `UserDeleteError.Text`, reported at L657. */
 const USER_DELETE_ERROR_MESSAGE = 'Error Deleting User';
 
-/** `SharedResources.resx` `All.Text`, appended to the alphabet strip at `Users.ascx.vb` L308. */
 const ALL_FILTER_LABEL = 'All';
 
 const USERNAME_HEADING = 'Username';
 
-/** `FirstName.Header` — the markup says "FirstName". DL-3 case one. */
+/** `FirstName.Header` — the markup says "FirstName". */
 const FIRST_NAME_HEADING = 'First Name';
 
-/** `LastName.Header` — the markup says "LastName". DL-3 case two. */
+/** `LastName.Header` — the markup says "LastName". */
 const LAST_NAME_HEADING = 'Last Name';
 
-/** `DisplayName.Header` — the markup says "DisplayName". DL-3 case three. */
+/** `DisplayName.Header` — the markup says "DisplayName". */
 const DISPLAY_NAME_HEADING = 'Name';
 
 const ADDRESS_HEADING = 'Address';
 const TELEPHONE_HEADING = 'Telephone';
 const EMAIL_HEADING = 'Email';
 
-/** `CreatedDate.Header` — the markup says "CreatedDate". DL-3 case four. */
+/** `CreatedDate.Header` — the markup says "CreatedDate". */
 const CREATED_DATE_HEADING = 'Created Date';
 
-/** `LastLogin.Header` — the markup says "LastLogin". DL-3 case five. */
+/** `LastLogin.Header` — the markup says "LastLogin". */
 const LAST_LOGIN_HEADING = 'Last Login';
 
 const AUTHORIZED_HEADING = 'Authorized';
@@ -301,25 +165,12 @@ const NEGATIVE_TEXT = 'No';
 /** The shared empty state's own default wording; this screen passes it no message. */
 const EMPTY_STATE_MESSAGE = 'No records found.';
 
-/**
- * The persisted permission key the three mutating affordances USED to be gated on, held only so
- * this specification can assert that it no longer appears anywhere in the rendered screen.
- *
- * ⚠ IT WAS THE WRONG VOCABULARY. `EDIT` is a grant over a module or page INSTANCE, carried in
- * `ModulePermissions` and `TabPermissions`. Every destination these affordances address —
- * `/users/new`, `/users/{id}`, and the removal endpoint — is declared under the
- * `PortalAdministrator` POLICY, which is answered from `Portals.AdministratorRoleId` and not from
- * any persisted key. The old gate could therefore hide a screen the caller may reach and offer one
- * the server will refuse, in the same session.
- */
 const EDIT_PERMISSION = 'EDIT';
 
 /**
- * The shared pager's own accessible names for its four steps.
- *
- * ⚠ THE PAGER OFFERS NO NUMBERED ENTRIES. It renders first, previous, next and last plus a position
- * readout, so a case moves pages by pressing a step rather than by pressing a number — verified in the
- * component's template rather than assumed.
+ * The shared pager's own accessible names for its four steps. ⚠ THE PAGER OFFERS NO NUMBERED ENTRIES. It
+ * renders first, previous, next and last plus a position readout, so a case moves pages by pressing a
+ * step rather than by pressing a number — verified in the component's template rather than assumed.
  */
 const PAGER_NEXT_LABEL = 'Next page';
 const PAGER_PREVIOUS_LABEL = 'Previous page';
@@ -357,18 +208,11 @@ const STATUS_TITLE: Readonly<Record<number, string>> = {
   500: 'Internal Server Error',
 };
 
-/**
- * A distributed-trace identifier, in the W3C shape the server emits.
- *
- * Used WITHOUT a correlation identifier wherever the retention of this value is the point, because the
- * shared summariser prefers a correlation identifier when one is present and would otherwise have
- * masked whether the trace identifier survived at all.
- */
+/** A distributed-trace identifier, in the W3C shape the server emits. */
 const TRACE_ID = '00-4b1f9d1cb7f24a9e8e1a6c5d3f207b41-9f2c7d5a1e0b4c63-01';
 
 const CORRELATION_ID = '2f8b1c74-5d93-4e02-9a6f-7c1b0d84e5a2';
 
-/** The shared vocabulary's sentence for a refusal, used to prove the wording is not re-authored here. */
 const FORBIDDEN_MESSAGE = 'You do not have permission to perform this action.';
 
 /** The severity word the shared banner paints for a refusal. */
@@ -378,13 +222,9 @@ const WARNING_SEVERITY_LABEL = 'Warning';
 const ERROR_SEVERITY_LABEL = 'Error';
 
 /**
- * Builds an RFC 7807 problem document.
- *
- * ⚠ `errors` IS KEYED AS THE SERVER KEYS IT. The map arrives from .NET's model-state dictionary, whose
- * keys are the PROPERTY NAMES of the request contract in their original casing — `UserName`, not
- * `userName` — so every read of it in this file is a BRACKET access. `noPropertyAccessFromIndexSignature`
- * is enabled, which makes `problem.errors.UserName` a compilation error rather than a silent
- * `undefined`; the bracket form is the only correct one and is used throughout.
+ * Builds an RFC 7807 problem document. ⚠ `errors` IS KEYED AS THE SERVER KEYS IT. The map arrives from
+ * .NET's model-state dictionary, whose keys are the PROPERTY NAMES of the request contract in their
+ * original casing — `UserName`, not `userName` — so every read of it in this file is a BRACKET access.
  *
  * @param code The failure code the server writes into `type`.
  * @param status The HTTP status.
@@ -411,13 +251,10 @@ function problem(
 }
 
 /**
- * A problem document carrying NEITHER a summary nor a sentence.
- *
- * ⚠ THIS SHAPE IS WHAT REACHES THE SHARED STATUS VOCABULARY AT ALL. The summariser prefers the server's
- * `detail`, then its `title`, and only then falls back to a sentence of its own — so a document carrying
- * the bare status word "Forbidden" as its title renders THAT, and a case meaning to assert the shared
- * wording has to omit both members. The API does emit documents of this shape: an authorisation refusal
- * raised by the policy handler carries a type and a status and nothing a person can read.
+ * A problem document carrying NEITHER a summary nor a sentence. ⚠ THIS SHAPE IS WHAT REACHES THE SHARED
+ * STATUS VOCABULARY AT ALL. The summariser prefers the server's `detail`, then its `title`, and only then
+ * falls back to a sentence of its own — so a document carrying the bare status word "Forbidden" as its
+ * title renders THAT, and a case meaning to assert the shared wording has to omit both members.
  *
  * @param code The failure code the server writes into `type`.
  * @param status The HTTP status.
@@ -436,34 +273,10 @@ function bareProblem(code: string, status: number): ProblemDetails {
 // =====================================================================================================
 
 /**
- * One account row, in the exact shape `decodeUserListItem` accepts.
- *
- * ⚠ EVERY MEMBER IS PRESENT AND EVERY SPELLING IS THE WIRE'S. The listing decoder is strict — it
- * refuses an undeclared member value and rejects the WHOLE page — so an omitted member or the
- * plausible-looking `userName` in place of `username` would fail the read rather than the assertion,
- * which is a far harder failure to diagnose.
- *
- * ⚠ THE DEFAULT TENANT KEY IS MINUS ONE, AND THAT IS A SCHEMA FACT RATHER THAN A CURIOSITY.
- * `dbo.Portals.PortalID` is declared `IDENTITY (-1, 1)`
- * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77), so the first
- * portal ever created carries minus one — while `Library/Components/Shared/Null.vb` L41-L45
- * simultaneously defines `NullInteger` as minus one. The same number therefore means both "the first
- * tenant" and "no tenant", which is why nothing in this file tests an identifier for truthiness, for
- * positivity, or against minus one.
- *
- * @param userId The account identifier. Defaults to a value no seed produces, so a case that means to
- * exercise an identity edge has to say so.
- * @param overrides Members to replace.
- * @returns The row.
- */
-/**
- * The signed-in caller's identity.
- *
- * ⚠ THE TENANT KEY IS -1 AND THE ACCOUNT KEY IS 99, BOTH DELIBERATE. `Portals.PortalID` is
- * `IDENTITY(-1, 1)`, so -1 is the FIRST REAL TENANT as well as the legacy marker for a missing
- * integer — a fixture using a tidier value would not exercise the screen's explicit presence tests.
- * The account key differs from every row fixture's default, so a case that means to make the caller
- * its own row has to say so.
+ * The signed-in caller's identity. ⚠ THE TENANT KEY IS -1 AND THE ACCOUNT KEY IS 99, BOTH DELIBERATE.
+ * `Portals.PortalID` is `IDENTITY(-1, 1)`, so -1 is the FIRST REAL TENANT as well as the legacy marker
+ * for a missing integer — a fixture using a tidier value would not exercise the screen's explicit
+ * presence tests.
  *
  * @param overrides Members a case cares about.
  * @returns A complete identity.
@@ -484,6 +297,21 @@ function callerAccount(overrides: Partial<CurrentUser> = {}): CurrentUser {
   };
 }
 
+/**
+ * One account row, in the exact shape `decodeUserListItem` accepts. ⚠ EVERY MEMBER IS PRESENT AND EVERY
+ * SPELLING IS THE WIRE'S. The listing decoder is strict — it refuses an undeclared member value and
+ * rejects the WHOLE page — so an omitted member or the plausible-looking `userName` in place of
+ * `username` would fail the read rather than the assertion, which is a far harder failure to diagnose. ⚠
+ * THE DEFAULT TENANT KEY IS MINUS ONE, AND THAT IS A SCHEMA FACT RATHER THAN A CURIOSITY.
+ * `dbo.Portals.PortalID` is declared `IDENTITY (-1, 1)`
+ * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77), so the first portal
+ * ever created carries minus one — while `Library/Components/Shared/Null.vb` L41-L45 simultaneously
+ * defines `NullInteger` as minus one.
+ *
+ * @param userId The account identifier.
+ * @param overrides Members to replace.
+ * @returns The row.
+ */
 function userRow(userId = 7, overrides: Partial<UserListItem> = {}): UserListItem {
   return {
     userId,
@@ -507,18 +335,8 @@ function userRow(userId = 7, overrides: Partial<UserListItem> = {}): UserListIte
 }
 
 /**
- * The tenant's account policy, in the shape `decodeMembershipSettings` accepts.
- *
- * ⚠ ALL NINE OPTIONAL COLUMNS ARE SWITCHED ON HERE, and that is a fixture choice rather than the
- * product default. `UserModuleBase.GetSettings` (`Library/Components/Users/UserModuleBase.vb`
- * L98-L124) left FOUR of the nine off — the two name parts, the address column's neighbour and the
- * last-login column — and the component reproduces those defaults for a tenant whose policy cannot be
- * read. Switching them all on is what lets the ordinary cases below assert the complete column set;
- * the defaults are asserted separately, in the case that fails the policy read.
- *
- * ⚠ THE PAGE SIZE IS DECLARED HERE AND NOWHERE ELSE. `Users.ascx.vb` L114-L119 read it from the
- * tenant's `Records_PerPage` setting, so it was never a constant in the legacy screen and is never a
- * literal in an assertion below: a case asserts the value it supplied.
+ * The tenant's account policy, in the shape `decodeMembershipSettings` accepts. ⚠ ALL NINE OPTIONAL
+ * COLUMNS ARE SWITCHED ON HERE, and that is a fixture choice rather than the product default.
  *
  * @param overrides Members to replace.
  * @returns The policy.
@@ -561,24 +379,9 @@ const TENANT_PAGE_SIZE = membershipSettings().recordsPerPage;
 
 /**
  * The policy a tenant with NO SETTINGS SOURCE is answered with: the platform defaults, marked as
- * defaults.
- *
- * ⚠ #5/#6 — A SUCCESSFUL `200`, NOT A `404`, AND THAT IS THE WHOLE POINT OF THIS BUILDER. The server
- * answers a portal holding no "User Accounts" module instance with the measured legacy defaults and
- * `isStored: false`; the write for the same address answers `409`. The backend authority is
- * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
- * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`. A fixture that
- * synthesised a `404` for this state taught this screen to treat an ordinary tenant as a broken one.
- *
- * Every value is the one `UserModuleBase.GetSettings`
- * (`Library/Components/Users/UserModuleBase.vb` L98-L190) applied for an absent key, which is why the
- * column set it produces is the same four-hidden, five-shown selection the component falls back to
- * when it holds no policy at all — the difference being that here the SERVER supplied them.
- *
- * ⚠ ITS DISPLAY MODE IS THE NO-QUERY ONE, and that is measured rather than convenient:
- * `UserModuleBase.vb` L126-L130 defaults `Display_Mode` to it, so a tenant that has configured
- * nothing opens with no rows until an operator presses a letter or searches
- * (`Users.ascx.vb` L494-L506 and the `BindData` switch at L248-L290).
+ * defaults. ⚠ #5/#6 — A SUCCESSFUL `200`, NOT A `404`, AND THAT IS THE WHOLE POINT OF THIS BUILDER. The
+ * server answers a portal holding no "User Accounts" module instance with the measured legacy defaults
+ * and `isStored: false`; the write for the same address answers `409`.
  *
  * @param overrides Members to replace.
  * @returns The policy.
@@ -608,12 +411,10 @@ function unstoredMembershipSettings(
 }
 
 /**
- * One tenant-declared profile property, in the shape `decodeProfilePropertyDefinition` accepts.
- *
- * Declared as a local shape rather than imported, because the profile contract is not one of this
- * screen's own dependencies: the declarations reach the component as NAMES through the store's
- * derived view, and what this file needs is a body the decoder accepts. Every member the decoder
- * requires is present.
+ * One tenant-declared profile property, in the shape `decodeProfilePropertyDefinition` accepts. Declared
+ * as a local shape rather than imported, because the profile contract is not one of this screen's own
+ * dependencies: the declarations reach the component as NAMES through the store's derived view, and what
+ * this file needs is a body the decoder accepts.
  *
  * @param propertyName The property's name, which is the value the search axis transmits.
  * @param propertyDefinitionId The declaration's identifier.
@@ -640,14 +441,6 @@ function profileDefinition(
   };
 }
 
-/**
- * A deliberately unusual property name.
- *
- * The third search axis is an OPEN SET — `Users.ascx.vb` L272-L274 passed its field name straight
- * through as the property name — so a name is neither validated, case-folded nor checked against a
- * list. A name carrying mixed case, a digit, an underscore and a space is what proves that: a screen
- * that normalised anything would visibly alter this one.
- */
 const ODD_PROPERTY_NAME = 'Xx_Legacy Field 42';
 
 /** A second declared property, so the option list is provably a list rather than a single entry. */
@@ -659,25 +452,16 @@ const PROFILE_DEFINITIONS: readonly Readonly<Record<string, unknown>>[] = Object
   profileDefinition(SECOND_PROPERTY_NAME, 12),
 ]);
 
-/** The single-payload envelope. `meta` is framing the caller never sees; the decoder tolerates null. */
+/** The single-payload envelope. */
 function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
 }
 
 /**
- * A page of accounts.
- *
- * ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data`. A fixture spelling it otherwise
- * flushes successfully and unwraps to no rows at all, which reads as an empty result rather than as a
- * malformed body.
- *
- * ⚠ `meta` IS REQUIRED HERE, unlike on the single-payload envelope: the total and the coordinates ARE
- * the page, and treating their absence as an empty first page is exactly the defect the page decoder
- * exists to prevent.
+ * A page of accounts. ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data`.
  *
  * @param items The rows on this page.
- * @param totalCount The total across every page. Defaults to the rows in hand, which is the
- * single-page case.
+ * @param totalCount The total across every page.
  * @param pageIndex The ZERO-BASED index the server is reporting, which is what the pager binds.
  * @param pageSize The size the server applied.
  * @returns The page.
@@ -710,14 +494,10 @@ const COMPONENT_DEFINITION_FIELD = 'ɵcmp';
 const ON_PUSH_FIELD = 'onPush';
 
 /**
- * One named field of an unknown value, or `undefined` where the value cannot carry fields.
- *
- * ⚠ READ THROUGH `Reflect.get` RATHER THAN THROUGH A CAST. Asserting an unknown into an index
- * signature is the shape of assertion that hides a mistake: it type-checks against a value that may be
- * a number, a string or nothing at all, and then fails at run time instead. `Reflect.get` needs only
- * that the target IS an object, which the guard establishes, so nothing here is unchecked — and this
- * file contains no `any`, no non-null assertion and no suppression comment, in a specification exactly
- * as in production code.
+ * One named field of an unknown value, or `undefined` where the value cannot carry fields. ⚠ READ THROUGH
+ * `Reflect.get` RATHER THAN THROUGH A CAST. Asserting an unknown into an index signature is the shape of
+ * assertion that hides a mistake: it type-checks against a value that may be a number, a string or
+ * nothing at all, and then fails at run time instead.
  *
  * @param carrier The value to read from.
  * @param field The field name.
@@ -732,15 +512,10 @@ function fieldOf(carrier: unknown, field: string): unknown {
 }
 
 /**
- * Whether a component type was compiled with `OnPush` change detection.
- *
- * ⚠ READ STRUCTURALLY BECAUSE NOTHING ELSE CAN WITNESS IT. The usual demonstration moves an input with
- * `setInput` and shows one repaint — but this is a ROUTED SCREEN WITH NO INPUTS AT ALL, so `setInput`
- * would throw rather than prove anything. Nor is the strategy observable through the store: every
- * slice this screen renders is a signal, and a signal read in a template marks its consumer dirty
- * under either strategy. The compiled definition is the only honest witness, and the declaration is
- * worth witnessing — the non-functional requirements make `OnPush` mandatory and nothing else in this
- * suite would notice its removal.
+ * Whether a component type was compiled with `OnPush` change detection. ⚠ READ STRUCTURALLY BECAUSE
+ * NOTHING ELSE CAN WITNESS IT. The usual demonstration moves an input with `setInput` and shows one
+ * repaint — but this is a ROUTED SCREEN WITH NO INPUTS AT ALL, so `setInput` would throw rather than
+ * prove anything.
  *
  * @param componentType The component class.
  * @returns Whether the flag is set.
@@ -761,56 +536,29 @@ describe('UserListComponent', () => {
   let notifySpy: jasmine.Spy;
 
   /**
-   * Whether {@link create} has run in the CURRENT case.
-   *
-   * ⚠ A CLOSURE VARIABLE OUTLIVES THE CASE THAT ASSIGNED IT, so `fixture` still holds the previous
-   * case's component even in a case that never mounted one. This flag is what lets teardown tell
-   * "nothing was mounted" from "something was", rather than destroying a fixture a previous case has
-   * already destroyed.
+   * Whether {@link create} has run in the CURRENT case. ⚠ A CLOSURE VARIABLE OUTLIVES THE CASE THAT
+   * ASSIGNED IT, so `fixture` still holds the previous case's component even in a case that never mounted
+   * one.
    */
   let mounted = false;
 
   beforeEach(async () => {
     mounted = false;
 
-    /*
-     * ⚠ TENANT ADMINISTRATION IS THE INPUT TO THIS SCREEN, so it lives in a signal the cases can move.
-     * Five affordances are gated on it — the three header actions, the row edit link and the row
-     * delete button — and every destination they address is declared under the `PortalAdministrator`
-     * policy. The fact that decides them is therefore the server's own determination, re-exposed by
-     * the identity projection as `administersCurrentPortal`, and never a persisted permission key and
-     * never a role name.
-     *
-     * Seeded as ADMINISTERING, so the ordinary cases describe the screen an administrator sees. The
-     * gating itself is proved separately, by taking the determination away.
-     */
+    // ⚠ TENANT ADMINISTRATION IS THE INPUT TO THIS SCREEN, so it lives in a signal the cases can move. Five
+    // affordances are gated on it — the three header actions, the row edit link and the row delete button —
+    // and every destination they address is declared under the `PortalAdministrator` policy.
     administersPortal = signal<boolean>(true);
 
-    /*
-     * ⚠ THE CALLER'S OWN IDENTITY, which this screen reads for exactly two facts: the tenant to ask
-     * the protected facts for, and the account key the row-level removal guard compares against. Both
-     * are read through `currentUser()` rather than passed in, because this screen names no portal and
-     * no caller in its route.
-     *
-     * Seeded as an ordinary administrator of tenant -1 — a REAL tenant key, `Portals.PortalID` being
-     * seeded at -1 — who is not the account any fixture row describes.
-     */
+    // ⚠ THE CALLER'S OWN IDENTITY, which this screen reads for exactly two facts: the tenant to ask the
+    // protected facts for, and the account key the row-level removal guard compares against.
     callerIdentity = signal<CurrentUser | null>(callerAccount());
 
-    /*
-     * ⚠ THE TENANT'S DESIGNATED ADMINISTRATOR, held separately because it is the fact the removal
-     * guard turns on and it arrives ASYNCHRONOUSLY — `null` until the tenant's own record has been
-     * read. Seeded null, which is the state the screen paints in before the read lands, so the
-     * ordinary cases describe the pre-read screen and the protection is proved by stating the fact.
-     */
+    // ⚠ THE TENANT'S DESIGNATED ADMINISTRATOR, held separately because it is the fact the removal guard
+    // turns on and it arrives ASYNCHRONOUSLY — `null` until the tenant's own record has been read.
     designatedAdministrator = signal<number | null>(null);
 
-    /*
-     * The request for those facts, spied rather than served. The portal store is doubled here because
-     * the real one would issue a tenant read on arrival that all 100-odd cases below would have to
-     * answer, and because the spy is a sharper assertion than a flushed response: it records the
-     * tenant asked for, and whether it was asked at all.
-     */
+    // The request for those facts, spied rather than served.
     loadCurrentPortalContext = jasmine.createSpy('loadCurrentPortalContext');
 
     await TestBed.configureTestingModule({
@@ -823,12 +571,8 @@ describe('UserListComponent', () => {
         // ADDRESS and writes them with a real navigation. An empty route table refuses every navigation, so
         // the write would silently fail and the read that follows the address change would never be issued.
         provideRouter([{ path: '**', component: UserListComponent }]),
-        /*
-         * The REAL store, pinned to this injector rather than left to its root registration, so each
-         * case starts from a store that has read nothing. It is the subject of half the assertions
-         * below — the page it asks for, the filter it sends, the page it preserves — and a double
-         * would have proved the double.
-         */
+        // The REAL store, pinned to this injector rather than left to its root registration, so each case
+        // starts from a store that has read nothing.
         UserStore,
         {
           provide: AuthStore,
@@ -846,28 +590,12 @@ describe('UserListComponent', () => {
   });
 
   afterEach(() => {
-    /*
-     * ⚠ THE FIXTURE IS TORN DOWN BEFORE THE BACKEND IS VERIFIED, AND THAT ORDER IS DELIBERATE.
-     *
-     * The confirmation this screen raises is a native `<dialog>`, and the top layer it opens into
-     * belongs to the DOCUMENT rather than to the fixture — one Karma page hosts every specification in
-     * the suite, so a confirmation left open here is still open when an unrelated specification runs
-     * and its modal backdrop swallows that specification's clicks. Destroying closes it. Teardown also
-     * cancels the store's outstanding reads, which is what makes the verification below a statement
-     * about requests the SCREEN issued rather than about ones its teardown left behind.
-     */
+    // ⚠ THE FIXTURE IS TORN DOWN BEFORE THE BACKEND IS VERIFIED, AND THAT ORDER IS DELIBERATE.
     if (mounted) {
       fixture.destroy();
       mounted = false;
     }
 
-    /*
-     * ⚠ MANDATORY, AND IT DOUBLES AS A POSITIVE ASSERTION. Every case answers exactly the requests it
-     * provoked, so an unanticipated call — a duplicated read, a mutation issued twice, a request the
-     * screen should not have made at all — fails here even where nothing asserted its absence. Without
-     * it an unflushed or unexpected request passes silently, which is the commonest false green there
-     * is in an Angular suite.
-     */
     httpMock.verify();
   });
 
@@ -876,12 +604,7 @@ describe('UserListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /** Creates the screen. `ngOnInit` issues the policy read and the declarations read during this pass. */
-  /**
-   * Lets a navigation this screen started actually happen.
-   *
-   * The search box, the alphabet strip and the pager write the ADDRESS rather than calling the store, and a
-   * router navigation is asynchronous, so the read that follows one is not issued in the same task.
-   */
+  /** Lets a navigation this screen started actually happen. */
   async function settleAddress(): Promise<void> {
     await fixture.whenStable();
     fixture.detectChanges();
@@ -906,11 +629,9 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Consumes exactly one pending request, asserted by verb AND address.
-   *
-   * Matched on `url`, which is the address WITHOUT the query string, so a case states the endpoint here
-   * and inspects the parameters separately. Matching on `urlWithParams` instead would have made every
-   * expectation restate every parameter and would have coupled unrelated cases to the parameter order.
+   * Consumes exactly one pending request, asserted by verb AND address. Matched on `url`, which is the
+   * address WITHOUT the query string, so a case states the endpoint here and inspects the parameters
+   * separately.
    *
    * @param method The HTTP verb.
    * @param url The address, without a query string.
@@ -940,11 +661,9 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Answers the tenant's profile declarations.
-   *
-   * ⚠ UNPAGED, AND THE ABSENCE OF EVERY COORDINATE IS PART OF THE CONTRACT. The transport returns a
-   * plain array inside the single-payload envelope and the store holds no page index, page size or
-   * total for it.
+   * Answers the tenant's profile declarations. ⚠ UNPAGED, AND THE ABSENCE OF EVERY COORDINATE IS PART OF
+   * THE CONTRACT. The transport returns a plain array inside the single-payload envelope and the store
+   * holds no page index, page size or total for it.
    *
    * @param definitions The declarations to answer with.
    * @returns The declarations request.
@@ -976,11 +695,10 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Mounts the screen and settles all three arrival reads.
-   *
-   * ⚠ THE ORDER IS THE COMPONENT'S, NOT THIS HELPER'S. The policy is answered first because the listing
-   * is not issued until it has been; the declarations are independent and are answered between the two
-   * only because that keeps the pending set small.
+   * Mounts the screen and settles all three arrival reads. ⚠ THE ORDER IS THE COMPONENT'S, NOT THIS
+   * HELPER'S. The policy is answered first because the listing is not issued until it has been; the
+   * declarations are independent and are answered between the two only because that keeps the pending set
+   * small.
    *
    * @param page The page the listing answers with.
    * @param settings The policy the tenant declares.
@@ -1000,12 +718,10 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * The component's host element.
-   *
-   * ⚠ BY ASSIGNMENT, NOT BY CAST. `ComponentFixture.nativeElement` is declared `any`, so the annotated
-   * local is what gives it a type — and it is a real check rather than a cosmetic one, because a cast
-   * would equally have accepted a wrong element type and pushed the failure into whichever assertion
-   * happened to touch it first.
+   * The component's host element. ⚠ BY ASSIGNMENT, NOT BY CAST. `ComponentFixture.nativeElement` is
+   * declared `any`, so the annotated local is what gives it a type — and it is a real check rather than a
+   * cosmetic one, because a cast would equally have accepted a wrong element type and pushed the failure
+   * into whichever assertion happened to touch it first.
    *
    * @returns The host element.
    */
@@ -1024,12 +740,10 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * The one element matching `selector`, narrowed by a real check.
-   *
-   * ⚠ THIS EXISTS BECAUSE A NON-NULL ASSERTION IS NOT ALLOWED HERE. `element!.textContent` would silence
-   * the compiler and then read `textContent` of `null` at run time, and Jasmine reports that as a bare
-   * `TypeError` naming neither the selector nor the case's intent. Throwing on the absence names the
-   * selector that was missing, which is the difference between a diagnosis and a puzzle.
+   * The one element matching `selector`, narrowed by a real check. ⚠ THIS EXISTS BECAUSE A NON-NULL
+   * ASSERTION IS NOT ALLOWED HERE. `element!.textContent` would silence the compiler and then read
+   * `textContent` of `null` at run time, and Jasmine reports that as a bare `TypeError` naming neither
+   * the selector nor the case's intent.
    *
    * @param root The subtree to search.
    * @param selector The selector to find.
@@ -1050,13 +764,7 @@ describe('UserListComponent', () => {
     return queryAll<Element>(selector).map((node) => (node.textContent ?? '').trim());
   }
 
-  /**
-   * The wording of every strip entry currently reporting itself as applied.
-   *
-   * Reads the ATTRIBUTE'S VALUE rather than its presence, because the value is the state: the
-   * attribute is emitted on all twenty-seven entries, and a presence test would answer with the whole
-   * strip.
-   */
+  /** The wording of every strip entry currently reporting itself as applied. */
   function pressedAffordances(): readonly string[] {
     return queryAll<HTMLButtonElement>(LETTER_SELECTOR)
       .filter((entry) => entry.getAttribute('aria-pressed') === 'true')
@@ -1074,10 +782,9 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * The DATA cells of one row — the three command cells excluded.
-   *
-   * The commands carry their own cell class, so the two families are distinguishable without counting
-   * positions, which keeps a case that adds a column from breaking every other case.
+   * The DATA cells of one row — the three command cells excluded. The commands carry their own cell
+   * class, so the two families are distinguishable without counting positions, which keeps a case that
+   * adds a column from breaking every other case.
    *
    * @param row The row to read.
    * @returns Its data cells, in document order.
@@ -1089,10 +796,9 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * One data cell of the single painted row, addressed by its heading.
-   *
-   * Located by matching the heading text against the VISIBLE heading order, so a case names the column
-   * it means rather than an index that a visibility change would silently move.
+   * One data cell of the single painted row, addressed by its heading. Located by matching the heading
+   * text against the VISIBLE heading order, so a case names the column it means rather than an index that
+   * a visibility change would silently move.
    *
    * @param heading The column heading.
    * @returns That column's cell in the first row.
@@ -1125,12 +831,8 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * The value of one query parameter, narrowed without a non-null assertion.
-   *
-   * ⚠ `HttpParams.get` RETURNS `string | null`, and `!` is forbidden in this file. Throwing on the
-   * absence names the parameter, which is what makes a missing-parameter failure legible; a case that
-   * means to assert ABSENCE uses `has` instead, because a `get` returning null is a DIFFERENT assertion
-   * that also passes for a parameter that is present and empty.
+   * The value of one query parameter, narrowed without a non-null assertion. ⚠ `HttpParams.get` RETURNS
+   * `string | null`, and `!` is forbidden in this file.
    *
    * @param request The request to read.
    * @param name The parameter name.
@@ -1146,9 +848,9 @@ describe('UserListComponent', () => {
         throw new Error(`Expected the search body to carry "${name}"`);
       }
 
-      // Stringified so that a case reads the same value whichever address carried it. A query
-      // parameter is always text, and a body member is typed — a page index is a number there — so
-      // without this every coordinate assertion would have to be written twice.
+      // Stringified so that a case reads the same value whichever address carried it. A query parameter is
+      // always text, and a body member is typed — a page index is a number there — so without this every
+      // coordinate assertion would have to be written twice.
       return String(member);
     }
 
@@ -1174,10 +876,6 @@ describe('UserListComponent', () => {
 
   /**
    * The members of a search body, or `null` when the request was not a search.
-   *
-   * Returning `null` rather than an empty record is what lets {@link paramOf} and {@link carries}
-   * tell "this was a `GET`, read the query" from "this was a search whose body omits the member" —
-   * two answers a single empty record would collapse into one.
    *
    * @param request The request to inspect.
    * @returns The body members, or null for a query-string request.
@@ -1215,10 +913,7 @@ describe('UserListComponent', () => {
   function expectNoListRead(): void {
     // ⚠ COUNTED, NOT `expectNone`, AND THE DIFFERENCE IS VISIBLE IN THE LOG. `expectNone` asserts by
     // throwing, so Jasmine records no expectation for a spec whose entire claim is this call - and the
-    // runner then reports that spec exactly as it reports one that forgot to assert anything. `match`
-    // returns what it matched, so the emptiness of that list is the assertion and it fails just as loudly
-    // on an unexpected read. Nothing is weakened: the predicate names only the two listing addresses, and
-    // it matched neither, so the `verify()` in the teardown still guards every other request.
+    // runner then reports that spec exactly as it reports one that forgot to assert anything.
     expect(
       httpMock.match(
         (candidate) =>
@@ -1231,12 +926,11 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * A button inside `root` whose rendered wording is exactly `label`.
-   *
-   * ⚠ SCOPED TO A SUBTREE ON PURPOSE. The row delete command and the confirmation's affirmative control
-   * BOTH read "Delete" — the affirmative wording is deliberately the legacy `Delete.Text` — so a
-   * document-wide search by wording would find whichever came first in the document and the flow would
-   * pass while testing the wrong control.
+   * A button inside `root` whose rendered wording is exactly `label`. ⚠ SCOPED TO A SUBTREE ON PURPOSE.
+   * The row delete command and the confirmation's affirmative control BOTH read "Delete" — the
+   * affirmative wording is deliberately the legacy `Delete.Text` — so a document-wide search by wording
+   * would find whichever came first in the document and the flow would pass while testing the wrong
+   * control.
    *
    * @param root The subtree to search.
    * @param label The exact wording.
@@ -1266,15 +960,8 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Types a term into the shared search control and submits it immediately.
-   *
-   * ⚠ SUBMITTED RATHER THAN LEFT TO DEBOUNCE, which is what keeps this file free of timers. The shared
-   * control debounces its typing path but emits at once on Enter and on its submit control, so pressing
-   * the submit control is the synchronous path — and it is also the legacy path: `users.ascx` L9
-   * declared an image button that ran the query, and typing alone ran nothing.
-   *
-   * ⚠ THE SHARED CONTROL SUPPRESSES A DUPLICATE TERM. It remembers the last term it emitted and
-   * discards a repeat, so two cases wanting two requests must use two DIFFERENT terms.
+   * Types a term into the shared search control and submits it immediately. ⚠ SUBMITTED RATHER THAN LEFT
+   * TO DEBOUNCE, which is what keeps this file free of timers.
    *
    * @param term The text to type, passed through exactly as given.
    */
@@ -1293,10 +980,6 @@ describe('UserListComponent', () => {
 
   /**
    * Chooses a search axis by its rendered wording.
-   *
-   * Changing the axis DISPATCHES NOTHING, which is parity rather than an omission: `users.ascx` L8
-   * declared the selector with no auto-post-back, so a new selection had no effect until the search
-   * control was used.
    *
    * @param label The option wording to select.
    */
@@ -1395,14 +1078,10 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Presses the confirmation's affirmative control.
-   *
-   * ⚠ ADDRESSED BY ITS DANGER MODIFIER RATHER THAN BY EXACT WORDING, and the reason is worth recording:
-   * the dialogue prefixes a warning glyph to the label when the danger input is set, so the control's
-   * text is the glyph AND the legacy `Delete.Text` rather than the label alone. Matching the wording
-   * exactly would fail here for a reason that has nothing to do with the flow, and matching it loosely
-   * across the document would find the ROW command, which carries the same word. The label itself is
-   * asserted to be present, so the wording is still checked.
+   * Presses the confirmation's affirmative control. ⚠ ADDRESSED BY ITS DANGER MODIFIER RATHER THAN BY
+   * EXACT WORDING, and the reason is worth recording: the dialogue prefixes a warning glyph to the label
+   * when the danger input is set, so the control's text is the glyph AND the legacy `Delete.Text` rather
+   * than the label alone.
    */
   function acceptRemoval(): void {
     const affirmative = queryOrFail<HTMLButtonElement>(
@@ -1417,13 +1096,9 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Opens the confirmation for the first row and accepts it, returning the removal request.
-   *
-   * The confirmation is a real dialogue rather than a browser prompt, so acceptance is a press on its
-   * own affirmative control — scoped to the dialogue, because the row command carries the same wording.
-   *
-   * The outcome is NOT settled here: nothing can be reported until the removal itself has answered, so
-   * a case answers the request and then calls {@link settleOutcome}.
+   * Opens the confirmation for the first row and accepts it, returning the removal request. The
+   * confirmation is a real dialogue rather than a browser prompt, so acceptance is a press on its own
+   * affirmative control — scoped to the dialogue, because the row command carries the same wording.
    *
    * @param userId The account the first row carries.
    * @returns The removal request.
@@ -1436,12 +1111,10 @@ describe('UserListComponent', () => {
   }
 
   /**
-   * Drains the effect that reports a settled removal.
-   *
-   * ⚠ `TestBed.flushEffects()` IS THE API THIS FRAMEWORK VERSION PUBLISHES. It is declared on the
-   * `TestBed` interface in the installed `@angular/core@19.2.25`; `TestBed.tick()` does not exist here,
-   * so there is nothing else to use — and nothing in this file is asynchronous, so nothing else is
-   * needed.
+   * Drains the effect that reports a settled removal. ⚠ `TestBed.flushEffects()` IS THE API THIS
+   * FRAMEWORK VERSION PUBLISHES. It is declared on the `TestBed` interface in the installed
+   * `@angular/core@19.2.25`; `TestBed.tick()` does not exist here, so there is nothing else to use — and
+   * nothing in this file is asynchronous, so nothing else is needed.
    */
   function settleOutcome(): void {
     TestBed.flushEffects();
@@ -1456,15 +1129,6 @@ describe('UserListComponent', () => {
     it('reads the tenant policy and the profile declarations at once, and the listing only after the policy', () => {
       create();
 
-      /*
-       * Both independent reads are already in flight, and the listing is NOT: the page size is a
-       * per-tenant setting (`Users.ascx.vb` L116 reads `Records_PerPage`), so the listing cannot be
-       * requested correctly until the policy that declares it is in hand.
-       *
-       * ⚠ AN EXPECTATION CONSUMES ITS REQUEST, so the two in flight are captured and answered through these
-       * handles rather than expected a second time. Expecting the same request twice is a self-inflicted
-       * "found none" that says nothing at all about the screen.
-       */
       const settings = expectRequest('GET', MEMBERSHIP_SETTINGS_URL, 'the account-policy read');
       const definitions = expectRequest(
         'GET',
@@ -1498,18 +1162,9 @@ describe('UserListComponent', () => {
 
       const listing = answerListing(pageOf([userRow()], 1, 0, 10));
 
-      /*
-       * ⚠ THE LISTING FOLLOWS ON BOTH OUTCOMES. A tenant whose policy is unavailable still has accounts,
-       * and a listing at the shared fallback size beside a recorded failure is a better answer than no
-       * listing at all. The fallback is the paging contract's own `DEFAULT_PAGE_SIZE`, which is where
-       * the legacy default of ten from `UserModuleBase.vb` L134-L136 now lives — so this case asserts
-       * that a size was sent WITHOUT restating the number, because the number belongs to that contract.
-       *
-       * ⚠ A REFUSAL, NOT AN UNSTORED TENANT. The status here means the policy could not be read at all;
-       * a tenant that merely stores nothing is answered `200` with the server's own defaults and is
-       * asserted separately below. Conflating the two is what made this screen report a healthy tenant
-       * as a degraded one.
-       */
+      // ⚠ A REFUSAL, NOT AN UNSTORED TENANT. The status here means the policy could not be read at all; a
+      // tenant that merely stores nothing is answered `200` with the server's own defaults and is asserted
+      // separately below.
       expect(carries(listing, PAGE_SIZE_PARAM)).toBeTrue();
       expect(paramOf(listing, PAGE_SIZE_PARAM)).not.toBe(String(TENANT_PAGE_SIZE));
       expect(rows()).toHaveSize(1);
@@ -1525,16 +1180,9 @@ describe('UserListComponent', () => {
       answerDefinitions();
       answerListing(pageOf([userRow()], 1, 0, 10));
 
-      /*
-       * MEASURED, NOT ASSUMED, AND NOT UNIFORMLY TRUE. `UserModuleBase.GetSettings`
-       * (`Library/Components/Users/UserModuleBase.vb` L98-L124) filled each unset key with a value that
-       * left FOUR of the nine optional columns HIDDEN: both name parts, the electronic-mail column and
-       * the last-login column. A default of true everywhere would have shown four columns the legacy
-       * screen did not, so the four absences are asserted as firmly as the five presences.
-       *
-       * These are the component's OWN fallbacks, applied because it holds no policy. The identical set
-       * arrives from the server for a tenant that stores nothing, which the next two cases assert.
-       */
+      // MEASURED, NOT ASSUMED, AND NOT UNIFORMLY TRUE. `UserModuleBase.GetSettings` filled each unset key
+      // with a value that left FOUR of the nine optional columns HIDDEN: both name parts, the
+      // electronic-mail column and the last-login column.
       const headings: readonly string[] = textOf(HEADER_SELECTOR);
 
       expect(headings).toContain(USERNAME_HEADING);
@@ -1549,19 +1197,9 @@ describe('UserListComponent', () => {
     });
 
     it('takes the default columns and page size from the SERVER when the tenant stores no policy', async () => {
-      /*
-       * ⚠ #5/#6 — THE REAL CONTRACT FOR A TENANT WITH NO SETTINGS SOURCE, WHICH NO CASE USED TO FLUSH.
-       * The read succeeds: `200`, the measured legacy defaults, `isStored: false`. Nothing about it is a
-       * failure, so this screen must show no banner, no retry and no degradation notice — the values on
-       * screen came from the server and are exactly the ones the legacy screen applied for the same
-       * tenant. The authority for the response shape is
-       * `UserApiTests.MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
-       *
-       * ⚠ NO LISTING IS ISSUED ON ARRIVAL, and that is the policy being honoured. The measured default
-       * display mode is the no-query one (`UserModuleBase.vb` L126-L130), so the screen waits to be
-       * asked — which is why the page size is proved through the unfiltered affordance rather than
-       * through an arrival read.
-       */
+      // ⚠ NO LISTING IS ISSUED ON ARRIVAL, and that is the policy being honoured. The measured default
+      // display mode is the no-query one, so the screen waits to be asked — which is why the page size is
+      // proved through the unfiltered affordance rather than through an arrival read.
       create();
       answerSettings(unstoredMembershipSettings());
       answerDefinitions();
@@ -1595,14 +1233,6 @@ describe('UserListComponent', () => {
     });
 
     it('discloses NOTHING when the tenant stores no policy, because nothing was lost', () => {
-      /*
-       * ⚠ THE MIRROR OF THE #5 DEFECT, AND THE HALF THAT WAS STILL WRONG. A tenant that stores no policy
-       * used to be answered `404`, which this screen reported as degradation — a notice claiming the
-       * settings "could not be read" over a screen whose settings had been read perfectly well. The
-       * server now supplies the defaults, so there is nothing to disclose here at all: the provenance is
-       * published by the store and explained on the POLICY screen, which is the only surface on which
-       * the distinction changes what an operator may do.
-       */
       create();
       answerSettings(unstoredMembershipSettings());
       answerDefinitions();
@@ -1634,17 +1264,9 @@ describe('UserListComponent', () => {
     });
 
     it('re-reads the policy, the declarations and the listing when the reader retries', () => {
-      /*
-       * ⚠ #5 — THE FAULT THIS CASE INJECTS CHANGED, AND THE CHANGE IS THE FIX. It used to fail the
-       * account-POLICY read, because that was one of the three operations the screen-level failure
-       * surface answered for. It no longer is: a policy that cannot be read costs the tenant its
-       * preferred page size and column selection, both of which this screen has a documented fallback
-       * for, and the listing is dispatched on that failure exactly as it is on success — so the surface
-       * used to raise an assertive "Not Found" banner with a retry command above a perfectly healthy
-       * listing of accounts. The fault is now injected on the LISTING read, which IS this screen's own
-       * content and is the state a retry genuinely recovers from. The behaviour being asserted — that
-       * the retry re-reads all THREE, not just the one that failed — is unchanged.
-       */
+      // ⚠ #5 — THE FAULT THIS CASE INJECTS IS A LISTING FAILURE, NOT A POLICY FAILURE. The account
+      // policy is not one of the operations the screen-level failure surface answers for, so failing that
+      // read instead would raise no surface for the retry to press.
       create();
       answerSettings();
       answerDefinitions();
@@ -1656,10 +1278,8 @@ describe('UserListComponent', () => {
 
       pressIn(host(), RETRY_LABEL);
 
-      /*
-       * The POLICY is re-read as well as the listing, because a listing read at the fallback size beside
-       * an unreadable policy is exactly the state the retry recovers from.
-       */
+      // The POLICY is re-read as well as the listing, because a listing read at the fallback size beside an
+      // unreadable policy is exactly the state the retry recovers from.
       answerSettings();
       answerDefinitions();
       answerListing();
@@ -1668,17 +1288,9 @@ describe('UserListComponent', () => {
     });
 
     it('does NOT raise the screen-level failure surface when only the account policy read fails', () => {
-      /*
-       * ⚠ #5 — THE DEFECT, STATED AS AN ASSERTION. The account-policy read used to open the screen's
-       * failure surface: an assertive banner reading "Not Found", with a Try-again command, sitting
-       * directly above a listing that had loaded correctly and was showing every account it should. The
-       * banner reported a failure of the listing that had not happened, and offered a retry for a
-       * listing that needed none.
-       *
-       * Nothing about the accounts is affected by an unreadable policy. The store dispatches the listing
-       * on BOTH policy outcomes for exactly that reason, and this screen holds a documented fallback for
-       * each of the two things the policy decides — the page size and the optional-column selection.
-       */
+      // Nothing about the accounts is affected by an unreadable policy. The store dispatches the listing on
+      // BOTH policy outcomes for exactly that reason, and this screen holds a documented fallback for each
+      // of the two things the policy decides — the page size and the optional-column selection.
       create();
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
         problem('not_found', 404, 'That portal could not be resolved.'),
@@ -1697,13 +1309,9 @@ describe('UserListComponent', () => {
     });
 
     it('discloses the degradation quietly instead, naming only what the policy decides', () => {
-      /*
-       * ⚠ #5 — SILENCE WOULD BE THE MIRROR OF THE DEFECT. A listing quietly showing ten rows a page
-       * when the tenant asked for fifty, with nothing on screen to say the preference was not honoured,
-       * is as misleading as a banner claiming the listing failed. The disclosure is a plain paragraph
-       * rather than a live region or an alert: it describes what is on screen rather than reporting an
-       * event, and it is not a fault the reader can act on from here.
-       */
+      // ⚠ #5 — SILENCE WOULD BE THE MIRROR OF THE DEFECT. A listing quietly showing ten rows a page when
+      // the tenant asked for fifty, with nothing on screen to say the preference was not honoured, is as
+      // misleading as a banner claiming the listing failed.
       create();
       expectRequest('GET', MEMBERSHIP_SETTINGS_URL).flush(
         problem('not_found', 404, 'That portal could not be resolved.'),
@@ -1728,10 +1336,6 @@ describe('UserListComponent', () => {
     });
 
     it('shows no degradation notice while the policy reads successfully', () => {
-      // The counterpart of the case above. The notice must be absent in the ordinary state, or it would
-      // be describing a degradation that is not happening. The sibling case in the arrival suite asserts
-      // the same for the OTHER successful state — a tenant that stores no policy at all — because that
-      // state is a `200` too and used to be reported here as degradation.
       arrive();
 
       expect(query('.user-list__policy-notice')).toBeNull();
@@ -1744,16 +1348,6 @@ describe('UserListComponent', () => {
 
   describe('the paging envelope', () => {
     it('takes the rows and the total from one envelope rather than from a by-reference argument', () => {
-      /*
-       * MIGRATION: the legacy total arrived through an argument passed BY REFERENCE —
-       * `GetUsers(portalId, …, pageIndex, pageSize, ByRef totalRecords)` — so the count was a side
-       * effect on one of the screen's own fields. It now travels inside the envelope beside the rows,
-       * which is what lets one answer settle both.
-       *
-       * ⚠ MEASURED CORRECTION TO THE ACTION PLAN: that idiom is cited there as having three sites.
-       * `Library/Components/Users/UserController.vb` carries EIGHT — L725, L746, L769, L793, L816,
-       * L840, L864 and L889 — every one of them a paged account reader.
-       */
       arrive(pageOf([userRow(1), userRow(2)], 9, 0, TENANT_PAGE_SIZE));
 
       expect(rows()).toHaveSize(2);
@@ -1767,12 +1361,6 @@ describe('UserListComponent', () => {
     it('requests the page size the tenant policy declares, never a hard-coded literal', () => {
       const listing = arrive();
 
-      /*
-       * `Users.ascx.vb` L114-L119 read the size from the tenant's `Records_PerPage` setting through
-       * `UserModuleBase.GetSetting`, so it was never a constant in the legacy screen either. The
-       * expected value is read back off the fixture rather than written out, so this case cannot drift
-       * into asserting a literal.
-       */
       expect(paramOf(listing, PAGE_SIZE_PARAM)).toBe(String(TENANT_PAGE_SIZE));
     });
 
@@ -1788,15 +1376,9 @@ describe('UserListComponent', () => {
     it('sends offset paging only — no cursor, continuation token, link relation or skip/take pair', () => {
       const listing = arrive();
 
-      /*
-       * ⚠ THE ENVELOPE CARRIES A TOTAL AND A ZERO-BASED INDEX, WHICH IS OFFSET PAGING — the model the
-       * legacy pager consumed. Every name below is a different paging model wearing the same clothes,
-       * and none of them is detectable from a listing assertion that merely passes.
-       *
-       * `page` is in that list deliberately: the shared pager's INPUT is called `page`, and a screen
-       * that forwarded its own input name to the wire would look right and request under a name the
-       * server does not bind.
-       */
+      // ⚠ THE ENVELOPE CARRIES A TOTAL AND A ZERO-BASED INDEX, WHICH IS OFFSET PAGING — the model the
+      // legacy pager consumed. Every name below is a different paging model wearing the same clothes, and
+      // none of them is detectable from a listing assertion that merely passes.
       for (const foreign of FOREIGN_PAGING_PARAMS) {
         expect(carries(listing, foreign))
           .withContext(`the listing must not send "${foreign}"`)
@@ -1810,26 +1392,12 @@ describe('UserListComponent', () => {
     it('sends no ordering parameters when the address asks for none, yet offers exactly five sortable headings', () => {
       const listing = arrive();
 
-      /*
-       * ⚠ THIS TEST USED TO ASSERT THE OPPOSITE OF ITS SECOND HALF, and the reversal is deliberate. It
-       * read "sends no ordering parameters, because the legacy grid offered no sorting" and required
-       * ZERO sort buttons, on the authority that `users.ascx` L22-L23 declares no `AllowSorting`. That
-       * authority is real but is OUTRANKED twice over: AAP 0.3.2 specifies `sortBy`, `sortDir` and
-       * `sortChange` on the shared record grid, and the review recorded their absence from this listing
-       * as an AAP compliance failure rather than a design choice. The test was encoding the defect.
-       *
-       * The half that WAS right is kept and still matters: arriving with no ordering in the address must
-       * send no ordering on the wire, so the endpoint's own default applies rather than a direction this
-       * screen invented. An unasked-for ordering announced as though it were asked for is its own defect.
-       */
       expect(carries(listing, 'sortBy')).toBeFalse();
       expect(carries(listing, 'sortDir')).toBeFalse();
 
-      /*
-       * The five headings, named rather than counted. A bare count of five would pass if the WRONG five
-       * were sortable, which would be worse than none: each of these was issued against the running
-       * endpoint and observed to return 200 with a genuinely different order.
-       */
+      // The five headings, named rather than counted. A bare count of five would pass if the WRONG five
+      // were sortable, which would be worse than none: each of these was issued against the running
+      // endpoint and observed to return 200 with a genuinely different order.
       const sortableHeadings: readonly string[] = queryAll('button.data-table__sort').map((button) =>
         (button.textContent ?? '').replace(/[\u25b2\u25bc]/g, '').trim(),
       );
@@ -1848,11 +1416,6 @@ describe('UserListComponent', () => {
           .toContain(heading);
       }
 
-      /*
-       * THE NEGATIVE CONTROL, which is what makes the five above mean something. Each of these five was
-       * ALSO issued against the running endpoint and observed to be REFUSED with a field-level 400, so
-       * offering a heading for it would produce an affordance that cannot work.
-       */
       for (const heading of [
         ADDRESS_HEADING,
         TELEPHONE_HEADING,
@@ -1869,11 +1432,8 @@ describe('UserListComponent', () => {
     /**
      * The offered set is bounded by the endpoint, not by the grid. `SortableFields.Users` in
      * `backend/src/DnnMigration.Application/Validation/SortableFields.cs` permits `UserId`, `Username`,
-     * `FirstName`, `LastName`, `DisplayName`, `Email` and `IsSuperUser`; the five below are exactly those of
-     * the seven this grid paints a column for. Nothing else may carry a control: `Address` and `Telephone`
-     * are profile values in a second table, and the created, last-login and authorised columns are filled
-     * from the external membership store after the page has been taken, so ordering by any of them would
-     * order the page rather than the collection. That file refuses all five at the boundary.
+     * `FirstName`, `LastName`, `DisplayName`, `Email` and `IsSuperUser`; the five below are exactly those
+     * of the seven this grid paints a column for.
      */
     it('offers a sort on exactly the columns the endpoint permits and paints', () => {
       arrive();
@@ -1892,15 +1452,10 @@ describe('UserListComponent', () => {
     });
 
     /**
-     * ⚠ THE TRANSMITTED FIELD IS THE SERVER'S PASCAL-CASE MEMBER NAME, NOT THE CAMEL-CASED COLUMN KEY, and
-     * this is the assertion that catches the confusion. The grid identifies its columns by keys this screen
-     * spells `userName`, `displayName` and so on, while the endpoint’s allowlist is typed as
-     * `UserSortField` and holds `Username`, `DisplayName` and the rest. Sending a key would be answered
-     * with a field-level rejection - and only a request-level assertion can tell the two apart, because
-     * both spellings look correct in the template.
-     *
-     * The ordering travels through the ADDRESS, so the navigation the press starts is settled before the
-     * read it causes is consumed.
+     * ⚠ THE TRANSMITTED FIELD IS THE SERVER'S PASCAL-CASE MEMBER NAME, NOT THE CAMEL-CASED COLUMN KEY,
+     * and this is the assertion that catches the confusion. The grid identifies its columns by keys this
+     * screen spells `userName`, `displayName` and so on, while the endpoint’s allowlist is typed as
+     * `UserSortField` and holds `Username`, `DisplayName` and the rest.
      */
     it('transmits the endpoint field name for the pressed column, in the server spelling', async () => {
       arrive();
@@ -2004,15 +1559,6 @@ describe('UserListComponent', () => {
     });
 
     it('never sends 1 for the first page', () => {
-      /*
-       * ⚠ THE NEGATIVE CONTROL, AND THE WHOLE REASON THIS DESCRIBE EXISTS. The legacy screen ran BOTH
-       * bases at once — `Users.ascx.vb` L51 seeded a one-based `CurrentPage` while L265, L269, L271 and
-       * L274 each passed `CurrentPage - 1` — so an off-by-one here is the single likeliest defect in the
-       * whole migration of this screen, and it is invisible to a case that only asserts what the first
-       * page DOES send: `expect(index).toBe('0')` would still read '0' if the code sent the one-based
-       * number and subtracted one twice somewhere. Asserting the forbidden value explicitly is what
-       * catches the class rather than the instance.
-       */
       const listing = arrive();
 
       expect(paramOf(listing, PAGE_INDEX_PARAM)).not.toBe('1');
@@ -2035,17 +1581,8 @@ describe('UserListComponent', () => {
     });
 
     it('forwards the pager index unchanged, adding and subtracting nothing', async () => {
-      /*
-       * ⚠ THE BRANCH THIS COMPONENT TOOK, STATED EXPLICITLY: BOTH ENDS ARE ALREADY ZERO-BASED, so there
-       * is NO ±1 ARITHMETIC in the screen at all. Verified in the shared pager rather than assumed — it
-       * documents that "the boundary is ZERO-BASED and the display is ONE-BASED", its `page` input takes
-       * the wire's index, it derives the one-based number a reader sees internally, and its change
-       * output emits a zero-based index. Adding one in the screen would show the wrong page number AND
-       * request the wrong page.
-       *
-       * Proved on a LATER page than the second, because index and display differ by one everywhere and
-       * only a third page distinguishes "forwarded unchanged" from "off by one in both directions".
-       */
+      // ⚠ THE BRANCH THIS COMPONENT TOOK, STATED EXPLICITLY: BOTH ENDS ARE ALREADY ZERO-BASED, so there is
+      // NO ±1 ARITHMETIC in the screen at all.
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
       await pressPager(PAGER_LAST_LABEL);
@@ -2097,12 +1634,9 @@ describe('UserListComponent', () => {
     });
 
     it('steps backwards to index 1 from the last page, never to a negative index', async () => {
-      /*
-       * The pager emits only a whole index inside the available range, and the store passes the index
-       * straight to the transport without clamping it — so stepping back from the last of three pages must
-       * ask for index one. A screen that adjusted the index would ask for nought or for minus one here, and
-       * minus one is the value the server refuses with a field-level message rather than reinterpreting.
-       */
+      // The pager emits only a whole index inside the available range, and the store passes the index
+      // straight to the transport without clamping it — so stepping back from the last of three pages must
+      // ask for index one.
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
       await pressPager(PAGER_LAST_LABEL);
@@ -2130,7 +1664,7 @@ describe('UserListComponent', () => {
     /**
      * Moves the listing to its second page and leaves it there.
      *
-     * @returns Nothing; the second page is settled when this returns.
+     * @returns Nothing ; the second page is settled when this returns.
      */
     async function goToSecondPage(): Promise<void> {
       await pressPager(PAGER_NEXT_LABEL);
@@ -2144,12 +1678,9 @@ describe('UserListComponent', () => {
     }
 
     it('resets to the first page when a letter is activated from a later page', async () => {
-      /*
-       * `FilterURL` (`Users.ascx.vb` L446-L456) was called from the strip with a LITERAL page argument of
-       * "1" (`users.ascx` L16), so a letter always returned to the first page — and asking for the fifth
-       * page of a match set that now has one would answer with nothing while the pager insisted there was
-       * something there.
-       */
+      // `FilterURL` was called from the strip with a LITERAL page argument of "1", so a letter always
+      // returned to the first page — and asking for the fifth page of a match set that now has one would
+      // answer with nothing while the pager insisted there was something there.
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
       await goToSecondPage();
 
@@ -2165,7 +1696,6 @@ describe('UserListComponent', () => {
     });
 
     it('resets to the first page for a new search term from a later page', async () => {
-      // `Users.ascx.vb` L631 set `CurrentPage = 1` before redirecting, for the same reason.
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
       await goToSecondPage();
 
@@ -2205,12 +1735,10 @@ describe('UserListComponent', () => {
 
       requestRemoval();
 
-      /*
-       * MIGRATION: THE CONFIRMATION IS A REAL DIALOGUE. `Page_Init` L522-L524 attached it as a JavaScript
-       * string on the command column, which the framework emitted as a browser confirmation prompt; the
-       * shared dialogue replaces it with a focus trap, escape handling and an accessible name the prompt
-       * had none of. Its PRESENCE in the document is what "open" means.
-       */
+      // THE CONFIRMATION IS A REAL DIALOGUE. `Page_Init` L522-L524 attached it as a JavaScript string on
+      // the command column, which the framework emitted as a browser confirmation prompt; the shared
+      // dialogue replaces it with a focus trap, escape handling and an accessible name the prompt had none
+      // of.
       expect(dialog()).not.toBeNull();
       expect(textIn(queryOrFail<Element>(openDialog(), 'p.confirm-dialog__message'))).toBe(
         REMOVAL_CONFIRM_MESSAGE,
@@ -2219,17 +1747,6 @@ describe('UserListComponent', () => {
     });
 
     it('renders no delete command at all for a row the server will not let go', () => {
-      /*
-       * ⚠ THE PARITY THIS RESTORES. `grdUsers_ItemDataBound` (`Users.ascx.vb` L691-L692) read
-       * `delImage.Visible = Not (user.UserID = PortalSettings.AdministratorId) AndAlso Not
-       * (user.UserID = Me.UserId And user.IsSuperUser)` — the command was HIDDEN, not disabled, for
-       * a protected account. Neither fact was reachable from this feature, so the server publishes
-       * the capability on the row and the row is not rendered a command it cannot use.
-       *
-       * RENDERED AS NOTHING RATHER THAN AS A DISABLED CONTROL, because a disabled button still
-       * reaches assistive technology as an inoperable control that destroys a record, and invites a
-       * reader to work out why it is there.
-       */
       arrive(pageOf([userRow(7, { canDelete: false })]));
 
       const actions: readonly HTMLElement[] = queryAll<HTMLElement>(ROW_ACTION_SELECTOR);
@@ -2252,9 +1769,9 @@ describe('UserListComponent', () => {
     });
 
     it('offers the delete command for an ordinary row and withholds it only from the protected one', () => {
-      // Both rows in one page, so the withholding is proved to be PER ROW rather than per listing.
-      // The two carry DIFFERENT account names, because the accessible name is what identifies which
-      // row a command belongs to and identical names would make the surviving one unattributable.
+      // Both rows in one page, so the withholding is proved to be PER ROW rather than per listing. The two
+      // carry DIFFERENT account names, because the accessible name is what identifies which row a command
+      // belongs to and identical names would make the surviving one unattributable.
       arrive(
         pageOf([
           userRow(7, { canDelete: true, username: 'ordinary_member' }),
@@ -2277,11 +1794,6 @@ describe('UserListComponent', () => {
       requestRemoval();
       pressIn(openDialog(), 'Cancel');
 
-      /*
-       * Nothing is dispatched and nothing is reported: the legacy prompt's cancel branch suppressed the
-       * post-back and reported nothing either. `httpMock.verify()` in teardown is the second half of this
-       * assertion — an unexpected request would fail there even if this expectation were removed.
-       */
       expect(dialog()).toBeNull();
       httpMock.expectNone(userUrl(7));
       expect(notifySpy).not.toHaveBeenCalled();
@@ -2292,11 +1804,6 @@ describe('UserListComponent', () => {
 
       const removal = confirmRemoval(7);
 
-      /*
-       * The endpoint answers with NO BODY, so the observable emits once carrying nothing. Flushing null at
-       * 204 is that shape exactly; a fixture flushing an object here would prove a response the API does
-       * not send.
-       */
       removal.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
@@ -2307,13 +1814,6 @@ describe('UserListComponent', () => {
     });
 
     it('re-reads the SAME page after a removal, never the first', async () => {
-      /*
-       * ⚠ THE ASYMMETRY, AND IT IS REAL BEHAVIOUR RATHER THAN AN OVERSIGHT. `grdUsers_DeleteCommand`
-       * (`Users.ascx.vb` L646-L669) called `BindData` after removing an account and never touched
-       * `CurrentPage`, whereas the search button (L631) and the alphabet strip (`users.ascx` L16, through
-       * `FilterURL`'s literal page argument) both reset it. A screen that helpfully returned to the first
-       * page here would look tidier and would lose the operator's place mid-way through a long list.
-       */
       arrive(pageOf([userRow(1)], 12, 0, TENANT_PAGE_SIZE));
 
       await pressPager(PAGER_NEXT_LABEL);
@@ -2335,21 +1835,6 @@ describe('UserListComponent', () => {
     });
 
     it('re-reads the listing rather than splicing the row out locally', () => {
-      /*
-       * The response carries no body, and splicing the row out here would additionally require adjusting a
-       * total the SERVER owns — leaving a pager with two sources of truth.
-       *
-       * The evidence is threefold, and the middle part is the one a naive case misses: a re-read IS issued;
-       * while it is in flight the grid KEEPS the rows already on screen and marks itself busy rather than
-       * tearing them down; and the row count that finally appears is the server's answer rather than
-       * arithmetic performed on this side.
-       *
-       * The middle assertion changed with the shared grid. It used to require the progress indicator to
-       * REPLACE the rows, which meant every read tore the body down to one spanning cell and rebuilt it -
-       * measured as a zero-data row on every transition, a pager yanked several hundred pixels, and the
-       * application's largest layout shift. `aria-busy` now carries the same fact to assistive technology
-       * without blanking the rows a reader is looking at.
-       */
       arrive(pageOf([userRow(7), userRow(8)], 2));
 
       expect(rows()).toHaveSize(2);
@@ -2384,12 +1869,6 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
       settleOutcome();
 
-      /*
-       * `Users.ascx.vb` L657 reported failure with `UserDeleteError`, which the LOCAL resource file does
-       * not carry — so the wording is a three-level fall-through to `SharedResources.resx`. The server's
-       * own sentence is appended BEHIND that wording rather than replacing it, so the operator sees the
-       * sentence they used to see and the detail the server supplied.
-       */
       expect(notifySpy).toHaveBeenCalledWith(
         'error',
         `${USER_DELETE_ERROR_MESSAGE} The account could not be removed.`,
@@ -2398,14 +1877,6 @@ describe('UserListComponent', () => {
     });
 
     it('surfaces a refused removal at WARNING severity, not error', () => {
-      /*
-       * ⚠ MEASURED FROM THE LEGACY SEVERITY VOCABULARY. `Website/admin/Security/AccessDenied.ascx.vb`
-       * L41-L47 rendered a denial with `ModuleMessageType.YellowWarning` in BOTH of its branches, and the
-       * vocabulary is three-valued across the in-scope screens — `RedError` 27 uses, `YellowWarning` 21,
-       * `GreenSuccess` 12. A refusal is not a fault: the caller is known, the request was understood, and
-       * the answer is no. The severity is resolved by the shared summariser, so the screen reports at the
-       * severity it is GIVEN rather than deciding a second time — which is what stops the two disagreeing.
-       */
       arrive(pageOf([userRow(7)]));
 
       confirmRemoval(7).flush(bareProblem('forbidden', 403), {
@@ -2415,11 +1886,6 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
       settleOutcome();
 
-      /*
-       * The document deliberately carries no sentence of its own, so the wording is the shared vocabulary's
-       * — which proves the screen appends the SERVER's message rather than composing one, and that the
-       * status alone is enough to reach a sentence.
-       */
       expect(notifySpy).toHaveBeenCalledWith(
         'warning',
         `${USER_DELETE_ERROR_MESSAGE} ${FORBIDDEN_MESSAGE}`,
@@ -2446,11 +1912,6 @@ describe('UserListComponent', () => {
     });
 
     it('prefers the correlation identifier over the trace identifier when the server sends both', () => {
-      /*
-       * Both are diagnostic handles and the correlation identifier is the one an operator can quote to
-       * support, because it spans the whole request rather than one server-side trace. The resolver prefers
-       * it and falls back to the trace identifier, which is exactly why the case above omits it.
-       */
       arrive(pageOf([userRow(7)]));
 
       confirmRemoval(7).flush(
@@ -2469,12 +1930,6 @@ describe('UserListComponent', () => {
     });
 
     it('retains the trace identifier the server supplied, passed as its own argument', () => {
-      /*
-       * Passed SEPARATELY rather than concatenated into the sentence, which is what keeps truncation from
-       * ever reaching it. The document below carries a trace identifier and NO correlation identifier on
-       * purpose: the shared resolver prefers a correlation identifier when one is present, so including
-       * both would have hidden whether the trace identifier survived at all.
-       */
       arrive(pageOf([userRow(7)]));
 
       confirmRemoval(7).flush(problem('server_error', 500, 'Storage is unavailable.'), {
@@ -2490,10 +1945,6 @@ describe('UserListComponent', () => {
     });
 
     it('leaves the inline failure surface alone for a failed removal', () => {
-      /*
-       * A failed WRITE is reported transiently and a failed READ is a permanent surface, which is the
-       * legacy division: `Users.ascx.vb` L657 raised a module message rather than replacing the grid.
-       */
       arrive(pageOf([userRow(7)]));
 
       confirmRemoval(7).flush(problem('server_error', 500, 'Storage is unavailable.'), {
@@ -2504,9 +1955,9 @@ describe('UserListComponent', () => {
       settleOutcome();
 
       // ⚠ THE SURFACE IS THE BANNER'S CONTENTS, NOT THE BANNER ELEMENT. The element is mounted
-      // unconditionally so that its assertive live region survives between failures rather than
-      // being created with its first message; what a failed WRITE must leave alone is the painted
-      // read-failure banner inside it, which is what this asserts.
+      // unconditionally so that its assertive live region survives between failures rather than being
+      // created with its first message; what a failed WRITE must leave alone is the painted read-failure
+      // banner inside it, which is what this asserts.
       expect(query('app-error-banner .error-banner'))
         .withContext('a failed removal paints no read-failure banner')
         .toBeNull();
@@ -2514,11 +1965,6 @@ describe('UserListComponent', () => {
     });
 
     it('does not report a failed re-read as a failed removal', () => {
-      /*
-       * A SUCCESSFUL removal triggers a re-read, and that re-read can itself fail. The outcome is matched
-       * on the OPERATION as well as on the presence of a failure, so the removal is still reported as the
-       * success it was and the re-read's failure surfaces as a read failure instead.
-       */
       arrive(pageOf([userRow(7)]));
 
       confirmRemoval(7).flush(null, { status: 204, statusText: 'No Content' });
@@ -2580,13 +2026,6 @@ describe('UserListComponent', () => {
     }
 
     it('offers the two account fields first, then one entry per tenant-declared property', () => {
-      /*
-       * `Users.ascx.vb` L577 adds the account name, L578 adds the address, and L579-L582 then add one
-       * entry per declaration exactly as `GetPropertyDefinitionsByPortal` returned it. `Items.Insert` is
-       * never used, so the two account fields LEAD rather than being spliced in afterwards — and the order
-       * is load-bearing, because it decides the winner when a tenant declares a property whose name
-       * collides with an account field.
-       */
       arrive();
 
       expect(axisValues()).toEqual([
@@ -2598,21 +2037,11 @@ describe('UserListComponent', () => {
     });
 
     it('renders a tenant property whose name COLLIDES with an account field, keeping both entries', () => {
-      /*
-       * ⚠ THE TRACKING-KEY REGRESSION GUARD, AND THE CONFIGURATION IS REAL RATHER THAN CONTRIVED. The
-       * profile axis is an OPEN SET, so a tenant may declare a property literally named `Username`, and
-       * the legacy order — account fields first (L577-L578), then declarations (L579-L582), with
-       * `Items.Insert` never used — means the collision is PRESERVED rather than de-duplicated: the
-       * legacy switch tested the account field first, so the account field wins the query and the
-       * duplicate entry still appears in the list.
-       *
-       * That is precisely why the template cannot track this loop by `option.value`: two entries would
-       * carry the same key and Angular would raise a duplicated-key error, breaking the screen for a
-       * configuration the component deliberately keeps working. The entries carry an ordinal-plus-value
-       * key instead, so this case renders four options with the third repeating the first's value — and
-       * because a duplicated key is a hard runtime error, this expectation is the proof that no two keys
-       * collide.
-       */
+      // ⚠ THE TRACKING-KEY REGRESSION GUARD, AND THE CONFIGURATION IS REAL RATHER THAN CONTRIVED. The
+      // profile axis is an OPEN SET, so a tenant may declare a property literally named `Username`, and the
+      // legacy order — account fields first, then declarations, with `Items.Insert` never used — means the
+      // collision is PRESERVED rather than de-duplicated: the legacy switch tested the account field first,
+      // so the account field wins the query and the duplicate entry still appears in the list.
       arrive(pageOf([userRow()]), membershipSettings(), [
         profileDefinition('Username', 21),
         profileDefinition(SECOND_PROPERTY_NAME, 22),
@@ -2623,12 +2052,8 @@ describe('UserListComponent', () => {
     });
 
     it('labels a property the resource file knows, and falls back to the raw name for one it does not', () => {
-      /*
-       * `AddSearchItem` (L205-L218) resolved each entry through a resource lookup and FELL BACK TO THE RAW
-       * NAME when the lookup returned nothing. That fallback is what keeps this axis an OPEN SET: a tenant
-       * may declare any property, and one the label map does not know is labelled with its own name rather
-       * than rejected.
-       */
+      // `AddSearchItem` resolved each entry through a resource lookup and FELL BACK TO THE RAW NAME when
+      // the lookup returned nothing.
       arrive();
 
       expect(axisOptions()).toEqual([
@@ -2640,19 +2065,10 @@ describe('UserListComponent', () => {
     });
 
     it('offers the free-text control with its own placeholder and its own label', () => {
-      /*
-       * ⚠ THE WORDING "Search:" IS THE SHARED CONTROL'S OWN LABEL AND IS NOT WRITTEN TWICE. `Search.Text` is
-       * the wording of `lblSearch` (`users.ascx` L5), and the shared control paints exactly that as its
-       * `for`-associated label — so this screen must not render it beside the control, which would put two
-       * labels on one field and read the words twice to a screen reader. The placeholder is authored: the
-       * legacy text box had none, and it promises neither a starts-with nor a contains test, because the
-       * matching rule is the server's to state.
-       *
-       * ⚠ U-M13 — THAT LAST SENTENCE IS WITHDRAWN AND THE PLACEHOLDER NOW STATES THE PREDICATE. Leaving
-       * the rule unstated was defensible only while the rule was genuinely the server's private business,
-       * and it is not: the endpoint appends exactly one trailing wildcard, which is a starts-with, and it
-       * is the same rule the twenty-seven-entry alphabet strip beside the box depends on. See the constant.
-       */
+      // ⚠ U-M13 — THAT LAST SENTENCE IS WITHDRAWN AND THE PLACEHOLDER NOW STATES THE PREDICATE. Leaving the
+      // rule unstated was defensible only while the rule was genuinely the server's private business, and
+      // it is not: the endpoint appends exactly one trailing wildcard, which is a starts-with, and it is
+      // the same rule the twenty-seven-entry alphabet strip beside the box depends on.
       arrive();
 
       const field = queryOrFail<HTMLInputElement>(host(), SEARCH_INPUT_SELECTOR);
@@ -2664,11 +2080,6 @@ describe('UserListComponent', () => {
     });
 
     it('names the selector, which the legacy control never was', () => {
-      /*
-       * `users.ascx` L8 declared `ddlSearchType` with no associated label of any kind and the resource file
-       * supplies no key for it, so the legacy selector reached assistive technology unnamed. The wording is
-       * authored rather than ported, and the `for`/`id` pair is what makes the association real.
-       */
       arrive();
 
       const label = queryOrFail<HTMLLabelElement>(host(), 'label.form-field__label');
@@ -2683,16 +2094,9 @@ describe('UserListComponent', () => {
 
       const definitions = expectRequest('GET', PROFILE_DEFINITIONS_URL);
 
-      /*
-       * ⚠ UNPAGED, AND EVERY COORDINATE IS ABSENT RATHER THAN DEFAULTED. The transport documents that no
-       * page coordinate, no ordering and no filter is emitted on this call — not an empty one, not a
-       * defaulted one — because the answer is already final.
-       *
-       * ⚠ DIVERGENCE FROM THIS FILE'S BRIEF, RESOLVED IN FAVOUR OF THE CODE: the brief describes this read
-       * as `?portalId=…`. It carries NO tenant parameter, because the API resolves one portal per request
-       * from the host reconciled against the alias table, so a portal identifier here would either be
-       * redundant or be a second, disagreeing opinion about which tenant the caller meant.
-       */
+      // ⚠ UNPAGED, AND EVERY COORDINATE IS ABSENT RATHER THAN DEFAULTED. The transport documents that no
+      // page coordinate, no ordering and no filter is emitted on this call — not an empty one, not a
+      // defaulted one — because the answer is already final.
       expect(definitions.request.params.keys()).toHaveSize(0);
 
       definitions.flush(envelope(PROFILE_DEFINITIONS));
@@ -2722,11 +2126,9 @@ describe('UserListComponent', () => {
     });
 
     it('searches the account name on the axis the screen opens with', async () => {
-      /*
-       * Seeded to the account name because L577 added that entry FIRST and `AddSearchItem` selected an
-       * entry only when it matched a `filterProperty` query-string value, so with no query string the first
-       * entry was the selected one.
-       */
+      // Seeded to the account name because L577 added that entry FIRST and `AddSearchItem` selected an
+      // entry only when it matched a `filterProperty` query-string value, so with no query string the first
+      // entry was the selected one.
       arrive();
 
       await typeSearch('blog');
@@ -2743,7 +2145,6 @@ describe('UserListComponent', () => {
     });
 
     it('searches the address when that axis is chosen', async () => {
-      // `Users.ascx.vb` L268-L269 `GetUsersByEmail`.
       arrive();
 
       chooseAxis('Email');
@@ -2760,7 +2161,6 @@ describe('UserListComponent', () => {
     });
 
     it('searches a profile property by name and value when a declared property is chosen', async () => {
-      // `Users.ascx.vb` L272-L274 `GetUsersByProfileProperty(…, SearchField, SearchText + "%", …)`.
       arrive();
 
       chooseAxis(ODD_PROPERTY_NAME);
@@ -2778,12 +2178,6 @@ describe('UserListComponent', () => {
     });
 
     it('transmits the property name VERBATIM — not validated, not case-folded, not restricted', async () => {
-      /*
-       * ⚠ THE FIXTURE NAME IS DELIBERATELY UNUSUAL — mixed case, an underscore, a digit and a space — so
-       * that any normalisation at all is visible. The legacy screen passed its field name straight through
-       * as the property name, so an unrecognised name is the SERVER's to refuse rather than this screen's
-       * to reject.
-       */
       arrive();
 
       chooseAxis(ODD_PROPERTY_NAME);
@@ -2801,17 +2195,6 @@ describe('UserListComponent', () => {
     });
 
     it('keeps every searched value out of the request target', async () => {
-      // ⚠ CWE-598, PINNED FROM THE SCREEN'S SIDE AS WELL AS THE TRANSPORT'S. The screen's three search
-      // axes all name a person: an account name, an email address, and an arbitrary profile-property
-      // name paired with the value to match. A request target is written to the browser's history, to
-      // every forward and reverse proxy's access log, to the server's access log and to any telemetry
-      // that samples URLs — every one of which sits at an END of the encrypted channel, so transport
-      // encryption addresses none of it.
-      //
-      // Asserted here as well as in the transport's own specification because this is the screen an
-      // operator actually types into: if the transport ever stopped choosing the body, the failure
-      // would be invisible in this file without this case, and every case above reads its values
-      // through a helper that is deliberately blind to which address carried them.
       arrive();
 
       await typeSearch('jbloggs');
@@ -2876,11 +2259,6 @@ describe('UserListComponent', () => {
     });
 
     it('issues nothing when the axis alone is changed', () => {
-      /*
-       * PARITY RATHER THAN AN OMISSION. `users.ascx` L8 declared the selector with no auto-post-back, so a
-       * new selection had no effect at all until the search control at L9 was used; L586 read
-       * `ddlSearchType.SelectedItem.Value` at query time.
-       */
       arrive();
 
       chooseAxis('Email');
@@ -2912,12 +2290,6 @@ describe('UserListComponent', () => {
     }
 
     it('transmits exactly what was typed, appending no wildcard', async () => {
-      /*
-       * ⚠ THE TRAILING WILDCARD IS THE SERVER'S. All three legacy modes appended a single `%` at the call
-       * site — `SearchText + "%"` at L269, L271 and L274 — and the target endpoint reproduces that
-       * appending, so the match is a STARTS-WITH and the client sends raw text. Appending one here would
-       * produce a doubled pattern; leading with one would silently turn a starts-with into a contains.
-       */
       const searched = await searchFor('Blog');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('Blog');
@@ -2927,10 +2299,6 @@ describe('UserListComponent', () => {
     });
 
     it('sends no per-cent character in any transmitted value', async () => {
-      // ⚠ THE SWEEP FOLLOWS THE VALUES TO WHEREVER THEY TRAVEL. A search now goes in a body, so a loop
-      // over the query parameters alone would find nothing to inspect and pass vacuously — the exact
-      // shape of a check that has silently stopped checking. Both are swept, so this case is
-      // meaningful whichever address the transport chose.
       const searched = await searchFor('Blog');
 
       for (const name of searched.request.params.keys()) {
@@ -2960,11 +2328,6 @@ describe('UserListComponent', () => {
     });
 
     it('preserves a per-cent character the reader typed, rather than escaping or stripping it', async () => {
-      /*
-       * The complement of the case above, and the one that proves the absence there is the CLIENT declining
-       * to add a wildcard rather than the client scrubbing the parameter. A term a person typed is theirs;
-       * the server states the matching rule.
-       */
       const searched = await searchFor('100%');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('100%');
@@ -2994,21 +2357,6 @@ describe('UserListComponent', () => {
     });
 
     it('does not hand-encode the term, leaving any encoding to the transport', async () => {
-      /*
-       * The term is carried DECODED, exactly as the operator typed it. Encoding by hand would double-encode
-       * it: the per-cent sign of each escape would itself be escaped, and the server would search for the
-       * escape sequence rather than for the text. The absence of `%25` anywhere is what rules that out.
-       *
-       * ⚠ THE TERM NOW TRAVELS IN A BODY, SO THERE IS NO URL ENCODING TO GET WRONG AT ALL — a JSON string
-       * member carries the characters verbatim. This case previously asserted that the serialised target
-       * contained `userName=`, which is exactly what must no longer be true: a searched account name names
-       * a person and a request target is recorded by the browser, by every proxy and by the server
-       * (CWE-598). The assertion is inverted rather than deleted, because the property worth pinning is
-       * still that nothing re-encodes the operator's text on the way out — it has simply moved.
-       *
-       * The four characters chosen are the ones that would have been escaped in a query string and that
-       * would separate or terminate a parameter if they were not: a space, an ampersand, an equals sign.
-       */
       const searched = await searchFor('a b&c=d');
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe('a b&c=d');
@@ -3025,13 +2373,6 @@ describe('UserListComponent', () => {
     });
 
     it('searches for a term the legacy screen could never search for', async () => {
-      /*
-       * MIGRATION: the legacy branch was chosen by comparing the search TEXT against localised words — L258
-       * `Unauthorized`, L261 `OnLine`, L264 `All` — so which query an operator got depended on the language
-       * the page had been rendered in, and none of those three words could be searched for at all even
-       * though each is an ordinary thing to type. The branch is a typed discriminator here, so every one of
-       * them is searchable like any other text.
-       */
       const searched = await searchFor(ALL_FILTER_LABEL);
 
       expect(paramOf(searched, USER_NAME_PARAM)).toBe(ALL_FILTER_LABEL);
@@ -3041,11 +2382,6 @@ describe('UserListComponent', () => {
     });
 
     it('searches for the empty term as a real value rather than dropping the filter', async () => {
-      /*
-       * Empty text is a LEGITIMATE value on this contract, and the omission rule treats only `undefined`
-       * and `null` as absent. Clearing the box and pressing search is therefore a search for the empty
-       * prefix, which is a request the server answers — not a silent reversion to the unfiltered listing.
-       */
       await typeSearch('present');
       expectListRead('the first search').flush(pageOf([userRow()]));
       fixture.detectChanges();
@@ -3068,15 +2404,6 @@ describe('UserListComponent', () => {
 
   describe('the reserved words', () => {
     it('never transmits the literal "None"', async () => {
-      /*
-       * `Users.ascx.vb` L266 read `ElseIf SearchText <> "None"`, so the marker meant DO NOT QUERY AT ALL —
-       * every branch fell through and the grid was left unbound. The successor state issues no request
-       * either, which is why the assertion below is about a request that does not exist rather than about a
-       * parameter that does.
-       *
-       * The state is reached by searching for the word, which on this screen is an ORDINARY TERM: the axis
-       * is a typed discriminator, so no reserved word is ever compared against user text.
-       */
       arrive();
 
       await typeSearch('None');
@@ -3097,10 +2424,6 @@ describe('UserListComponent', () => {
     });
 
     it('issues a paged, unfiltered request for the "All" affordance, carrying no search parameter', async () => {
-      /*
-       * `Users.ascx.vb` L264-L265 called the unfiltered PAGED reader, which is a DISTINCT FOURTH BRANCH and
-       * not the same as the `"None"` fall-through: it really does ask the server for everything.
-       */
       arrive();
 
       await typeSearch('narrowed');
@@ -3111,11 +2434,6 @@ describe('UserListComponent', () => {
 
       const unfiltered = expectListRead('the unfiltered read');
 
-      /*
-       * ⚠ ABSENCE IS PROVED WITH `has`, NEVER WITH `get`. A `get` returning null is a DIFFERENT assertion
-       * and passes just as well for a parameter that is present and empty — which is exactly the state the
-       * case above establishes is meaningful on this contract.
-       */
       for (const name of SEARCH_PARAMS) {
         expect(carries(unfiltered, name))
           .withContext(`the unfiltered read must not carry "${name}"`)
@@ -3133,14 +2451,10 @@ describe('UserListComponent', () => {
     });
 
     it('opens on the unfiltered listing, so the screen is never blank on arrival', () => {
-      /*
-       * MIGRATION, AND A DOCUMENTED DIVERGENCE THE STORE OWNS. `Page_Init` L494-L506 chose the opening view
-       * from the tenant's `Display_Mode` setting, and `UserModuleBase.vb` L126-L130 defaulted it to
-       * `DisplayMode.None` — so a tenant that had configured nothing opened this screen with NO QUERY
-       * ISSUED and NO ROWS at all until the operator acted. The no-query state is promoted to the
-       * unfiltered listing when a listing screen comes up, which is why arrival issues a listing read at
-       * all, and the assertion below is that promotion.
-       */
+      // MIGRATION, AND A DOCUMENTED DIVERGENCE THE STORE OWNS. `Page_Init` L494-L506 chose the opening view
+      // from the tenant's `Display_Mode` setting, and `UserModuleBase.vb` L126-L130 defaulted it to
+      // `DisplayMode.None` — so a tenant that had configured nothing opened this screen with NO QUERY
+      // ISSUED and NO ROWS at all until the operator acted.
       const listing = arrive();
 
       for (const name of SEARCH_PARAMS) {
@@ -3152,14 +2466,6 @@ describe('UserListComponent', () => {
     });
 
     it('transmits no reserved word of its own, in any parameter', () => {
-      /*
-       * ⚠ THE DIRECT FORM OF "THE MARKER IS NEVER TRANSMITTED". The four legacy words were CONTROL VALUES
-       * that travelled in the same channel as a search term — `Users.ascx.vb` L258, L261 and L264 compared
-       * the search text against localised lookups and L266 against the bare marker `"None"` — so a screen
-       * that carried the mode as text would send one of them. Here the mode is the store's own command
-       * surface and no reserved word reaches the wire from the screen at all: the only way any of these
-       * strings can appear is if a reader typed it, which the case above proves is an ordinary search.
-       */
       const listing = arrive();
 
       for (const name of listing.request.params.keys()) {
@@ -3174,16 +2480,8 @@ describe('UserListComponent', () => {
     });
 
     it('sends no tenant identifier, because the API resolves the tenant from the request', () => {
-      /*
-       * ⚠ NOT AN OMISSION, AND NOT THE SAME QUESTION AS THE SENTINEL RULE. The legacy screen passed
-       * `UsersPortalId` into every reader; the target resolves ONE portal per request from the host
-       * reconciled against the alias table, before it dispatches to a controller — so a tenant identifier
-       * in a path or a query string here would either be redundant or be a second, disagreeing opinion
-       * about which tenant the caller meant.
-       *
-       * The sentinel rule still applies to the value ITSELF, which arrives on every row and must survive
-       * being minus one; that is asserted with the identity values.
-       */
+      // The sentinel rule still applies to the value ITSELF, which arrives on every row and must survive
+      // being minus one; that is asserted with the identity values.
       const listing = arrive(pageOf([userRow(7, { portalId: -1 })]));
 
       expect(carries(listing, 'portalId')).toBeFalse();
@@ -3192,29 +2490,15 @@ describe('UserListComponent', () => {
     });
 
     it('sends no approval restriction, because the legacy listing showed both states', () => {
-      /*
-       * The unauthorised-only affordance the legacy strip offered (L309-L310) is NOT reproduced — it was
-       * answered from an unpaged reader that took no page coordinate and no endpoint serves it — so the
-       * listing never restricts on approval and the column reports the state instead.
-       */
+      // The unauthorised-only affordance the legacy strip offered is NOT reproduced — it was answered from
+      // an unpaged reader that took no page coordinate and no endpoint serves it — so the listing never
+      // restricts on approval and the column reports the state instead.
       const listing = arrive();
 
       expect(carries(listing, 'isApproved')).toBeFalse();
     });
 
     it('ANNOUNCES the applied entry, which the legacy strip never did', async () => {
-      /*
-       * ⚠ THIS CLOSES A GAP THE TEMPLATE USED TO REPORT RATHER THAN FIX. The markup carried a note
-       * saying the applied entry could not be announced because "the letter in force lives inside the
-       * store's search discriminator and is not re-published on the screen's surface", and declined to
-       * emit `aria-pressed`. That described a missing predicate on the paired class, not a limit of
-       * anything: the store publishes its search and the sibling portal listing already derives exactly
-       * this state from its own equivalent.
-       *
-       * Every legacy entry rendered identically whatever was applied (`users.ascx` L16), so an operator
-       * could not tell from the strip which letter they were looking at, and a reader was handed
-       * twenty-seven controls with no indication that one of them was in force.
-       */
       arrive();
 
       // On arrival the unfiltered listing is what the tenant policy asked for, so its entry is the
@@ -3231,9 +2515,6 @@ describe('UserListComponent', () => {
     });
 
     it('emits aria-pressed on EVERY entry, so the attribute is a state and not a marker', () => {
-      // ⚠ THE ATTRIBUTE'S VALUE IS THE STATE, AND ITS PRESENCE IS NOT. Emitting it only on the applied
-      // entry would make "not pressed" indistinguishable from "not a toggle" for a reader, and would
-      // let a presence-based stylesheet selector paint the whole strip as applied.
       arrive();
 
       const entries = queryAll<HTMLButtonElement>(LETTER_SELECTOR);
@@ -3252,9 +2533,6 @@ describe('UserListComponent', () => {
     });
 
     it('shows NO entry as applied when the search is on an axis the strip does not offer', async () => {
-      // An electronic-mail prefix is a real search that no strip entry describes, so the truthful
-      // answer is that none of them is pressed — including the unfiltered entry, which is emphatically
-      // not what is in force.
       arrive();
 
       chooseAxis('Email');
@@ -3266,9 +2544,6 @@ describe('UserListComponent', () => {
     });
 
     it('matches a letter case-INSENSITIVELY, so the strip agrees with the listing it describes', async () => {
-      // The strip renders upper case while the free-text field admits any case, and both land in an
-      // identical search. A case-sensitive comparison would leave the strip claiming nothing was
-      // applied while the grid showed a letter-filtered listing.
       arrive();
 
       await typeSearch('c');
@@ -3291,13 +2566,6 @@ describe('UserListComponent', () => {
     });
 
     it('offers twenty-six letters and the unfiltered affordance, and nothing else', () => {
-      /*
-       * `CreateLetterSearch` (L304-L316) read a pure 26-letter resource value — no "All" entry, no "0-9"
-       * entry, no punctuation beyond the separators — and then APPENDED the unfiltered entry at L308. L309
-       * and L310 appended a signed-in entry and an unauthorised entry as well, and NEITHER is reproduced:
-       * both were answered from unpaged readers, one of them from session tracking and a scheduled purge
-       * this migration does not carry forward. Two documented functional reductions.
-       */
       arrive();
 
       const affordances: readonly string[] = textOf(LETTER_SELECTOR);
@@ -3312,11 +2580,6 @@ describe('UserListComponent', () => {
     });
 
     it('treats a letter as a prefix search on the axis currently chosen, not as a query of its own', async () => {
-      /*
-       * `Users.ascx.vb` L586 passed the filter and `ddlSearchType.SelectedItem.Value` into the SAME
-       * `BindData` the search button used, so pressing "A" with the address axis chosen listed accounts
-       * whose ADDRESS began with A.
-       */
       arrive();
 
       chooseAxis('Email');
@@ -3338,18 +2601,9 @@ describe('UserListComponent', () => {
 
   describe('identity values', () => {
     it('treats an account identifier of nought as a real identifier in its route', () => {
-      /*
-       * ⚠ DEFENSIVE, AND THE NUANCE MATTERS. `dbo.Users.UserID` is declared `IDENTITY (1, 1)`
-       * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L98), so an account
-       * keyed nought DOES NOT OCCUR NATURALLY — this is a test of the SENTINEL RULE, not a schema fact.
-       *
-       * It is worth testing anyway because the rule it protects is a fact: `dbo.Roles.RoleID` is
-       * `IDENTITY (0, 1)` and `dbo.Portals.PortalID` is `IDENTITY (-1, 1)`, so nought and minus one are
-       * both real keys SOMEWHERE in this schema, while `Library/Components/Shared/Null.vb` L41-L45 defines
-       * minus one as the marker for a missing integer. One vocabulary cannot carry both meanings, so no
-       * identifier anywhere in this screen may be tested for truthiness or for positivity — and an
-       * account keyed nought is the cheapest way to catch a screen that started doing so.
-       */
+      // ⚠ DEFENSIVE, AND THE NUANCE MATTERS. `dbo.Users.UserID` is declared `IDENTITY (1, 1)`
+      // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L98), so an account
+      // keyed nought DOES NOT OCCUR NATURALLY — this is a test of the SENTINEL RULE, not a schema fact.
       arrive(pageOf([userRow(0)]));
 
       const edit = rowAction(EDIT_COMMAND_LABEL);
@@ -3374,12 +2628,8 @@ describe('UserListComponent', () => {
     });
 
     it('retains a tenant identifier of minus one on the row it renders', () => {
-      /*
-       * ⚠ THIS ONE IS A SCHEMA FACT RATHER THAN A DEFENSIVE CASE. `dbo.Portals.PortalID` is
-       * `IDENTITY (-1, 1)` at L77, so minus one is the FIRST REAL PORTAL — and it is simultaneously
-       * `Null.NullInteger`. A row carrying it must render exactly like any other; eliding it, normalising
-       * it or treating it as "no tenant" would discard the tenant that ships with the product.
-       */
+      // ⚠ THIS ONE IS A SCHEMA FACT RATHER THAN A DEFENSIVE CASE. `dbo.Portals.PortalID` is `IDENTITY (-1,
+      // 1)` at L77, so minus one is the FIRST REAL PORTAL — and it is simultaneously `Null.NullInteger`.
       arrive(pageOf([userRow(7, { portalId: -1 })]));
 
       expect(rows()).toHaveSize(1);
@@ -3387,24 +2637,8 @@ describe('UserListComponent', () => {
     });
 
     it('renders a row whose every nullable member is absent, and never a placeholder WORD', () => {
-      /*
-       * `Null.NullString` is the EMPTY STRING rather than a null reference (`Null.vb` L71-L75), so a stored
-       * empty value and an absent one were indistinguishable once read by the legacy screen. They stay
-       * distinct on the wire here and neither ever renders as the word "null" or "undefined", which is what
-       * an unguarded interpolation produces.
-       *
-       * ⚠ U-M2 — THE TWO PROFILE CELLS ARE NO LONGER EXPECTED TO BE EMPTY, AND THIS CASE IS WHERE THAT
-       * CHANGED. It used to require them to paint nothing at all. Measured against the seeded tenant, that
-       * produced two of the nine columns rendering nothing on EVERY one of two hundred and fifty-three
-       * rows — two hundred and thirty-eight units of grid saying nothing, indistinguishable from a grid
-       * that had failed to render. The values genuinely are absent, on the detail endpoint as well as on
-       * the listing, so an empty cell was truthful; what it was not was distinguishable from a fault.
-       *
-       * ⚠ THE MARK IS NOT A PLACEHOLDER WORD, WHICH IS WHY THIS CASE STILL FORBIDS ONE. An em dash cannot
-       * be mistaken for a stored value: no address and no telephone number can be spelled that way,
-       * whereas "None", "N/A" and "Unknown" are all things a person could type into a free-text profile
-       * field. The words this case rejects are exactly the ones that would be ambiguous.
-       */
+      // ⚠ U-M2 — THE TWO PROFILE CELLS ARE NO LONGER EXPECTED TO BE EMPTY, AND THIS CASE IS WHERE THAT
+      // CHANGED. It used to require them to paint nothing at all.
       arrive(
         pageOf([
           userRow(7, {
@@ -3457,13 +2691,6 @@ describe('UserListComponent', () => {
     });
 
     it('marks a whitespace-only profile value as absent, because nothing would be painted', () => {
-      /*
-       * ⚠ U-M2 — WHITESPACE IS TREATED AS ABSENT HERE AND AS A VALUE EVERYWHERE ELSE, and the two are
-       * answering different questions. The value itself is never rewritten: the legacy null contract makes
-       * an empty string a STORED value (`Null.vb` L71-L75) and it stays one. But the question this mark
-       * answers is "would a reader see anything", and for three spaces the answer is no — so leaving it
-       * unmarked would reinstate the very blank cell the mark exists to explain.
-       */
       arrive(pageOf([userRow(7, { address: '   ', telephone: '' })]));
 
       for (const heading of [ADDRESS_HEADING, TELEPHONE_HEADING]) {
@@ -3494,12 +2721,9 @@ describe('UserListComponent', () => {
     }
 
     it('renders the sentinel instant as nothing at all', () => {
-      /*
-       * ⚠ PARITY, NOT A DIVERGENCE, AND IT MUST NOT BE REPORTED AS ONE. `DisplayDate`
-       * (`Users.ascx.vb` L396-L408) seeded its result with `Null.NullString` and returned `""` when
-       * `Null.IsNull` recognised the instant, so the legacy cell was ALREADY BLANK. Rendering
-       * `01/01/0001` would be the change in behaviour.
-       */
+      // ⚠ PARITY, NOT A DIVERGENCE, AND IT MUST NOT BE REPORTED AS ONE. `DisplayDate` seeded its result
+      // with `Null.NullString` and returned `""` when `Null.IsNull` recognised the instant, so the legacy
+      // cell was ALREADY BLANK. Rendering `01/01/0001` would be the change in behaviour.
       const [created, lastLogin] = dateCells('0001-01-01T00:00:00Z', '0001-01-01T00:00:00Z');
 
       expect(created).toBe('');
@@ -3509,13 +2733,6 @@ describe('UserListComponent', () => {
     });
 
     it('renders the sentinel DATE with a non-zero time component as nothing either', () => {
-      /*
-       * ⚠ THE CASE A NAIVE FULL-TIMESTAMP COMPARISON FAILS, AND THE ONE MOST LIKELY TO BE LEFT OUT.
-       * Detection is DATE-PART ONLY: `Null.vb` compares `objDate.Date.Equals(NullDate.Date)`, and its own
-       * comment gives the reason — "this avoids subtle time differences". An equality check against the
-       * whole minimum-value instant would pass the case above and render a confident, alarming
-       * `01/01/0001 13:45` here.
-       */
       const [created, lastLogin] = dateCells('0001-01-01T13:45:30Z', '0001-01-01T23:59:59Z');
 
       expect(created).toBe('');
@@ -3532,24 +2749,8 @@ describe('UserListComponent', () => {
     });
 
     it('refuses an unparseable instant at the boundary rather than rendering one', () => {
-      /*
-       * ⚠ DIVERGENCE FROM THIS FILE'S BRIEF, RESOLVED IN FAVOUR OF THE CODE, AND REPORTED. The brief asks
-       * for "an unparseable value renders the same empty string". It cannot reach a cell on this screen at
-       * all: the listing decoder validates each instant and refuses a value the platform cannot parse,
-       * which fails the WHOLE page rather than one cell. The honest — and stronger — assertion is therefore
-       * that no fabricated date is ever displayed: the read fails, no row is painted, and the offending
-       * text reaches no cell.
-       *
-       * ⚠ AND A SECOND FINDING, REPORTED RATHER THAN WORKED AROUND: a CONTRACT VIOLATION carries no problem
-       * document, because there is no response to take one from — so the store records a failure whose
-       * document is null and the shared banner, bound to a null problem, emits nothing at all. A reader
-       * therefore sees the empty state rather than an explanation. That is the store's and the banner's
-       * behaviour, both outside this file, and this case pins the observable outcome truthfully instead of
-       * asserting a surface that does not appear.
-       *
-       * The pipe's own handling of an unparseable value is real and is covered by the pipe's specification;
-       * this case is about the boundary in front of it.
-       */
+      // ⚠ DIVERGENCE FROM THIS FILE'S BRIEF, RESOLVED IN FAVOUR OF THE CODE, AND REPORTED. The brief asks
+      // for "an unparseable value renders the same empty string".
       create();
       answerSettings();
       answerDefinitions();
@@ -3565,11 +2766,6 @@ describe('UserListComponent', () => {
     });
 
     it('renders a real instant, and renders it with its time as well as its date', () => {
-      /*
-       * `DisplayDate` (L400) rendered the instant with the plain general format — a short date AND a long
-       * time — whereas the shared pipe defaults to a short date alone, so both cells ask for the
-       * date-and-time shape BY NAME. A cell showing only a date would mean that request was dropped.
-       */
       const [created, lastLogin] = dateCells(
         '2006-03-02T09:15:00Z',
         '2006-04-18T16:42:30Z',
@@ -3599,10 +2795,8 @@ describe('UserListComponent', () => {
 
   describe('the row commands', () => {
     it('offers exactly three commands per row, in the legacy order', () => {
-      /*
-       * THREE SEPARATE COLUMNS rather than one column of three controls, because that is what
-       * `users.ascx` L32, L33 and L34 declared: three distinct `dnn:imagecommandcolumn` elements.
-       */
+      // THREE SEPARATE COLUMNS rather than one column of three controls, because that is what `users.ascx`
+      // L32, L33 and L34 declared: three distinct `dnn:imagecommandcolumn` elements.
       arrive();
 
       expect(queryAll(ACTION_CELL_SELECTOR)).toHaveSize(3);
@@ -3614,15 +2808,6 @@ describe('UserListComponent', () => {
     });
 
     it('links edit to the account editor keyed by the account', () => {
-      /*
-       * Replaces `Users.ascx.vb` L530, which built the address with a dummy token and then substituted a
-       * format placeholder into the RENDERED URL.
-       *
-       * The address is asserted as the router RESOLVED it, from a segment array rather than from a
-       * concatenated string — which is why it carries no query string at all. The legacy screen assembled
-       * `filter`, `filterproperty` and `currentpage` by hand into every one of its addresses (L164-L188), and
-       * a screen still doing that would show them here.
-       */
       arrive(pageOf([userRow(42)]));
 
       const href: string | null = rowAction(EDIT_COMMAND_LABEL).getAttribute('href');
@@ -3632,22 +2817,6 @@ describe('UserListComponent', () => {
     });
 
     it('CARRIES THE ACCOUNT to the role listing, as a query parameter and not a path segment', () => {
-      /*
-       * ⚠ THE ACCOUNT MUST NOT BE DROPPED. This case previously asserted the opposite — a bare `/roles`
-       * with the row discarded — and recorded it as a deliberate reduction. It was not acceptable: an
-       * operator pressing "Manage Roles" on one person arrived at every role in the tenant, with the
-       * account they had chosen nowhere on screen and nothing to narrow by. `Users.ascx.vb` L542 built
-       * `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`, and the screen it reached served TWO
-       * MODES from one page keyed by either a role or an account (`SecurityRoles.ascx.vb` L413-L418).
-       *
-       * ⚠ A QUERY PARAMETER, AND THE "NO PER-ACCOUNT SEGMENT" HALF OF THE OLD CLAIM STILL HOLDS. The
-       * target's route set is closed and contains no per-account membership address, so the account
-       * travels on an address that already exists rather than on a new one. That is also how the legacy
-       * carried it: `UserId=KEYFIELD` was a query argument, not a distinct page.
-       *
-       * ⚠ THE ADDRESS IS STILL ASSERTED AS A STRING, AND THIS FILE STILL IMPORTS NOTHING FROM THE ROLE
-       * FEATURE. An import would couple two features through their specifications.
-       */
       arrive(pageOf([userRow(42)]));
 
       expect(rowAction(MANAGE_ROLES_COMMAND_LABEL).getAttribute('href')).toBe('/roles?userId=42');
@@ -3670,11 +2839,6 @@ describe('UserListComponent', () => {
     });
 
     it('names every command with the account it acts on', () => {
-      /*
-       * MIGRATION: all three legacy commands were UNLABELLED IMAGES, so the delete command reached
-       * assistive technology as an unnamed control that destroyed a record. Each name carries the account
-       * and CONTAINS the visible word, which is what keeps a spoken command matching what is seen.
-       */
       arrive(pageOf([userRow(42, { username: 'asmith' })]));
 
       expect(rowAction(EDIT_COMMAND_LABEL).getAttribute('aria-label')).toBe(
@@ -3689,14 +2853,9 @@ describe('UserListComponent', () => {
     });
 
     it('withdraws the mutating affordances from a caller that does not administer the tenant', () => {
-      /*
-       * REMOVAL, NOT CONCEALMENT, and an AFFORDANCE ONLY — the server re-authorises every request and
-       * answers 403, and its verdict is the only authority. What withholding buys is that the operator
-       * is not offered two screens the router will refuse and a command the API will decline.
-       *
-       * The roles command is NOT gated, because reaching the role listing is not itself a mutation and
-       * that route carries authentication alone.
-       */
+      // REMOVAL, NOT CONCEALMENT, and an AFFORDANCE ONLY — the server re-authorises every request and
+      // answers 403, and its verdict is the only authority. What withholding buys is that the operator is
+      // not offered two screens the router will refuse and a command the API will decline.
       administersPortal.set(false);
       arrive();
 
@@ -3705,10 +2864,6 @@ describe('UserListComponent', () => {
     });
 
     it('names the superseded permission key nowhere in the rendered screen', () => {
-      // ⚠ THE VOCABULARY REGRESSION GUARD. The three header actions and the two mutating row commands
-      // were gated on the persisted `EDIT` key, which answers a different question — a grant over a
-      // module or page instance — from the one every destination here actually asks. Asserted against
-      // the rendered markup so a directive quietly reinstated on any of the five fails by name.
       arrive();
 
       expect(host().innerHTML).not.toContain(EDIT_PERMISSION);
@@ -3716,15 +2871,10 @@ describe('UserListComponent', () => {
     });
 
     it('offers the mutating affordances to an administrator holding NO persisted key', () => {
-      /*
-       * ⚠ THE OTHER HALF OF THE VOCABULARY SEPARATION, AND THE HALF THAT WAS A LOCKOUT. The client's
-       * key list is derived from GRANT ROWS ALONE, so a tenant administrator who has never been named
-       * in one holds no keys whatsoever — measured on the seeded baseline, the administrator account
-       * holds the designated administrator role and ZERO portal-level permission keys. The API admits
-       * that operator to create, update and delete (`UsersController.cs:L451`, `:L493`, `:L541`),
-       * because each declares the administration policy; the old key gate removed all three controls
-       * from the very operator this screen exists for.
-       */
+      // ⚠ THE OTHER HALF OF THE VOCABULARY SEPARATION, AND THE HALF THAT WAS A LOCKOUT. The client's key
+      // list is derived from GRANT ROWS ALONE, so a tenant administrator who has never been named in one
+      // holds no keys whatsoever — measured on the seeded baseline, the administrator account holds the
+      // designated administrator role and ZERO portal-level permission keys.
       administersPortal.set(true);
       arrive();
 
@@ -3734,9 +2884,6 @@ describe('UserListComponent', () => {
     });
 
     it('follows a change of administration without being recreated', () => {
-      // The verdict can change within one page load — a renewal re-reads the caller's authority, and an
-      // administrator can be demoted — and this screen is not rebuilt for it. The gate is read from a
-      // signal and the component renders on-push, which is what makes the change observable.
       arrive();
 
       expect(textOf('a.user-list__page-action')).toContain(ADD_USER_LABEL);
@@ -3749,7 +2896,6 @@ describe('UserListComponent', () => {
     });
 
     it('disables the delete command while a removal is already in flight', () => {
-      // The legacy screen post-backed, so the reader could not press twice.
       arrive(pageOf([userRow(7)]));
 
       const removal = confirmRemoval(7);
@@ -3765,42 +2911,11 @@ describe('UserListComponent', () => {
     });
   });
 
-  // ===================================================================================================
-  // §3.10a — THE TWO PROTECTED ACCOUNTS
-  // ===================================================================================================
-  //
-  // MIGRATION: `grdUsers_ItemDataBound` (`Website/admin/Users/Users.ascx.vb` L693-L694) hid the delete
-  // image on exactly two conditions, joined with `AndAlso`:
-  //
-  //   delImage.Visible = Not (user.UserID = PortalSettings.AdministratorId) AndAlso _
-  //                      Not (user.UserID = Me.UserId And user.IsSuperUser)
-  //
   // The first protects the tenant's DESIGNATED ADMINISTRATOR — removing it would leave
-  // `Portals.AdministratorId` naming an account that no longer exists. The second stops a signed-in
-  // HOST account deleting ITSELF, and both halves of that clause are load-bearing: one host account
-  // may legitimately remove another, and an ordinary account removing itself was never guarded here.
-  //
-  // ⚠ WITHHOLDING IS NOT INTERCHANGEABLE WITH A SERVER REFUSAL. A refusal arrives only after the
-  // operator has confirmed a deletion and waited, and it arrives on the two accounts where a mistaken
-  // attempt is most alarming.
-  // ===================================================================================================
+  // `Portals.AdministratorId` naming an account that no longer exists.
 
   describe('the two protected accounts', () => {
     it('reads the tenant record NOT AT ALL, because the row already carries the verdict', () => {
-      /*
-       * ⚠ U-M5 — THIS ASSERTION IS THE REVERSE OF WHAT IT USED TO BE. It previously REQUIRED the screen
-       * to read the tenant's own record on arrival, purely to learn `Portals.AdministratorId` and compare
-       * it against each row. That comparison is one the server has already made:
-       * `UserMappings.ToListItem` computes `canDelete` as
-       * `!user.IsSuperUser && (portalAdministratorId is not { } designated || designated != user.UserId)`.
-       * The client was therefore issuing a whole extra request, on every visit, to recompute a verdict it
-       * was being handed with every row — the fourth of four requests this screen needed to paint.
-       *
-       * The duplication was not merely wasteful. It was WEAKER, because the flag withholds every host
-       * account as well while the client clause covered one account only; and it was RACY, because the
-       * tenant read settled independently of the listing, so for the interval before it arrived the
-       * clause protected nobody and the command was rendered on a row the server would refuse.
-       */
       arrive();
 
       expect(loadCurrentPortalContext).not.toHaveBeenCalled();
@@ -3817,9 +2932,9 @@ describe('UserListComponent', () => {
     });
 
     it('withholds removal from the tenant\u2019s designated administrator', () => {
-      // ⚠ U-M5 — DRIVEN THROUGH THE ROW'S OWN VERDICT RATHER THAN THROUGH A SEPARATELY-READ TENANT
-      // RECORD. The server withholds `canDelete` for the account named by `Portals.AdministratorId`, so
-      // that flag IS the designation as far as this screen is concerned, and it arrives with the row.
+      // ⚠ U-M5 — DRIVEN THROUGH THE ROW'S OWN VERDICT RATHER THAN THROUGH A SEPARATELY-READ TENANT RECORD.
+      // The server withholds `canDelete` for the account named by `Portals.AdministratorId`, so that flag
+      // IS the designation as far as this screen is concerned, and it arrives with the row.
       arrive(pageOf([userRow(7, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).toEqual([EDIT_COMMAND_LABEL, MANAGE_ROLES_COMMAND_LABEL]);
@@ -3845,15 +2960,6 @@ describe('UserListComponent', () => {
     });
 
     it('protects a designated administrator whose key is ZERO, which is not an absence', () => {
-      // ⚠ SENTINEL DISCIPLINE. The guard compares with explicit equality against a resolved key: a
-      // truthiness test would read a legitimate key of zero as "no designation" and expose the one
-      // account the legacy screen most carefully protected.
-      // ⚠ U-M5 — THE SENTINEL DISCIPLINE MOVED TO THE SERVER WITH THE COMPARISON, and it is expressed
-      // there in the same terms: `portalAdministratorId is not { } designated || designated != user.UserId`
-      // is a pattern match on presence followed by an equality, never a truthiness test, so a designated
-      // key of zero is a designation. What this screen must still get right is the flag itself: it is
-      // compared against `false` explicitly and never read for truthiness, because a row identifier of
-      // zero sitting beside it is a legitimate account.
       arrive(pageOf([userRow(0, { canDelete: false })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).not.toContain(DELETE_COMMAND_LABEL);
@@ -3876,9 +2982,6 @@ describe('UserListComponent', () => {
     });
 
     it('offers removal to an ORDINARY account acting on its own row', () => {
-      // ⚠ BOTH HALVES OF THE SECOND CLAUSE ARE REQUIRED. The legacy condition guarded self-removal
-      // only for an installation administrator, so withholding it from an ordinary account would be a
-      // capability this migration invented rather than preserved.
       callerIdentity.set(callerAccount({ userId: 7, isSuperUser: false }));
       arrive(pageOf([userRow(7, { isSuperUser: false })]));
 
@@ -3886,12 +2989,10 @@ describe('UserListComponent', () => {
     });
 
     it('offers removal on a row the server says may be removed', () => {
-      // ⚠ U-M5 — THERE IS NO LONGER AN "UNRESOLVED" WINDOW TO BE FAIL-SAFE ABOUT, WHICH IS THE POINT.
-      // This case used to assert the fail-safe direction for the interval between the screen painting and
-      // the tenant record arriving: the designation was null, the client clause protected nobody, and the
-      // command was offered on every row until the read settled. That interval is gone — the verdict
-      // arrives WITH the row it applies to, so there is no state in which the screen holds rows and does
-      // not yet know which of them may be removed.
+      // ⚠ U-M5 — THERE IS NO LONGER AN "UNRESOLVED" WINDOW TO BE FAIL-SAFE ABOUT, WHICH IS THE POINT. This
+      // case used to assert the fail-safe direction for the interval between the screen painting and the
+      // tenant record arriving: the designation was null, the client clause protected nobody, and the
+      // command was offered on every row until the read settled.
       arrive(pageOf([userRow(7, { canDelete: true })]));
 
       expect(textOf(ROW_ACTION_SELECTOR)).toContain(DELETE_COMMAND_LABEL);
@@ -3927,14 +3028,6 @@ describe('UserListComponent', () => {
 
   describe('the column set', () => {
     it('paints the ten data headings in the legacy order, using the RESOURCE wording', () => {
-      /*
-       * ⚠ FIVE OF THESE CONTRADICT THE MARKUP, AND THE RESOURCE FILE WINS. `Users.ascx.vb` L585 ran
-       * `Localization.LocalizeDataGrid`, which rewrote every heading from
-       * `GetString(HeaderText & ".Header", ResourceFile)` at run time — so the markup's `FirstName`,
-       * `LastName`, `DisplayName`, `CreatedDate` and `LastLogin` render as "First Name", "Last Name",
-       * "Name", "Created Date" and "Last Login". Taking the markup attribute would have produced five
-       * wrong headings that no compiler could have caught.
-       */
       arrive();
 
       const headings: readonly string[] = textOf(HEADER_SELECTOR);
@@ -3970,11 +3063,9 @@ describe('UserListComponent', () => {
     });
 
     it('hides the three command headings visually while keeping them announced', () => {
-      /*
-       * The legacy grid supplied NO heading text for any of its three command columns, so painting one
-       * would be an addition; keeping the label in the accessibility tree means a command cell is still
-       * read out with its column name, which closes a real gap at no visual cost.
-       */
+      // The legacy grid supplied NO heading text for any of its three command columns, so painting one
+      // would be an addition; keeping the label in the accessibility tree means a command cell is still
+      // read out with its column name, which closes a real gap at no visual cost.
       arrive();
 
       const headers: readonly HTMLTableCellElement[] = queryAll<HTMLTableCellElement>(
@@ -3995,11 +3086,9 @@ describe('UserListComponent', () => {
     });
 
     it('keeps the account-name column visible whatever the tenant policy says', () => {
-      /*
-       * ⚠ UNCONDITIONAL, AND DELIBERATELY NOT GATED. `Page_Init` L510-L511 made a column visible WITHOUT
-       * consulting any setting when its heading was empty or lower-cased to `username`, and the settings
-       * screen declares nine `Column_*` keys with no `Column_Username` among them.
-       */
+      // ⚠ UNCONDITIONAL, AND DELIBERATELY NOT GATED. `Page_Init` L510-L511 made a column visible WITHOUT
+      // consulting any setting when its heading was empty or lower-cased to `username`, and the settings
+      // screen declares nine `Column_*` keys with no `Column_Username` among them.
       arrive(
         pageOf([userRow()]),
         membershipSettings({
@@ -4020,16 +3109,9 @@ describe('UserListComponent', () => {
 
     /**
      * ⚠ A SORT CONTROL CANNOT SIT ON A COLUMN THAT IS NOT PAINTED, and this was measured in the running
-     * application rather than reasoned about. Against the live tenant, `GET /api/v1/users/settings` answers
-     * 404, so `membershipSettings()` is null and `LEGACY_DEFAULT_COLUMN_VISIBILITY` applies - which declares
-     * `firstName: false`, `lastName: false` and `columnEmail: false`. Three of the five sortable columns are
-     * therefore not rendered at all, and the grid showed TWO sort controls rather than five. That is the
-     * CORRECT outcome: the offered set is the intersection of "the endpoint permits it" and "this tenant
-     * paints it", and a control over a column nobody can see would order rows by a value nobody can read.
-     *
-     * The two halves are asserted together here so the intersection cannot silently become a union: the
-     * account name keeps its control because that column is unconditional, and the three switched-off
-     * columns lose both the heading AND the control.
+     * application rather than reasoned about. Against the live tenant, `GET /api/v1/users/settings`
+     * answers 404, so `membershipSettings()` is null and `LEGACY_DEFAULT_COLUMN_VISIBILITY` applies -
+     * which declares `firstName: false`, `lastName: false` and `columnEmail: false`.
      */
     it('offers a sort only on the columns this tenant actually paints', () => {
       arrive(
@@ -4055,12 +3137,10 @@ describe('UserListComponent', () => {
     });
 
     it('hides one optional column when the tenant switches exactly that one off', () => {
-      /*
-       * Every flag is compared EXPLICITLY against true, because false is DATA on this contract rather than
-       * an absence — the legacy absent-Boolean marker was itself `False` (`Null.vb` L76-L80), so in the
-       * legacy model a switched-off column and an unset one were indistinguishable, whereas here the wire
-       * value means what it says.
-       */
+      // Every flag is compared EXPLICITLY against true, because false is DATA on this contract rather than
+      // an absence — the legacy absent-Boolean marker was itself `False`, so in the legacy model a
+      // switched-off column and an unset one were indistinguishable, whereas here the wire value means what
+      // it says.
       arrive(pageOf([userRow()]), membershipSettings({ columnTelephone: false }));
 
       const headings: readonly string[] = textOf(HEADER_SELECTOR);
@@ -4071,14 +3151,8 @@ describe('UserListComponent', () => {
     });
 
     it('does not reproduce the users-online column', () => {
-      /*
-       * `users.ascx` L35-L39 declared an unlabelled template column holding a single
-       * `~/images/userOnline.gif` image whose visibility came from L702. It carries no heading, no
-       * alternative text and no information a heading could announce, and users-online is out of scope with
-       * no endpoint serving it. A documented functional reduction — the row contract DOES carry a signed-in
-       * flag, so this is a scope decision rather than a data limitation, which is why the case asserts the
-       * column's absence rather than the datum's.
-       */
+      // `users.ascx` L35-L39 declared an unlabelled template column holding a single
+      // `~/images/userOnline.gif` image whose visibility came from L702.
       arrive(pageOf([userRow(7, { isOnline: true })]));
 
       // Fourteen legacy columns resolve to thirteen: three commands plus ten data columns.
@@ -4087,11 +3161,6 @@ describe('UserListComponent', () => {
     });
 
     it('applies no zebra striping', () => {
-      /*
-       * `users.ascx` L25-L26 gave the item style and the ALTERNATING item style the SAME class, so alternate
-       * rows were never tinted, and L23 set `GridLines="None"` so no cell carried a rule. Every painted row
-       * therefore carries an identical class list.
-       */
       arrive(pageOf([userRow(1), userRow(2), userRow(3)], 3));
 
       const classLists: readonly string[] = rows().map((row) =>
@@ -4103,18 +3172,8 @@ describe('UserListComponent', () => {
     });
 
     it('renders the address exactly as the server composed it', () => {
-      /*
-       * ⚠ DIVERGENCE FROM THIS FILE'S BRIEF, RESOLVED IN FAVOUR OF THE CODE, AND REPORTED. The brief asks
-       * for a client-side join of six trimmed profile parts. THE COMPOSITION IS THE SERVER'S: `users.ascx`
-       * L44-L49 composed the six values through `Globals.FormatAddress`, but those six are profile VALUES
-       * that the 02.02.01 upgrade script moved off the account table, so composing them client-side would
-       * require fetching a profile per row. The row contract carries the finished text and this screen
-       * renders it unchanged.
-       *
-       * The assertion is therefore the stronger one for the code as it stands: the six-part text arrives in
-       * the legacy order — unit, street, city, region, country, postal code — and is painted VERBATIM, with
-       * nothing re-ordered, re-joined, trimmed or truncated.
-       */
+      // ⚠ DIVERGENCE FROM THIS FILE'S BRIEF, RESOLVED IN FAVOUR OF THE CODE, AND REPORTED. The brief asks
+      // for a client-side join of six trimmed profile parts.
       const composed = 'Flat 2, 14 High Street, Bristol, Avon, United Kingdom, BS1 4TR';
 
       arrive(pageOf([userRow(7, { address: composed })]));
@@ -4123,11 +3182,9 @@ describe('UserListComponent', () => {
     });
 
     it('renders a partly composed address without a stray separator', () => {
-      /*
-       * `Globals.FormatAddress` appended each NON-BLANK part behind a comma and space and then stripped the
-       * leading separator, so a partial address never carried a dangling comma. The client must not add one
-       * either — no padding, no placeholder for a missing part.
-       */
+      // `Globals.FormatAddress` appended each NON-BLANK part behind a comma and space and then stripped the
+      // leading separator, so a partial address never carried a dangling comma. The client must not add one
+      // either — no padding, no placeholder for a missing part.
       const partial = 'Bristol, United Kingdom';
 
       arrive(pageOf([userRow(7, { address: partial })]));
@@ -4147,14 +3204,9 @@ describe('UserListComponent', () => {
     });
 
     it('renders the electronic-mail address as a mailto link through a property binding', () => {
-      /*
-       * MIGRATION: this is `HtmlUtils.FormatEmail` (`Library/Components/Shared/HtmlUtils.vb` L89-L102)
-       * expressed as DATA rather than as markup. The legacy helper concatenated an anchor around the stored
-       * value and returned it as a string a label control then emitted, which is a script-injection vector
-       * for any address containing markup. Here the address and the target travel separately, the target is
-       * bound through `[href]` so the framework's URL sanitiser sees it, and the address is interpolated as
-       * text and therefore escaped.
-       */
+      // This is `HtmlUtils.FormatEmail` expressed as DATA rather than as markup. The legacy helper
+      // concatenated an anchor around the stored value and returned it as a string a label control then
+      // emitted, which is a script-injection vector for any address containing markup.
       arrive(pageOf([userRow(7, { email: 'jbloggs@example.test' })]));
 
       const link = queryOrFail<HTMLAnchorElement>(cellUnder(EMAIL_HEADING), EMAIL_LINK_SELECTOR);
@@ -4164,10 +3216,6 @@ describe('UserListComponent', () => {
     });
 
     it('does not link a stored value that carries no mailbox separator', () => {
-      /*
-       * `HtmlUtils.vb` L94 tested for the separator and L97 returned the value UNCHANGED when it was absent,
-       * so a stored value that is not an address renders as plain text in the legacy screen and in this one.
-       */
       arrive(pageOf([userRow(7, { email: 'not-an-address' })]));
 
       const cell = cellUnder(EMAIL_HEADING);
@@ -4186,22 +3234,8 @@ describe('UserListComponent', () => {
       expect(textIn(cell)).toBe('');
     });
 
-    // ⚠ MAJOR (CWE-20 improper input validation) — HOSTILE STORED ADDRESSES.
-    //
     // `dbo.Users.Email` is `[nvarchar] (256) NOT NULL` with no format constraint, and the legacy
-    // application applied none: `AddUser` stored whatever the caller supplied. So the column holds
-    // arbitrary operator-supplied text on any installation with a history, and the previous rule for
-    // building a target - "contains an at-sign" - passed everything after that character into the
-    // `mailto:` address verbatim.
-    //
-    // A `mailto:` address is not opaque text to a mail client. Everything after `?` is a QUERY whose
-    // `to`, `cc`, `bcc`, `subject` and `body` fields are honoured; a newline or `%0A` injects a HEADER;
-    // and a second separator addresses a second recipient. In each case the operator reads the stored
-    // address in the cell and their mail client composes something else.
-    //
-    // Every case below asserts the SAME TWO THINGS: no link is emitted, and the stored value is still
-    // shown exactly as stored. The second half is what makes the narrowing safe - nothing is hidden
-    // from the operator and nothing is rewritten, only the link is withheld.
+    // application applied none: `AddUser` stored whatever the caller supplied.
 
     describe('a hostile stored address is shown but never linked', () => {
       /**
@@ -4273,8 +3307,7 @@ describe('UserListComponent', () => {
       // ⚠ ONE CASE PER VALUE, GENERATED, AND THE SHAPE IS FORCED BY THE HARNESS. Each mount reads the
       // membership settings, the profile definitions and the listing, so a case cannot render a second
       // stored value without a second mount - and the end-of-test verification would report the first
-      // mount's requests as outstanding. Generating the cases keeps one mount each while stating every
-      // hostile shape by name in the reporter's output.
+      // mount's requests as outstanding.
       const REFUSED_VALUES: readonly (readonly [string, string])[] = [
         // Neither whitespace nor punctuation, so the two rules above do not catch them: refused by code
         // point, because a stored control character is entirely possible in a column no constraint governs.
@@ -4316,32 +3349,20 @@ describe('UserListComponent', () => {
       });
 
       it('refuses a value padded with whitespace, because the padding is part of the target', () => {
-        // The legacy helper trimmed only for its BLANK test and linked the untrimmed value, so leading or
-        // trailing space went into the address. Trimming it here would rewrite what an operator stored,
-        // so the value is shown as stored and simply not linked.
-        //
-        // ⚠ READ THROUGH `textContent` RATHER THAN THROUGH THE TRIMMING READER, because the padding IS the
-        // subject: the shared reader trims, so it cannot tell a stored ' x ' from a stored 'x', and using
-        // it here would assert the opposite of what this case is about. The DOM keeps the value exactly as
-        // received - an operator correcting a padded address has to be able to see the padding.
         const cell: HTMLElement = emailCellFor(' grace@example.test ');
 
         expect(cell.querySelector(EMAIL_LINK_SELECTOR))
           .withContext('nothing navigable, because the padding would enter the target')
           .toBeNull();
-        // Asserted as CONTAINMENT rather than equality, because the template's own control-flow block
-        // contributes whitespace text nodes around the interpolation; the value's own padding is what
-        // this reads, and equality here would be an assertion about template formatting.
         expect(cell.textContent ?? '')
           .withContext('and the padding survives into the document, untrimmed')
           .toContain(' grace@example.test ');
         expect((cell.textContent ?? '').trim()).toBe('grace@example.test');
       });
 
-      // ⚠ THE COUNTERPART SET, AND IT IS WHAT STOPS THE GATE FROM BEING A REGRESSION. A rule strict
-      // enough to refuse the values above must still admit the addresses this column actually holds:
-      // dots, hyphens, plus-addressing and underscores in the local part, and a multi-label domain. One
-      // case per value for the same harness reason as the refusals.
+      // ⚠ THE COUNTERPART SET, AND IT IS WHAT STOPS THE GATE FROM BEING A REGRESSION. A rule strict enough
+      // to refuse the values above must still admit the addresses this column actually holds: dots,
+      // hyphens, plus-addressing and underscores in the local part, and a multi-label domain.
       const ADMITTED_VALUES: readonly string[] = [
         'grace@example.test',
         'grace.hopper@example.test',
@@ -4374,15 +3395,6 @@ describe('UserListComponent', () => {
     });
 
     it('never renders the telephone number as a mailto link, even one containing an at-sign', () => {
-      /*
-       * ⚠ DEFECT D1, CORRECTED AND ANNOTATED RATHER THAN SILENTLY FIXED. The legacy cell applied
-       * `DisplayEmail` to the TELEPHONE NUMBER — the electronic-mail formatter to a value that is not an
-       * address (`users.ascx` L50-L55). The consequence was LATENT rather than visible: the helper emitted
-       * an anchor only when the value carried a mailbox separator, so a well-formed number passed through
-       * unchanged and the grid looked correct. A number carrying an at-sign — a stored extension note, say —
-       * WOULD have been wrapped in a `mailto:` link pointing at a telephone number. The pathological value
-       * is used here precisely because it is the one the legacy screen would have got wrong.
-       */
       arrive(pageOf([userRow(7, { telephone: '0117 496 0000 x@204' })]));
 
       const cell = cellUnder(TELEPHONE_HEADING);
@@ -4392,24 +3404,15 @@ describe('UserListComponent', () => {
     });
 
     it('renders the authorisation flag as an announced word', () => {
-      /*
-       * MIGRATION — THE OPTION-STRICT COERCION IS MADE EXPLICIT. The legacy markup drew one of two images by
-       * evaluating `Membership.Approved=true` and `Membership.Approved=false`, comparing a strongly-typed
-       * Boolean against UNQUOTED Boolean literals; it compiled only because the administration pages were
-       * built with strict type checking switched off (`Website/release.config` L125). The flag is a Boolean
-       * here and both states render as words instead of as one of a pair of untitled images.
-       */
       arrive(pageOf([userRow(7, { isApproved: true })]));
 
       expect(textIn(cellUnder(AUTHORIZED_HEADING))).toBe(AFFIRMATIVE_TEXT);
     });
 
     it('renders an unauthorised account as "No" rather than as an empty cell', () => {
-      /*
-       * ⚠ FALSE IS DATA, NOT "UNSET". The legacy absent-Boolean marker was itself `False` (`Null.vb`
-       * L76-L80), so a truthiness test would render an unauthorised account as a blank cell and an operator
-       * could not tell "not authorised" from "not known".
-       */
+      // ⚠ FALSE IS DATA, NOT "UNSET". The legacy absent-Boolean marker was itself `False`, so a truthiness
+      // test would render an unauthorised account as a blank cell and an operator could not tell "not
+      // authorised" from "not known".
       arrive(pageOf([userRow(7, { isApproved: false })]));
 
       const painted: string = textIn(cellUnder(AUTHORIZED_HEADING));
@@ -4438,28 +3441,14 @@ describe('UserListComponent', () => {
   // ===================================================================================================
 
   describe('the opening view the tenant configured', () => {
-    /*
-     * MIGRATION: `Page_Init` L494-L506 chose the screen's opening filter from `Display_Mode`, and
-     * `BindData` L248-L290 branched on that filter: the localised "All" word listed everything
-     * (L264), any other non-"None" value fell through to the search-axis switch (L267) whose default
-     * axis was `Username` (L577), and the bare marker "None" matched no branch at all so no query
-     * was issued and the grid rendered unbound.
-     *
-     * ⚠ AN EARLIER REVISION IGNORED THE SETTING and always opened on the unfiltered listing. These
-     * cases close that gap from the screen's side; the store's own suite pins the query each mode
-     * dispatches.
-     */
-
     it('opens on the first letter of the alphabet strip when the tenant chose that view', () => {
       create();
       answerSettings(membershipSettings({ displayMode: 1 }));
       answerDefinitions();
 
-      // ⚠ EITHER TRANSPORT, READ THROUGH THE SHARED ACCESSOR. A first-letter view is an
-      // account-name filter, and an account name identifies a person, so it travels in a request
-      // BODY rather than in a request target — see {@link USERS_SEARCH_URL}. The accessor answers
-      // from whichever of the two the screen used, so this case asserts the FILTER rather than the
-      // transport, which is what it was always about.
+      // ⚠ EITHER TRANSPORT, READ THROUGH THE SHARED ACCESSOR. A first-letter view is an account-name
+      // filter, and an account name identifies a person, so it travels in a request BODY rather than in a
+      // request target — see {@link USERS_SEARCH_URL}.
       const listing = expectListRead('the listing read');
 
       expect(paramOf(listing, 'userName'))
@@ -4475,12 +3464,6 @@ describe('UserListComponent', () => {
     });
 
     it('issues no query and explains why when the tenant chose the no-query view', () => {
-      /*
-       * ⚠ THE NOTICE EXISTS BECAUSE THE SHARED GRID'S EMPTY STATE WOULD STATE A FALSEHOOD HERE. That
-       * state reports that nothing was FOUND; in this state nothing was LOOKED FOR. The legacy showed
-       * no message at all, and since `UserModuleBase.vb` L126-L130 defaulted the setting to this
-       * mode, every unconfigured tenant opened on a silent empty grid.
-       */
       create();
       answerSettings(membershipSettings({ displayMode: 2 }));
       answerDefinitions();
@@ -4554,10 +3537,6 @@ describe('UserListComponent', () => {
     });
 
     it('lets waiting win over emptiness', async () => {
-      /*
-       * An empty page is a legitimate answer rather than an error, but claiming it while a request is still
-       * in flight would tell the reader "nothing found" about a query that has not answered yet.
-       */
       arrive(pageOf([]));
 
       expect(query('app-empty-state')).not.toBeNull();
@@ -4620,10 +3599,6 @@ describe('UserListComponent', () => {
     });
 
     it('renders a refused read at WARNING severity rather than as an error', () => {
-      /*
-       * The same three-valued vocabulary as the removal path: `AccessDenied.ascx.vb` L41-L47 presented a
-       * denial at the warning level in BOTH of its branches. A refusal is not a fault.
-       */
       create();
       answerSettings();
       answerDefinitions();
@@ -4645,19 +3620,8 @@ describe('UserListComponent', () => {
     });
 
     it('renders the per-field messages of a validation failure, under the normalised client keys', () => {
-      /*
-       * ⚠ THE WIRE KEYS ARE .NET MODEL-STATE KEYS AND THE RENDERED KEYS ARE NOT THE SAME STRING, which is
-       * the fact this case pins. The dictionary arrives in the request contract's own Pascal casing —
-       * `UserName`, `PageIndex` — and the shared contract lower-cases the FIRST CHARACTER ONLY at the
-       * boundary, deliberately and in one function, so a client key matches the client's own member
-       * spelling; lower-casing the whole key would turn `PageSize` into `pagesize` and match nothing. What
-       * a reader sees is therefore `userName`, and anything reading the document directly still sees
-       * `UserName`.
-       *
-       * ⚠ EVERY READ OF THE FIXTURE IS A BRACKET ACCESS. `noPropertyAccessFromIndexSignature` is enabled, so
-       * `errors.UserName` is a compilation error rather than a silent `undefined` — and the dotted form
-       * would be wrong here in any case, because the key is not a member name.
-       */
+      // ⚠ THE WIRE KEYS ARE .NET MODEL-STATE KEYS AND THE RENDERED KEYS ARE NOT THE SAME STRING, which is
+      // the fact this case pins.
       const errors: Readonly<Record<string, readonly string[]>> = {
         UserName: ['The user name is not valid.'],
         PageIndex: ['The page index may not be negative.'],
@@ -4680,11 +3644,9 @@ describe('UserListComponent', () => {
     });
 
     it('surfaces a form-level message that belongs to no field', () => {
-      /*
-       * The empty-string key is what a model-state failure uses for a message about the request as a whole.
-       * It has no first character to lower-case and no control to match, so it survives untouched and is
-       * shown beside the summary rather than beside a field.
-       */
+      // The empty-string key is what a model-state failure uses for a message about the request as a whole.
+      // It has no first character to lower-case and no control to match, so it survives untouched and is
+      // shown beside the summary rather than beside a field.
       const errors: Readonly<Record<string, readonly string[]>> = {
         '': ['The request could not be understood.'],
       };
@@ -4754,21 +3716,6 @@ describe('UserListComponent', () => {
     });
 
     it('disables the retry affordance while a read is still in flight beneath a recorded failure', () => {
-      /*
-       * ⚠ REACHED THROUGH THE PROFILE-DECLARATIONS FAILURE, WHICH IS NOW THE ONE STATE WHERE BOTH HOLD AT
-       * ONCE. Every store command clears the failure slot before it dispatches, so pressing retry REMOVES
-       * the surface the affordance lives on — the disabled binding could never be observed that way. What
-       * is needed is a read that FAILS while a different read is still in flight, and whose failure this
-       * screen answers for.
-       *
-       * ⚠ #5 — IT USED TO BE REACHED THROUGH THE ACCOUNT-POLICY FAILURE AND CANNOT BE ANY MORE. A failed
-       * policy read no longer opens this surface at all: it costs the tenant its preferred page size and
-       * column selection, both of which have a documented fallback here, so raising an assertive banner
-       * with a retry above a healthy listing reported a failure that had not happened. The declarations
-       * read is the substitute and is a better fit than the policy ever was — it is genuinely one of this
-       * screen's own reads, it feeds the search-axis selector, and it is dispatched INDEPENDENTLY of the
-       * listing, so failing it leaves the listing in flight beneath the surface exactly as required.
-       */
       create();
       answerSettings();
       expectRequest('GET', PROFILE_DEFINITIONS_URL, 'the profile-declarations read').flush(
@@ -4798,9 +3745,6 @@ describe('UserListComponent', () => {
     /**
      * Types into the box WITHOUT submitting, so the debounced emission is left pending.
      *
-     * The submit path is immediate and would defeat the whole point of these cases: what is being
-     * tested is what happens to an emission that has not fired yet.
-     *
      * @param term The text to type.
      */
     function beginTyping(term: string): void {
@@ -4812,11 +3756,10 @@ describe('UserListComponent', () => {
     }
 
     it('lets a letter win over a term still waiting in the box', fakeAsync(() => {
-      // ⚠ THE ORDERING DEFECT, END TO END. Typing "bl" starts a delay inside the shared box;
-      // pressing "C" a moment later dispatches a query for C; the delay then elapsed and emitted
-      // "bl", so the OLDER intent silently replaced the NEWER one and the strip showed C selected
-      // over a listing of accounts beginning with B. The screen now calls the pending emission off
-      // before it dispatches its own query.
+      // ⚠ THE ORDERING DEFECT, END TO END. Typing "bl" starts a delay inside the shared box; pressing "C" a
+      // moment later dispatches a query for C; the delay then elapsed and emitted "bl", so the OLDER intent
+      // silently replaced the NEWER one and the strip showed C selected over a listing of accounts
+      // beginning with B. The screen now calls the pending emission off before it dispatches its own query.
       arrive();
       beginTyping('bl');
 
@@ -4895,14 +3838,6 @@ describe('UserListComponent', () => {
 
   describe('the chosen axis and what is still declared', () => {
     it('falls back to the account name when the chosen property stops being declared', async () => {
-      // ⚠ THE SCREEN LIED ABOUT WHAT IT WAS SEARCHING. The third axis is one entry per
-      // tenant-declared profile property, and the declarations live in the application-scoped store
-      // that the neighbouring profile-declarations screen writes. The chosen axis was written only by
-      // the selector's change handler and never revisited, so when the property it named stopped
-      // being declared its `<option>` vanished — and a `<select>` whose selected value is no longer
-      // among its options falls back to the FIRST option in the browser, while the component went on
-      // holding the removed name. The operator read "User Name" and every search queried the deleted
-      // property.
       arrive();
       chooseAxis(ODD_PROPERTY_NAME);
 
@@ -4974,14 +3909,9 @@ describe('UserListComponent', () => {
   describe('a read that failed without a problem document', () => {
     it('shows the store\u2019s authored summary instead of nothing at all', () => {
       // ⚠ THE FAILURE THIS MAKES VISIBLE WAS COMPLETELY SILENT. The runtime decoders that check each
-      // response against its published contract run inside the service's own mapping, DOWNSTREAM of
-      // the interceptor's error handling — so a `200` whose body does not match its contract throws a
-      // plain error with no document, no status and no support reference. The banner bound only a
-      // document, so it rendered nothing: the grid stayed empty because no rows were committed, and
-      // no surface on the screen said why.
-      //
-      // A page envelope missing its `meta` is exactly that input: the transport answers success and
-      // the page decoder refuses the body.
+      // response against its published contract run inside the service's own mapping, DOWNSTREAM of the
+      // interceptor's error handling — so a `200` whose body does not match its contract throws a plain
+      // error with no document, no status and no support reference.
       create();
       answerSettings();
       answerDefinitions();
@@ -5022,12 +3952,6 @@ describe('UserListComponent', () => {
 
   describe('the persistent announcing region', () => {
     it('is mounted before anything has failed, with the retry offered only for a failure', () => {
-      // ⚠ THE REGION MUST PRE-EXIST THE MESSAGE IT ANNOUNCES. A `role="alert"` region inserted in the
-      // same change as its first text is announced inconsistently across screen readers, and the first
-      // read failure is the one an operator most needs to hear. This screen used to create the banner
-      // element only while a read failure existed - correct about WHICH failures it reported, once both
-      // inputs were bound, and still wrong about the region's lifetime. The shared component keeps its
-      // own `@if` inside the region, so an empty banner paints nothing and occupies no height.
       arrive(pageOf([userRow(7)]));
 
       expect(query('app-error-banner'))
@@ -5047,11 +3971,6 @@ describe('UserListComponent', () => {
 
   describe('whose write settled', () => {
     it('reports a removal refused AFTER an unrelated write settled first', () => {
-      // ⚠ DEFECT (a) FROM THE STORE'S OWN NOTE, AT THE SCREEN THAT SUFFERED IT. This screen used to
-      // settle its removal by watching the store's aggregate write flag fall — which happens when the
-      // FIRST write anywhere in the application finishes. An unrelated write settling therefore
-      // consumed this screen's removal marker, so the refusal that arrived afterwards had nothing to
-      // attribute itself to: the row the server refused to delete silently stayed, with nothing said.
       arrive(pageOf([userRow(7)]));
 
       const removal = confirmRemoval(7);
@@ -5083,20 +4002,7 @@ describe('UserListComponent', () => {
     });
   });
 
-
-  // ---------------------------------------------------------------------------------------------------
   // PROOF — THE ADDRESS CARRIES THE SEARCH, THE AXIS AND THE PAGE
-  //
-  // Runtime testing on the sibling portal listing measured five desyncs from keeping this state privately:
-  // pager clicks advanced the grid while the address stayed on the bare route, pressing back from page three
-  // was not possible because paging created no history entry at all, a typed address carrying a filter issued
-  // no request, and a fresh arrival landed on a page and a filter the operator could not see, because this
-  // store is provided at the application root and OUTLIVES this route.
-  //
-  // ⚠ THIS LISTING HAS A THIRD STATE THE OTHER THREE DO NOT: an address that states NO search means nothing
-  // has been asked for, which is a real legacy state distinct from the unfiltered listing. Several cases here
-  // exist only to hold that distinction in place.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the address', () => {
     it('writes a typed search and its default axis, stating the axis by omission', async () => {
@@ -5139,8 +4045,8 @@ describe('UserListComponent', () => {
 
     it('restores a whole view from the address on entry: axis, term and page together', async () => {
       // ⚠ ONE READ, AT THE RIGHT COORDINATE. Every search command on the store returns the listing to the
-      // first page, so restoring the search and the page separately would discard the page the address asked
-      // for. The staged search also has to outrank the policy's own opening view.
+      // first page, so restoring the search and the page separately would discard the page the address
+      // asked for. The staged search also has to outrank the policy's own opening view.
       await enterAt('/users?searchby=Email&filter=a&currentpage=3');
       create();
       answerSettings();
@@ -5180,9 +4086,6 @@ describe('UserListComponent', () => {
     });
 
     it('corrects away a page on an address that states no search', async () => {
-      // Which page four IS depends on a result set nobody asked for, so the page cannot be honoured. Every
-      // affordance writes the search alongside the page precisely so this is only reached by a hand-edited
-      // address.
       await enterAt('/users?currentpage=4');
       create();
       await settleAddress();
@@ -5196,9 +4099,9 @@ describe('UserListComponent', () => {
     });
 
     it('writes the search alongside the page when a page is turned', async () => {
-      // ⚠ THE CASE THAT KEEPS A POLICY-CHOSEN VIEW PAGEABLE. The policy chose the opening view, so the address
-      // still states no search; writing only the page would produce an address that the rule above corrects
-      // away, and the operator's page turn would be undone.
+      // ⚠ THE CASE THAT KEEPS A POLICY-CHOSEN VIEW PAGEABLE. The policy chose the opening view, so the
+      // address still states no search; writing only the page would produce an address that the rule above
+      // corrects away, and the operator's page turn would be undone.
       arrive(pageOf([userRow()], 40, 0, TENANT_PAGE_SIZE));
 
       await pressPager(PAGER_NEXT_LABEL);
@@ -5212,11 +4115,6 @@ describe('UserListComponent', () => {
     });
 
     it('clears the rows when the address becomes bare, rather than captioning stale ones', async () => {
-      // ⚠ THE DEFECT RUNTIME TESTING FOUND, PINNED. This store outlives the route and the nothing-asked-for
-      // state issues NO request, so a previous query's rows had nothing to replace them: the screen printed
-      // "No accounts have been requested yet" directly above 255 retained rows, and pressing Back onto the
-      // bare address changed the address without changing the view. Both halves are asserted - the rows are
-      // gone AND the hint is shown - because either alone would pass while the other failed.
       arrive();
 
       await pressLetter(ALL_FILTER_LABEL);
@@ -5231,9 +4129,9 @@ describe('UserListComponent', () => {
       await enterAt('/users');
       await settleAddress();
 
-      // ⚠ COUNTED BY THE ROW CLASS, NOT BY `tbody tr`. The shared table also renders a waiting placeholder and
-      // two virtualisation spacer rows inside its body, so a bare `tbody tr` count never reaches nought and
-      // would pass for any implementation.
+      // ⚠ COUNTED BY THE ROW CLASS, NOT BY `tbody tr`. The shared table also renders a waiting placeholder
+      // and two virtualisation spacer rows inside its body, so a bare `tbody tr` count never reaches nought
+      // and would pass for any implementation.
       expect(host().querySelectorAll('tr.data-table__row').length)
         .withContext('a bare address states no search, so there is no result set to show')
         .toBe(0);
@@ -5258,9 +4156,6 @@ describe('UserListComponent', () => {
 
       const read: TestRequest = expectListRead('the fresh read');
 
-      // Asserted as ABSENT rather than empty: the helper above throws for a parameter that is not there, so
-      // presence is checked directly. An empty term would be a real search for the empty string, which is a
-      // different query from no search at all.
       expect(read.request.params.has(USER_NAME_PARAM))
         .withContext('the bare address carries no term, whatever the store still held')
         .toBeFalse();

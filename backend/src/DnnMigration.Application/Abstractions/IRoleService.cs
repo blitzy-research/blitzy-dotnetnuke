@@ -3,167 +3,6 @@ using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Domain.Common;
 
-// This contract replaces the whole public surface of
-// Library/Components/Security/Roles/RoleController.vb, measured at 892 lines and
-// 42 public members. Twelve of those 42 were Shared (static) - the members between the
-// "Public Shared Methods" region marker at L614 and the end of the file - and are reborn
-// here as instance members on an injected abstraction, per AAP 0.4.3. The annotations
-// below record every place the migrated contract deliberately departs from the
-// legacy behaviour, as AAP Rule T5 requires; each is also carried in
-// MIGRATION_NOTES.md at the repository root.
-//
-// MIGRATION: `Imports Microsoft.VisualBasic` at RoleController.vb:L25 is removed. It
-//            is the ONLY occurrence in the entire in-scope legacy surface, and the
-//            DateAdd(DateInterval.Day, n, d), DateAdd(DateInterval.Month, n, d) and
-//            DateAdd(DateInterval.Year, n, d) calls it supplied become d.AddDays(n),
-//            d.AddDays(n * 7), d.AddMonths(n) and d.AddYears(n) inside
-//            Services/RoleService.cs, selected by the frequency enumeration that the
-//            domain layer owns. No date arithmetic is exposed on this contract, so no
-//            caller above the application layer can perform it (AAP Rule T2).
-//
-// MIGRATION: the frequency code set has SIX measured members, not the four the plan
-//            cites. RoleController.vb:L541-L546 reads: 'N' assigns Null.NullDate, so
-//            never expires; 'O' assigns the far-future sentinel 9999-12-31, so
-//            perpetual; 'D' is DateAdd by day and period; 'W' is DateAdd by day and
-//            period times seven; 'M' is DateAdd by month; 'Y' is DateAdd by year. The
-//            whole table is short-circuited at L537, where a period equal to
-//            Null.NullInteger yields no expiry before the code is even examined. The
-//            codes are load-bearing single-character data - the columns are declared
-//            char(1) NULL at 01.00.00.SqlDataProvider:L120 and L122 - and are never
-//            renamed. This is REPORTED as a refinement of the plan, not a correction
-//            to it, and the enumeration itself is declared by the domain layer.
-//
-// MIGRATION: the trial-versus-billing selection at RoleController.vb:L521 is preserved
-//            exactly: the trial terms govern only when the trial has not already been
-//            consumed AND the trial frequency is not the 'N' code; otherwise the
-//            billing terms govern. The 'N' code therefore does double duty as the
-//            no-trial guard, which is why it may never be treated as an unset marker.
-//
-// MIGRATION: RoleController.vb:L530 and L533 normalise both dates before any offset is
-//            applied, and both rules are preserved. An effective date already in the
-//            past is reset to Null.NullDate - no start gate at all - and an expiry date
-//            already in the past is reset to the current instant so that the offset
-//            always runs forward from now rather than from a stale value. The current
-//            instant is read from the clock abstraction the domain layer owns, never
-//            from an ambient one, so the arithmetic is unit-testable.
-//
-// MIGRATION: RoleController.vb:L495-L496 does NOT delete a cancelled assignment when
-//            the role carries a service fee and its trial has been used. It back-dates
-//            the expiry to yesterday instead, commented in the source as retaining the
-//            trial-used data. Preserved, and reported through an informational reason on
-//            a SUCCESSFUL outcome so a caller can distinguish an expiry from a deletion.
-//
-// MIGRATION: the legacy removal reported success when the portal or the assignment could
-//            not be found - L330-L347 leaves its flag true and silently does nothing - so
-//            a caller could not tell a real removal from a no-op. This surface reports a
-//            distinct failure reason instead. Documented behavioural difference.
-//
-// MIGRATION: seven legacy parameters carried the ambient per-request composite and are
-//            removed with it - five typed PortalSettings on public members (L647, L677,
-//            L695, L714, L741), one typed PortalInfo (L764), and one typed PortalSettings
-//            on the private notification helper at L577. Every member below takes its
-//            portal identifier explicitly; the immutable, scoped tenant context that the
-//            domain layer owns supplies the remaining per-request facts. No member infers
-//            a tenant from ambient state.
-//
-// MIGRATION: fourteen legacy members took or returned RoleInfo, RoleGroupInfo,
-//            UserRoleInfo or UserInfo - L100, L163, L179, L254, L362, L626, L647, L677,
-//            L695, L714, L794, L811, L838 and L849. None of those types, and no domain
-//            entity, appears here: requests and responses are data transfer objects and
-//            plain identifiers, so no entity crosses the boundary in either direction.
-//
-// MIGRATION: the notifyUser flag on the four shared members (L647, L677, L695, L714) sent
-//            an e-mail through a mail subsystem this migration excludes, so no equivalent
-//            exists to delegate to and no member here takes one. The flag itself survives
-//            on the assignment contract as RoleAssignmentRequest.NotifyUser, because it was
-//            a genuine caller input - the legacy markup pre-selected it - and dropping it
-//            would delete a user-facing choice rather than an implementation detail. No
-//            member below acts on it, and no successful outcome implies a notification was
-//            sent. A deliberate functional reduction, recorded rather than silently
-//            absorbed.
-//
-// MIGRATION: the SynchronizationMode flag (L849) and the SynchronizeRoles flag (L854) are
-//            dropped. Both toggled the legacy membership and role provider
-//            synchronisation model, which this migration replaces wholesale rather than
-//            reproduces, so neither flag has anything left to switch.
-//
-// MIGRATION: the legacy removability predicate at L741 and L764 - two duplicated bodies
-//            the source itself flags as a hack - is NOT reproduced as a public predicate.
-//            Its measured rule blocks exactly two cases: stripping the portal's
-//            designated administrator of that portal's administrator role, and removing
-//            ANY user from that portal's registered-users role. Both are enforced inside
-//            the removal member and reported as role_assignment.protected, so no caller
-//            above the application layer can settle the question for itself (Rule T2).
-//
-// MIGRATION: the three legacy members returning a raw single-dimension array of names
-//            (L194, L240, L859) and every legacy untyped, non-generic collection return
-//            become read-only generic sequences. Neither a raw array nor a non-generic
-//            collection appears anywhere on this surface (AAP 0.5.1.10).
-//
-// MIGRATION: duplicate and overload families are collapsed. The two portal role listings
-//            (L146, L854) join the group-filtered listing (L224) as one member; the two
-//            byte-identical listings of a role's users (L457, L874) become one; four
-//            removal overloads (L330, L677, L695, L714) become one; three assignment
-//            overloads (L277, L295, L647) become one; and three listings of a user's
-//            assignments (L376, L392, L408) join L240, L425 and L859 as one.
-//
-// MIGRATION: the paid-services wrappers (L864, L869, L879, L884) are not reproduced.
-//            Measured, each is a thin alias of a role or assignment member above, and the
-//            member-services screen they served folds into the user feature's membership
-//            settings screen, so re-declaring them under service names would fork one
-//            behaviour across two contracts.
-//
-// MIGRATION: the all-portals role read (L208) is not exposed. Measured, it reaches the
-//            data layer with the portal identifier set to Null.NullInteger, returning
-//            every tenant's roles in a single answer. Tenant isolation is a preservation
-//            requirement of this migration, so every member below demands an explicit
-//            portal identifier and none offers an unscoped variant.
-//
-// MIGRATION: no numeric or date sentinel survives on this surface. Null.NullInteger is
-//            minus one and Null.NullDate is DateTime.MinValue (Null.vb:L41-L45 and
-//            L66-L70), yet Roles.RoleID is IDENTITY(0,1) at
-//            01.00.00.SqlDataProvider:L115 - so 0 is a real role identifier - and
-//            Portals.PortalID is IDENTITY(-1,1), so its seed and first generated value is
-//            minus one, which is simultaneously the legacy absence marker, while the
-//            shipped default portal row was inserted with an explicit PortalID of 0. Both
-//            are real portal keys. RoleGroupID additionally uses Null.NullInteger to mean
-//            "no group", and L224 documents minus one as "all roles for the portal".
-//            Absence is therefore carried by nullable types alone: an absent role group is
-//            a null int, an absent date a null DateTime. An implementation must never
-//            coalesce minus one or 0 to null, and must never read either value as meaning
-//            absent (AAP Rule T7, 0.7.2).
-//
-// MIGRATION: every projection named on this contract is one AAP 0.4.1.1 itemises, and
-//            that constraint is deliberate rather than stylistic. A projection the plan
-//            does not name has no authoring owner in this migration, so naming one here
-//            would leave the backend permanently uncompilable however faithful its shape
-//            was. Listing a role's members therefore projects the user list item the plan
-//            names, and listing a user's roles projects the role list item, which is the
-//            faithful shape in any case: the legacy assignment record inherits the role
-//            record outright, declaring eight properties of its own over fifteen inherited
-//            (UserRoleInfo.vb:L38-L128 over RoleInfo.vb).
-//
-// MIGRATION: consequently the effective and expiry dates are NOT carried on either
-//            listing, and that is a functional reduction against the legacy grid, which
-//            bound five columns at securityroles.ascx:L68-L84 - user identifier, role
-//            identifier, display name, effective date and expiry date. The two dates
-//            travel on the write path instead, on the assignment request, which is where
-//            AAP 0.5.1.8 requires them. No read projection on this contract exposes a
-//            stored effective or expiry date. Restoring them to the read path requires the
-//            plan to name an assignment projection; until it does, inventing one here would
-//            trade a documented reduction for a broken build.
-//
-// MIGRATION: the single-assignment reader at RoleController.vb:L362 is not surfaced. Its
-//            only measured in-scope consumer is the date-priming routine spanning
-//            SecurityRoles.ascx.vb:L273-L303, which reads an existing assignment purely to
-//            pre-fill two inputs and otherwise projects a proposed expiry from the role's
-//            billing terms with a reduced four-code switch at L295-L301 - a presentation
-//            layer recomputation of arithmetic that AAP Rule T2 places squarely inside the
-//            application layer, and the likely origin of the four-code reading the plan
-//            cites. Exposing the reader would invite that recomputation back above the
-//            boundary; the authoritative expiry is computed once, on assignment, from the
-//            full six-code table.
-
 namespace DnnMigration.Application.Abstractions;
 
 /// <summary>
@@ -172,269 +11,72 @@ namespace DnnMigration.Application.Abstractions;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Why this type exists. The legacy grouping filter is THREE-way over a single integer, and two of its
-/// three branches are magic values rather than keys, so a nullable group identifier cannot express it. The
-/// bands were measured rather than inferred, and the whole chain is recorded here because an earlier
-/// revision of this contract lost one of the three branches by trusting a stale legacy comment:
-/// </para>
-/// <list type="bullet">
-///   <item>
-///     <description>
-///     <c>&lt;= -2</c> meant "no group filter - every role in the portal".
-///     <c>Website/admin/Security/Roles.ascx.vb:L72-L76</c> branches on <c>If RoleGroupId &lt; -1</c> and
-///     calls <c>GetPortalRoles(PortalId)</c>, and <c>:L112</c> is the drop-down entry that produces it -
-///     value <c>"-2"</c>, labelled <c>AllRoles</c>, which
-///     <c>Website/App_GlobalResources/SharedResources.resx:L834-L836</c> renders as
-///     "&lt; All Roles &gt;".
-///     </description>
-///   </item>
-///   <item>
-///     <description>
-///     <c>-1</c> meant "only the roles that belong to NO group". <c>:L114</c> is its drop-down entry,
-///     value <c>"-1"</c>, labelled <c>GlobalRoles</c> - "&lt; Global Roles &gt;" at
-///     <c>SharedResources.resx:L837-L839</c> - and <c>EditRoles.ascx.vb:L75</c> spells it identically.
-///     The value reaches the store as SQL <see langword="null"/>, not as minus one:
-///     <c>MembershipProviders/DataProvider/SqlDataProvider.vb:L231</c> wraps the argument in
-///     <c>GetNull</c>, and <c>Null.vb:L155</c> converts an integer equal to the absence sentinel into
-///     <c>DBNull</c>. The terminal procedure body then reads
-///     <c>WHERE (RoleGroupId = @RoleGroupId OR (RoleGroupId IS NULL AND @RoleGroupId IS NULL))</c>, whose
-///     second arm is the one that fires - so the answer is the ungrouped roles.
-///     </description>
-///   </item>
-///   <item>
-///     <description>
-///     <c>&gt;= 0</c> meant that one group, and zero is a real key:
-///     <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1) NOT NULL</c>. That is why no small number can
-///     be borrowed as a marker here and why this concern needs a type of its own.
-///     </description>
-///   </item>
-/// </list>
-/// <para>
-/// MIGRATION: the legacy XML comment at <c>RoleController.vb:L217-L218</c> states "Id of the Role Group
-/// (If -1 all roles for the portal are retrieved)". That comment is WRONG, and it is named here so that a
-/// later reader who finds it is not misled a second time. It is contradicted by the provider chain and
-/// terminal statement above, and independently by the calling screen: if minus one meant "all", the
-/// screen's own <c>&lt; -1</c> branch would be unreachable and the "&lt; Global Roles &gt;" entry would
-/// list every role in the portal rather than the ungrouped ones.
-/// </para>
-/// <para>
-/// Why two members and not three. A specific group is already named by supplying its identifier, so a
-/// third member for that case would say nothing the identifier does not, while adding a second way to
-/// contradict oneself. The two members here are exactly the two branches that no identifier can express.
-/// </para>
-/// <para>
-/// The magic integers themselves do not survive. A caller names the branch it wants rather than landing in
-/// a band, which is what a bare integer allowed.
-/// </para>
-/// <para>
 /// A value outside the enumeration is refused by model binding at the HTTP boundary, and this was MEASURED
 /// rather than assumed: MVC's enumeration binder tests DEFINED membership for a non-flags enumeration, so
 /// <c>?scope=999</c> is answered <c>400</c> naming the parameter before the action body runs, while
-/// <c>?scope=0</c> and <c>?scope=1</c> bind normally. The verification was worth doing because the
-/// corresponding claim is FALSE for a JSON body, where <c>System.Text.Json</c> performs no such check -
-/// which is why this solution's body-bound enumerations carry converter and validator rules instead.
+/// <c>?scope=0</c> and <c>?scope=1</c> bind normally.
 /// </para>
 /// <para>
-/// MIGRATION: <c>ListRolesAsync</c> nonetheless tests membership itself, and the reason is not
-/// belt-and-braces. A CLR enumeration is an integer at run time, so <c>(RoleGroupScope)999</c> is a
-/// constructible value and this interface is a public API reachable by callers that never touch MVC. The
-/// narrowing tests only for equality with <see cref="RoleGroupScope.Ungrouped"/>, so an undefined scope
-/// would otherwise fall through every branch and the member would answer the UNFILTERED list reporting
-/// success. An invariant belongs to the layer that owns it, which is the same reason the two
-/// permission-evaluation members of <c>IPermissionService</c> carry the identical test.
+/// <c>ListRolesAsync</c> nonetheless tests membership itself, and the reason is not belt-and-braces.
 /// </para>
 /// </remarks>
 public enum RoleGroupScope
 {
-    /// <summary>
-    /// Every role in the portal, whatever its grouping and including the ungrouped ones.
-    /// </summary>
-    /// <remarks>
-    /// The legacy <c>&lt;= -2</c> band, and the default: omitting the scope entirely means this, which
-    /// preserves the behaviour of every existing caller. It is also what the legacy screen forced when the
-    /// portal had no role groups at all - <c>Roles.ascx.vb:L129</c> assigns <c>-2</c> and hides the
-    /// drop-down - so an installation that never adopted role groups sees an unfiltered list.
-    /// </remarks>
+    /// <summary>Every role in the portal, whatever its grouping and including the ungrouped ones.</summary>
     All = 0,
 
     /// <summary>
     /// Only the roles that belong to no role group - the legacy "&lt; Global Roles &gt;" selection.
     /// </summary>
     /// <remarks>
-    /// The legacy <c>-1</c> band, which reaches the store as a null-group test rather than as a
-    /// comparison against minus one. This is the branch that had no expression at all before, and
-    /// restoring it is the point of this type.
+    /// The legacy <c>-1</c> band, which reaches the store as a null-group test rather than as a comparison
+    /// against minus one. This is the branch that had no expression at all before, and restoring it is the
+    /// point of this type.
     /// </remarks>
     Ungrouped = 1,
 }
 
 /// <summary>
-/// Application-layer contract for the role aggregate - DotNetNuke's permission
-/// grouping - together with role groups and user-to-role assignment.
+/// Application-layer contract for the role aggregate - DotNetNuke's permission grouping - together with
+/// role groups and user-to-role assignment.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Scope. Three closely bound concerns share this one contract: the role itself,
-/// including its paid-membership terms; the role group that classifies roles for
-/// presentation; and the assignment that joins a user to a role for a period. They
-/// are not separable, because the legacy screens treat them as one workflow and
-/// because a role group cannot be deleted while it still classifies roles. There is
-/// deliberately no separate role-group contract; the role-group endpoints are served
-/// from here.
+/// Tenancy. Every member takes an explicit portal identifier and scopes every read and write to it.
 /// </para>
 /// <para>
-/// Not in this contract. Role <em>permissions</em> belong to the permission contract:
-/// a role is the <em>subject</em> of a permission grant, never its store, so no
-/// member here reads or writes a module or page permission. Caching is an
-/// implementation concern behind the cache abstraction the domain layer owns, so no
-/// member exposes a cache, a clear or a synchronise switch. Data access is reached
-/// only through the repository abstractions the domain layer declares (AAP Rule T3),
-/// which is why nothing on this surface names a persistence type.
-/// </para>
-/// <para>
-/// Every member is asynchronous, carries the <c>Async</c> suffix and accepts a
-/// trailing cancellation token, because every one of them performs input or output
-/// (AAP Rule T6). No member declares an out-parameter or a by-reference parameter:
-/// the thirty measured legacy signatures that mutated an argument while returning a
-/// status are replaced by <see cref="Result"/> and <see cref="Result{T}"/>, which
-/// carry the value and the reason together (AAP 0.7.4).
-/// </para>
-/// <para>
-/// Reading an outcome. An <em>expected</em> failure - a missing role, a duplicate
-/// name, a protected assignment - is returned as a failed result carrying a stable
-/// reason code. Request-SHAPE failures travel the other channel: the implementation
-/// throws <see cref="DomainException"/> for a blank or over-long name, a negative fee
-/// or period, and an unrecognised frequency code, on the reasoning that a request which
-/// cannot be formed is a caller defect rather than a business outcome. On the HTTP path
-/// those are normally caught first by the boundary validator and surface as a validation
-/// problem response; a caller invoking this contract directly must be prepared for both
-/// channels and must not read "returns a Result" as "does not throw". Either way the
-/// answer is a 400. Any other exception is left to surface and is translated once at the
-/// outermost boundary. On a single-item lookup a
-/// <em>successful</em> result whose value is <see langword="null"/> means the item is
-/// <em>absent</em>, which is a different answer from a failed lookup and must not be
-/// collapsed into one (AAP Rule T7). A successful result may additionally carry an
-/// informational reason, which is how the cancel-a-paid-assignment path reports that
-/// it expired the assignment rather than deleting it.
-/// </para>
-/// <para>
-/// Reason codes used by this contract, all stable and all lower-case:
-/// <c>portal.not_found</c>, <c>role.not_found</c>, <c>role.name_duplicate</c>,
-/// <c>role.create_failed</c>, <c>role_group.not_found</c>,
-/// <c>role_group.name_duplicate</c>, <c>role_group.in_use</c>,
-/// <c>role_group.scope_invalid</c>, <c>user.not_found</c>,
-/// <c>role_assignment.not_found</c>, <c>role_assignment.protected</c> and the
-/// informational <c>role_assignment.expired_not_removed</c>.
-/// </para>
-/// <para>
-/// Tenancy. Every member takes an explicit portal identifier and scopes every read
-/// and write to it. A role, a role group or an assignment that exists in a different
-/// portal is reported as not found rather than returned, which reproduces the legacy
-/// screens' treatment of a cross-tenant identifier as a security violation. Where a
-/// request object also carries a portal identifier, the parameter is authoritative
-/// and a disagreement is a request-shape validation failure at the boundary, not a
-/// reason code here.
-/// </para>
-/// <para>
-/// Registration. Implemented by <c>Services/RoleService.cs</c> and registered by
-/// <c>AddApplication()</c> as one of its seven scoped services. A scoped lifetime is
-/// required: the implementation composes with the scoped repositories, the scoped
-/// unit of work and the scoped tenant context, so a singleton registration would
-/// capture one request's state and serve it to every later request.
+/// Registration. Implemented by <c>Services/RoleService.cs</c> and registered by <c>AddApplication()</c> as
+/// one of its seven scoped services.
 /// </para>
 /// </remarks>
 public interface IRoleService
 {
     /// <summary>
-    /// Lists one page of the roles defined in a portal, optionally narrowed to a
-    /// single role group.
+    /// Lists one page of the roles defined in a portal, optionally narrowed to a single role group.
     /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal whose roles are listed. Authoritative for tenant
-    /// scoping: no role belonging to any other portal may appear in the answer.
-    /// </param>
-    /// <param name="request">
-    /// Paging coordinates and the optional free-text filter for the listing. The
-    /// page-index base is fixed and documented by the paging envelope this member
-    /// returns, and is deliberately not restated here.
-    /// </param>
+    /// <param name="portalId">Identifier of the portal whose roles are listed.</param>
+    /// <param name="request">Paging coordinates and the optional free-text filter for the listing.</param>
     /// <param name="roleGroupId">
-    /// Identifier of the role group to restrict the listing to, or
-    /// <see langword="null"/> to leave the choice to <paramref name="scope"/>. Zero
-    /// is a real group key, so absence is expressed by <see langword="null"/> and
-    /// never by a small number.
+    /// Identifier of the role group to restrict the listing to, or <see langword="null"/> to leave the
+    /// choice to <paramref name="scope"/>.
     /// </param>
     /// <param name="scope">
-    /// Which roles to consider when no group identifier is supplied - every role, or
-    /// only the ungrouped ones. See <see cref="RoleGroupScope"/>, which records why
-    /// this cannot be folded into <paramref name="roleGroupId"/>. Defaults to
-    /// <see cref="RoleGroupScope.All"/>, so an existing caller that supplies neither
-    /// argument keeps the behaviour it already had.
+    /// Which roles to consider when no group identifier is supplied - every role, or only the ungrouped
+    /// ones.
     /// </param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying one page of roles, empty when the portal has
-    /// none or when the requested page lies past the end of the set; a failed
-    /// outcome carrying <c>portal.not_found</c> when no such portal exists,
-    /// <c>role_group.not_found</c> when <paramref name="roleGroupId"/> is supplied
-    /// but names no group in that portal, or <c>role_group.scope_invalid</c> in either
-    /// of two cases - when <paramref name="scope"/> is not a defined member of
-    /// <see cref="RoleGroupScope"/>, or when the two narrowing arguments contradict
-    /// each other.
+    /// A successful outcome carrying one page of roles, empty when the portal has none or when the
+    /// requested page lies past the end of the set; a failed outcome carrying <c>portal.not_found</c> when
+    /// no such portal exists, <c>role_group.not_found</c> when <paramref name="roleGroupId"/> is supplied
+    /// but names no group in that portal, or <c>role_group.scope_invalid</c> in either of two cases - when
+    /// <paramref name="scope"/> is not a defined member of <see cref="RoleGroupScope"/>, or when the two
+    /// narrowing arguments contradict each other.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Consolidates three measured legacy members: the portal role listing at
-    /// RoleController.vb:L146, its synchronisation-flagged twin at L854, and the
-    /// group-filtered listing at L224.
-    /// </para>
-    /// <para>
-    /// The two narrowing arguments are not interchangeable and are not redundant. A
-    /// group identifier names ONE group; the scope chooses between the two answers
-    /// that no identifier can name - every role, or only the roles belonging to no
-    /// group at all. <see cref="RoleGroupScope"/> carries the measured evidence for
-    /// all three legacy branches, including the fact that the legacy XML comment at
-    /// RoleController.vb:L217-L218 misdescribes the middle one.
-    /// </para>
-    /// <para>
-    /// Supplying a group identifier together with
-    /// <see cref="RoleGroupScope.Ungrouped"/> is a contradiction - the caller has
-    /// asked for one group and for the roles in no group in the same breath - and is
-    /// refused with <c>role_group.scope_invalid</c> rather than resolved by a
-    /// precedence rule. Silently preferring one argument would make the answer depend
-    /// on an ordering the caller cannot see, and would return a page the caller did
-    /// not ask for. Supplying an identifier together with the default
-    /// <see cref="RoleGroupScope.All"/> is NOT a conflict: the scope is what a caller
-    /// that never heard of it sends, so treating it as a contradiction would refuse
-    /// every existing group-filtered request.
-    /// </para>
-    /// <para>
-    /// MIGRATION: an UNDEFINED scope is refused with the same code, and by this member rather than by the
-    /// boundary - which already refuses it independently, as <see cref="RoleGroupScope"/> records. The test
-    /// is here because <c>(RoleGroupScope)999</c> is a constructible value and this member is callable
-    /// without MVC: the narrowing tests only for equality with <see cref="RoleGroupScope.Ungrouped"/>, so an
-    /// undefined scope would otherwise fall through every branch and this member would answer the UNFILTERED
-    /// list reporting success. The membership test is placed above the contradiction test so that an
-    /// undefined scope paired with a group identifier is reported as the undefined scope it is, rather than
-    /// as a contradiction between two meaningful arguments.
-    /// </para>
-    /// <para>
-    /// The projected item carries the columns the legacy grid bound, measured in
-    /// <c>Website/admin/Security/roles.ascx</c>: name, description, service fee,
-    /// billing frequency and period, trial fee, trial frequency and period, and the
-    /// public and auto-assignment flags. Preserving the paid-membership fields is a
-    /// functional-parity requirement, not an optional extra.
-    /// </para>
-    /// <para>
-    /// The page coordinates and the filter length are bounded by the shared
-    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
-    /// collection's sortable set because one request contract serves every listing. The sort field
-    /// is therefore bounded HERE, against <c>SortableFields.Roles</c> - exactly the column set
-    /// measured above, and exactly what this listing's ordering honours. An unrecognised field is
-    /// reported as <c>role.paging_invalid</c> rather than forwarded, so no caller-supplied field
-    /// name reaches a store unvetted and no caller is silently served a default order it did not
-    /// ask for.
-    /// </para>
+    /// Supplying a group identifier together with <see cref="RoleGroupScope.Ungrouped"/> is a contradiction
+    /// - the caller has asked for one group and for the roles in no group in the same breath - and is
+    /// refused with <c>role_group.scope_invalid</c> rather than resolved by a precedence rule.
     /// </remarks>
     Task<Result<PagedResult<RoleListItemDto>>> ListRolesAsync(
         int portalId,
@@ -443,138 +85,59 @@ public interface IRoleService
         RoleGroupScope scope = RoleGroupScope.All,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads one role of a portal in full, including its paid-membership terms.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role. Authoritative for tenant
-    /// scoping.
-    /// </param>
-    /// <param name="roleId">
-    /// Identifier of the role to read. Any non-negative value is legitimate,
-    /// including 0.
-    /// </param>
+    /// <summary>Reads one role of a portal in full, including its paid-membership terms.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role.</param>
+    /// <param name="roleId">Identifier of the role to read.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome whose value is the role, or a successful outcome whose
-    /// value is <see langword="null"/> when the portal has no such role - absent is
-    /// not the same answer as failed; or a failed outcome carrying
-    /// <c>portal.not_found</c> when no such portal exists.
+    /// A successful outcome whose value is the role, or a successful outcome whose value is <see
+    /// langword="null"/> when the portal has no such role - absent is not the same answer as failed; or a
+    /// failed outcome carrying <c>portal.not_found</c> when no such portal exists.
     /// </returns>
-    /// <remarks>
-    /// Replaces the identifier lookup at RoleController.vb:L163 and the by-name
-    /// lookup at L179. The by-name form is not surfaced separately because its only
-    /// measured use is the duplicate-name guard at
-    /// <c>Website/admin/Security/EditRoles.ascx.vb:L252</c>, and that guard is a
-    /// business rule enforced inside <see cref="CreateRoleAsync"/> and
-    /// <see cref="UpdateRoleAsync"/> rather than a question a caller asks first
-    /// (AAP Rule T2).
-    /// </remarks>
     Task<Result<RoleDetailDto?>> GetRoleAsync(
         int portalId,
         int roleId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Creates a role in a portal, including its paid-membership terms, and applies
-    /// the legacy auto-assignment rule.
+    /// Creates a role in a portal, including its paid-membership terms, and applies the legacy
+    /// auto-assignment rule.
     /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that will own the role. Authoritative for tenant
-    /// scoping; any portal identifier carried by
-    /// <paramref name="request"/> is subordinate to it.
-    /// </param>
-    /// <param name="request">
-    /// The role to create. Carries the paid-membership terms - billing frequency and
-    /// period, service fee, trial frequency, period and fee - plus the public flag,
-    /// the auto-assignment flag and the optional role-group identifier, which is
-    /// nullable because "no group" is a real state.
-    /// </param>
+    /// <param name="portalId">Identifier of the portal that will own the role.</param>
+    /// <param name="request">The role to create.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying the created role, with its server-assigned
-    /// identifier, so the caller can answer a create request with 201 and a
-    /// location; or a failed outcome carrying <c>portal.not_found</c> when no such
-    /// portal exists, <c>role_group.not_found</c> when a role group is named but
-    /// does not exist in that portal, <c>role.name_duplicate</c> when the portal
-    /// already has a role of that name, or <c>role.create_failed</c> when the store
-    /// declines the insert.
+    /// A successful outcome carrying the created role, with its server-assigned identifier, so the caller
+    /// can answer a create request with 201 and a location; or a failed outcome carrying
+    /// <c>portal.not_found</c> when no such portal exists, <c>role_group.not_found</c> when a role group is
+    /// named but does not exist in that portal, <c>role.name_duplicate</c> when the portal already has a
+    /// role of that name, or <c>role.create_failed</c> when the store declines the insert.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Replaces the two measured creation members, RoleController.vb:L100 and its
-    /// synchronisation-flagged twin at L849. The legacy member returned the integer
-    /// absence sentinel to signal failure; that channel is replaced by a failed
-    /// outcome, so a real identifier can never be confused with a failure - which
-    /// matters here because the identity column seeds at 0.
-    /// </para>
-    /// <para>
-    /// The auto-assignment rule is preserved: L100 calls its private auto-assign
-    /// helper immediately after a successful insert, so creating a role whose
-    /// auto-assignment flag is set also enrols the portal's existing users in it.
-    /// That work happens inside the implementation and is not a separate call.
-    /// </para>
-    /// <para>
-    /// The duplicate-name rule is measured at
-    /// <c>Website/admin/Security/EditRoles.ascx.vb:L252-L253</c>, where the legacy
-    /// screen looks the name up and inserts only when nothing comes back. It is
-    /// enforced here rather than left to the caller, and it is an expected failure,
-    /// so it is reported as a reason code and never thrown.
-    /// </para>
+    /// The auto-assignment rule is preserved: L100 calls its private auto-assign helper immediately after a
+    /// successful insert, so creating a role whose auto-assignment flag is set also enrols the portal's
+    /// existing users in it. That work happens inside the implementation and is not a separate call.
     /// </remarks>
     Task<Result<RoleDetailDto>> CreateRoleAsync(
         int portalId,
         CreateRoleRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Updates an existing role of a portal, including its paid-membership terms.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role. Authoritative for tenant
-    /// scoping.
-    /// </param>
-    /// <param name="roleId">
-    /// Identifier of the role to update. Authoritative, and the sole source of the
-    /// role's identity: the request contract carries no identifier of its own, so
-    /// there is nothing for it to disagree with.
-    /// </param>
+    /// <summary>Updates an existing role of a portal, including its paid-membership terms.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role.</param>
+    /// <param name="roleId">Identifier of the role to update.</param>
     /// <param name="request">The replacement state for the role.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying the updated role, so the caller can answer an
-    /// update request with 200 and the new state; or a failed outcome carrying
-    /// <c>portal.not_found</c>, <c>role.not_found</c> when the portal has no such
-    /// role, <c>role_group.not_found</c> when a role group is named but does not
-    /// exist in that portal, or <c>role.name_duplicate</c> when the submitted name
-    /// already belongs to a DIFFERENT role in the same portal.
+    /// A successful outcome carrying the updated role, so the caller can answer an update request with 200
+    /// and the new state; or a failed outcome carrying <c>portal.not_found</c>, <c>role.not_found</c> when
+    /// the portal has no such role, <c>role_group.not_found</c> when a role group is named but does not
+    /// exist in that portal, or <c>role.name_duplicate</c> when the submitted name already belongs to a
+    /// DIFFERENT role in the same portal.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Replaces RoleController.vb:L254, which accepted a whole legacy entity -
-    /// including its name - and returned nothing at all, so a caller could not tell
-    /// an applied update from a silently discarded one. Changing the billing or trial
-    /// terms here does not retrospectively re-compute the expiry of assignments
-    /// already in force; the terms are re-read on the next assignment or renewal,
-    /// which is the legacy behaviour and is preserved deliberately.
-    /// </para>
-    /// <para>
-    /// The role's NAME is updatable, which is a documented behavioural difference
-    /// from the legacy EDIT SCREEN and is itemised in <c>MIGRATION_NOTES.md</c>. That
-    /// screen revealed a read-only label, hid the name textbox for an existing role
-    /// and disabled the name's required-field validator with it
-    /// (<c>Website/admin/Security/EditRoles.ascx.vb:L131-L134</c>), the legacy
-    /// membership data contract declared no name parameter on its update member, and
-    /// the terminal <c>UpdateRole</c> procedure omits the column from its assignment
-    /// list. The library-level member replaced here nevertheless carried the name,
-    /// and the terminal schema constrains <c>(PortalID, RoleName)</c> uniquely
-    /// (<c>03.00.09.SqlDataProvider:L304</c>), so the duplicate-name outcome above is
-    /// reachable from this member as well as from the creating one: without it a
-    /// rename onto an existing name would violate that constraint at the provider and
-    /// be reported as a server fault rather than as something the caller can correct.
-    /// The comparison excludes <paramref name="roleId"/>, so resubmitting a role's own
-    /// current name is a no-op rather than a self-collision.
-    /// </para>
+    /// The role's NAME is updatable, which is a documented behavioural difference from the legacy EDIT
+    /// SCREEN and is itemised in <c>MIGRATION_NOTES.md</c>.
     /// </remarks>
     Task<Result<RoleDetailDto>> UpdateRoleAsync(
         int portalId,
@@ -582,76 +145,33 @@ public interface IRoleService
         UpdateRoleRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Deletes a role from a portal together with its user assignments.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role. Authoritative for tenant
-    /// scoping, so a role belonging to another portal is reported as missing rather
-    /// than deleted.
-    /// </param>
+    /// <summary>Deletes a role from a portal together with its user assignments.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role to delete.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome when the role no longer exists, so the caller can answer
-    /// a delete request with 204; or a failed outcome carrying
-    /// <c>portal.not_found</c>, or <c>role.not_found</c> when the portal has no such
-    /// role.
+    /// A successful outcome when the role no longer exists, so the caller can answer a delete request with
+    /// 204; or a failed outcome carrying <c>portal.not_found</c>, or <c>role.not_found</c> when the portal
+    /// has no such role.
     /// </returns>
-    /// <remarks>
-    /// Replaces RoleController.vb:L125. Deleting a role necessarily discards its
-    /// assignments and its permission grants; those cascades are the implementation's
-    /// responsibility and are committed as one unit of work, because the legacy
-    /// sequence performed them as separate, non-transactional statements.
-    /// </remarks>
     Task<Result> DeleteRoleAsync(
         int portalId,
         int roleId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Lists one page of the users assigned to a role.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role. Authoritative for tenant
-    /// scoping.
-    /// </param>
+    /// <summary>Lists one page of the users assigned to a role.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role whose members are listed.</param>
     /// <param name="request">Paging coordinates and the optional free-text filter.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying one page of members, empty when the role has none;
-    /// or a failed outcome carrying <c>portal.not_found</c>, or <c>role.not_found</c>
-    /// when the portal has no such role.
+    /// A successful outcome carrying one page of members, empty when the role has none; or a failed outcome
+    /// carrying <c>portal.not_found</c>, or <c>role.not_found</c> when the portal has no such role.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Serves the role side of the legacy security-roles screen and collapses three
-    /// measured members: the byte-identical listings at RoleController.vb:L457 and
-    /// L874, and the by-role-name listing at L441. The legacy members were keyed by
-    /// role <em>name</em>; this member is keyed by identifier and resolves the name
-    /// internally, so a rename cannot silently change which members are returned.
-    /// </para>
-    /// <para>
     /// The legacy grid bound five columns, measured at
-    /// <c>Website/admin/Security/securityroles.ascx:L71-L86</c>: the account key, the
-    /// account's display name, the role name, the effective date and the expiry date.
-    /// ALL FIVE are carried by the projected item, together with the assignment key and
-    /// the role key that the row's own delete affordance needs
-    /// (<c>DeleteButtonVisible(UserID, RoleID)</c> at <c>:L68</c>).
-    /// </para>
-    /// <para>
-    /// The page coordinates and the filter length are bounded by the shared
-    /// <c>PagedRequestValidator</c>, which can apply nothing narrower than the union of every
-    /// collection's sortable set because one request contract serves every listing. The sort field
-    /// is therefore bounded HERE, against <c>SortableFields.RoleUsers</c>, and an unrecognised
-    /// field is reported as <c>role.paging_invalid</c>. That set is wider than the account
-    /// listing's - which is empty - because this listing materialises the membership before paging
-    /// and can therefore order what it holds, whereas the account listing is paged by the database
-    /// under a fixed order. The two assignment dates remain excluded because the projected item
-    /// does not carry them, for the reason given above, and the role identifier is excluded because
-    /// the route fixes it for every record on the page.
-    /// </para>
+    /// <c>Website/admin/Security/securityroles.ascx:L71-L86</c>: the account key, the account's display
+    /// name, the role name, the effective date and the expiry date.
     /// </remarks>
     Task<Result<PagedResult<RoleMembershipDto>>> ListRoleUsersAsync(
         int portalId,
@@ -659,48 +179,21 @@ public interface IRoleService
         PagedRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads ONE account's membership of ONE role, addressed by both identifiers.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role. Authoritative for tenant scoping.
-    /// </param>
+    /// <summary>Reads ONE account's membership of ONE role, addressed by both identifiers.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role.</param>
     /// <param name="roleId">Identifier of the role.</param>
     /// <param name="userId">Identifier of the account.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying the membership and the terms it runs on; a successful outcome
-    /// carrying no value when the account holds no membership of that role, which the HTTP boundary
-    /// reports as <c>404</c>; or a failed outcome carrying <c>portal.not_found</c>,
-    /// <c>role.not_found</c> or <c>user.not_found</c>.
+    /// A successful outcome carrying the membership and the terms it runs on; a successful outcome carrying
+    /// no value when the account holds no membership of that role, which the HTTP boundary reports as
+    /// <c>404</c>; or a failed outcome carrying <c>portal.not_found</c>, <c>role.not_found</c> or
+    /// <c>user.not_found</c>.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// <b>Why an exact-identifier read exists beside the listing.</b> Its consumer asks a
-    /// one-membership question — does THIS account hold THIS role, and on what terms — and the only
-    /// address available for it was the paged listing narrowed by that listing's free-text filter.
-    /// The server matches that filter against the login name and the display name, so asking the
-    /// question put the account's LOGIN NAME into the request target: written to browser history, to
-    /// every proxy access log and to the server's own access log, each of them at an END of the
-    /// encrypted channel where transport security does not reach. That is CWE-598, and it was the
-    /// more conspicuous for standing beside a body-bound account search introduced to avoid exactly
-    /// it. Two opaque numeric identifiers in a path disclose nothing about a person.
-    /// </para>
-    /// <para>
-    /// <b>Absence is a successful outcome, not a failure.</b> "The account holds nothing" is a real
-    /// and expected answer — the legacy screen showed it by blanking the date fields
-    /// (<c>Website/admin/Security/SecurityRoles.ascx.vb:L484</c>) — whereas an unknown portal, role
-    /// or account is a broken request. The two are distinguished so that a caller can render the
-    /// first without reporting a failure and must report the second.
-    /// </para>
-    /// <para>
-    /// MIGRATION: replaces the grid scan at
-    /// <c>Website/admin/Security/SecurityRoles.ascx.vb:L273-L303</c> (<c>GetDates</c>) and
-    /// <c>:L656-L658</c>. The legacy screen was unpaged, so it answered both of its questions — what
-    /// bounds to show, and whether to relabel the action — by scanning rows it already held. A paged
-    /// grid holds one window, so the scan would answer "no membership" for an account whose row sits
-    /// on another page. This member answers it in one read that cannot depend on where a row falls.
-    /// </para>
+    /// <b>Why an exact-identifier read exists beside the listing.</b> Its consumer asks a one-membership
+    /// question — does THIS account hold THIS role, and on what terms — and the only address available for
+    /// it was the paged listing narrowed by that listing's free-text filter.
     /// </remarks>
     Task<Result<RoleMembershipDto?>> GetRoleMembershipAsync(
         int portalId,
@@ -708,115 +201,36 @@ public interface IRoleService
         int userId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Lists every role a user holds in a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the assignments belong to. Authoritative for tenant
-    /// scoping.
-    /// </param>
+    /// <summary>Lists every role a user holds in a portal.</summary>
+    /// <param name="portalId">Identifier of the portal the assignments belong to.</param>
     /// <param name="userId">Identifier of the user whose assignments are listed.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying every role the user holds in that portal, empty
-    /// when the user holds none; or a failed outcome carrying
-    /// <c>portal.not_found</c>, or <c>user.not_found</c> when the portal has no such
-    /// user.
+    /// A successful outcome carrying every role the user holds in that portal, empty when the user holds
+    /// none; or a failed outcome carrying <c>portal.not_found</c>, or <c>user.not_found</c> when the portal
+    /// has no such user.
     /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Serves the user side of the legacy security-roles screen, measured at
-    /// <c>Website/admin/Security/SecurityRoles.ascx.vb:L246</c> and L253. The legacy
-    /// projection was the assignment record, which inherits the role record outright -
-    /// <c>UserRoleInfo</c> declares eight properties of its own and inherits fifteen
-    /// from <c>RoleInfo</c> - so the role projection is the faithful shape for the
-    /// roles a user holds, and it is the shape AAP 0.4.1.1 names.
-    /// </para>
-    /// <para>
-    /// Collapses six measured members: the three assignment listings at
-    /// RoleController.vb:L376, L392 and L408, the by-user-name listing at L425, and
-    /// the two name-only readers at L240 and L859. The visibility toggle carried by
-    /// L408 is not reproduced: a boolean that silently changes which rows come back
-    /// makes the answer unreadable at the call site, and the projection instead
-    /// carries the public flag so a caller filters explicitly on data it can see.
-    /// </para>
-    /// <para>
-    /// Unpaged by design. The answer is bounded by the number of roles a portal
-    /// defines, which the legacy screen also rendered whole, so paging would add a
-    /// coordinate with nothing to coordinate.
-    /// </para>
-    /// </remarks>
     Task<Result<IReadOnlyList<RoleListItemDto>>> ListUserRolesAsync(
         int portalId,
         int userId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Assigns a user to a role, or revises the dates of an assignment the user
-    /// already holds, computing the expiry from the role's trial and billing terms
-    /// when the caller does not state one.
+    /// Assigns a user to a role, or revises the dates of an assignment the user already holds, computing
+    /// the expiry from the role's trial and billing terms when the caller does not state one.
     /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the assignment belongs to. Authoritative for tenant
-    /// scoping.
-    /// </param>
-    /// <param name="roleId">
-    /// Identifier of the role to assign. Authoritative; any identifier carried by
-    /// <paramref name="request"/> must agree with it.
-    /// </param>
-    /// <param name="request">
-    /// The user to assign, together with the optional effective and expiry dates.
-    /// Both dates are nullable: a null effective date means the assignment is in
-    /// force immediately, and a null expiry date means the service derives one from
-    /// the role's terms.
-    /// </param>
+    /// <param name="portalId">Identifier of the portal the assignment belongs to.</param>
+    /// <param name="roleId">Identifier of the role to assign.</param>
+    /// <param name="request">The user to assign, together with the optional effective and expiry dates.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome, which <c>RolesController.AssignUserAsync</c> answers with
-    /// <c>204 No Content</c> at <c>POST /api/v1/roles/{roleId}/users</c>;
-    /// or a failed outcome carrying <c>portal.not_found</c>, <c>role.not_found</c> or
-    /// <c>user.not_found</c>. No payload is returned, and no read projection on this
-    /// contract exposes the stored effective or expiry date either - returning one would
-    /// require an assignment projection AAP 0.4.1.1 does not name. A caller that needs to
-    /// know what was stored knows it because it supplied the dates, or must re-submit
-    /// them; that reduction is recorded at the head of this file.
+    /// A successful outcome, which <c>RolesController.AssignUserAsync</c> answers with <c>204 No
+    /// Content</c> at <c>POST /api/v1/roles/{roleId}/users</c>; or a failed outcome carrying
+    /// <c>portal.not_found</c>, <c>role.not_found</c> or <c>user.not_found</c>.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Collapses the three measured assignment members at RoleController.vb:L277,
-    /// L295 and L647, and the assigning half of the two revision members at L472 and
-    /// L489. The measured behaviour at L295-L315 is an upsert - it inserts when the
-    /// user does not yet hold the role and otherwise revises the two dates - so this
-    /// member is deliberately idempotent in the same way.
-    /// </para>
-    /// <para>
-    /// Expiry derivation, reproducing RoleController.vb:L503-L558 exactly and
-    /// entirely inside the implementation, in this order. First, an absent period
-    /// yields no expiry at all, short-circuiting everything that follows. Second, an
-    /// effective date already in the past is cleared, so the assignment carries no
-    /// start gate, and an expiry date already in the past is advanced to the current
-    /// instant so that the offset runs forward from now. Third, the trial terms
-    /// govern only when the trial has not already been consumed and the trial
-    /// frequency is not the never code; otherwise the billing terms govern. Fourth,
-    /// the frequency code selects the offset: never yields no expiry, one-off yields
-    /// the perpetual far-future date, and the day, week, month and year codes offset
-    /// by the period, by seven times the period in days, by months and by years
-    /// respectively. The current instant comes from the injected clock, never from an
-    /// ambient reading, so the arithmetic is pinned by unit tests.
-    /// </para>
-    /// <para>
-    /// Sentinel dates at the boundary. The legacy store represents "never expires"
-    /// with the minimum date value and "perpetual" with the explicit far-future date
-    /// 9999-12-31. The first is absence and is carried as a null date here; the
-    /// second is a real, externally observable value and is carried through
-    /// unchanged, because a legacy consumer reading the same row expects to see it.
-    /// Neither is silently converted into the other (AAP Rule T7).
-    /// </para>
-    /// <para>
-    /// The notification switch the legacy shared member carried is not reproduced,
-    /// and neither is its dependency on the ambient per-request composite; see the
-    /// annotations at the head of this file.
-    /// </para>
+    /// The notification switch the legacy shared member carried is not reproduced, and neither is its
+    /// dependency on the ambient per-request composite; see the annotations at the head of this file.
     /// </remarks>
     Task<Result> AssignUserToRoleAsync(
         int portalId,
@@ -825,206 +239,88 @@ public interface IRoleService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Removes a user from a role, enforcing the protected-assignment rule, and
-    /// expiring rather than deleting an assignment whose paid trial has been used.
+    /// Removes a user from a role, enforcing the protected-assignment rule, and expiring rather than
+    /// deleting an assignment whose paid trial has been used.
     /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal the assignment belongs to. Authoritative for tenant
-    /// scoping, and the source of the two protected identifiers the rule consults.
-    /// </param>
+    /// <param name="portalId">Identifier of the portal the assignment belongs to.</param>
     /// <param name="roleId">Identifier of the role to remove the user from.</param>
     /// <param name="userId">Identifier of the user to remove.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome when the user no longer holds the role, so the caller can
-    /// answer a delete request with 204. The success carries the informational reason
-    /// <c>role_assignment.expired_not_removed</c> when the assignment was expired
-    /// instead of deleted, so a caller that must report the difference can. A failed
-    /// outcome carries <c>portal.not_found</c>, <c>role.not_found</c>,
-    /// <c>user.not_found</c>, <c>role_assignment.not_found</c> when the user does not
-    /// hold the role, or <c>role_assignment.protected</c> when the rule refuses the
-    /// removal.
+    /// A successful outcome when the user no longer holds the role, so the caller can answer a delete
+    /// request with 204.
     /// </returns>
-    /// <remarks>
-    /// <para>
-    /// Collapses the four measured removal members at RoleController.vb:L330, L677,
-    /// L695 and L714, and the cancelling half of L489.
-    /// </para>
-    /// <para>
-    /// The protected-assignment rule, measured at RoleController.vb:L741 and again in
-    /// its duplicated twin at L764, refuses exactly two cases: removing the portal's
-    /// designated administrator from that portal's administrator role, and removing
-    /// any user at all from that portal's registered-users role. It is enforced here,
-    /// inside the operation, and never exposed as a question a caller may ask and
-    /// then ignore (AAP Rule T2). A client that wants to hide a delete affordance
-    /// uses the permission directive on the client side, exactly as the legacy screen
-    /// used the rule for button visibility at
-    /// <c>Website/admin/Security/SecurityRoles.ascx.vb:L362</c>; the authoritative
-    /// enforcement is here.
-    /// </para>
-    /// <para>
-    /// The expire-rather-than-delete rule, measured at RoleController.vb:L495-L496,
-    /// is preserved verbatim: when the role carries a service fee and the trial has
-    /// been used, the assignment's expiry is back-dated by one day instead of the row
-    /// being deleted, so the trial-used fact survives and a cancelled subscriber
-    /// cannot restart a trial. The row therefore remains readable afterwards, in the
-    /// expired state, and the informational reason on the successful outcome is the
-    /// only way a caller learns which of the two effects occurred.
-    /// </para>
-    /// </remarks>
     Task<Result> RemoveUserFromRoleAsync(
         int portalId,
         int roleId,
         int userId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Lists every role group defined in a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal whose role groups are listed. Authoritative for
-    /// tenant scoping.
-    /// </param>
+    /// <summary>Lists every role group defined in a portal.</summary>
+    /// <param name="portalId">Identifier of the portal whose role groups are listed.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying every role group in the portal, empty when it
-    /// has none; or a failed outcome carrying <c>portal.not_found</c>.
+    /// A successful outcome carrying every role group in the portal, empty when it has none; or a failed
+    /// outcome carrying <c>portal.not_found</c>.
     /// </returns>
-    /// <remarks>
-    /// Replaces RoleController.vb:L825. Unpaged by design, because both measured
-    /// consumers bind the whole answer to a selector rather than a grid: the group
-    /// filter at <c>Website/admin/Security/Roles.ascx.vb:L108</c> and the group
-    /// selector at <c>Website/admin/Security/EditRoles.ascx.vb:L73</c>.
-    /// </remarks>
     Task<Result<IReadOnlyList<RoleGroupDto>>> ListRoleGroupsAsync(
         int portalId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Reads one role group of a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group. Authoritative for tenant
-    /// scoping.
-    /// </param>
+    /// <summary>Reads one role group of a portal.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role group.</param>
     /// <param name="roleGroupId">Identifier of the role group to read.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome whose value is the role group, or a successful outcome
-    /// whose value is <see langword="null"/> when the portal has no such group; or a
-    /// failed outcome carrying <c>portal.not_found</c>.
+    /// A successful outcome whose value is the role group, or a successful outcome whose value is <see
+    /// langword="null"/> when the portal has no such group; or a failed outcome carrying
+    /// <c>portal.not_found</c>.
     /// </returns>
-    /// <remarks>
-    /// Replaces RoleController.vb:L811. The legacy screen treated an empty answer as
-    /// an attempt to reach an item belonging to another portal and redirected away -
-    /// measured at <c>Website/admin/Security/EditGroups.ascx.vb:L80-L82</c> - so the
-    /// absent case is a genuine, expected answer here rather than an error, and the
-    /// portal scoping that makes it meaningful is enforced by this member.
-    /// </remarks>
     Task<Result<RoleGroupDto?>> GetRoleGroupAsync(
         int portalId,
         int roleGroupId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Creates a role group in a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that will own the role group. Authoritative for
-    /// tenant scoping.
-    /// </param>
-    /// <param name="request">
-    /// The role group to create. It carries no identifier of its own - the store
-    /// assigns one - and no owning portal, because the tenant is
-    /// <paramref name="portalId"/>.
-    /// </param>
+    /// <summary>Creates a role group in a portal.</summary>
+    /// <param name="portalId">Identifier of the portal that will own the role group.</param>
+    /// <param name="request">The role group to create.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying the created role group with its server-assigned
-    /// identifier, so the caller can answer with 201 and a location; or a failed
-    /// outcome carrying <c>portal.not_found</c>, or <c>role_group.name_duplicate</c>
-    /// when the portal already has a group of that name.
+    /// A successful outcome carrying the created role group with its server-assigned identifier, so the
+    /// caller can answer with 201 and a location; or a failed outcome carrying <c>portal.not_found</c>, or
+    /// <c>role_group.name_duplicate</c> when the portal already has a group of that name.
     /// </returns>
-    /// <remarks>
-    /// Replaces RoleController.vb:L626. The duplicate-name case is measured at
-    /// <c>Website/admin/Security/EditGroups.ascx.vb:L114-L120</c>, where the legacy
-    /// screen wraps the call and maps any thrown error onto a localised duplicate
-    /// message. A duplicate name is an expected outcome, so it is reported as a
-    /// reason code rather than thrown (AAP 0.4.3), and the caller is no longer
-    /// obliged to interpret an exception to discover it.
-    /// <para>
-    /// MIGRATION: this member previously took the <c>RoleGroupDto</c> response
-    /// projection, on the reasoning that the legacy members at L626 and L838 both
-    /// accepted one type and that a role group has no asymmetry between what is sent
-    /// and what is returned. The asymmetry is real: two of the projection's four
-    /// members - the group key and the owning portal - are assigned by the store and
-    /// by the tenant scope, so accepting them here advertised two writable fields
-    /// that this member could not honour. The write contracts declare the two members
-    /// each verb actually writes, and <c>RoleGroupDto</c> is now returned only.
-    /// </para>
-    /// </remarks>
     Task<Result<RoleGroupDto>> CreateRoleGroupAsync(
         int portalId,
         CreateRoleGroupRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Updates an existing role group of a portal.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group. Authoritative for tenant
-    /// scoping.
-    /// </param>
-    /// <param name="roleGroupId">
-    /// Identifier of the role group to update. Authoritative, and the sole source of
-    /// the group's identity: the request contract carries no identifier of its own,
-    /// so there is nothing for it to disagree with.
-    /// </param>
+    /// <summary>Updates an existing role group of a portal.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role group.</param>
+    /// <param name="roleGroupId">Identifier of the role group to update.</param>
     /// <param name="request">The replacement state for the role group.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome carrying the updated role group, so the caller can answer
-    /// with 200 and the new state; or a failed outcome carrying
-    /// <c>portal.not_found</c>, <c>role_group.not_found</c>, or
-    /// <c>role_group.name_duplicate</c> when the new name is already taken by a
-    /// different group in the same portal.
+    /// A successful outcome carrying the updated role group, so the caller can answer with 200 and the new
+    /// state; or a failed outcome carrying <c>portal.not_found</c>, <c>role_group.not_found</c>, or
+    /// <c>role_group.name_duplicate</c> when the new name is already taken by a different group in the same
+    /// portal.
     /// </returns>
-    /// <remarks>
-    /// Replaces RoleController.vb:L838, which returned nothing and so left a caller
-    /// unable to distinguish an applied update from a discarded one. Re-classifying a
-    /// group does not move any role between groups; a role's group membership is a
-    /// field of the role and is changed through <see cref="UpdateRoleAsync"/>.
-    /// </remarks>
     Task<Result<RoleGroupDto>> UpdateRoleGroupAsync(
         int portalId,
         int roleGroupId,
         UpdateRoleGroupRequest request,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Deletes a role group from a portal, refusing while it still classifies roles.
-    /// </summary>
-    /// <param name="portalId">
-    /// Identifier of the portal that owns the role group. Authoritative for tenant
-    /// scoping.
-    /// </param>
+    /// <summary>Deletes a role group from a portal, refusing while it still classifies roles.</summary>
+    /// <param name="portalId">Identifier of the portal that owns the role group.</param>
     /// <param name="roleGroupId">Identifier of the role group to delete.</param>
     /// <param name="cancellationToken">Token that cancels the operation.</param>
     /// <returns>
-    /// A successful outcome when the role group no longer exists, so the caller can
-    /// answer with 204; or a failed outcome carrying <c>portal.not_found</c>,
-    /// <c>role_group.not_found</c>, or <c>role_group.in_use</c> when the group still
-    /// classifies at least one role.
+    /// A successful outcome when the role group no longer exists, so the caller can answer with 204; or a
+    /// failed outcome carrying <c>portal.not_found</c>, <c>role_group.not_found</c>, or
+    /// <c>role_group.in_use</c> when the group still classifies at least one role.
     /// </returns>
-    /// <remarks>
-    /// Collapses the two measured members at RoleController.vb:L779 and L794. The
-    /// in-use rule is measured at
-    /// <c>Website/admin/Security/EditGroups.ascx.vb:L75-L79</c>, where the legacy
-    /// screen counts the group's roles and hides the delete affordance when the count
-    /// is positive. Hiding a button is not enforcement, so the rule is enforced here,
-    /// inside the operation, and reported as a reason code - which closes the gap a
-    /// direct request could otherwise walk through.
-    /// </remarks>
     Task<Result> DeleteRoleGroupAsync(
         int portalId,
         int roleGroupId,

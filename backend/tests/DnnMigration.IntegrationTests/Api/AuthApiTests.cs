@@ -23,31 +23,15 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This suite is the only place the credential store is exercised over HTTP rather than bypassed. Every other
-/// suite mints its bearer token directly from the fixture's signing key, which is fast and deliberate but
-/// proves nothing about the sign-in path. The consequence is that everything between the submitted credential
-/// and the issued token - tenant resolution, account resolution, the account-state gates, the hash comparison,
-/// the failed-attempt bookkeeping and the authority-minimised claim set - is only ever asserted here.
+/// The gates are asserted in the order the service applies them, because the order is the security
+/// property. A caller who is not entitled to detail receives one indistinguishable denial for an unknown
+/// account, a wrong credential, a missing credential row and a locked account; a caller who is entitled -
+/// the host or the tenant's designated administrator - receives the specific reason.
 /// </para>
 /// <para>
-/// The gates are asserted in the order the service applies them, because the order is the security property.
-/// A caller who is not entitled to detail receives one indistinguishable denial for an unknown account, a
-/// wrong credential, a missing credential row and a locked account; a caller who is entitled - the host or the
-/// tenant's designated administrator - receives the specific reason. Both halves are pinned, since a refusal
-/// that leaks which of the four applied is an account-enumeration oracle.
-/// </para>
-/// <para>
-/// Refresh rotation is asserted as a rotation, not merely as a second token: presenting a consumed value is a
-/// replay, and the response to a replay is to revoke everything the account holds rather than to refuse the
-/// one value. That is wider than the legacy cookie sign-out and is asserted deliberately. Because it revokes
-/// by account, every rotation test operates on an account created for that test alone, so no other suite's
-/// tokens are collateral.
-/// </para>
-/// <para>
-/// Rate limiting cannot be asserted against the shared host, which runs with a deliberately permissive limit
-/// so that the other suites can sign in freely. It is asserted against a second host built inside an
-/// environment override, which is the only seam that reaches the limiter's configuration - the host reads its
-/// options while composing services, so nothing applied after construction can change them.
+/// Refresh rotation is asserted as a rotation, not merely as a second token: presenting a consumed value is
+/// a replay, and the response to a replay is to revoke everything the account holds rather than to refuse
+/// the one value. That is wider than the legacy cookie sign-out and is asserted deliberately.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -62,13 +46,7 @@ public sealed class AuthApiTests
     /// leaves in force.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: this is the TARGET's default in force, and deliberately not presented as a ported legacy
-    /// value. The legacy lockout policy was never stated: <c>passwordAttemptThreshold</c> and
-    /// <c>passwordAttemptWindow</c> appear in <c>Website/release.config</c> only inside the descriptive
-    /// comment above the provider element (L220-L232) and are absent from the element itself (L237-L247), so
-    /// the platform's own implicit defaults applied and no configured number exists to preserve. What is
-    /// asserted here is therefore that the configured threshold is ENFORCED, never that this particular
-    /// number is what the legacy installation used.
+    /// This is the TARGET's default in force, and deliberately not presented as a ported legacy value.
     /// </remarks>
     private const int MaxInvalidPasswordAttempts = 5;
 
@@ -85,8 +63,8 @@ public sealed class AuthApiTests
     private const int TightPermitLimit = 2;
 
     /// <summary>
-    /// The persisted <c>Portals.UserRegistration</c> value for verified registration, which is the only mode
-    /// under which the approval ladder distinguishes "enter your code" from "that code is wrong".
+    /// The persisted <c>Portals.UserRegistration</c> value for verified registration, which is the only
+    /// mode under which the approval ladder distinguishes "enter your code" from "that code is wrong".
     /// </summary>
     /// <remarks>
     /// Written as the stored integer rather than through the Domain enumeration, because this is a direct
@@ -97,27 +75,10 @@ public sealed class AuthApiTests
     /// <summary>The mode the seed tenant holds, restored after any test that raises it.</summary>
     private const int DefaultRegistrationMode = 0;
 
-    /// <summary>
-    /// The media-type suffix every refusal on this controller has to carry.
-    /// </summary>
+    /// <summary>The media-type suffix every refusal on this controller has to carry.</summary>
     /// <remarks>
-    /// <para>
     /// The SUFFIX is asserted rather than the exact type, and that is a measured position rather than a
-    /// weaker assertion for convenience. RFC 7807 section 3 fixes <c>application/problem+json</c>, and the
-    /// documents this surface returns ARE RFC 7807 documents - but the framework serves them as
-    /// <c>application/json</c>, because the controller declares <c>[Produces("application/json")]</c> and a
-    /// produces declaration constrains every result the controller returns, refusals included. Measured, not
-    /// assumed: asserting the RFC type here failed against the delivered pipeline with
-    /// <c>application/json</c>.
-    /// </para>
-    /// <para>
-    /// Pinning the current value would cement that deviation, and pinning the RFC value would fail against
-    /// the pipeline as delivered - which is the same conclusion the sibling problem-document contract suite
-    /// recorded for the same reason. Correcting it is a change to the controller's produces declaration and
-    /// therefore not this suite's to make. The suffix still carries real content: it fails if a refusal ever
-    /// arrives as a rendered page or as plain text, which is the failure mode that actually costs a client
-    /// its error handling.
-    /// </para>
+    /// weaker assertion for convenience.
     /// </remarks>
     private const string JsonMediaTypeSuffix = "json";
 
@@ -142,29 +103,18 @@ public sealed class AuthApiTests
     /// </summary>
     private const string TraceIdExtension = "traceId";
 
-    /// <summary>
-    /// The greatest length at which the correlation middleware still trusts an inbound identifier.
-    /// </summary>
+    /// <summary>The greatest length at which the correlation middleware still trusts an inbound identifier.</summary>
     private const int MaximumCorrelationIdLength = 128;
 
     /// <summary>
-    /// Account name the product was distributed with for a tenant administrator, and therefore the name
-    /// the weak-credential advisory recognises.
+    /// Account name the product was distributed with for a tenant administrator, and therefore the name the
+    /// weak-credential advisory recognises.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The shipped credential for this account was the account name itself, so this one constant serves as
     /// both. That is deliberate rather than convenient: the account name has to appear here because the
     /// advisory keys on it, and reusing it as the credential means these tests introduce NO credential
-    /// material into the repository that reading the account name did not already reveal. The service
-    /// itself holds the two credentials only as SHA-256 fingerprints for the same reason, and that
-    /// constant is the authority - this test drives the rule rather than restating it.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy comparison was <c>UserController.vb:L1145</c>, which tested the name with
-    /// VB's <c>=</c> under binary comparison and was therefore case-sensitive. The target compares
-    /// case-insensitively, so the exact casing used here is not what makes the advisory fire.
-    /// </para>
+    /// material into the repository that reading the account name did not already reveal.
     /// </remarks>
     private const string ShippedAdministratorAccountName = "admin";
 
@@ -187,8 +137,8 @@ public sealed class AuthApiTests
     public AuthApiTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// A seeded credential is exchanged for a usable token pair, and the access token it carries is accepted
-    /// by a protected endpoint.
+    /// A seeded credential is exchanged for a usable token pair, and the access token it carries is
+    /// accepted by a protected endpoint.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -216,20 +166,13 @@ public sealed class AuthApiTests
             "exactly one expiry is published, as an absolute instant in UTC, so a client can schedule a "
             + "refresh instead of discovering expiry through a rejected request");
 
-        // MIGRATION: the legacy session lifetime was the forms-authentication ticket's, declared as
-        // <forms name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/> at
+        // The legacy session lifetime was the forms-authentication ticket's, declared as <forms
+        // name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/> at
         // Website/release.config:L147 - sixty minutes, which is the value the token lifetime option carries
-        // forward. The number is NOT asserted here: this host deliberately configures a different lifetime so
-        // that no suite depends on the shipped one, so asserting sixty would be asserting the fixture rather
-        // than the parity. What is asserted is the property the legacy cookie had and this contract must keep -
-        // that a session expires, at a stated instant, known to the client in advance. The cookie's own
-        // settings (L214-L216) have no counterpart at all and are replaced by the bearer token wholesale.
-
+        // forward.
 
         // The response publishes no bearer-scheme member, no remaining-seconds duration and no refresh
-        // token expiry. The scheme is fixed by this contract rather than restated per response, a single
-        // expiry representation cannot disagree with itself, and the refresh token's expiry is rotation
-        // state the store owns rather than something a client should reason around.
+        // token expiry.
         issued.MustChangePassword.Should().BeFalse(
             "the seeded account carries no forced credential update and is not using a shipped credential");
         issued.PasswordExpiring.Should().BeFalse("the seeded account's credential is not near expiry");
@@ -371,9 +314,6 @@ public sealed class AuthApiTests
         unknownAccount.Content.Headers.ContentType?.MediaType.Should().Be(
             wrongCredential.Content.Headers.ContentType?.MediaType);
 
-        // Every part of the document that describes the outcome must match. The trace identifier is
-        // deliberately excluded because it is minted per request and carries no outcome information, so
-        // comparing whole bodies would compare a value that is required to differ.
         string first = await ReadDenialAsync(wrongCredential);
         string second = await ReadDenialAsync(unknownAccount);
 
@@ -471,28 +411,9 @@ public sealed class AuthApiTests
     /// <summary>A locked account is refused generically when the caller is not entitled to the reason.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION - THE ONE DELIBERATE BEHAVIOURAL REVERSAL ON THIS SURFACE, AND THE REASON THIS TEST
-    /// EXISTS. The legacy screen computed
-    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c> at
-    /// <c>Login.ascx.vb:L187</c>, and the enclosing <c>If</c> at L168 intercepted only
-    /// <c>LOGIN_USERNOTAPPROVED</c>. Read against the seven members of <c>UserLoginStatus</c> - measured
-    /// verbatim as 0 through 6 - that expression admits <c>LOGIN_USERLOCKEDOUT</c>, which is 3: a locked
-    /// account was therefore SIGNED IN, exactly as a successful one was. Only 0 and 4 refused.
-    /// </para>
-    /// <para>
     /// The migration discipline says to annotate a discovered defect rather than to fix it. This is the
     /// documented exception, on the same ground as the tenant-alias match: reproducing it would carry an
     /// AUTHENTICATION BYPASS into new code, and a lockout that admits the caller is not a lockout at all.
-    /// The target refuses instead - and refuses without comparing the credential, so the account cannot be
-    /// used as an oracle for whether a guess was right. The refusal is the same one an unknown account and a
-    /// wrong credential receive, which is what the two assertions below pin: the shared code, and the absence
-    /// of the word that would disclose the reason.
-    /// </para>
-    /// <para>
-    /// The reason is not withheld from everyone - the companion test proves an entitled caller is told - so
-    /// this is a disclosure boundary rather than a silence.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task Login_ForALockedAccount_IsGenericToAnAnonymousCaller()
@@ -598,8 +519,7 @@ public sealed class AuthApiTests
     /// The two refusals answer <c>400 Bad Request</c> rather than <c>401 Unauthorized</c>, and that is
     /// deliberate. The credential is verified before the approval gate runs, so a caller reaching either
     /// refusal has already proved its credential: it is not unauthenticated, and its submission is
-    /// incomplete. Answering 401 would invite a client to re-prompt for a credential that was never the
-    /// problem. The reason code names which arm of the ladder applied.
+    /// incomplete.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -619,9 +539,7 @@ public sealed class AuthApiTests
 
         // The approval outcomes are UNAUTHORIZED, not bad-request. Each names an account state that refused
         // a sign-in the credential itself did not refuse, so the request was correct and the account was
-        // not yet admissible - telling a client its request was at fault would be the wrong answer. The
-        // outcome is still NAMED in the body, which is the property this fact exists to assert: the caller
-        // has proved its credential, so it is entitled to know which gate refused.
+        // not yet admissible - telling a client its request was at fault would be the wrong answer.
         withoutCode.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         string withoutCodeBody = await withoutCode.Content.ReadAsStringAsync();
@@ -630,8 +548,8 @@ public sealed class AuthApiTests
             "auth.",
             "the approval outcome is named, because the caller has already proved its credential");
 
-        // The seed tenant's registration mode is the persisted default, which admits no self-verification, so
-        // the ladder selects the not-authorised member here. The other two members are exercised by the
+        // The seed tenant's registration mode is the persisted default, which admits no self-verification,
+        // so the ladder selects the not-authorised member here. The other two members are exercised by the
         // verified-registration test below, which raises the mode for the duration.
         (await withoutCode.Content.ReadAsStringAsync())
             .Should().Contain("urn:dnnmigration:error:auth.account_not_approved");
@@ -682,22 +600,13 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// An account locked after its tokens were issued cannot renew any of them, and the refusal reaches every
-    /// session it holds rather than only the one presented.
+    /// An account locked after its tokens were issued cannot renew any of them, and the refusal reaches
+    /// every session it holds rather than only the one presented.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// Two sessions are opened deliberately, because one would not distinguish the two possible fixes. The
-    /// first is presented while the account is locked and must be refused. The second is never presented while
-    /// locked at all: the account is unlocked first, so nothing about its own state or the store's would
-    /// refuse it - and it must still be refused, which can only be true if the first refusal revoked the
-    /// account's sessions rather than merely declining one request.
-    /// </para>
-    /// <para>
-    /// The lock is written to the credential store directly, exactly as the sign-in lock-out test writes it,
-    /// so the scenario does not depend on exhausting the attempt window or on the sign-in rate limiter.
-    /// </para>
+    /// first is presented while the account is locked and must be refused.
     /// </remarks>
     [Fact]
     public async Task Refresh_ForAnAccountLockedAfterIssue_IsRefusedAndEndsEverySession()
@@ -748,30 +657,16 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// On a verified-registration tenant each of the three legacy approval outcomes reaches the caller as its
-    /// own problem type answered <c>401</c>, and a wrong credential presented WITH the correct verification
-    /// code approves nothing.
+    /// On a verified-registration tenant each of the three legacy approval outcomes reaches the caller as
+    /// its own problem type answered <c>401</c>, and a wrong credential presented WITH the correct
+    /// verification code approves nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This test carries two obligations that only an end-to-end exchange can discharge. The first is parity:
-    /// the legacy screen told its user which of <c>EnterCode</c>, <c>InvalidCode</c> and
-    /// <c>UserNotAuthorized</c> had happened, and asserting the problem type proves the equivalent sentence now
-    /// reaches a client. Naming them is safe only because each is reported from behind an accepted credential,
-    /// and the third exchange below is what pins that boundary at the HTTP surface.
-    /// </para>
-    /// <para>
-    /// The second is the status mapping. These codes are classified by an explicit list at the Api edge, and
-    /// without an entry there they would fall to the default arm and answer <c>400</c> - telling a client its
-    /// request was malformed when the request was correct and the account was not yet admissible. Only a real
-    /// response carries that mapping, so only a test at this level can hold it.
-    /// </para>
-    /// <para>
-    /// The tenant's registration mode is raised for the duration and restored in a <c>finally</c>, because it
-    /// is the shared seed tenant and it is the only mode under which the ladder distinguishes its first two
-    /// members. The integration suite is a single xunit collection, so no other test observes the window.
-    /// </para>
+    /// The tenant's registration mode is raised for the duration and restored in a <c>finally</c>, because
+    /// it is the shared seed tenant and it is the only mode under which the ladder distinguishes its first
+    /// two members. The integration suite is a single xunit collection, so no other test observes the
+    /// window.
     /// </remarks>
     [Fact]
     public async Task Login_ForAnUnapprovedAccount_NamesTheApprovalOutcomeAndRefusesAWrongCredential()
@@ -818,12 +713,10 @@ public sealed class AuthApiTests
 
             wrongCodeBody.Should().Contain("urn:dnnmigration:error:auth.verification_code_invalid");
 
-            // THE CENTRAL ASSERTION OF THIS TEST. The correct verification code is composed from two integers
-            // that appear in ordinary URLs, so it is guessable; before the gates were reordered, presenting it
-            // with any password at all approved the account permanently and only then refused the sign-in. The
-            // exchange below presents it with a WRONG password: the answer must be the uniform denial, which
-            // discloses nothing about approval state to a caller who has proved nothing, and the account must
-            // still be unapproved afterwards.
+            // THE CENTRAL ASSERTION OF THIS TEST. The correct verification code is composed from two
+            // integers that appear in ordinary URLs, so it is guessable; before the gates were reordered,
+            // presenting it with any password at all approved the account permanently and only then refused
+            // the sign-in.
             using HttpResponseMessage wrongCredential = await client.PostAsJsonAsync(
                 LoginRoute(_fixture.Seed.PortalId),
                 new LoginRequest
@@ -848,9 +741,6 @@ public sealed class AuthApiTests
 
             stillPending.StatusCode.Should().Be(HttpStatusCode.OK);
 
-            // Read through the ENVELOPE. Deserialising an envelope directly as its payload type yields a
-            // non-null object with every member unset, so the assertion below would have compared the
-            // default of a boolean and passed whatever the endpoint actually said.
             UserDetailDto? pending = await stillPending.Content
                 .ReadEnvelopeAsync<UserDetailDto>();
 
@@ -875,9 +765,9 @@ public sealed class AuthApiTests
         using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
-        // Enhanced, matching the production hasher, so the only thing that differs from a
-        // current credential is the cost. A plain hash would fail to verify at all and the
-        // test would prove nothing about rehashing.
+        // Enhanced, matching the production hasher, so the only thing that differs from a current
+        // credential is the cost. A plain hash would fail to verify at all and the test would prove nothing
+        // about rehashing.
         string superseded = BCrypt.Net.BCrypt.EnhancedHashPassword(
             ApiTestFixture.KnownPassword,
             SupersededWorkFactor,
@@ -973,19 +863,8 @@ public sealed class AuthApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: TWO REVISIONS WROTE A LEGACY-MIGRATION FACT AND BOTH ARE KEPT, BECAUSE THEY ASSERT
-    /// DIFFERENT HALVES. The fact above proves the STORE changed - the representation, its format
-    /// discriminator and its salt - and that the replacement verifies afterwards. This one proves the TRAIL
-    /// changed: a distinct audit event naming only the former format, with the submitted credential, the
-    /// stored legacy value, its salt and the deployment decryption key all absent from the record. Neither
-    /// fact would notice the other's regression.
-    /// <para>
-    /// The credential is staged with the same helper the fact above uses, rather than with the independently
-    /// produced provider vector this fact was written against. That vector is keyed to its own test key and
-    /// is exercised where it belongs - against the verifier itself, in the unit suite - whereas what is being
-    /// proven here is the end-to-end trail, for which a credential the test host's own key can decrypt is
-    /// the correct input.
-    /// </para>
+    /// The credential is staged with the same helper the fact above uses, rather than with the
+    /// independently produced provider vector this fact was written against.
     /// </remarks>
     [Fact]
     public async Task Login_MigratingALegacyCredential_RecordsItWithoutDisclosingAnySecret()
@@ -1022,9 +901,6 @@ public sealed class AuthApiTests
                 record.Properties.GetValueOrDefault("AuditResourceId"),
                 account.UserId.ToString(CultureInfo.InvariantCulture)));
 
-        // The former format is the whole of the detail, and it is a closed enumeration member rather than a
-        // value the caller shaped. The sink projects each admitted property as its own structured field, so
-        // the assertion names the field rather than parsing a rendered string.
         audit.Properties["AuditMetadata_PreviousFormat"].Should().Be(
             PasswordFormat.Encrypted.ToString());
 
@@ -1065,15 +941,10 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// An account marked for a credential change is blocked from the ordinary API surface while authentication
-    /// lifecycle and its own password-remediation route remain available.
+    /// An account marked for a credential change is blocked from the ordinary API surface while
+    /// authentication lifecycle and its own password-remediation route remain available.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The final read uses the original access token after the password was changed. Its signed remediation
-    /// claim is intentionally stale, so the successful read proves the API gate re-evaluates authoritative
-    /// storage on every request rather than treating the claim as the decision.
-    /// </remarks>
     [Fact]
     public async Task RequiredPasswordChange_AllowsOnlyAuthenticationAndOwnPasswordRemediation()
     {
@@ -1140,24 +1011,14 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// C-03: a required profile property the account has not answered raises the blocking profile requirement
-    /// on sign-in, survives refresh and restricts the token until the owner answers it.
+    /// C-03: a required profile property the account has not answered raises the blocking profile
+    /// requirement on sign-in, survives refresh and restricts the token until the owner answers it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy gate is <c>UserController.vb</c> L1189-L1193 over
-    /// <c>ProfileController.ValidateProfile</c>. Both halves are exercised here through the API: a required
-    /// declaration is installed on the tenant, an account with no answer for it signs in, and the flag must be
-    /// raised. The resulting token is refused on an ordinary protected route but remains usable for
-    /// authentication lifecycle and the owner's profile read/write routes. It is then cleared by ANSWERING
-    /// the property through that permitted route, which proves the flag tracks the profile rather than being
-    /// set once at creation.
-    /// </para>
-    /// <para>
-    /// Refresh is asserted as well because the review named both paths. A flag raised only on sign-in would be
-    /// lost the moment a client rotated its token, which for a short-lived access token is within minutes.
-    /// </para>
+    /// Refresh is asserted as well because the review named both paths. A flag raised only on sign-in would
+    /// be lost the moment a client rotated its token, which for a short-lived access token is within
+    /// minutes.
     /// </remarks>
     [Fact]
     public async Task Login_WhenARequiredProfilePropertyIsUnanswered_RaisesTheProfileAdvisory()
@@ -1165,15 +1026,6 @@ public sealed class AuthApiTests
         using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
 
-        // MIGRATION: the declaration is installed ON THE RESOLVED TENANT, which is what this test has
-        // always meant to do. It previously wrote a SQL NULL portal, because the repository then rewrote a
-        // requested portal of -1 - the seeded tenant's key - into a "PortalID IS NULL" predicate, so a
-        // host-scoped row was the only thing that tenant could see. That translation was a measured
-        // data-isolation defect: dbo.Portals.PortalID is IDENTITY(-1, 1)
-        // (01.00.00.SqlDataProvider:L77), so -1 is the first REAL tenant of an installation. The scope is
-        // now matched exactly, so the tenant's own key is the scope this fixture must use.
-        // The same conflation is what made this fixture's earlier SQL-null scope look correct: see the
-        // repository's DefinitionsInPortalScope for the evidence, and MIGRATION_NOTES.md for the record.
         int definitionId = await _fixture.Database.ScalarAsync<int>(
             """
             INSERT INTO [dbo].[ProfilePropertyDefinition]
@@ -1282,24 +1134,12 @@ public sealed class AuthApiTests
         }
     }
 
-    /// <summary>
-    /// C-03: the profile gate is not applied to the host account.
-    /// </summary>
+    /// <summary>C-03: the profile gate is not applied to the host account.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>Website/admin/Authentication/Login.ascx.vb</c> L511 wraps the whole post-credential validation in
-    /// <c>If Not objUser.IsSuperUser Then</c>. Applying the gate to the host account would be able to lock an
-    /// installation out of the only account that can administer it, over reference data belonging to a tenant
-    /// the host is not even a member of.
-    /// </remarks>
     [Fact]
     public async Task Login_DoesNotRaiseTheProfileAdvisoryForTheHostAccount()
     {
-        // MIGRATION: installed on the resolved tenant for the same reason as the advisory test above. A
-        // SQL-null scope would make this assertion vacuous now that the scope is matched exactly - the
-        // tenant-scoped gate would not see the declaration at all, so "no advisory" would hold whatever
-        // the host exemption did. Scoping it to the tenant keeps the exemption itself the only reason the
-        // advisory stays down.
+        // Installed on the resolved tenant for the same reason as the advisory test above.
         int definitionId = await _fixture.Database.ScalarAsync<int>(
             """
             INSERT INTO [dbo].[ProfilePropertyDefinition]
@@ -1411,10 +1251,6 @@ public sealed class AuthApiTests
     /// Presenting a consumed refresh token is a replay, and the answer is to revoke every token the account
     /// holds rather than to refuse the one value.
     /// </summary>
-    /// <remarks>
-    /// The account is created for this test alone precisely because the response is account-wide. Using a
-    /// seeded account would revoke tokens other tests may hold.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task Refresh_WithAReplayedToken_IsRefusedAndRevokesTheAccountsTokens()
@@ -1461,18 +1297,8 @@ public sealed class AuthApiTests
     /// rotations.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// SEC-039: trimming spent generations to an arbitrary count created a replay-detection gap. The durable
-    /// store now retains each fingerprint until the family expires, while bounded cleanup removes only
-    /// families whose absolute ceiling has passed.
-    /// </para>
-    /// <para>
     /// The generation redeemed first is replayed from a different client after enough exchanges to exceed
     /// the removed generation window. Recognising it must still revoke the live successor.
-    /// </para>
-    /// <para>
-    /// The account is created for this test alone, because a detected replay would be account-wide.
-    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1607,8 +1433,8 @@ public sealed class AuthApiTests
             "there is no registry of withdrawn access tokens and none may be introduced, so the reduction "
             + "against the legacy cookie sign-out is asserted rather than papered over");
 
-        // Withdrawing the SAME value a second time answers alike. A token that had genuinely been revoked is
-        // the case an unknown value cannot stand in for, and answering differently for it would tell an
+        // Withdrawing the SAME value a second time answers alike. A token that had genuinely been revoked
+        // is the case an unknown value cannot stand in for, and answering differently for it would tell an
         // anonymous caller that this value had once been live.
         using HttpResponseMessage alreadyRevoked = await client.PostAsJsonAsync(
             LogoutRoute,
@@ -1624,12 +1450,10 @@ public sealed class AuthApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// SEC-F2. A blank value asks for nothing, so it is still a completed sign-out. An unrecognised value is
-    /// no longer answered <c>204</c>: with families held per process, "I do not hold this" and "this belongs
+    /// A blank value asks for nothing, so it is still a completed sign-out. An unrecognised value is no
+    /// longer answered <c>204</c>: with families held per process, "I do not hold this" and "this belongs
     /// to another replica" are the same answer, and reporting the second as a completed sign-out left the
-    /// session live there while the client discarded the only credential able to end it. It is answered
-    /// <c>503</c> - retry - and the answer is identical on repetition, so the endpoint still says nothing
-    /// about whether the value was ever live.
+    /// session live there while the client discarded the only credential able to end it.
     /// </remarks>
     [Fact]
     public async Task Logout_CompletesForABlankValueAndReportsAnUnconfirmedRetirement()
@@ -1733,20 +1557,10 @@ public sealed class AuthApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The two single-member tests above prove each rule fires. This one proves the DOCUMENT, which is a
     /// separate contract: a client renders the per-member messages beside the fields the operator filled
     /// in, so the dictionary keys are as load-bearing as the status, and a refusal that named no member
-    /// would leave the operator nothing to correct. The key set is asserted as EXACTLY the two members,
-    /// because a document that also attributed a failure to something the caller never sent would be
-    /// telling the operator to correct a field that is not on the form.
-    /// </para>
-    /// <para>
-    /// MIGRATION: these two rules were <c>asp:RequiredFieldValidator</c> controls rendered through the
-    /// validation summary beside the legacy sign-in form (<c>Login.ascx</c>), so their wording travelled to
-    /// the operator. It still does, and it is asserted as an exact string rather than as a substring for
-    /// that reason - equivalent error messages are required, not merely equivalent statuses.
-    /// </para>
+    /// would leave the operator nothing to correct.
     /// </remarks>
     [Fact]
     public async Task Login_WithNeitherMemberSupplied_ReportsBothOfThemInTheProblemDocument()
@@ -1792,18 +1606,10 @@ public sealed class AuthApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The refusal half is the one worth having. The response header is registered through a starting
     /// callback BEFORE the pipeline continues, so it survives a short-circuit: an operator diagnosing a
     /// sign-in that was refused is exactly the caller who needs the identifier, and a middleware that only
     /// stamped successful responses would fail them at the moment it mattered.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy sign-in path recorded nothing an operator could correlate - there are no audit
-    /// calls anywhere in <c>Login.ascx.vb</c>, so both the trail and the identifier that joins a response to
-    /// it are net-new here rather than ported. Nothing in the legacy source is the predecessor of this
-    /// assertion.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task Login_EchoesASuppliedCorrelationIdMintsOneWhenAbsentAndCarriesOneOnARefusal()
@@ -1878,11 +1684,8 @@ public sealed class AuthApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// An inbound identifier is caller-controlled and is written into log lines, so a value that is too long
-    /// to be trusted is discarded and a fresh one minted - never sanitised and kept, and never echoed. The
-    /// second half of the assertion matters as much as the first: a correlation identifier is a diagnostic
-    /// concern, so refusing the request over one would let a caller deny itself service by sending a long
-    /// header.
+    /// An inbound identifier is caller-controlled and is written into log lines, so a value that is too
+    /// long to be trusted is discarded and a fresh one minted - never sanitised and kept, and never echoed.
     /// </remarks>
     [Fact]
     public async Task Login_WithAnUnusableCorrelationId_MintsAReplacementAndStillAnswers()
@@ -1917,27 +1720,10 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// The shipped tenant-administrator credential is ACCEPTED and carries the change advisory. It is not
-    /// a refusal.
+    /// The shipped tenant-administrator credential is ACCEPTED and carries the change advisory. It is not a
+    /// refusal.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>UserController.vb</c> L1144-L1148 REPLACED an already-successful status with
-    /// <c>LOGIN_INSECUREADMINPASSWORD</c>, and <c>Login.ascx.vb:L187</c> then computed
-    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c> - so the caller was signed
-    /// in. Status five was a success variant, never a denial, and this test exists to keep it one: turning
-    /// the advisory into a refusal would lock an installation out of the very account it begins with, which
-    /// is the opposite of the remediation the legacy intended.
-    /// </para>
-    /// <para>
-    /// The advisory travels as the forced-change flag on the accepted response, which is the legacy
-    /// remediation intent expressed in the target's own vocabulary. No legacy status ordinal reaches the
-    /// wire, so nothing here asserts on the integer five - the three enumerations this vertical touches
-    /// number themselves incompatibly (one seeds success at thirteen, one at zero and one counts
-    /// downwards through negatives), which is precisely why the assertion is on the named outcome.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task Login_WithTheShippedAdministratorCredential_IsAcceptedAndCarriesTheChangeAdvisory()
     {
@@ -1975,13 +1761,6 @@ public sealed class AuthApiTests
     /// caller.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: the second half of the same legacy rule, <c>UserController.vb</c> L1149-L1152, which
-    /// promoted a superuser success to <c>LOGIN_INSECUREHOSTPASSWORD</c>. It is asserted separately from the
-    /// administrator case because the legacy promoted from a DIFFERENT starting status and the target
-    /// preserves that: the host arm is reached only for an account the store marks as a superuser, so a
-    /// single test could not distinguish the two rules.
-    /// </remarks>
     [Fact]
     public async Task Login_WithTheShippedHostCredential_IsAcceptedAndCarriesTheChangeAdvisory()
     {
@@ -2011,24 +1790,12 @@ public sealed class AuthApiTests
             + "reported as one would mean the wrong arm fired");
     }
 
-    /// <summary>
-    /// Two accounts may share one electronic-mail address, and both of them can sign in.
-    /// </summary>
+    /// <summary>Two accounts may share one electronic-mail address, and both of them can sign in.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Website/release.config</c> L244 registers the membership provider with
-    /// <c>requiresUniqueEmail="false"</c>, so a legacy installation's data may already hold duplicates.
-    /// The policy is carried forward verbatim rather than tightened, because tightening it during a
-    /// migration would refuse accounts that exist and refuse sign-ins that used to succeed. This test is
-    /// the guard against a well-meant hardening: the creation must be ACCEPTED, never answered as a
-    /// conflict.
-    /// </para>
-    /// <para>
     /// The sign-in half is what makes this an authentication test rather than an account-administration
     /// one. An address that identifies two accounts cannot be what resolves a credential, so both accounts
     /// have to be reachable by their own names and each has to receive its own session.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task Login_ForTwoAccountsSharingOneEmailAddress_AcceptsBoth()
@@ -2059,27 +1826,13 @@ public sealed class AuthApiTests
             "each account receives its own session, so a shared address cannot merge two identities");
     }
 
-    /// <summary>
-    /// None of the three responses that carry a session publishes credential material of any kind.
-    /// </summary>
+    /// <summary>None of the three responses that carry a session publishes credential material of any kind.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// MIGRATION: the legacy provider was registered with <c>enablePasswordRetrieval="true"</c> and
-    /// <c>passwordFormat="Encrypted"</c> (<c>Website/release.config</c> L239 and L245) - reversible
-    /// triple-DES storage, with the very key that reversed it committed to source control at L91-L93 - so a
-    /// legacy installation could hand a stored credential back. Reversible storage is replaced by one-way
-    /// BCrypt hashing and retrieval is deliberately NOT carried forward: no operation returns a credential,
-    /// and this test asserts that absence positively rather than leaving it to the reader to notice that no
-    /// such endpoint was written. The upgrade path for credentials already stored is the lazy re-hash the
-    /// sibling test pins, never a decrypt-and-rewrite.
-    /// </para>
-    /// <para>
-    /// The scan walks every member name in each document rather than checking the two documented shapes,
-    /// because the failure this guards against is an ADDED member - a hash echoed back on a session
-    /// response, or a credential reflected into a nested projection - and a shape-by-shape assertion would
-    /// not see one.
-    /// </para>
+    /// <c>passwordFormat="Encrypted"</c> - reversible triple-DES storage, with the very key that reversed
+    /// it committed to source control at L91-L93 - so a legacy installation could hand a stored credential
+    /// back.
     /// </remarks>
     [Fact]
     public async Task Auth_PublishesNoCredentialMaterialOnAnyOfItsResponses()
@@ -2087,8 +1840,8 @@ public sealed class AuthApiTests
         using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
 
         // An account of this test's own, because the exchange below rotates a refresh token and a replay of
-        // a rotated one withdraws every session the account holds. Using a seeded persona would make another
-        // suite's session collateral.
+        // a rotated one withdraws every session the account holds. Using a seeded persona would make
+        // another suite's session collateral.
         UserDetailDto account = await CreateUserAsync(administrator);
 
         using HttpClient client = _fixture.CreateAnonymousClient();
@@ -2143,38 +1896,14 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// The controller publishes the four operations it declares and nothing else, and each of those is bound
-    /// to its own method.
+    /// The controller publishes the four operations it declares and nothing else, and each of those is
+    /// bound to its own method.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// A closed surface is a security property rather than tidiness. The legacy application reached its
-    /// credential features through several pages, and the ones that are out of scope here must not be quietly
-    /// reachable through a catch-all route that answered anything under the controller's prefix. Three probes
-    /// establish it, and the first two are deliberately made by DIFFERENT callers because the answer differs
-    /// by caller.
-    /// </para>
-    /// <para>
-    /// <strong>An anonymous caller is refused before the address is even judged.</strong> The authorisation
-    /// options declare a fallback policy requiring an authenticated caller, which applies to anything that
-    /// carries no authorisation metadata of its own - including a request that matched no operation at all.
-    /// Measured rather than assumed: this probe was first written expecting a not-found answer and the
-    /// pipeline answered 401. That is the stronger behaviour and is asserted as the contract it is, because it
-    /// means an anonymous caller cannot use the surface as a directory of which addresses exist.
-    /// </para>
-    /// <para>
-    /// <strong>An authenticated caller reaches the routing answer</strong>, and that is where the closed
-    /// surface is actually proved: a path naming no operation is not found rather than served, so no
-    /// catch-all stands behind this prefix. The third probe addresses a DECLARED path with the wrong method,
-    /// which must be refused as such - a sign-in served over a retrieval verb would put a credential in a
-    /// request line, where it reaches proxy logs and browser history.
-    /// </para>
-    /// <para>
-    /// The undeclared segment is deliberately a name no feature could ever carry. Probing for the specific
-    /// out-of-scope legacy paths by name would put those names into this file, which is exactly what a reader
-    /// auditing the surface should not find here.
-    /// </para>
+    /// credential features through several pages, and the ones that are out of scope here must not be
+    /// quietly reachable through a catch-all route that answered anything under the controller's prefix.
     /// </remarks>
     [Fact]
     public async Task Auth_DeclaresNoOperationBeyondTheFourItPublishes()
@@ -2216,33 +1945,11 @@ public sealed class AuthApiTests
             + "a request line");
     }
 
-    /// <summary>
-    /// Sign-in is rate limited per caller address, and a rejected attempt states how long to wait.
-    /// </summary>
+    /// <summary>Sign-in is rate limited per caller address, and a rejected attempt states how long to wait.</summary>
     /// <remarks>
-    /// <para>
     /// A second host is built for this test because the shared host runs with a deliberately permissive
     /// limit. The limiter reads its options while services are composed, so the override must be in force
-    /// before the host is constructed - which is why the client is created inside the scope. Building a
-    /// dedicated host is also what keeps this test from spending the shared budget every other suite signs in
-    /// against, and the attempts below name an account that does not exist so that exhausting the window
-    /// cannot lock a real one out as a side effect.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this window IS the compensating control for a deleted defence. The legacy screen guarded
-    /// sign-in with a human-verification challenge - <c>Login.ascx.vb:L162</c> ran the credential check only
-    /// when <c>(UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)</c> held - and that control is
-    /// excluded here with the rest of the legacy control library. The challenge answered automated guessing;
-    /// so does a per-caller budget, and unlike the challenge it applies to every caller rather than only to
-    /// the tenants that switched it on. The exchange is deliberate and is recorded rather than absorbed: no
-    /// verification field exists on the sign-in contract, and none should be looked for.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the other argument that disappears from <c>Login.ascx.vb:L164</c> is the literal
-    /// authentication-type <c>"DNN"</c>. The legacy passed it so a provider could be selected; there is one
-    /// token path here, so the contract carries no such member and a caller cannot choose how it is
-    /// authenticated. Neither this test nor any other may assert one exists.
-    /// </para>
+    /// before the host is constructed - which is why the client is created inside the scope.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2322,14 +2029,8 @@ public sealed class AuthApiTests
     /// <summary>Creates an account through the API and returns its representation.</summary>
     /// <param name="client">A client holding the administrators role.</param>
     /// <param name="authorize">Whether the account is approved on creation.</param>
-    /// <param name="username">
-    /// The account name, or <see langword="null"/> for a generated one. Named explicitly only by the tests
-    /// that need a name a rule recognises, since the recognised names are not unique to a test run.
-    /// </param>
-    /// <param name="email">
-    /// The electronic-mail address, or <see langword="null"/> for a generated one. Supplied explicitly by
-    /// the test that proves two accounts may share one.
-    /// </param>
+    /// <param name="username">The account name, or <see langword="null"/> for a generated one.</param>
+    /// <param name="email">The electronic-mail address, or <see langword="null"/> for a generated one.</param>
     /// <returns>The created account.</returns>
     private async Task<UserDetailDto> CreateUserAsync(
         HttpClient client,
@@ -2370,19 +2071,10 @@ public sealed class AuthApiTests
     /// <param name="accountName">The shipped account name, which is also the shipped credential.</param>
     /// <returns>A task representing the creation.</returns>
     /// <remarks>
-    /// <para>
     /// The credential is WRITTEN into the store rather than submitted, and that is forced rather than
     /// preferred: the policy carried forward from <c>Website/release.config</c> L242 requires seven
     /// characters, both shipped values are shorter, and the account-creation rules reproduce that policy
-    /// verbatim - so the API correctly refuses to set either of them. Reaching the state a legacy
-    /// installation is actually in therefore means writing the stored value, which is also what keeps the
-    /// short credential out of every request this suite makes.
-    /// </para>
-    /// <para>
-    /// The stored value is written at the hasher's own cost and digest, so verification succeeds and the
-    /// lazy cost upgrade is not triggered as a side effect - that upgrade has its own test and this one
-    /// must not depend on it.
-    /// </para>
+    /// verbatim - so the API correctly refuses to set either of them.
     /// </remarks>
     private async Task CreateShippedAccountAsync(HttpClient administrator, string accountName)
     {
@@ -2403,9 +2095,9 @@ public sealed class AuthApiTests
     /// <returns>A task representing the write.</returns>
     /// <remarks>
     /// There is no endpoint that grants installation-wide authority, and there should not be one, so the
-    /// state is established by writing the single column the sign-in path reads. That column is the whole of
-    /// the distinction: a host account reaches the superuser outcome, which is the arm the host half of the
-    /// weak-credential advisory is promoted from.
+    /// state is established by writing the single column the sign-in path reads. That column is the whole
+    /// of the distinction: a host account reaches the superuser outcome, which is the arm the host half of
+    /// the weak-credential advisory is promoted from.
     /// </remarks>
     private async Task PromoteToSuperUserAsync(string userName)
     {
@@ -2425,10 +2117,6 @@ public sealed class AuthApiTests
     /// </summary>
     /// <param name="payload">The response body.</param>
     /// <param name="description">What the document is, so a failure names the operation.</param>
-    /// <remarks>
-    /// The whole document is walked, including nested objects and arrays, because the member this guards
-    /// against is one nobody meant to add.
-    /// </remarks>
     private static void AssertPublishesNoCredentialMember(string payload, string description)
     {
         using JsonDocument document = JsonDocument.Parse(payload);
@@ -2482,19 +2170,9 @@ public sealed class AuthApiTests
     /// <param name="member">The member to judge.</param>
     /// <returns><see langword="true"/> when the member must not appear on this surface.</returns>
     /// <remarks>
-    /// <para>
-    /// The name is matched by containment and case-insensitively, so a nested or differently spelled member
-    /// is caught too. The VALUE has to be textual for the member to offend, and that qualification is the
-    /// whole precision of this check rather than a loophole in it: the accepted sign-in response is REQUIRED
-    /// to publish the forced-change and the approaching-expiry advisories, whose names unavoidably contain
-    /// the credential word and whose values are boolean flags carrying no material at all. Flagging those
-    /// would make this test demand the removal of the two members that carry the legacy remediation intent.
-    /// </para>
-    /// <para>
-    /// The bearer values a session response does carry are deliberately outside the vocabulary matched here.
-    /// They are values the caller is meant to hold, minted for it and short-lived; a stored credential is
-    /// not, which is the distinction this check draws.
-    /// </para>
+    /// The bearer values a session response does carry are deliberately outside the vocabulary matched
+    /// here. They are values the caller is meant to hold, minted for it and short-lived; a stored
+    /// credential is not, which is the distinction this check draws.
     /// </remarks>
     private static bool CarriesCredentialMaterial(JsonProperty member) =>
         member.Value.ValueKind == JsonValueKind.String
@@ -2503,23 +2181,13 @@ public sealed class AuthApiTests
             || member.Name.Contains("secret", StringComparison.OrdinalIgnoreCase)
             || member.Name.Contains("answer", StringComparison.OrdinalIgnoreCase));
 
-    /// <summary>
-    /// Clears a lock by writing the credential store directly.
-    /// </summary>
+    /// <summary>Clears a lock by writing the credential store directly.</summary>
     /// <param name="userName">The account name.</param>
     /// <returns>A task representing the write.</returns>
     /// <remarks>
-    /// <para>
     /// The inverse of <see cref="LockAsync"/>, and written the same way for the same reason: the
-    /// administrative unlock endpoint carries its own authorisation, which is another suite's subject, and a
-    /// test that only needs the stored state should not depend on it.
-    /// </para>
-    /// <para>
-    /// The lock-out date is set to the legacy <c>17540101</c> sentinel rather than to <c>NULL</c>, because the
-    /// column is <c>NOT NULL</c> and that sentinel is how this schema expresses absence - the value the
-    /// membership procedures the upgrade chain patched write for the same purpose. Writing <c>NULL</c> here
-    /// fails outright, which is how this helper learned the rule.
-    /// </para>
+    /// administrative unlock endpoint carries its own authorisation, which is another suite's subject, and
+    /// a test that only needs the stored state should not depend on it.
     /// </remarks>
     private async Task UnlockAsync(string userName)
     {
@@ -2545,9 +2213,9 @@ public sealed class AuthApiTests
     /// <param name="mode">The persisted <c>Portals.UserRegistration</c> value.</param>
     /// <returns>A task representing the write.</returns>
     /// <remarks>
-    /// Written through SQL rather than through the tenant endpoint on purpose: the endpoint would exercise the
-    /// portal-update path and its authorisation, which is another suite's subject, and this test needs only the
-    /// stored value the sign-in ladder reads.
+    /// Written through SQL rather than through the tenant endpoint on purpose: the endpoint would exercise
+    /// the portal-update path and its authorisation, which is another suite's subject, and this test needs
+    /// only the stored value the sign-in ladder reads.
     /// </remarks>
     private async Task SetRegistrationModeAsync(int mode)
     {
@@ -2591,22 +2259,13 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// SEC-016. Every token-bearing response, and every refusal from the same endpoints, forbids storage by
-    /// any cache.
+    /// Every token-bearing response, and every refusal from the same endpoints, forbids storage by any
+    /// cache.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// An access token and a refresh token are bearer credentials: an intermediate cache that retains the
     /// response retains the credentials, and a shared cache can then serve one caller's tokens to another.
-    /// The refusals are covered for a related reason - a cached 401 is a cached security decision - and
-    /// because the endpoints that carry tokens must behave identically whatever they answer, or the presence
-    /// of the directive itself becomes a signal.
-    /// </para>
-    /// <para>
-    /// The negative control is what gives the fact meaning: an ordinary resource read must NOT carry the
-    /// directive, or the assertion would pass equally against a change that made the whole API uncacheable.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task CredentialEndpoints_ForbidResponseCaching()
@@ -2661,21 +2320,6 @@ public sealed class AuthApiTests
 
         ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        /*
-         * ⚠ THIS ASSERTION IS INVERTED FROM WHAT IT USED TO BE, AND THE INVERSION IS THE POINT. PRIV-03.
-         *
-         * It previously required an authenticated tenant read NOT to be marked no-store, arguing that marking
-         * every response "would make this assertion vacuous". That argument put the tidiness of a test above
-         * the property the test exists to protect. This is an administration API: an authorised read returns
-         * account names, e-mail addresses, profile values, role memberships and tenant configuration, every
-         * one of which could be written to a private browser cache and read off the disk afterwards, or
-         * re-displayed by pressing Back after a sign-out.
-         *
-         * The distinction the old assertion was protecting is kept, and asserted properly rather than by
-         * absence: a credential response carries the HTTP/1.0 and heuristic-freshness spellings as well, and
-         * an ordinary authorised response carries only the HTTP/1.1 directives plus `private`. So neither
-         * rule is vacuous, and the two remain distinguishable.
-         */
         ordinary.Headers.CacheControl.Should().NotBeNull(
             "an authorised read returns personal data, which no cache may store");
         ordinary.Headers.CacheControl!.NoStore.Should().BeTrue(
@@ -2913,14 +2557,6 @@ public sealed class AuthApiTests
     /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
-    /// <remarks>
-    /// FLAT, like <see cref="UserRoute(int, int)"/> beside it, because the account controller is mounted at
-    /// <c>api/v1/users</c> and the tenant comes from the arrival host rather than from a route segment. These
-    /// two builders were left nested when the surrounding suite was flattened, so every request they produced
-    /// matched NO endpoint - and an unmatched request is refused before it can reach an action, which made two
-    /// remediation facts read as authorisation refusals of the very self-service routes they were asserting.
-    /// The portal parameter is kept and discarded so the call sites read the same as their neighbours.
-    /// </remarks>
     private static Uri PasswordRoute(int _, int userId) =>
         new($"/api/v1/users/{Route(userId)}/password", UriKind.Relative);
 

@@ -1,21 +1,14 @@
 import { isRouteId, parseRouteId } from './route-id.util';
 
 /**
- * Specification for the shared strict route-identifier parser.
- *
- * No `TestBed`, because the module under test is a pair of pure functions over immutable
- * values with no injector, no router and no DOM involvement. Constructing a test bed would
- * add a fixture and an async boundary to assertions that need neither.
- *
- * The suite is organised around the three reasons a value is refused — grammar, magnitude
- * and range — plus the one reason a value must be ACCEPTED that every naive parser gets
- * wrong: `-1` and `0` are real primary keys in this schema and must survive.
+ * Specification for the shared strict route-identifier parser. No `TestBed`, because the module under
+ * test is a pair of pure functions over immutable values with no injector, no router and no DOM
+ * involvement.
  */
 describe('parseRouteId', () => {
   describe('the identifiers that must survive', () => {
-    // The single most important case in this file. `Portals.PortalID` is IDENTITY(-1, 1),
-    // so -1 is simultaneously the first real portal key AND the legacy absent-marker value.
-    // A parser that treated it as absent would make the seeded baseline portal unaddressable.
+    // The single most important case in this file. `Portals.PortalID` is IDENTITY(-1, 1), so -1 is
+    // simultaneously the first real portal key AND the legacy absent-marker value.
     it('accepts -1, which is a real portal identifier and not an absent marker', () => {
       expect(parseRouteId('-1')).toBe(-1);
     });
@@ -109,9 +102,6 @@ describe('parseRouteId', () => {
       expect(parseRouteId('1_000')).toBeNull();
     });
 
-    // \d in a non-unicode regular expression matches ASCII 0-9 only, so a full-width or
-    // Devanagari digit is refused. Accepting one would let a visually similar address
-    // resolve to a record.
     it('refuses non-ASCII digits', () => {
       expect(parseRouteId('１２')).toBeNull();
       expect(parseRouteId('१२')).toBeNull();
@@ -147,9 +137,6 @@ describe('parseRouteId', () => {
   });
 
   describe('purity', () => {
-    // The shared grammar carries no `g` flag, so it holds no `lastIndex` between calls. This
-    // asserts that property behaviourally: a stateful instance would answer differently on
-    // the second identical call.
     it('answers identically on repeated calls, so no state leaks between them', () => {
       expect(parseRouteId('12')).toBe(12);
       expect(parseRouteId('12')).toBe(12);

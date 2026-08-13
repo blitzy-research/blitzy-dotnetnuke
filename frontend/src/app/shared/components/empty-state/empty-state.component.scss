@@ -1,16 +1,16 @@
 @use '../../../../styles/mixins' as mx;
 
-// One rule set serves both readings of this component — the in-page stand-in for
-// an empty table and the whole-page catch-all body — so nothing here assumes a
-// table, grid or list ancestor, and nothing here owns a page width.
+// One rule set serves both readings of this component — the in-page stand-in for an empty table and the
+// whole-page catch-all body — so nothing here assumes a table, grid or list ancestor, and nothing here owns
+// a page width.
 
 :host {
   display: block;
 }
 
-// Elevation is declined rather than applied: this is a passive placeholder within
-// the page surface, not a floating overlay. The secondary surface colour is what
-// lets it read as a distinct region under a table header as well as standing alone.
+// Elevation is declined rather than applied: this is a passive placeholder within the page surface, not a
+// floating overlay. The secondary surface colour is what lets it read as a distinct region under a table
+// header as well as standing alone.
 .empty-state {
   display: flex;
   flex-direction: column;
@@ -23,9 +23,9 @@
   border: var(--border-width) var(--border-style) var(--color-border);
   border-radius: var(--radius-md);
 
-  // Through the shared breakpoint mixin only, because a component may never write
-  // a media query itself. Mobile-first, so the narrowest viewports keep the
-  // tighter inline padding and leave the message the most room to reflow.
+  // Through the shared breakpoint mixin only, because a component may never write a media query itself.
+  // Mobile-first, so the narrowest viewports keep the tighter inline padding and leave the message the most
+  // room to reflow.
   @include mx.respond-above('sm') {
     padding-inline: var(--space-6);
   }
@@ -43,9 +43,9 @@
   }
 }
 
-// The weight is load-bearing, because the user-agent default for this element is
-// bold and the intended style is not. Zeroing the margin is too: the parent spaces
-// its children with a gap, so a user-agent margin would double it.
+// The weight is load-bearing, because the user-agent default for this element is bold and the intended
+// style is not. Zeroing the margin is too: the parent spaces its children with a gap, so a user-agent
+// margin would double it.
 .empty-state__title {
   margin-block: 0;
   font-size: var(--font-size-xxl);
@@ -54,18 +54,6 @@
   color: var(--color-primary);
 }
 
-// The overflow pair diverges from generic break-word guidance and both halves are
-// required. Breaking on word boundaries does not lower this element's intrinsic
-// minimum-content width, and a centred flex child is sized to its own content, so
-// a long unbroken run — an address pasted into a caption, say — pushes the element
-// past its parent on both sides. Breaking anywhere lowers that width and the clamp
-// holds the box inside the parent; together they reflow instead of escaping.
-// Truncation is not the remedy, because this sentence is the reader's only
-// explanation.
-//
-// No wide-viewport line-length cap is set: the only tokenised clamp available is
-// the proportional one, and a literal measure would be a hardcoded value. Capping
-// page width stays with the page container.
 .empty-state__message {
   margin-block: 0;
   max-inline-size: var(--size-full);
@@ -76,20 +64,9 @@
   color: var(--color-text-muted);
 }
 
-// No focus rule is emitted here and one would not work if it were: this component
-// renders nothing focusable, and under emulated view encapsulation a projected
-// control carries the caller's scoping attribute, so a descendant rule written
-// here could not match it. Focus styling reaches projected controls through the
-// shared mixin at their own origin instead.
-//
-// The wrapper must contribute no space when nothing is projected. A gap alone
-// fails, because a childless wrapper is still a zero-sized flex item and the gap
-// is inserted between adjacent items; taken out of flow it is not an item at all,
-// so no gap slot is created.
-//
-// The emptiness pseudo-class tolerates a comment child but not a space-only text
-// child, so the slot is placed on its own line and this relies on space-only nodes
-// being stripped at compile time.
+// No focus rule is emitted here and one would not work if it were: this component renders nothing
+// focusable, and under emulated view encapsulation a projected control carries the caller's scoping
+// attribute, so a descendant rule written here could not match it.
 .empty-state__actions {
   display: flex;
   flex-wrap: wrap;

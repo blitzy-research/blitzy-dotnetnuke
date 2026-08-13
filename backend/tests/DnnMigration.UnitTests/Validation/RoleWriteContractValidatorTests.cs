@@ -1,40 +1,6 @@
-// MIGRATION: this suite is the parity proof for the role-family validators that the review found missing
-// altogether - UpdateRoleRequestValidator, the role-group validators and RoleAssignmentRequestValidator -
-// together with the shared rule definitions they and CreateRoleRequestValidator all consume, RoleTermsRules
-// and RoleGroupTermsRules.
-//
-// MIGRATION: the role-group half of this suite originally exercised ONE validator over RoleGroupDto, because
-// both write verbs bound that response projection and so advertised a group identifier and an owning portal
-// that neither AddRoleGroup nor UpdateRoleGroup writes. The verbs now bind CreateRoleGroupRequest and
-// UpdateRoleGroupRequest, so every shared rule below is asserted against both validators and a member census
-// stands in for the withdrawn identifier-bound theory. The same split applies to the profile-definition
-// section, whose full two-verb parity proof lives in ProfileDefinitionWriteContractValidatorTests.
-//
-// MIGRATION: the suite's most important single assertion is the CROSS-VERB one. Before the repair, the
-// icon-path containment rule existed on the creation validator and not on the update validator, so a
-// rooted or upward-traversing path that POST refused was stored verbatim by PUT against the very same
-// dbo.Roles.IconFile column. A rule that can be bypassed by choosing the other verb is not a rule, so
-// the parity between the two validators is asserted directly rather than being left to inspection of
-// two files that happen to look alike.
-//
-// MIGRATION: the legacy declarations these validators reproduce, measured rather than assumed, and read
-// case-insensitively because the legacy markup writes its tags in lower case - a case-sensitive search
-// for "Validator" returns nothing on either screen and would falsely suggest neither declared any rule.
-//   Website/admin/Security/editroles.ascx        L29/L31  valRoleName       RequiredFieldValidator
-//                                               L95/L96  valServiceFee2    GreaterThanEqual 0
-//                                               L113/114 valBillingPeriod2 GreaterThan 0
-//                                               L127/128 valTrialFee2      GreaterThanEqual 0
-//                                               L145/146 valTrialPeriod2   GreaterThan 0
-//   Website/admin/Security/EditGroups.ascx       L11      txtRoleGroupName  maxlength 50
-//                                                L12      valRoleGroupName  requiredfieldvalidator
-//                                                L17      txtDescription    maxlength 1000, NO validator
-//   Website/admin/Security/securityroles.ascx    L45      valEffectiveDate  DataTypeCheck Date
-//                                                L46      valExpiryDate     DataTypeCheck Date
-//                                                L47      valDates          GreaterThan, expiry vs effective
-//
-// MIGRATION: every message is quoted character for character rather than matched by substring. A
-// substring match cannot tell "You Must Enter a Valid Name" apart from "<br>You Must Enter a Valid
-// Name", and stripping that leading markup tag is itself one of the recorded divergences.
+// MIGRATION: the role-group half of this suite originally exercised ONE validator over RoleGroupDto,
+// because both write verbs bound that response projection and so advertised a group identifier and an
+// owning portal that neither AddRoleGroup nor UpdateRoleGroup writes.
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Validation;
@@ -46,21 +12,12 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Proves rule-for-rule parity for the three role-family write contracts whose validators the code review
-/// found absent, and proves that the shared rule definition leaves no rule reachable on one write verb
-/// and not the other.
+/// Proves rule-for-rule parity for the three role-family write contracts, and proves that the shared rule
+/// definition leaves no rule reachable on one write verb and not the other.
 /// </summary>
 /// <remarks>
-/// <para>
-/// Both halves of every failure are asserted, never just the fact of failure. The property name becomes
-/// the key and the message the value in the <c>errors</c> dictionary of the RFC 7807 payload a client
-/// consumes, so a test that checked only <see cref="ValidationResult.IsValid"/> would prove the rule
-/// fires without proving it reports what the legacy screen reported.
-/// </para>
-/// <para>
 /// Each acceptance baseline is asserted before the refusals that vary from it, so a later failure can be
 /// attributed to the one member the test altered rather than to an already-invalid starting point.
-/// </para>
 /// </remarks>
 public class RoleWriteContractValidatorTests
 {
@@ -104,8 +61,8 @@ public class RoleWriteContractValidatorTests
     private const int RoleGroupNameWidth = 50;
 
     /// <summary>
-    /// Width of <c>Roles.RoleName nvarchar(50) NOT NULL</c>
-    /// (<c>01.00.00.SqlDataProvider</c> L117), which both role write verbs enforce.
+    /// Width of <c>Roles.RoleName nvarchar(50) NOT NULL</c> (<c>01.00.00.SqlDataProvider</c> L117), which
+    /// both role write verbs enforce.
     /// </summary>
     private const int RoleNameWidth = 50;
 
@@ -120,8 +77,7 @@ public class RoleWriteContractValidatorTests
     /// <remarks>
     /// This baseline is load-bearing rather than incidental. The contract is a full replacement, so
     /// omitting a nullable member CLEARS the stored value; a presence rule on any member BESIDES the name
-    /// would make the clearing operation unreachable. This object is exactly what a caller sends to clear
-    /// every optional term at once while keeping the role's name.
+    /// would make the clearing operation unreachable.
     /// </remarks>
     [Fact]
     public void UpdateRole_AcceptsARequestCarryingNothingButItsName()
@@ -172,8 +128,8 @@ public class RoleWriteContractValidatorTests
     }
 
     /// <summary>
-    /// A fully populated, legitimate update is accepted, so every later refusal is attributable to the
-    /// one member that test alters.
+    /// A fully populated, legitimate update is accepted, so every later refusal is attributable to the one
+    /// member that test alters.
     /// </summary>
     [Fact]
     public void UpdateRole_AcceptsAFullyPopulatedRequest()
@@ -188,12 +144,6 @@ public class RoleWriteContractValidatorTests
     /// the update verb, which is the defect this validator was written to close.
     /// </summary>
     /// <param name="iconFile">The path the caller submitted.</param>
-    /// <remarks>
-    /// Both separators are tested regardless of the host platform, because the legacy application stored
-    /// Windows-style separators while the migrated API runs on Linux, so both have to be treated as
-    /// rooting characters. The traversal cases cover a leading, an embedded and a trailing parent
-    /// segment, because the rule is a containment rule and not a prefix rule.
-    /// </remarks>
     [Theory]
     [InlineData("/images/role.gif")]
     [InlineData("\\images\\role.gif")]
@@ -218,11 +168,6 @@ public class RoleWriteContractValidatorTests
     /// closes the gap without refusing legitimate input.
     /// </summary>
     /// <param name="iconFile">The path the caller submitted.</param>
-    /// <remarks>
-    /// The empty string is included deliberately: the legacy screen stored it when no icon had been
-    /// picked, so refusing it would refuse the commonest case of all. A single full stop is included
-    /// because the rule refuses a parent segment, not any occurrence of the character.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -242,13 +187,13 @@ public class RoleWriteContractValidatorTests
 
     /// <summary>
     /// The creation and the update verb reach exactly the same verdict on every icon path, which is the
-    /// property whose absence was the defect.
+    /// property a rule declared privately on one of the two verbs would break.
     /// </summary>
     /// <param name="iconFile">The path submitted to both validators.</param>
     /// <remarks>
-    /// This asserts the invariant directly rather than inferring it from two suites that happen to agree.
-    /// A future revision that re-declared the rule privately on one of the two validators would leave
-    /// every other test in both files passing and would fail only here.
+    /// This asserts the invariant directly rather than inferring it from two suites that happen to agree. A
+    /// future revision that re-declared the rule privately on one of the two validators would leave every
+    /// other test in both files passing and would fail only here.
     /// </remarks>
     [Theory]
     [InlineData(null)]
@@ -274,8 +219,8 @@ public class RoleWriteContractValidatorTests
         refusedOnUpdate.Should().Be(
             refusedOnCreate,
             "a rule reachable on one write verb and not the other could be bypassed by choosing the "
-            + "other verb, and the icon path \"{0}\" is exactly the value that used to be treated "
-            + "differently",
+            + "other verb, and the icon path \"{0}\" is a value the two verbs must judge "
+            + "alike",
             iconFile ?? "<null>");
     }
 
@@ -359,16 +304,7 @@ public class RoleWriteContractValidatorTests
             TrialPeriodNotPositive);
     }
 
-    /// <summary>
-    /// A frequency outside the domain enumeration is refused on both frequency members.
-    /// </summary>
-    /// <remarks>
-    /// The refused value is cast from an integer that is not a member, which is the only way to express
-    /// the case: the enumeration members carry the code points of the stored characters, so a literal
-    /// character list would be a different rule. This is also the write-path half of a deliberate
-    /// asymmetry - the shipped seed data holds two codes the enumeration cannot represent, and tolerance
-    /// for those rows lives on the read path alone.
-    /// </remarks>
+    /// <summary>A frequency outside the domain enumeration is refused on both frequency members.</summary>
     [Fact]
     public void UpdateRole_RefusesAFrequencyOutsideTheEnumeration()
     {
@@ -385,8 +321,8 @@ public class RoleWriteContractValidatorTests
 
     /// <summary>Every column width the contract carries is enforced, and the boundary value is accepted.</summary>
     /// <remarks>
-    /// The exactly-at-the-limit case is asserted alongside the over-limit case, because an off-by-one
-    /// width would refuse a value the column can hold and no over-limit test alone would notice.
+    /// The exactly-at-the-limit case is asserted alongside the over-limit case, because an off-by-one width
+    /// would refuse a value the column can hold and no over-limit test alone would notice.
     /// </remarks>
     [Fact]
     public void UpdateRole_EnforcesEveryColumnWidth()
@@ -395,9 +331,6 @@ public class RoleWriteContractValidatorTests
 
         UpdateRoleRequest atLimit = ValidUpdate();
         atLimit.Description = new string('d', DescriptionWidth);
-        // TWO CHARACTER CLASSES, so this fact isolates the width it names: a single repeated character now
-        // trips the authoring-strength rule as well, and a width fact that failed for a strength reason would
-        // report the wrong rule.
         atLimit.RsvpCode = StrongCodeOfLength(RsvpCodeWidth);
         atLimit.IconFile = new string('i', IconFileWidth);
         ShouldAccept(validator.Validate(atLimit));
@@ -420,8 +353,8 @@ public class RoleWriteContractValidatorTests
     }
 
     /// <summary>
-    /// A role-group reference of zero and one that is absent are both accepted, because the referenced
-    /// key is seeded from zero and absence means "ungrouped".
+    /// A role-group reference of zero and one that is absent are both accepted, because the referenced key
+    /// is seeded from zero and absence means "ungrouped".
     /// </summary>
     /// <param name="roleGroupId">The group reference the caller submitted.</param>
     [Theory]
@@ -443,12 +376,6 @@ public class RoleWriteContractValidatorTests
     // ------------------------------------------------------------------------
 
     /// <summary>A legitimate role group is accepted on both write verbs with both members populated.</summary>
-    /// <remarks>
-    /// MIGRATION: the two verbs bind two request types rather than the response projection, because
-    /// <c>AddRoleGroup</c> and <c>UpdateRoleGroup</c> write only the name and the description - the group
-    /// identifier is assigned by the store or taken from the route, and the portal is the resolved tenant. A
-    /// caller could previously submit either and watch it be ignored.
-    /// </remarks>
     [Fact]
     public void RoleGroup_AcceptsALegitimateSubmissionOnBothVerbs()
     {
@@ -461,11 +388,6 @@ public class RoleWriteContractValidatorTests
     /// <c>valRoleGroupName</c>.
     /// </summary>
     /// <param name="roleGroupName">The name the caller submitted.</param>
-    /// <remarks>
-    /// The null case is what used to reach the store: <c>RoleGroups.RoleGroupName</c> is <c>NOT NULL</c>,
-    /// so before this validator existed an absent name produced a persistence fault rather than the
-    /// declared field error.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -545,19 +467,10 @@ public class RoleWriteContractValidatorTests
     /// needs asserting.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this supersedes a theory that submitted a group identifier and a portal identifier and
-    /// asserted that neither was bounded. Both verbs previously bound <c>RoleGroupDto</c>, so both members
-    /// were present on the request surface and silently ignored; the correct fix is for the members not to be
-    /// there, not for a rule to tolerate them. The census below is the standing proof that they have not been
-    /// re-added.
-    /// </para>
-    /// <para>
     /// The bounds those withdrawn cases guarded against still matter and are still forbidden wherever an
     /// identifier does appear: <c>RoleGroups.RoleGroupID</c> is seeded <c>IDENTITY(0,1)</c> and
     /// <c>Portals.PortalID</c> is seeded <c>IDENTITY(-1,1)</c>, so a "greater than zero" bound on either
     /// would refuse a legitimate row and a "non-positive means absent" test would silently exclude one.
-    /// </para>
     /// </remarks>
     [Fact]
     public void RoleGroup_WriteContractsCarryNoIdentifierMemberAtAll()
@@ -586,8 +499,8 @@ public class RoleWriteContractValidatorTests
         => ShouldAccept(new RoleAssignmentRequestValidator().Validate(ValidAssignment()));
 
     /// <summary>
-    /// An assignment naming no usable user is refused, which covers both the omitted member and the
-    /// legacy "nothing selected" sentinel.
+    /// An assignment naming no usable user is refused, which covers both the omitted member and the legacy
+    /// "nothing selected" sentinel.
     /// </summary>
     /// <param name="userId">The user reference the caller submitted.</param>
     /// <remarks>
@@ -614,12 +527,6 @@ public class RoleWriteContractValidatorTests
     /// <c>valDates</c>, equality included.
     /// </summary>
     /// <param name="expiryOffsetDays">Days to add to the effective date to obtain the expiry.</param>
-    /// <remarks>
-    /// Equality is refused because the legacy comparison was <c>GreaterThan</c> and not
-    /// <c>GreaterThanEqual</c>: a window that opens and closes at the same instant is a membership that is
-    /// never in force. The failure is reported against the expiry, which is the field the legacy screen
-    /// highlighted and therefore the one an operator would correct.
-    /// </remarks>
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -641,11 +548,6 @@ public class RoleWriteContractValidatorTests
     /// </summary>
     /// <param name="hasEffective">Whether an effective date was supplied.</param>
     /// <param name="hasExpiry">Whether an expiry was supplied.</param>
-    /// <remarks>
-    /// All three open shapes are asserted, including the wholly open one. A null expiry additionally
-    /// instructs the service to derive one from the role's own terms, so refusing it would remove a
-    /// workflow rather than tighten a rule.
-    /// </remarks>
     [Theory]
     [InlineData(false, false)]
     [InlineData(true, false)]
@@ -681,11 +583,6 @@ public class RoleWriteContractValidatorTests
     /// The literal far-future expiry the legacy "one time" code stored is accepted verbatim and is not
     /// mistaken for an absence marker.
     /// </summary>
-    /// <remarks>
-    /// The legacy expiry switch assigned <c>9999-12-31</c> for that code, and the legacy null test compared
-    /// only against the minimum date, so the far-future value read as present. A rule that refused or
-    /// normalised it would change what a legacy consumer reading the same row sees.
-    /// </remarks>
     [Fact]
     public void RoleAssignment_AcceptsTheLiteralFarFutureExpiry()
     {
@@ -717,26 +614,12 @@ public class RoleWriteContractValidatorTests
     // ------------------------------------------------------------------------
 
     /// <summary>A legitimate profile property definition is accepted.</summary>
-    /// <remarks>
-    /// MIGRATION: the create contract is the subject throughout this section because it is the wider of the
-    /// two - it alone carries the module-definition key the terminal insert procedure declares. Parity
-    /// between the two verbs is proven member by member in
-    /// <c>ProfileDefinitionWriteContractValidatorTests</c>, which asserts every shared rule against both
-    /// validators.
-    /// </remarks>
     [Fact]
     public void ProfileDefinition_AcceptsALegitimateSubmission()
         => ShouldAccept(new CreateProfilePropertyDefinitionRequestValidator().Validate(ValidDefinition()));
 
-    /// <summary>
-    /// The two mandatory text members are refused when absent, empty or whitespace-only.
-    /// </summary>
+    /// <summary>The two mandatory text members are refused when absent, empty or whitespace-only.</summary>
     /// <param name="value">The value submitted for both members.</param>
-    /// <remarks>
-    /// Both columns are <c>NOT NULL</c>, so before this validator existed an absent value produced a
-    /// persistence fault. Both legacy members carry <c>Required(True)</c>, and unlike the two mandatory
-    /// integers that rule genuinely bites on a text control.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -764,12 +647,6 @@ public class RoleWriteContractValidatorTests
     /// </summary>
     /// <param name="propertyName">The name the caller submitted.</param>
     /// <param name="permitted">Whether the legacy pattern admits it.</param>
-    /// <remarks>
-    /// The space case is the one most likely to be "corrected" later and is asserted deliberately: the
-    /// property name is an identifier used as a resource key, and the legacy screen carried a separate
-    /// localisation step for the human-readable label. The pattern is anchored at both ends, so a name
-    /// that merely contains a permitted run is still refused.
-    /// </remarks>
     [Theory]
     [InlineData("City", true)]
     [InlineData("Preferred.Name", true)]
@@ -797,36 +674,13 @@ public class RoleWriteContractValidatorTests
     }
 
     /// <summary>
-    /// The three numeric members of a profile definition carry NO bound, so a value outside every documented
-    /// meaning survives a round trip.
+    /// The three numeric members of a profile definition carry NO bound, so a value outside every
+    /// documented meaning survives a round trip.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this replaces four theories that asserted the opposite - a 0-to-2 range on the visibility
-    /// hint, a non-negative data-type key, a non-negative length and a view order no lower than the append
-    /// instruction. Every one of those is a BUSINESS rule the legacy did not have, and AAP 0.9.1 permits
-    /// bounds to be added for representability or for security but not domain rules to be invented. The
-    /// measured position is recorded per member in
-    /// <c>ProfileDefinitionWriteContractValidatorTests</c>, which is the parity proof for both write
-    /// validators and cites the legacy declaration behind each absence: the editor screen declares no
-    /// validators at all, the authoritative attributes on <c>ProfilePropertyDefinition.vb</c> mark exactly
-    /// three members required, and none of these is among them.
-    /// </para>
-    /// <para>
     /// The concrete harm the withdrawn rules would have caused is why the position is asserted here as well
     /// as there. The data-type key names a row in the excluded lookup subsystem, so no endpoint can offer a
-    /// valid one and a positive bound would make both write verbs unusable rather than safer. A length of
-    /// zero legitimately means unbounded. And minus one on the view order is an INSTRUCTION rather than an
-    /// absence marker - the terminal insert procedure branches on it to append - so a lower bound would have
-    /// removed the append affordance outright.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the visibility hint is no longer among the members asserted here, because it is no longer
-    /// a member of either write contract. It is not a column on <c>ProfilePropertyDefinition</c> at any point
-    /// in the 88-script chain, so a request that carried it was advertising a field the store could not
-    /// honour. Removing it from the request surface is what the withdrawn range rule should have been in the
-    /// first place, and <c>ProfileDefinitionWriteContractValidatorTests</c> asserts its continued absence.
-    /// </para>
+    /// valid one and a positive bound would make both write verbs unusable rather than safer.
     /// </remarks>
     [Fact]
     public void ProfileDefinition_BoundsItsThreeNumericMembersInNoWay()
@@ -839,14 +693,13 @@ public class RoleWriteContractValidatorTests
         ShouldAccept(new CreateProfilePropertyDefinitionRequestValidator().Validate(definition));
     }
 
-
     /// <summary>
     /// Definition text widths follow the terminal schema except for tenant-authored validation expressions,
     /// whose write boundary is intentionally narrower to cap regular-expression compilation and match work.
     /// </summary>
     /// <remarks>
-    /// The terminal column remains two thousand characters for existing rows and schema compatibility, while
-    /// new expressions are limited to 512 characters and evaluated with a bounded timeout.
+    /// The terminal column remains two thousand characters for existing rows and schema compatibility,
+    /// while new expressions are limited to 512 characters and evaluated with a bounded timeout.
     /// </remarks>
     [Fact]
     public void ProfileDefinition_EnforcesTheRegexWriteWorkFactorLimit()
@@ -863,10 +716,6 @@ public class RoleWriteContractValidatorTests
 
         CreateProfilePropertyDefinitionRequest overLimit = ValidDefinition();
         overLimit.ValidationExpression = new string('x', 513);
-        // The message is the AUTHORED one, not the framework default. Every other rule on this validator
-        // reports wording carried over from the legacy screen, and reporting one member in the framework's
-        // voice - which also quotes the submitted length back - would make the response inconsistent with
-        // its siblings for no gain.
         ShouldReport(
             validator.Validate(overLimit),
             nameof(CreateProfilePropertyDefinitionRequest.ValidationExpression),
@@ -884,7 +733,6 @@ public class RoleWriteContractValidatorTests
 
         ShouldAccept(new CreateProfilePropertyDefinitionRequestValidator().Validate(definition));
     }
-
 
     // ------------------------------------------------------------------------
     // BUILDERS
@@ -957,24 +805,15 @@ public class RoleWriteContractValidatorTests
     // ASSERTION HELPERS
     // ------------------------------------------------------------------------
 
-
     /// <summary>
     /// Builds an invitation code of an exact length that satisfies every rule EXCEPT a width bound.
     /// </summary>
     /// <param name="length">The length the value must have.</param>
     /// <returns>A code of exactly that length, mixing letters with digits.</returns>
-    /// <remarks>
-    /// A width fact has to vary the width and nothing else. A value made of one repeated character carries a
-    /// single character class and therefore also trips the authoring-strength rule, so a width fact built from
-    /// one would fail for the wrong reason and report the wrong field message. Alternating a letter with a
-    /// digit gives two classes at every length, including the odd ones, and keeps the value single-line and
-    /// free of invisible characters so the text-integrity rule is not in play either.
-    /// </remarks>
     private static string StrongCodeOfLength(int length)
         => string.Concat(Enumerable.Range(0, length).Select(index => index % 2 == 0 ? 'a' : '1'));
     /// <summary>
-    /// Asserts that a result reports the given message against the given property, character for
-    /// character.
+    /// Asserts that a result reports the given message against the given property, character for character.
     /// </summary>
     /// <param name="result">The result to inspect.</param>
     /// <param name="property">The property the failure must name.</param>
@@ -994,11 +833,6 @@ public class RoleWriteContractValidatorTests
     /// </summary>
     /// <param name="result">The result to inspect.</param>
     /// <param name="property">The property the failure must name.</param>
-    /// <remarks>
-    /// Used where the message is FluentValidation's own rather than a measured legacy sentence - a column
-    /// width has no legacy message to reproduce, because the legacy screen expressed the limit as a text
-    /// box <c>MaxLength</c> that simply refused further typing.
-    /// </remarks>
     private static void ShouldNotAccept(ValidationResult result, string property)
     {
         result.IsValid.Should().BeFalse("a failure was expected for " + property);

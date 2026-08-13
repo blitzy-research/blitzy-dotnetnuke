@@ -1,201 +1,38 @@
-// =============================================================================
-//  _mixins.scss — breakpoints, focus ring, visually-hidden
-// =============================================================================
-//
-//  ROLE — A PURE-ABSTRACTION PARTIAL THAT EMITS ZERO CSS
-//  ----------------------------------------------------
-//  This file declares `@mixin` and `@function` members and nothing else. It
-//  contains no selector, no document-root block, no custom property and no
-//  top-level declaration, so compiling it in isolation produces an empty
-//  stylesheet and loading it from another file adds not one byte to the bundle.
-//  Every rule below is emitted only where a consumer chooses to `@include` it.
-//
-//  It is the companion to _tokens.scss. That file owns the design VALUES; this
-//  file owns the design BEHAVIOURS that cannot be expressed as a value:
-//
-//    * a media query, because CSS custom properties are not evaluated inside
-//      media feature queries (see THE ONE DOCUMENTED EXCEPTION below);
-//    * a pseudo-class rule, because `:focus-visible` is a selector, not a value.
-//
-//  _tokens.scss delegates both to this file explicitly, and those two
-//  delegations are the reason the members below exist rather than being a
-//  speculative utility library:
-//    _tokens.scss L44      "the breakpoint set is declared once, in
-//                           _mixins.scss, and consumed by mixin so that no
-//                           component ever restates one"
-//    _tokens.scss          "applied through the focus-ring mixin in _mixins.scss
-//                           on `:focus-visible`"
-//
-//  It is NOT a build entry point. The workspace declares exactly one global
-//  stylesheet (src/styles.scss) and Sass partials are never listed alongside it.
-//
-//  THIS IS THE ONLY FILE IN THE WORKSPACE PERMITTED A RAW `@media`
-//  ---------------------------------------------------------------
-//  No sibling partial and no *.component.scss may write `@media` directly.
-//  Responsive behaviour is obtained by `@use`-ing this file and `@include`-ing a
-//  mixin. A breakpoint restated in a component is a real defect: it drifts
-//  silently from every other declaration of the same value. Because the exported
-//  surface below is closed, a consumer that needs any OTHER at-rule — a
-//  reduced-motion guard, a hover-capability query — must report the gap and
-//  degrade, never write the query itself.
-//
-//  EXPORTED SURFACE — the contract downstream stylesheets consume
-//  -------------------------------------------------------------
-//  Responsive  (mobile-first: `min-width` is the default direction)
-//    breakpoint($name)              -> length   Width of a named step; build
-//                                               error on an unknown name.
-//    respond-above($name)  { ... }            Applies at and above the step.
-//    respond-below($name)  { ... }            Applies strictly below the step.
-//  Interaction
-//    hover                 { ... }            Applies on `:hover`, but ONLY where
-//                                             the pointer can genuinely hover, so a
-//                                             touch tap cannot leave the state
-//                                             stuck on the last-tapped element.
-//  Accessibility
-//    focus-ring                               Visible `:focus-visible` outline
-//                                             on the current selector.
-//    visually-hidden                          Hides from sight, keeps in the
-//                                             accessibility tree.
-//    motion-safe           { ... }            Applies ONLY where the reader has not
-//                                             asked their system for less motion.
-//                                             Wrap every animation and transition
-//                                             in it; never animate outside it.
-//    visually-hidden-focusable                As above while NOT focus-visible,
-//                                             so it reveals itself on keyboard
-//                                             focus (skip links). Declare the
-//                                             revealed appearance flatly beside
-//                                             the include; it cannot clobber the
-//                                             hidden state.
-//
-//  Names and signatures are stable and are not to be renamed: the shared
-//  component set, the layout shell and the sibling partials are written against
-//  them.
-//
-//  HOW TO LOAD THIS FILE — VERIFIED PATHS, NOT ESTIMATES
-//  ----------------------------------------------------
-//  The workspace configures no Sass load path: angular.json declares no
-//  stylePreprocessorOptions.includePaths and tsconfig.json declares no
-//  baseUrl/paths. Every `@use` must therefore be RELATIVE, and a path that is
-//  off by a single directory fails the build with "Can't find stylesheet to
-//  import." Each row below was verified by compiling a probe stylesheet at that
-//  exact location — none is inferred:
-//
-//    src/styles/_<sibling>.scss            @use 'mixins' as mx;
-//    src/styles.scss                       @use './styles/mixins' as mx;
-//    src/app/app.component.scss            @use '../styles/mixins' as mx;
-//    src/app/layout/<x>/                   @use '../../../styles/mixins' as mx;
-//    src/app/shared/directives/            @use '../../../styles/mixins' as mx;
-//    src/app/shared/components/<x>/        @use '../../../../styles/mixins' as mx;
-//    src/app/features/<f>/<screen>/        @use '../../../../styles/mixins' as mx;
-//
-//  Note the two different depths: a layout or directive stylesheet is three
-//  levels below src/, whereas a shared component and a feature screen are four.
-//  Count the directories from the stylesheet to src/ rather than copying a
-//  neighbour's line from a different depth.
-//
-//  Sass modules are per-file and are NOT ambient. A `@use` in src/styles.scss
-//  does not make these members visible to a component stylesheet; every
-//  consumer must `@use` this file itself. There is deliberately no barrel or
-//  index partial to forward them from — imports are explicitly pathed.
-//
-//  This file loads nothing but built-in `sass:*` modules, so it can never take
-//  part in a load cycle. It does NOT load _tokens.scss: it emits no CSS and so
-//  never needs a token's value at compile time. It only names custom properties
-//  inside mixin bodies, which the browser resolves at run time from the single
-//  document-root block that _tokens.scss owns.
-//
-//  ZERO HARDCODED VALUES, AND THE ONE DOCUMENTED EXCEPTION
-//  ------------------------------------------------------
-//  Every value these mixins emit resolves to a `var(--token)` from _tokens.scss.
-//  The only literals are the six the migration plan permits — `0`, `none`,
-//  `auto`, `inherit`, `currentColor`, `transparent` — plus CSS structural
-//  keywords such as `absolute`, `hidden` and `nowrap`, which name a layout
-//  mechanism rather than a design decision and have no token to resolve to.
-//
-// MIGRATION: the breakpoint widths below are the single exception, and it is a
-//  bounded and unavoidable one rather than a lapse. A CSS custom property is not
-//  evaluated inside a media feature query — `@media (min-width: var(--bp-md))`
-//  is inert in every browser, because custom properties resolve per element at
-//  computed-value time whereas a media query is evaluated against the viewport
-//  before any element exists. The widths are therefore compile-time Sass values,
-//  substituted into the query text by the compiler. They are confined to the
-//  private map in this one file, which is exactly what "declared once" requires:
-//  because the map name begins with an underscore it is module-private, so no
-//  other stylesheet can read it even by accident, and every consumer is forced
-//  through the mixins.
-//
-//  PROVENANCE — MEASURED, NOT ASSUMED
-//  ----------------------------------
-//  The only visual design source for this migration is the legacy DotNetNuke
-//  portal CSS; no Figma frame, design URL or attachment was supplied. Both
-//  reference stylesheets were measured, and every member here is a net addition
-//  because the legacy portal simply has no equivalent to carry forward:
-//
-//    Website/Portals/_default/default.css   1030 lines, 136 rules
-//    Website/Portals/_default/portal.css     275 lines, every rule body empty
-//
-//    @media                     0 in default.css, 0 in portal.css,
-//                               and 0 across every *.css file under Website/
-//    :focus / outline           0 and 0 in both stylesheets
-//    transition / animation /
-//      @keyframes / transform   0 in both stylesheets
-//    display:none /
-//      visibility:hidden        0 in both stylesheets
-//    em or rem units            0 in both stylesheets (195 px, 15 pt, 6 %)
-//
-//  Both legacy stylesheets are read-only reference inputs. This migration is
-//  purely additive: no legacy file is modified or removed.
-//
-//  DIVERGENCE POLICY
-//  -----------------
-//  Where this file departs from what the legacy portal did, the departure is
-//  annotated inline with a `// MIGRATION:` comment rather than silently
-//  absorbed. Because the legacy rest state carries no focus treatment and no
-//  responsive behaviour at all, adding them changes nothing the legacy portal
-//  rendered at rest — the accessibility improvements below have zero visual cost
-//  to the resting state.
-//
-// MIGRATION: motion is deliberately NOT part of this surface. The legacy portal
-//  declares `transition`, `animation`, `@keyframes` and `transform` zero times
-//  each, so there is no motion to carry forward, and the design system closes
-//  this file's exports at the responsive and accessibility members above. No
-//  duration, easing, guard or animation helper is exported, and no consumer may
-//  substitute its own at-rule for one: a component that wants motion reports the
-//  gap and renders the static presentation instead. That keeps the workspace's
-//  only `@media` ownership pointed at responsive behaviour, which is the single
-//  purpose the plan grants it.
-// =============================================================================
-
-// Built-in Sass modules only. These ship inside the compiler itself rather than
-// being installed packages, so loading them adds no dependency to the workspace —
-// zero design-system and zero third-party style dependencies are used anywhere.
-// The modern module API is used throughout: the global `map-get` and friends are
-// deprecated in Dart Sass and would emit build deprecation warnings.
 @use 'sass:map';
+
+// =============================================================================
+//  HOW TO LOAD THIS FILE - the verified relative depths
+// =============================================================================
+//
+// The workspace configures no Sass load path: `angular.json` declares no
+// `stylePreprocessorOptions.includePaths`. Every `@use` must therefore be
+// relative, and a path off by one directory fails the build with "Can't find
+// stylesheet to import." Count the directories from the stylesheet up to `src/`:
+//
+//   src/styles/_<sibling>.scss                  @use 'mixins' as mx;
+//   src/styles.scss                             @use './styles/mixins' as mx;
+//   src/app/app.component.scss                  @use '../styles/mixins' as mx;
+//   src/app/layout/<band>/                      @use '../../../styles/mixins' as mx;
+//   src/app/shared/directives/                  @use '../../../styles/mixins' as mx;
+//   src/app/shared/components/<name>/           @use '../../../../styles/mixins' as mx;
+//   src/app/features/<f>/<screen>/              @use '../../../../styles/mixins' as mx;
+//   src/app/features/<f>/<screen>/<child>/      @use '../../../../../styles/mixins' as mx;
+//
+// The last row is real rather than hypothetical: a nested feature screen sits
+// five levels below `src/`, and `features/user/membership-settings/
+// member-services/member-services.component.scss` loads this file at that depth.
+//
+// Sass modules are per-file and NOT ambient: a `@use` in `styles.scss` does not
+// make these members visible to a component stylesheet, so every consumer must
+// load this file itself. There is deliberately no barrel to forward them from.
 
 // =============================================================================
 //  BREAKPOINT SCALE — declared exactly once for the entire workspace
 // =============================================================================
 
-// Widths are in rem rather than px on purpose. Inside a media query rem resolves
-// against the browser's default font size — the reader's own preference — and
-// not against any root size the page sets, so a reader who enlarges their text
-// reaches the simpler layout sooner. Private, via the leading underscore, so no
-// other stylesheet can reach in and restate a step: add one here and the whole
-// workspace picks it up at once.
-//
-// Each step is named before the map is composed from those names, so the scale has
-// the same shape as every other value in the workspace — a name, a documented
-// provenance, and exactly one definition site — rather than four bare widths
-// sitting inside a literal map. A media query cannot evaluate a CSS custom
-// property, which is why these are Sass variables and not tokens in _tokens.scss,
-// and it is also why this file is the one authorized place they may be declared.
-//
-// The four widths themselves are a NET ADDITION, not a measurement. The legacy
-// portal declares no media query anywhere — both Website/Portals/_default/default.css
-// and portal.css contain zero — so there is no responsive behaviour to preserve and
-// no legacy figure to match. They are conventional device-class boundaries: a large
-// handset, a small tablet, a laptop, and a wide desktop.
+// Each step is named before the map is composed from those names, so the scale has the same shape as every
+// other value in the workspace — a name, a documented provenance, and exactly one definition site — rather
+// than four bare widths sitting inside a literal map.
 $_breakpoint-sm: 30rem;
 $_breakpoint-md: 48rem;
 $_breakpoint-lg: 64rem;
@@ -208,20 +45,8 @@ $_breakpoints: (
   'xl': $_breakpoint-xl,
 );
 
-// Subtracted from a step to make `respond-below`'s upper bound exclusive, so
-// `respond-below('md')` and `respond-above('md')` can never both match the same
-// viewport. 0.001rem is far below a single device pixel yet large enough to
-// survive the fractional viewport widths that browser zoom produces. Classic
-// min-width/max-width is used in preference to range syntax (`width < 48rem`)
-// for browser support, and the epsilon makes the two forms equivalent.
 $_breakpoint-epsilon: 0.001rem;
 
-// Resolves a named step to its width, for the occasional rule that needs the raw
-// value — a grid `max-inline-size`, say. Not an escape hatch for hand-rolling a
-// query: `@media (min-width: breakpoint('md'))` in a component reintroduces the
-// duplication this file exists to prevent. An unknown name fails the build
-// rather than emitting a query that can never match, which would compile
-// cleanly and lay out wrongly with no diagnostic anywhere.
 @function breakpoint($name) {
   @if not map.has-key($_breakpoints, $name) {
     @error 'Unknown breakpoint #{$name}. Valid steps are: #{map.keys($_breakpoints)}. '
@@ -233,53 +58,31 @@ $_breakpoint-epsilon: 0.001rem;
   @return map.get($_breakpoints, $name);
 }
 
-// Applies the wrapped declarations at and above a step, and is the default
-// direction: author the narrow layout unconditionally, then layer the wider one
-// on top of it. Mixing directions across a codebase produces overlapping queries
-// whose winner depends on source order.
+// Applies the wrapped declarations at and above a step, and is the default direction: author the narrow
+// layout unconditionally, then layer the wider one on top of it. Mixing directions across a codebase
+// produces overlapping queries whose winner depends on source order.
 @mixin respond-above($name) {
   @media (min-width: breakpoint($name)) {
     @content;
   }
 }
 
-// Strictly below a step, for a rule that has to be withdrawn rather than added.
-// The bound is exclusive, so pairing this with `respond-above` on the same step
-// covers every viewport exactly once — no overlap and no gap.
+// Strictly below a step, for a rule that has to be withdrawn rather than added. The bound is exclusive, so
+// pairing this with `respond-above` on the same step covers every viewport exactly once — no overlap and no
+// gap.
 @mixin respond-below($name) {
   @media (max-width: breakpoint($name) - $_breakpoint-epsilon) {
     @content;
   }
 }
 
-
 // =============================================================================
 //  INTERACTION — a hover state that a touch device cannot get stuck in
 // =============================================================================
 
-// Include inside a selector: it attaches `:hover` to the parent, so a top-level
-// include is a compile error rather than a silent no-op — the same shape as
-// `focus-ring` beside it, and idempotent for the same reason.
-//
-// THE DEFECT THIS EXISTS TO PREVENT. A bare `:hover` rule on a touch device is
-// applied on tap and then LEFT APPLIED until something else is tapped, so a row a
-// reader merely touched keeps reading as hovered indefinitely — and on a grid whose
-// selected row is also distinguished by colour, a stuck hover is indistinguishable
-// from a state the reader did not choose. `pointer: fine` is included as well as
-// `hover: hover` because a device can report itself hover-capable while its primary
-// pointer is coarse, which is where the stuck state actually appears.
-//
-// The query is written HERE and only here. Every sibling partial and every
-// component stylesheet is barred from authoring a media feature query of its own,
-// and four of them — the form vocabulary, the table conventions, the pagination
-// component and the record grid — each recorded the absence of this guard as a
-// reported gap and named this file as the place to close it. This is that closure.
-//
-// A rule withdrawn rather than added: a device that cannot hover simply never
-// matches, so the declarations inside are additive decoration and nothing an
-// interaction depends on may live in them. The pointer, the focus ring and the
-// programmatic state carry the affordance for every reader; hover only enriches it
-// for a reader who has a pointer that can express it.
+// Include inside a selector: it attaches `:hover` to the parent, so a top-level include is a compile error
+// rather than a silent no-op — the same shape as `focus-ring` beside it, and idempotent for the same
+// reason.
 @mixin hover {
   @media (hover: hover) and (pointer: fine) {
     &:hover {
@@ -288,58 +91,13 @@ $_breakpoint-epsilon: 0.001rem;
   }
 }
 
-
 // =============================================================================
 //  ACCESSIBILITY — invisible to a sighted mouse user at rest, so no visual cost
 // =============================================================================
 
-// Include inside a selector: it attaches `:focus-visible` to the parent, so a
-// top-level include is a compile error rather than a silent no-op. Idempotent,
-// and therefore safe to apply broadly and again on an individual control.
-// `:focus-visible` rather than `:focus` keeps the ring off mouse presses.
-// `outline` rather than `border` because an outline is painted outside the box
-// without participating in layout, so it cannot shift, resize or reflow what it
-// marks, and unlike a shadow it survives forced-colours and high-contrast modes.
-// The ring resolves to the brand colour, which measures 12.61:1 against the page
-// background — well clear of the 3:1 AA threshold for a non-text indicator.
-//
-// MIGRATION: TWO-TONE, and the second tone is what makes the indicator independent
-// of the backdrop rather than merely usually-visible against it. The ring colour is
-// the brand colour, and the brand colour is also a painted surface in this system,
-// so a single-toned ring paints brand-on-brand at 1:1 wherever a focusable element
-// sits on a brand-filled band — a collision the record grid carried a standing
-// accessibility flag for, and one that no flat colour can resolve: the luminance
-// window that clears the 3:1 non-text floor on a brand band and on the selected tint
-// simultaneously is empty, with a best achievable worst-case of about 2.87:1.
-//
-// GEOMETRY. The outline occupies the annulus from `offset` to `offset + width`
-// outside the border box. A single outset shadow with no blur and a spread of
-// `offset + width + width` paints a solid block of the contrast colour from the
-// border box out to the ring's outer edge PLUS one ring width, and the outline is
-// painted on top of the middle of it — because a box shadow is painted beneath the
-// element's own background and border while an outline is painted above them. The
-// result is three concentric bands: contrast, ring, contrast. Every geometric term
-// is composed from the existing focus tokens, so retuning the width or the offset
-// keeps all three bands consistent with no second place to edit.
-//
-// WHY THIS COSTS NOTHING VISUALLY ON A LIGHT SURFACE. The contrast tone resolves to
-// the page background, so on the page background and on either neutral surface the
-// two bands are indistinguishable from the backdrop they replace — the inner band
-// occupies the gap the offset already left transparent, and the outer band lands on
-// a surface it matches to within 1.13:1. Only where the backdrop is dark do the
-// bands become visible, which is exactly where the ring alone stops being.
-//
-// NEITHER DECLARATION PARTICIPATES IN LAYOUT, so a two-tone ring shifts nothing that
-// a one-tone ring did not shift. In forced-colours mode the shadow is dropped by the
-// user agent and the outline remains, which is the correct degradation: the backdrop
-// is forced there too, so the collision the second tone exists to answer cannot
-// arise. The shadow is therefore additive and the outline stays the load-bearing
-// indicator.
-//
-// ONE CONSUMER SUPPRESSES THE SHADOW, and it is the only place a suppression is
-// legitimate: the record grid turns its row ring INWARD because the rows live in a
-// region that clips, and an outward band would then paint over the neighbouring rows.
-// That rule states the reason at its own site. Nothing else may suppress it.
+// Include inside a selector: it attaches `:focus-visible` to the parent, so a top-level include is a
+// compile error rather than a silent no-op. Idempotent, and therefore safe to apply broadly and again on an
+// individual control.
 @mixin focus-ring {
   &:focus-visible {
     outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
@@ -350,22 +108,6 @@ $_breakpoint-epsilon: 0.001rem;
   }
 }
 
-// Removes an element from view while keeping it in the accessibility tree, for
-// text a screen reader must announce but the layout must not show. Deliberately
-// not `display: none` and not `visibility: hidden`: both drop the element from
-// the accessibility tree as well as the page, silencing the very text this
-// exists to announce. `clip-path: inset(50%)` supersedes the deprecated
-// `clip: rect(...)`. The clip that does the hiding collapses the box to its own
-// centre, and it resolves to `--clip-collapsed` rather than being written inline:
-// being geometric rather than aesthetic makes a value no less of a value, and the
-// vocabulary rule admits only `0`, `none`, `auto`, `inherit`, `currentColor` and
-// `transparent`.
-// `white-space: nowrap` stops a long string from wrapping inside the hairline
-// box, which in some engines expands its block size and reintroduces a scrollbar
-// on an ancestor. Every length here is either `0` or the hairline
-// `--border-width`: the technique needs a non-zero box, and that is the token
-// which expresses one. Logical properties keep the rule correct under a
-// right-to-left or vertical writing mode.
 @mixin visually-hidden {
   position: absolute;
   inline-size: var(--border-width);
@@ -379,89 +121,29 @@ $_breakpoint-epsilon: 0.001rem;
   border-width: 0;
 }
 
-// Hidden as above until it receives keyboard focus — the skip-link pattern,
-// where a link must lead the tab order yet stay invisible until tabbed to. Note
-// the shape: the hidden state is scoped to `:not(:focus-visible)` rather than
-// applied unconditionally and then reversed on focus. That raises it to a
-// compound selector, so a consumer's flat `padding` or `background` for the
-// revealed state cannot accidentally defeat the geometry that does the hiding;
-// and if `:focus-visible` is unsupported the whole rule is dropped, leaving the
-// link permanently visible rather than permanently unreachable. Revealing
-// returns the element to normal flow, so following content shifts down while it
-// holds focus; a consumer wanting an overlay instead can position it on focus.
+// Hidden as above until it receives keyboard focus — the skip-link pattern, where a link must lead the tab
+// order yet stay invisible until tabbed to. Note the shape: the hidden state is scoped to
+// `:not(:focus-visible)` rather than applied unconditionally and then reversed on focus.
 @mixin visually-hidden-focusable {
   &:not(:focus-visible) {
     @include visually-hidden;
   }
 }
 
-// -----------------------------------------------------------------------------
-//  MOTION
-// -----------------------------------------------------------------------------
-//  ONE guard and one rotation, in one section. Both the guard and its section banner
-//  were declared TWICE in this file, with identical bodies and overlapping prose, so a
-//  reader met the same mixin explained two different ways and a later edit could have
-//  changed one copy and not the other. The two accounts are merged below and the
-//  duplicate declaration is gone.
-//
-//  MIGRATION: A NET ADDITION, and it is added here rather than in a component for the
-//  same reason every media query lives in this file: a component stylesheet may not
-//  author a raw `@media`, so a component that needs motion cannot guard it and must
-//  therefore be given a guard to use. Without one the only compliant choice was to
-//  ship no motion at all - which is what happened, and what left the application's
-//  primary asynchronous affordance conveying nothing: runtime measurement found ZERO
-//  `@keyframes` rules in the whole bundle, so the "spinner" was a static ring that
-//  never moved while a request was in flight. The legacy portal declared no motion
-//  vocabulary, so nothing is being diverged FROM here; a spinner that spins is a net
-//  addition in the same sense as the spacing scale.
-//
-//  ⚠ WHY THE GUARD EXISTS AT ALL, since the exported surface is deliberately closed.
-//  The header of this file states that a consumer needing any other at-rule - "a
-//  reduced-motion guard, a hover-capability query" - "must report the gap and degrade,
-//  never write the query itself". The progress indicator did exactly that: it recorded
-//  that it could not rotate because no such guard was exported and a component
-//  stylesheet may not author a feature query of its own, and it degraded to a static
-//  glyph. A static indeterminate indicator does not report progress, so the gap was
-//  reported and is now CLOSED HERE, in the one file permitted the query, rather than
-//  worked around at the call site.
-//
-//  ⚠ `no-preference` AND NOT `not (reduce)`. The guard admits motion only on an
-//  explicit absence of preference, so a browser that reports the feature as
-//  unsupported gets the STATIC presentation. Choosing the negated form would treat
-//  "unknown" as consent, which is the wrong default for an accessibility
-//  preference: nobody is harmed by a still indicator, and a reader who cannot
-//  tolerate movement is harmed by an unexpected one.
-//
-//  The static presentation therefore remains the base state and the guard only ever
-//  ADDS movement, which is also why no `animation: none` counterpart is needed - and it
-//  is what makes the movement admissible: the reduced-motion presentation is the
-//  DEFAULT and the movement is the enhancement.
+// MOTION
+// MIGRATION: A NET ADDITION, and it is added here rather than in a component for the same reason every
+// media query lives in this file: a component stylesheet may not author a raw `@media`, so a component that
+// needs motion cannot guard it and must therefore be given a guard to use.
 
-/// Wraps declarations that must only apply when motion is welcome.
-///
-/// @content Declarations applied when the reader has not requested reduced motion.
 @mixin motion-safe {
   @media (prefers-reduced-motion: no-preference) {
     @content;
   }
 }
 
-/// Applies the indeterminate rotation to the element it is included on.
-///
-/// The rotation itself is declared once, here, so that the keyframes are defined a
-/// single time in the bundle and a component cannot invent a second, differently-timed
-/// spin. `will-change` is deliberately absent: a compositor hint for a 24 px element is
-/// a cost, not an optimisation.
-///
-/// ⚠ THE DURATION AND THE EASING ARE TOKENS AND WERE A SASS VARIABLE AND A KEYWORD. A
-/// private `$_motion-duration-indicator: 900ms` was declared in this file alongside a
-/// literal `linear`, while `--duration-rotate` and `--easing-rotate` already existed in
-/// the token vocabulary carrying exactly this purpose - so one motion had two
-/// authorities that disagreed on the duration, and the one outside the vocabulary won.
-/// Both now resolve to the tokens, which is also why the shorthand is written out as
-/// three longhand declarations: `animation` cannot be assembled from custom properties
-/// reliably, because an invalid substitution in a shorthand invalidates the whole
-/// declaration at computed-value time rather than falling back per component.
+// / Applies the indeterminate rotation to the element it is included on. / / The rotation itself is
+// declared once, here, so that the keyframes are defined a / single time in the bundle and a component
+// cannot invent a second, differently-timed / spin.
 @mixin indeterminate-spin {
   @include motion-safe {
     animation-name: dnn-indeterminate-spin;
@@ -470,11 +152,3 @@ $_breakpoint-epsilon: 0.001rem;
     animation-iteration-count: infinite;
   }
 }
-
-//  ⚠ THE @keyframes BLOCK ITSELF IS NOT DECLARED HERE. It lives in `styles.scss`, once.
-//  Sass modules are per-compilation, and every component stylesheet is its own
-//  compilation, so a top-level at-rule in this partial is emitted into the CSS of EVERY
-//  file that `@use`s it - measured at 33 consuming stylesheets and 35 copies of one
-//  keyframes block in the built bundle. Keyframe names are global regardless of view
-//  encapsulation, so one global declaration is both correct and sufficient; this mixin
-//  only REFERENCES the name.

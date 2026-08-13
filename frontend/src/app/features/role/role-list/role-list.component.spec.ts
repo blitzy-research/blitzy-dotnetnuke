@@ -1,32 +1,7 @@
 /**
- * Specification for {@link RoleListComponent} — the security-role listing at `/roles`.
- *
- * ## WHY THIS SCREEN NEEDS ITS OWN SPECIFICATION
- *
- * It is TWO screens sharing one surface: a listing of roles, and an inline editor for the role GROUP
- * currently being filtered by. The group half is where the risk lives — the group being edited is the
- * one the FILTER names, so the filter and the editor must never disagree about which group that is, and
- * a group may only be removed once nothing is in it.
- *
- * ## HOW IT IS DRIVEN
- *
- *   - Mounted as the standalone unit it is, with the REAL {@link RoleStore} pinned to each case's
- *     injector, and every request answered through `HttpTestingController`.
- *   - `NotificationService.notify` is spied and called through. No router is spied: every cross-screen
- *     movement this screen offers is a link, asserted as an address.
- *
- * ## THE FACTS THAT SHAPE EVERY CASE
- *
- * ⚠ ARRIVAL IS ONE CHAINED READ, NOT TWO INDEPENDENT ONES. `GET /role-groups` is issued first and
- * `GET /roles` follows only once the groups have answered — they are one subscription joined by a
- * switch — so a case must answer them IN THAT ORDER. Answering the roles read first finds nothing.
- *
- * ⚠ THE FILTER IS NOT SENT AS A NUMBER. The two pseudo-entries are negative values IN THE DOM ONLY;
- * what travels is a named scope (`All` or `Ungrouped`) or a real `roleGroupId`. A negative number
- * reaching the wire would be a request for a group that cannot exist.
- *
- * ⚠ A GROUP CAN ONLY BE REMOVED WHILE THE LISTING IS EMPTY. That is the client's own precondition, and
- * the server's `role_group.in_use` refusal at `409` is the backstop for the race between them.
+ * Specification for {@link RoleListComponent} — the security-role listing at `/roles`. ## WHY THIS SCREEN
+ * NEEDS ITS OWN SPECIFICATION It is TWO screens sharing one surface: a listing of roles, and an inline
+ * editor for the role GROUP currently being filtered by.
  */
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -53,12 +28,7 @@ import type { UserDetail } from '../../../core/models/user.model';
 
 const ROLES_URL = '/api/v1/roles';
 
-/**
- * The memberships-of-one-account address, for the account key these cases use.
- *
- * Nested under the ACCOUNT, because the answer is one person's memberships rather than one role's
- * members — `RolesController.cs:839` routes it at `users/{userId:int}/roles`.
- */
+/** The memberships-of-one-account address, for the account key these cases use. */
 const USER_ROLES_URL = '/api/v1/users/42/roles';
 
 /** A second account's address, so a switch of subject is provable. */
@@ -105,7 +75,7 @@ const FILTER_CONTROL_ID = 'role-list-group-filter';
 const GROUP_NAME_CONTROL_ID = 'role-list-group-name';
 const GROUP_DESCRIPTION_CONTROL_ID = 'role-list-group-description';
 
-/** The DOM-only pseudo-entry values. Neither ever reaches the wire. */
+/** The DOM-only pseudo-entry values. */
 const ALL_ROLES_VALUE = '-2';
 const GLOBAL_ROLES_VALUE = '-1';
 
@@ -150,10 +120,8 @@ function problem(
 // =====================================================================================================
 
 /**
- * One listing row.
- *
- * ⚠ THE DEFAULT IDENTIFIER IS ZERO, because `dbo.Roles.RoleID` is seeded from zero: role zero is the
- * Administrators role of an installation and must render and link like any other.
+ * One listing row. ⚠ THE DEFAULT IDENTIFIER IS ZERO, because `dbo.Roles.RoleID` is seeded from zero: role
+ * zero is the Administrators role of an installation and must render and link like any other.
  */
 function roleRow(roleId = 0, overrides: Partial<RoleListItem> = {}): RoleListItem {
   return {
@@ -187,10 +155,8 @@ function envelope<T>(data: T): ApiResponse<T> {
 }
 
 /**
- * A page of roles.
- *
- * ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data` — a fixture spelling it otherwise
- * flushes successfully and unwraps to no rows at all.
+ * A page of roles. ⚠ THE PAYLOAD MEMBER OF A PAGED LISTING IS `items`, NOT `data` — a fixture spelling it
+ * otherwise flushes successfully and unwraps to no rows at all.
  */
 function pageOf(
   items: readonly RoleListItem[],
@@ -206,32 +172,19 @@ function pageOf(
 // STRUCTURAL PROBES
 // =====================================================================================================
 
-/**
- * The field the Angular compiler writes the component definition onto.
- *
- * Held as a constant so the single unusual identifier in this file appears exactly once, and read
- * with bracket notation because `noPropertyAccessFromIndexSignature` is enabled.
- */
+/** The field the Angular compiler writes the component definition onto. */
 const COMPONENT_DEFINITION_FIELD = 'ɵcmp';
 
 /** The flag the compiler sets from `changeDetection: ChangeDetectionStrategy.OnPush`. */
 const ON_PUSH_FIELD = 'onPush';
 
 /**
- * Whether a component type was compiled with `OnPush` change detection.
- *
- * ⚠ WHY THIS IS READ STRUCTURALLY RATHER THAN OBSERVED. The usual demonstration is to move an
- * input with `componentRef.setInput` and show the view repaints only once the component is marked
- * dirty. {@link RoleListComponent} does now declare one input — the route-bound account key — so
- * that move is possible, but it does not witness the STRATEGY: the input is a SIGNAL input, which
- * marks its consumer dirty under either strategy, and everything it feeds is a signal too. Nor is
- * the strategy observable through the store, for the same reason: every slice this screen renders
- * is a signal, and a signal read in a template marks its consumer dirty under EITHER strategy, so
- * the two behave identically from the outside. The compiled definition is therefore the only honest
- * witness, and the declaration is worth witnessing: the non-functional requirements make `OnPush`
- * mandatory on every component, and nothing else in this suite would notice its removal.
- *
- * Reads through `unknown` rather than through `any`, so no assertion here is unchecked.
+ * Whether a component type was compiled with `OnPush` change detection. ⚠ WHY THIS IS READ STRUCTURALLY
+ * RATHER THAN OBSERVED. The usual demonstration is to move an input with `componentRef.setInput` and show
+ * the view repaints only once the component is marked dirty. {@link RoleListComponent} does now declare
+ * one input — the route-bound account key — so that move is possible, but it does not witness the
+ * STRATEGY: the input is a SIGNAL input, which marks its consumer dirty under either strategy, and
+ * everything it feeds is a signal too.
  */
 function declaresOnPush(componentType: unknown): boolean {
   const definition: unknown = fieldOf(componentType, COMPONENT_DEFINITION_FIELD);
@@ -240,12 +193,10 @@ function declaresOnPush(componentType: unknown): boolean {
 }
 
 /**
- * One named field of an unknown value, or `undefined` where the value cannot carry fields.
- *
- * ⚠ READ THROUGH `Reflect.get` RATHER THAN THROUGH A CAST. Asserting an unknown into an index
- * signature is the shape of assertion that hides a mistake — it type-checks against a value that may
- * be a number, a string or nothing at all, and fails at run time instead. `Reflect.get` needs only
- * that the target IS an object, which the guard establishes, so nothing here is unchecked.
+ * One named field of an unknown value, or `undefined` where the value cannot carry fields. ⚠ READ THROUGH
+ * `Reflect.get` RATHER THAN THROUGH A CAST. Asserting an unknown into an index signature is the shape of
+ * assertion that hides a mistake — it type-checks against a value that may be a number, a string or
+ * nothing at all, and fails at run time instead.
  */
 function fieldOf(carrier: unknown, field: string): unknown {
   if (carrier === null || (typeof carrier !== 'object' && typeof carrier !== 'function')) {
@@ -255,13 +206,7 @@ function fieldOf(carrier: unknown, field: string): unknown {
   return Reflect.get(carrier, field);
 }
 
-/**
- * Whether a signal is read-only — that is, whether it withholds both mutators.
- *
- * A `WritableSignal` carries `set` and `update`; the projection `asReadonly()` returns, and a
- * `computed()`, carry neither. Testing for their absence is what proves a component cannot write
- * to state it only renders.
- */
+/** Whether a signal is read-only — that is, whether it withholds both mutators. */
 function withholdsMutators(source: unknown): boolean {
   if (typeof source !== 'function') {
     return false;
@@ -277,12 +222,9 @@ describe('RoleListComponent', () => {
   let notifySpy: jasmine.Spy;
 
   /**
-   * Whether {@link create} has run in the CURRENT case.
-   *
-   * ⚠ A CLOSURE VARIABLE SURVIVES THE CASE THAT ASSIGNED IT, so `fixture` still holds the
-   * previous case's component even in a case that never mounted one. This flag is what lets
-   * teardown tell "nothing was mounted" from "something was", rather than destroying a fixture
-   * that a previous case already destroyed. It is reset for every case, below.
+   * Whether {@link create} has run in the CURRENT case. ⚠ A CLOSURE VARIABLE SURVIVES THE CASE THAT
+   * ASSIGNED IT, so `fixture` still holds the previous case's component even in a case that never mounted
+   * one.
    */
   let mounted = false;
 
@@ -290,23 +232,6 @@ describe('RoleListComponent', () => {
     mounted = false;
 
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it.
-    /*
-     * ⚠ TENANT ADMINISTRATION IS THE INPUT TO THIS SCREEN, so it is held in a signal the cases can
-     * move. The two CREATE affordances address `/roles/new` and `/role-groups/new`, both of which
-     * declare the `PortalAdministrator` policy on their own routes — so the fact that decides whether
-     * to offer them is the server's own determination, re-exposed by the identity projection as
-     * `administersCurrentPortal`. Nothing else in this component's subtree touches the projection at
-     * all, which is why a one-member double is honest here rather than a convenience.
-     *
-     * ⚠ THIS REPLACED A PERMISSION KEY, AND THE DIFFERENCE IS NOT COSMETIC. The affordances used to be
-     * gated by `*hasPermission="'EDIT'"`. `EDIT` is a PERSISTED grant over a module or page instance,
-     * carried in `ModulePermissions` and `TabPermissions`; it is consulted by nothing on the
-     * role-administration path, so the old gate could both hide a screen the caller may reach and
-     * offer one the router will refuse.
-     *
-     * Seeded as ADMINISTERING, so the ordinary cases below describe the screen an administrator sees.
-     * The gating itself is proved separately, by taking the determination away.
-     */
     administersPortal = signal<boolean>(true);
 
     await TestBed.configureTestingModule({
@@ -315,10 +240,7 @@ describe('RoleListComponent', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         // ⚠ A ROUTE THAT ALWAYS MATCHES, because this screen now keeps its narrowing and its page in the
-        // ADDRESS and writes them with a real navigation. An empty route table refuses every navigation, so
-        // the write would silently fail and the read that follows the address change would never be issued -
-        // which is exactly how thirty cases below started failing when the address contract was introduced.
-        // The component under test is named as the target so the tree is genuinely resolvable.
+        // ADDRESS and writes them with a real navigation.
         provideRouter([{ path: '**', component: RoleListComponent }]),
         RoleStore,
         { provide: AuthStore, useValue: { administersCurrentPortal: administersPortal } },
@@ -330,30 +252,12 @@ describe('RoleListComponent', () => {
   });
 
   afterEach(() => {
-    /*
-     * ⚠ THE FIXTURE IS TORN DOWN BEFORE THE BACKEND IS VERIFIED, AND THAT ORDER IS DELIBERATE.
-     *
-     * The confirmation this screen raises is a native `<dialog>`, and the top layer it opens into
-     * belongs to the DOCUMENT rather than to the fixture — one Karma page hosts every spec in the
-     * whole suite, so a confirmation left open here is still open when an unrelated spec runs and
-     * its modal backdrop swallows that spec's clicks. Destroying explicitly closes it. Teardown
-     * also cancels the store's outstanding reads, which is what makes the verification below a
-     * statement about requests the SCREEN issued rather than about ones its teardown left behind.
-     *
-     * `create()` is what assigns the fixture, and a case may fail before reaching it, so the
-     * guard is a real branch and not defensive noise. One case destroys its own fixture to observe
-     * what teardown does; a second destruction is a no-op, so that case needs no exemption here.
-     */
+    // ⚠ THE FIXTURE IS TORN DOWN BEFORE THE BACKEND IS VERIFIED, AND THAT ORDER IS DELIBERATE.
     if (mounted) {
       fixture.destroy();
       mounted = false;
     }
 
-    /*
-     * Doubles as a positive assertion: every case answers exactly the requests it provoked, so an
-     * unanticipated call — a duplicated read, a mutation issued twice, a request the screen should
-     * not have made at all — fails here even where nothing asserted its absence.
-     */
     httpMock.verify();
   });
 
@@ -369,12 +273,9 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * Lets a navigation this screen started actually happen.
-   *
-   * The narrowing selector, the pager and the ordering controls write the ADDRESS rather than calling the
-   * store, and a router navigation is asynchronous, so the read that follows one is not issued in the same
-   * task. Anything that changes the narrowing, the page or the ordering must therefore be followed by this
-   * before its request can be expected.
+   * Lets a navigation this screen started actually happen. The narrowing selector, the pager and the
+   * ordering controls write the ADDRESS rather than calling the store, and a router navigation is
+   * asynchronous, so the read that follows one is not issued in the same task.
    */
   async function settleAddress(): Promise<void> {
     await fixture.whenStable();
@@ -390,10 +291,9 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * Answers the chained arrival read.
-   *
-   * ⚠ THE ORDER IS FIXED BY THE COMPONENT, NOT BY THIS HELPER. The groups are read first and the roles
-   * read is issued only once they have answered, so answering them the other way round finds nothing.
+   * Answers the chained arrival read. ⚠ THE ORDER IS FIXED BY THE COMPONENT, NOT BY THIS HELPER. The
+   * groups are read first and the roles read is issued only once they have answered, so answering them
+   * the other way round finds nothing.
    */
   function answerArrival(
     groups: readonly RoleGroup[] = [roleGroup()],
@@ -420,12 +320,10 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * The component's host element.
-   *
-   * ⚠ BY ASSIGNMENT, NOT BY CAST. `ComponentFixture.nativeElement` is declared `any`, so the
-   * annotated local is what gives it a type — and it is a real check rather than a cosmetic one,
-   * because a cast would equally have accepted a wrong element type and pushed the failure into
-   * whichever assertion happened to touch it first.
+   * The component's host element. ⚠ BY ASSIGNMENT, NOT BY CAST. `ComponentFixture.nativeElement` is
+   * declared `any`, so the annotated local is what gives it a type — and it is a real check rather than a
+   * cosmetic one, because a cast would equally have accepted a wrong element type and pushed the failure
+   * into whichever assertion happened to touch it first.
    */
   function host(): HTMLElement {
     const element: HTMLElement = fixture.nativeElement;
@@ -442,13 +340,10 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * The one element matching `selector`, narrowed by a real check.
-   *
-   * ⚠ THIS EXISTS BECAUSE A NON-NULL ASSERTION IS NOT ALLOWED HERE. `element!.textContent` would
-   * silence the compiler and then read `textContent` of `null` at run time, and Jasmine reports
-   * that as a bare `TypeError` naming neither the selector nor the case's intent. Throwing on the
-   * absence names the selector that was missing, which is the difference between a diagnosis and
-   * a puzzle.
+   * The one element matching `selector`, narrowed by a real check. ⚠ THIS EXISTS BECAUSE A NON-NULL
+   * ASSERTION IS NOT ALLOWED HERE. `element!.textContent` would silence the compiler and then read
+   * `textContent` of `null` at run time, and Jasmine reports that as a bare `TypeError` naming neither
+   * the selector nor the case's intent.
    */
   function queryOrFail<E extends Element>(root: ParentNode, selector: string): E {
     const found: E | null = root.querySelector<E>(selector);
@@ -514,10 +409,9 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * Presses one of the two icon-only group commands, which carry no text of their own.
-   *
-   * ⚠ THEY CANNOT BE FOUND BY WORDING. Each is a real button whose visible content is an image plus
-   * clipped text, so the class is the handle; the accessible name is asserted separately.
+   * Presses one of the two icon-only group commands, which carry no text of their own. ⚠ THEY CANNOT BE
+   * FOUND BY WORDING. Each is a real button whose visible content is an image plus clipped text, so the
+   * class is the handle; the accessible name is asserted separately.
    */
   function pressGroupCommand(kind: 'edit' | 'remove'): void {
     const controls: readonly HTMLButtonElement[] = queryAll<HTMLButtonElement>(
@@ -583,17 +477,6 @@ describe('RoleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * Answers the subject account's NAME read.
-   *
-   * ⚠ EVERY NARROWED CASE MUST ANSWER THIS, and `afterEach`'s `verify()` is what enforces it. The
-   * screen names the person beneath the heading — `SecurityRoles.ascx.vb` L104-L105 read the account
-   * for exactly that — so narrowing to an account provokes a second read alongside the membership
-   * one, and a case that leaves it open fails as an unanticipated call.
-   *
-   * Answered SEPARATELY from the membership read rather than folded into it, because the two are
-   * independent: the membership read can be refused while the name read succeeds, and vice versa,
-   * and several cases below rely on exactly that.
-   *
    * @param account The account key the read is expected for.
    * @param name The display name to answer with, or `undefined` to refuse the read.
    */
@@ -613,10 +496,9 @@ describe('RoleListComponent', () => {
   }
 
   /**
-   * A minimal account-detail payload, carrying only what the subtitle reads.
-   *
-   * The decoder requires the whole contract, so this states every member rather than the two the
-   * screen consumes — a partial payload would be rejected before the name reached the subtitle.
+   * A minimal account-detail payload, carrying only what the subtitle reads. The decoder requires the
+   * whole contract, so this states every member rather than the two the screen consumes — a partial
+   * payload would be rejected before the name reached the subtitle.
    *
    * @param userId The account key.
    * @param displayName The name to carry.
@@ -654,8 +536,8 @@ describe('RoleListComponent', () => {
       const groupRead = expectRequest('GET', ROLE_GROUPS_URL);
 
       // ⚠ THE ROLES READ DOES NOT EXIST YET, and that ordering is deliberate: the groups decide which
-      // narrowing the roles read carries, so issuing both at once could read the roles under a filter
-      // the screen is about to abandon.
+      // narrowing the roles read carries, so issuing both at once could read the roles under a filter the
+      // screen is about to abandon.
       httpMock.expectNone((candidate) => candidate.url === ROLES_URL);
       expect(groupRead.request.params.keys()).withContext('no query string').toHaveSize(0);
 
@@ -697,13 +579,10 @@ describe('RoleListComponent', () => {
     });
 
     it('withholds the two CREATE affordances from a caller that does not administer the tenant', () => {
-      // ⚠ AN AFFORDANCE AND NEVER AN ENFORCEMENT POINT. The API re-authorises every request and its
-      // verdict governs, so hiding these links protects nothing — what it does is stop offering an
-      // operator two screens the router is certain to refuse, which is the difference between an
-      // application that knows what you may do and one that lets you find out by failing.
-      //
-      // ⚠ AND THE SETTINGS LINK IS NOT GATED, DELIBERATELY. Its route carries authentication alone,
-      // so the outcome of following it is genuinely uncertain from here and the entry is shown.
+      // ⚠ AN AFFORDANCE AND NEVER AN ENFORCEMENT POINT. The API re-authorises every request and its verdict
+      // governs, so hiding these links protects nothing — what it does is stop offering an operator two
+      // screens the router is certain to refuse, which is the difference between an application that knows
+      // what you may do and one that lets you find out by failing.
       administersPortal.set(false);
 
       arrive();
@@ -718,10 +597,6 @@ describe('RoleListComponent', () => {
     });
 
     it('restores the CREATE affordances the moment the determination arrives', () => {
-      // The gate is re-read from the identity rather than cached at first render, so an administrator
-      // whose determination arrives after the screen has painted — which is the ORDINARY case, the
-      // identity being fetched while the sign-in snapshot leaves the derived fact false — is not left
-      // looking at a screen it cannot act on.
       administersPortal.set(false);
 
       arrive();
@@ -802,24 +677,13 @@ describe('RoleListComponent', () => {
   // PROOF 2 — FILTERING BY GROUP
   // ---------------------------------------------------------------------------------------------------
 
-  // ---------------------------------------------------------------------------------------------------
   // NARROWED TO ONE ACCOUNT
-  //
-  // MIGRATION: `Users.ascx.vb:L542` built the account listing's roles command as
-  // `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD")`, and the screen it reached served TWO
-  // MODES from one page keyed by either a role or an account (`SecurityRoles.ascx.vb:L413-L418`).
-  // The target had only the role-keyed mode, so the command discarded the row's account and landed
-  // the operator on every role in the tenant. These cases describe the account-keyed mode.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('narrowed to one account', () => {
     /**
-     * Mounts the screen already narrowed to one account, and settles all three arrival reads.
-     *
-     * ⚠ THREE READS, NOT TWO. The group read and the chained role read are the screen's ordinary
-     * arrival; the membership read is issued by the effect that watches the account key, on the
-     * same first pass. Answering them in this order is required — the role read does not exist
-     * until the group read has answered.
+     * Mounts the screen already narrowed to one account, and settles all three arrival reads. ⚠ THREE
+     * READS, NOT TWO. The group read and the chained role read are the screen's ordinary arrival; the
+     * membership read is issued by the effect that watches the account key, on the same first pass.
      *
      * @param held The memberships the account holds.
      * @param account The account key the address carries.
@@ -860,10 +724,9 @@ describe('RoleListComponent', () => {
     }
 
     /**
-     * The role names the grid is currently rendering, in order.
-     *
-     * Located by its HEADING rather than by a fixed offset: the first cell of a row carries the
-     * edit command, and a positional read would silently compare command labels instead of names.
+     * The role names the grid is currently rendering, in order. Located by its HEADING rather than by a
+     * fixed offset: the first cell of a row carries the edit command, and a positional read would
+     * silently compare command labels instead of names.
      */
     function renderedRoleNames(): readonly string[] {
       const headings: readonly HTMLTableCellElement[] = queryAll<HTMLTableCellElement>(
@@ -902,9 +765,9 @@ describe('RoleListComponent', () => {
     });
 
     it('RENDERS THE MEMBERSHIPS rather than the tenant-wide listing', () => {
-      // ⚠ THE DEFECT THIS FIXES. The tenant listing answered with a role the account does NOT
-      // hold; rendering it would show the operator every role in the tenant under a heading that
-      // names one person.
+      // ⚠ THE DEFECT THIS FIXES. The tenant listing answered with a role the account does NOT hold;
+      // rendering it would show the operator every role in the tenant under a heading that names one
+      // person.
       arriveForAccount([roleRow(0, { roleName: 'Administrators' })], ACCOUNT_ID, [
         roleRow(7, { roleName: 'Subscribers' }),
         roleRow(8, { roleName: 'Translators' }),
@@ -958,9 +821,9 @@ describe('RoleListComponent', () => {
     it('OFFERS THE WAY BACK to every role in the tenant, at this screen\u2019s own address', () => {
       arriveForAccount();
 
-      // ⚠ SELECTED BY LABEL, NOT BY POSITION. Narrowing to an account now offers TWO affordances —
-      // the way BACK to the person and the way SIDEWAYS to every role — and a positional read would
-      // silently assert about whichever happened to come first.
+      // ⚠ SELECTED BY LABEL, NOT BY POSITION. Narrowing to an account now offers TWO affordances — the way
+      // BACK to the person and the way SIDEWAYS to every role — and a positional read would silently assert
+      // about whichever happened to come first.
       const link = queryAll<HTMLAnchorElement>('.role-list__page-action').find(
         (candidate) => (candidate.textContent ?? '').trim() === 'Show All Roles',
       );
@@ -982,18 +845,6 @@ describe('RoleListComponent', () => {
     });
 
     it('PAGES ITSELF HONESTLY while narrowed, rather than reporting the tenant listing\u2019s figures', () => {
-      // ⚠ TWO READS, TWO SHAPES, ONE PAGER. While an account is the subject the grid renders the
-      // MEMBERSHIP read - `RolesController.cs` routes it at `users/{userId:int}/roles` and answers with
-      // a bare array, every role the account holds, unpaged - while the tenant listing behind the
-      // narrowing keeps its own paged coordinates. The pager used to read those tenant coordinates on
-      // both paths, so a narrowed screen contradicted itself: runtime testing measured a grid of TWO
-      // rows, a live region announcing "2 records." and a pager reading "1-4 of 4" beneath them, all at
-      // once. A range summary that contradicts the rows it sits beside is worse than no summary,
-      // because it is read as authority.
-      //
-      // The figures are therefore synthesised from the rows actually rendered, and the steps disappear
-      // with them: there is no second page of a membership read to step to, and offering one would
-      // write a page parameter into an address this read cannot honour.
       arriveForAccount(
         [roleRow(0, { roleName: 'Administrators' }), roleRow(3, { roleName: 'Translators' })],
         ACCOUNT_ID,
@@ -1019,7 +870,6 @@ describe('RoleListComponent', () => {
 
       expect(pageActions()).not.toContain('Show All Roles');
       expect(subtitle()).toBe('');
-      // Nothing was claimed at the account address, and teardown's verification is what proves it.
       httpMock.expectNone(
         (candidate) => candidate.url.startsWith('/api/v1/users/'),
         'no membership read without an account',
@@ -1027,9 +877,6 @@ describe('RoleListComponent', () => {
     });
 
     it('RE-READS FOR THE NEW ACCOUNT when the address moves between two accounts', () => {
-      // ⚠ THE COMPONENT IS NOT RECREATED, because both addresses match the same route. The input
-      // moves and the effect re-reads, which is exactly the case the store\u2019s dispatch-time
-      // account recording exists to make safe.
       arriveForAccount([roleRow(0, { roleName: 'Administrators' })]);
 
       fixture.componentRef.setInput('userId', String(OTHER_ACCOUNT_ID));
@@ -1051,15 +898,9 @@ describe('RoleListComponent', () => {
     });
 
     it('SHOWS NOTHING OF THE PREVIOUS ACCOUNT while a second account is read', () => {
-      // ⚠ THE MOST CONSEQUENTIAL CASE HERE, AND IT FOUND A REAL DEFECT. Between the switch and the
-      // answer the store recorded the NEW subject while still holding the OLD account's rows, so
-      // the two agreed and the subtitle claimed "account 43 — 1 role" about account 42's single
-      // membership. The store now discards a previous answer when the subject changes, which is
-      // what makes both statements below true at once.
-      //
-      // The GRID shows the shared table's waiting state for the duration — waiting wins over both
-      // data and emptiness there — so the assertion about the grid is that the previous account's
-      // row is nowhere on screen, rather than that some other row is.
+      // The GRID shows the shared table's waiting state for the duration — waiting wins over both data and
+      // emptiness there — so the assertion about the grid is that the previous account's row is nowhere on
+      // screen, rather than that some other row is.
       arriveForAccount([roleRow(0, { roleName: 'Administrators' })], ACCOUNT_ID, [
         roleRow(7, { roleName: 'Subscribers' }),
       ]);
@@ -1083,10 +924,6 @@ describe('RoleListComponent', () => {
       expect(renderedRoleNames()).toEqual(['Translators']);
       expect(subtitle()).toBe(`Roles held by account ${OTHER_ACCOUNT_ID} \u2014 1 role`);
 
-      // ⚠ THE SECOND ACCOUNT'S NAME READ IS ANSWERED WITH THE FIRST ACCOUNT'S NAME ON PURPOSE, and
-      // the assertion is that it is IGNORED. The screen pairs a held name with the key it belongs
-      // to, so an answer that arrives for a superseded subject cannot name the current one — the
-      // same protection the rows already have, applied to the label.
       answerAccountNameRead(OTHER_ACCOUNT_ID, 'Second Member');
 
       expect(subtitle())
@@ -1111,23 +948,9 @@ describe('RoleListComponent', () => {
       });
       fixture.detectChanges();
 
-      /*
-       * ⚠ THIS WAS A CRITICAL FALSE-DATA DEFECT AND THE ASSERTION IS NOW ITS INVERSE. The screen used
-       * to render the TENANT listing here, which meant `/roles?userId=999` - whose read is refused
-       * with `404` "Portal -1 has no member bearing identifier 999" - displayed every role in the
-       * portal beneath the subtitle "Roles held by account 999". It asserted in writing that a
-       * non-existent account held every role, with no banner, no notification and no console error.
-       *
-       * The rows that answer "what roles exist in this tenant" must not stand in for an answer to
-       * "what roles does this account hold" that was never given. Showing none of them, and stating
-       * the refusal, is the only presentation that claims nothing untrue.
-       *
-       * The prior reasoning - that an empty grid reads as "this account holds nothing" - is still
-       * respected, and is why the refusal is now SURFACED: the banner carries the server's own
-       * sentence, so the empty grid is read together with the reason it is empty rather than as a
-       * membership fact. The case below proves a genuinely empty ANSWER is still rendered as one, so
-       * the two are not conflated.
-       */
+      // The rows that answer "what roles exist in this tenant" must not stand in for an answer to "what
+      // roles does this account hold" that was never given. Showing none of them, and stating the refusal,
+      // is the only presentation that claims nothing untrue.
       expect(renderedRoleNames())
         .withContext('no borrowed rows from a different question')
         .toEqual([]);
@@ -1140,10 +963,6 @@ describe('RoleListComponent', () => {
         .withContext("and it carries the server's own explanation")
         .toContain('not permitted');
 
-      // ⚠ THE NAME READ IS INDEPENDENT OF THE MEMBERSHIP READ, and it is REFUSED here too so that
-      // this case proves the pairing the screen relies on: a refused name leaves the subtitle keyed
-      // by identifier rather than blank, and it raises NO second banner of its own. One failure slot
-      // serves this screen, and the membership refusal is the more informative of the two.
       answerAccountNameRead(ACCOUNT_ID);
 
       expect(subtitle()).toBe(`Roles held by account ${ACCOUNT_ID}`);
@@ -1153,12 +972,6 @@ describe('RoleListComponent', () => {
     });
 
     it('keeps the announcing region mounted before anything has failed', () => {
-      // ⚠ THE REGION MUST PRE-EXIST THE MESSAGE IT ANNOUNCES. A `role="alert"` region inserted in the
-      // same change as its first text is announced inconsistently across screen readers, and the first
-      // failure is the one an operator most needs to hear. This screen used to create the banner
-      // element only once `loadProblem()` was non-null; it is now bound unconditionally, and the shared
-      // component keeps its own `@if` inside the region so an empty banner paints nothing and occupies
-      // no height. Only the retry command stays conditional.
       arrive();
 
       expect(query('app-error-banner'))
@@ -1228,11 +1041,8 @@ describe('RoleListComponent', () => {
     it('keeps the tenant-wide affordances beside the account ones, in that order', () => {
       arriveForAccount();
 
-      // The way BACK to the person comes first, then the way SIDEWAYS to every role, then the
-      // create affordances, which remain gated as they were — so nothing is lost by narrowing.
-      //
-      // ⚠ THE RETURN PATH IS THE ADDITION THAT CLOSED THE REPORTED DEFECT: an operator who pressed a
-      // per-account command on the account listing could not get back to the account from here.
+      // The way BACK to the person comes first, then the way SIDEWAYS to every role, then the create
+      // affordances, which remain gated as they were — so nothing is lost by narrowing.
       expect(pageActions()).toEqual([
         'Back to Account',
         'Show All Roles',
@@ -1247,21 +1057,6 @@ describe('RoleListComponent', () => {
   // =====================================================================================================
   // ORDERING
   // =====================================================================================================
-  /**
-   * SORTING IS A NET-NEW AFFORDANCE HERE, AND ITS BOUNDS ARE THE ENDPOINT'S.
-   *
-   * It was previously declined on the ground that the legacy grid had no sort affordance. That is true, and
-   * a case-insensitive census across BOTH legacy trees finds `AllowSorting` exactly ONCE in either of them,
-   * in `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope - so not one in-scope
-   * legacy grid could be reordered, INCLUDING the module listing that has offered sorting since it was
-   * written. The census says the same thing about every grid in this application and therefore cannot
-   * support the affordance on one screen and its absence on the rest.
-   *
-   * What bounds it is `SortableFields.Roles` in
-   * `backend/src/DnnMigration.Application/Validation/SortableFields.cs`, which permits every member of the
-   * role list contract. Ten of the eleven are offered; `RoleId` is not, because this grid paints no
-   * identifier column and a control cannot sit on a column that is not shown.
-   */
   describe('ordering', () => {
     /** The rendered sort controls, in column order. */
     function sortControls(): readonly HTMLButtonElement[] {
@@ -1343,13 +1138,7 @@ describe('RoleListComponent', () => {
       expect(announcedDirections()).withContext('no column reports itself sorted').toEqual([]);
     });
 
-    /**
-     * ⚠ THE AFFORDANCE IS WITHHELD WHEN AN ACCOUNT IS THE SUBJECT, and this is not tidiness. Those rows
-     * come from a different and unpaged slice - the memberships the account holds - which the ordering
-     * command cannot reach: it re-reads the browsable listing, so a press would issue a request whose
-     * answer this grid never renders, and the heading would then announce an order the visible rows are not
-     * in. An affordance that does nothing is worse than none.
-     */
+    /** ⚠ THE AFFORDANCE IS WITHHELD WHEN AN ACCOUNT IS THE SUBJECT, and this is not tidiness. */
     it('paints no sort control at all while an account is the subject', () => {
       fixture = TestBed.createComponent(RoleListComponent);
       mounted = true;
@@ -1467,12 +1256,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ A NARROWING CHANGED TWICE MUST NOT PAINT THE FIRST ANSWER.
-     *
-     * The legacy screen posted back for each narrowing and the browser discarded the earlier response
-     * for us. Nothing discards it here, so the store holds one handle per read and abandons the
-     * outstanding one before issuing its replacement. Were it not to, the slower first answer would
-     * land last and paint rows that do not belong to the narrowing on screen — a silently wrong grid.
+     * ⚠ A NARROWING CHANGED TWICE MUST NOT PAINT THE FIRST ANSWER. The legacy screen posted back for each
+     * narrowing and the browser discarded the earlier response for us. Nothing discards it here, so the
+     * store holds one handle per read and abandons the outstanding one before issuing its replacement.
      */
     it('abandons a superseded narrowing, so its answer cannot paint over the newest one', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
@@ -1509,12 +1295,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ THE READ IS OWNED BY THE ROOT-PROVIDED STORE, NOT BY THIS SCREEN.
-     *
-     * `RoleStore` is declared `providedIn: 'root'`, so it deliberately outlives every screen that reads
-     * through it: navigating away and back must not throw away a listing that has already been paid
-     * for. Abandonment therefore belongs to the store's own teardown, and this proves BOTH halves —
-     * leaving the screen does not abandon the read, and the store's teardown does.
+     * ⚠ THE READ IS OWNED BY THE ROOT-PROVIDED STORE, NOT BY THIS SCREEN. `RoleStore` is declared
+     * `providedIn: 'root'`, so it deliberately outlives every screen that reads through it: navigating
+     * away and back must not throw away a listing that has already been paid for.
      */
     it('leaves an outstanding narrowing to the store, which abandons it on its own teardown', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
@@ -1644,12 +1427,6 @@ describe('RoleListComponent', () => {
       expect(field<HTMLInputElement>(GROUP_NAME_CONTROL_ID).value).toBe('Paid Services');
     });
 
-    /**
-     * The legacy screen refused a duplicate group name with `EditGroups.ascx.resx` →
-     * `DuplicateRoleGroup.Text`. The modern wire spelling of that same condition is
-     * `role_group.name_duplicate`, and the sentence an operator reads is the PUBLISHED one rather than
-     * whatever prose the server happened to send — the published sentence says what to do next.
-     */
     it('reports a duplicate group name at 409 in the published wording, not the server prose', async () => {
       await arriveWithGroup();
 
@@ -1764,9 +1541,9 @@ describe('RoleListComponent', () => {
       );
       fixture.detectChanges();
 
-      // ⚠ THIS IS THE RACE THE CLIENT PRECONDITION CANNOT CLOSE: the listing said the group was empty,
-      // and by the time the request landed it was not. So the refusal re-reads BOTH halves — the groups
-      // and the roles, as two independent requests this time — to show what is actually there.
+      // ⚠ THIS IS THE RACE THE CLIENT PRECONDITION CANNOT CLOSE: the listing said the group was empty, and
+      // by the time the request landed it was not. So the refusal re-reads BOTH halves — the groups and the
+      // roles, as two independent requests this time — to show what is actually there.
       expectRequest('GET', ROLE_GROUPS_URL, 'the group re-read').flush(envelope([roleGroup(4)]));
       expectRequest('GET', ROLES_URL, 'the role re-read').flush(pageOf([roleRow()]));
       fixture.detectChanges();
@@ -1859,9 +1636,7 @@ describe('RoleListComponent', () => {
     /**
      * ⚠ THE SHELL OWNS EVERY LANDMARK, AND A SECOND ONE IS WORSE THAN NONE. A screen reader offers a
      * landmark list as the primary way to move around a page, and two elements answering to the same
-     * landmark role make that list ambiguous rather than richer. The roles are checked as well as the
-     * elements, because `role="banner"` on a `<div>` is a landmark just as much as a `<header>` is, and
-     * only the element form would be caught by a tag-name check.
+     * landmark role make that list ambiguous rather than richer.
      */
     it('emits no landmark and exactly one heading, because the shell owns both', () => {
       arrive();
@@ -1900,9 +1675,6 @@ describe('RoleListComponent', () => {
 
       expect(commands.length).withContext('both commands are offered').toBe(2);
       commands.forEach((command) => {
-        // ⚠ AN IMAGE IS NOT A NAME. The legacy affordance was an unlabelled image; each command here
-        // carries real text, and its decorative image is hidden from assistive technology so it cannot
-        // compete with that text.
         expect((command.textContent ?? '').trim())
           .withContext('carries discernible text')
           .not.toBe('');
@@ -1945,14 +1717,6 @@ describe('RoleListComponent', () => {
     });
 
     it('renders a stored frequency code outside the published six exactly as it is stored', () => {
-      // MIGRATION: the listing used to be unopenable in a real migrated database whenever any role
-      //   held one of these codes. The API carries a stored frequency character through losslessly
-      //   and shipped DotNetNuke data seeds two roles with characters from the superseded numeric
-      //   code set, but the read decoder was closed to the six published codes — so one legacy row
-      //   refused the whole page and an administrator saw no roles at all.
-      //
-      // The grid binds the raw field, exactly as the legacy grid did, so the character renders as
-      // itself and is never expanded into a word or mapped onto a supported code.
       arrive([roleGroup()], [roleRow(0, { billingFrequency: '4', trialFrequency: 'm' })]);
 
       const cells: readonly string[] = Array.from(
@@ -1981,14 +1745,7 @@ describe('RoleListComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 6 — THE THREE-WAY GROUPING FILTER, WITHOUT CONFLATION
-  //
-  // The legacy screen carried THREE distinct grouping concepts through ONE integer, and two of them
-  // are negative. `Roles.ascx.vb` L48 initialises the field to -1, L72 branches on `< -1` — strictly,
-  // so -1 does NOT take the all-roles path — and L112/L114 offer -2 and -1 as the two pseudo-entries.
-  // Every case below pins one of the three apart from the other two.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the three-way grouping filter', () => {
     /** The picker's options, as rendered: label and DOM value together, in document order. */
@@ -2000,13 +1757,10 @@ describe('RoleListComponent', () => {
     }
 
     /**
-     * ⭐ THE DEFAULT NARROWING IS THE UNGROUPED SCOPE, NOT THE ALL-ROLES ONE.
-     *
-     * `Roles.ascx.vb` L48 is `Private RoleGroupId As Integer = -1`, and L72's `If RoleGroupId < -1`
-     * is STRICTLY less-than, so the initial -1 falls to the ELSE arm and reads
-     * `GetRolesByGroup(PortalId, -1)` — the roles belonging to no group. It does NOT read every role.
-     * A default of -2, or a branch written `<= -1` or `< 0`, would list the whole tenant on arrival,
-     * which looks like a working screen and is a different screen.
+     * ⭐ THE DEFAULT NARROWING IS THE UNGROUPED SCOPE, NOT THE ALL-ROLES ONE. `Roles.ascx.vb` L48 is
+     * `Private RoleGroupId As Integer = -1`, and L72's `If RoleGroupId < -1` is STRICTLY less-than, so
+     * the initial -1 falls to the ELSE arm and reads `GetRolesByGroup(PortalId, -1)` — the roles
+     * belonging to no group. It does NOT read every role.
      */
     it('arrives on the ungrouped scope, which is the legacy default and not the all-roles one', () => {
       create();
@@ -2030,14 +1784,6 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
     });
 
-    /**
-     * ⭐ THE CORRECTION FOR LEGACY DEFECT D-R3.
-     *
-     * `Roles.ascx.vb` L115 reads `If RoleGroupId < 0 Then liItem.Selected = True`, and that condition
-     * is attached to the GLOBAL ROLES entry alone — so with the filter at -2 the legacy picker
-     * selected "Global Roles" while the grid below it showed EVERY role. The picker lied about what
-     * was on screen. Here the chosen option is derived from the actual narrowing, so the two agree.
-     */
     it('shows the ungrouped pseudo-entry as the chosen one on arrival, not the all-roles one', () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
@@ -2054,13 +1800,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * The legacy order is fixed by construction: L112 adds the all-roles entry, L114-118 adds the
-     * global one, and only then does L120's loop append the groups. Every one is `.Items.Add`, never
+     * The legacy order is fixed by construction: L112 adds the all-roles entry, L114-118 adds the global
+     * one, and only then does L120's loop append the groups. Every one is `.Items.Add`, never
      * `.Items.Insert`, so nothing is ever placed ahead of the two pseudo-entries.
-     *
-     * The labels carry their angle brackets AND the spaces inside them. `SharedResources.resx` stores
-     * them escaped, as `&lt; All Roles &gt;` and `&lt; Global Roles &gt;`, which decodes to a bracket,
-     * a space, the words, a space and a bracket. Trimming the interior would be a different label.
      */
     it('offers the two pseudo-entries in the legacy order, ahead of every group', () => {
       arrive([
@@ -2077,11 +1819,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⭐ THE TWO PSEUDO-ENTRIES ARE NOT INTERCHANGEABLE, and this is the case that would fail if they
-     * were ever merged. -2 asks for every role in the tenant; -1 asks for the roles that belong to no
-     * group, which is a REAL PERSISTED VALUE of `Roles.RoleGroupID` and therefore a genuine data
-     * predicate. `EditRoles.ascx.vb`'s own group picker offers -1 as a storable choice and never
-     * mentions -2 at all — the one is a row value, the other is only ever a view.
+     * ⭐ THE TWO PSEUDO-ENTRIES ARE NOT INTERCHANGEABLE, and this is the case that would fail if they were
+     * ever merged. -2 asks for every role in the tenant; -1 asks for the roles that belong to no group,
+     * which is a REAL PERSISTED VALUE of `Roles.RoleGroupID` and therefore a genuine data predicate.
      */
     it('keeps the two pseudo-entries distinct, because only one of them is a stored row value', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
@@ -2113,10 +1853,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⭐ GROUP ZERO IS A GROUP. Nothing in this screen may test a grouping identifier for truthiness
-     * or for a positive sign: `>= 0` is the whole of the "real group" test, so zero addresses the
-     * group it names and travels as the digit it is. A `if (roleGroupId)` guard anywhere on this path
-     * would silently redirect group zero to the ungrouped scope.
+     * ⭐ GROUP ZERO IS A GROUP. Nothing in this screen may test a grouping identifier for truthiness or
+     * for a positive sign: `>= 0` is the whole of the "real group" test, so zero addresses the group it
+     * names and travels as the digit it is.
      */
     it('treats group zero as a real group rather than as an absence', async () => {
       arrive([roleGroup(0, { roleGroupName: 'Seeded Group' })]);
@@ -2135,9 +1874,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * With no group in the tenant there is nothing to narrow BY, so the legacy screen forced the
-     * filter to -2 and hid the whole row (`Roles.ascx.vb` L129-L130). Keeping the ungrouped default
-     * there would show only the ungrouped roles behind a control the operator cannot see or change.
+     * With no group in the tenant there is nothing to narrow BY, so the legacy screen forced the filter
+     * to -2 and hid the whole row. Keeping the ungrouped default there would show only the ungrouped
+     * roles behind a control the operator cannot see or change.
      */
     it('drops to the all-roles scope and hides the row when the tenant has no group at all', () => {
       create();
@@ -2157,14 +1896,7 @@ describe('RoleListComponent', () => {
     });
   });
 
-
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 7 — THE GRID'S TEN DATA COLUMNS
-  //
-  // `roles.ascx` L34-L77 declares TWELVE columns: two icon commands and ten data columns. Each case
-  // below pins one rendering rule taken from the legacy screen, and the sentinel cases are the ones
-  // that matter most — the legacy code distinguishes "zero" from "absent" and a naive port does not.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the grid data columns', () => {
     /** Every heading cell of the grid, in column order. */
@@ -2190,24 +1922,18 @@ describe('RoleListComponent', () => {
     }
 
     /**
-     * The body cell sitting beneath a named heading.
-     *
-     * Addressed by heading rather than by ordinal, because an ordinal silently follows a column
-     * reordering while a heading name does not — and because a case that names the column it means
-     * reads as the sentence it is proving.
+     * The body cell sitting beneath a named heading. Addressed by heading rather than by ordinal, because
+     * an ordinal silently follows a column reordering while a heading name does not — and because a case
+     * that names the column it means reads as the sentence it is proving.
      */
     function cellUnder(heading: string): string {
       return cellsOfFirstRow()[columnIndexOf(heading)] ?? '';
     }
 
     /**
-     * What a cell of the FIRST row actually PAINTS, with clipped content excluded.
-     *
-     * Two cell kinds on this screen now carry content that is deliberately in the accessibility tree and
-     * deliberately not on the screen: the absent-value mark's own words, and the expansion of a stored
-     * frequency character. `textContent` returns both, so a case asserting on the painted appearance has
-     * to exclude them explicitly — otherwise a rule that changed the VISIBLE output would still pass
-     * because the hidden words made up the difference.
+     * What a cell of the FIRST row actually PAINTS, with clipped content excluded. Two cell kinds on this
+     * screen now carry content that is deliberately in the accessibility tree and deliberately not on the
+     * screen: the absent-value mark's own words, and the expansion of a stored frequency character.
      *
      * @param heading The column heading to read under.
      * @returns The trimmed painted text, with every clipped span removed.
@@ -2268,16 +1994,11 @@ describe('RoleListComponent', () => {
     }
 
     /**
-     * ⭐ EIGHT LEGACY HEADER KEYS FOR TEN COLUMNS, DISAMBIGUATED.
-     *
-     * `Roles.ascx.resx` supplies exactly eight `.Header` entries — Name, Description, Fee, Every,
-     * Period, Trial, Public, Auto — because DotNetNuke localised a grid heading by its `HeaderText`
-     * VALUE rather than by the column, so `Every.Header` and `Period.Header` each served two columns
-     * and the rendered grid showed "Every" and "Period" twice with nothing to tell the pairs apart.
-     * A screen reader moving across a row announced two different cells under the same column name.
-     *
-     * The four are qualified here, and the set assertion is what keeps them qualified: if any future
-     * edit reintroduced a duplicate the sizes would diverge.
+     * ⭐ EIGHT LEGACY HEADER KEYS FOR TEN COLUMNS, DISAMBIGUATED. `Roles.ascx.resx` supplies exactly eight
+     * `.Header` entries — Name, Description, Fee, Every, Period, Trial, Public, Auto — because DotNetNuke
+     * localised a grid heading by its `HeaderText` VALUE rather than by the column, so `Every.Header` and
+     * `Period.Header` each served two columns and the rendered grid showed "Every" and "Period" twice
+     * with nothing to tell the pairs apart.
      */
     it('names all ten data columns distinctly, disambiguating the two pairs the legacy left colliding', () => {
       arrive();
@@ -2304,9 +2025,7 @@ describe('RoleListComponent', () => {
     /**
      * The two `ImageCommandColumn`s carry no `HeaderText` at all, so DotNetNuke's own localiser skipped
      * them — `If Not String.IsNullOrEmpty(col.HeaderText)` is the guard — and the legacy grid rendered
-     * two blank headings. Here each command column keeps a real accessible name and merely clips it
-     * visually: blank to the eye, named to a reader, which is strictly better than the legacy blank
-     * and still emits no visible heading the legacy did not have.
+     * two blank headings.
      */
     it('clips the heading of each command column rather than publishing one', () => {
       arrive();
@@ -2315,22 +2034,13 @@ describe('RoleListComponent', () => {
         .filter((cell) => cell.querySelector('.data-table__label--hidden') !== null)
         .map((cell) => (cell.textContent ?? '').trim());
 
-      // THREE commands now, not two: the removal command was added to this listing, and the reasoning
-      // for it — parity as a floor rather than a ceiling, plus the three sibling listings that all carry
-      // one — is recorded on the view query in the component. It is headed and clipped exactly like the
-      // two it joins, because it must read as the same kind of column.
+      // THREE commands now, not two: the removal command was added to this listing, and the reasoning for
+      // it — parity as a floor rather than a ceiling, plus the three sibling listings that all carry one —
+      // is recorded on the view query in the component.
       expect(headerCells()).withContext('three commands plus ten data columns').toHaveSize(13);
       expect(clipped).toEqual([EDIT_LABEL, MANAGE_USERS_LABEL, 'Delete']);
     });
 
-    /**
-     * ⭐⭐ ZERO IS A PRICE. `RoleController.vb` L494 discriminates a paid assignment from a free one
-     * with `userRole.ServiceFee > 0.0`, so a fee of zero is a role that is deliberately FREE — a real,
-     * stored, meaningful value — and `FormatPrice` renders it, because its only guard is
-     * `If price <> Null.NullSingle`. Rendering it blank would be indistinguishable from a role whose
-     * terms were never set, and rendering it as the word "Free" would invent wording the legacy screen
-     * never showed.
-     */
     it('renders a fee of zero as zero money in both fee columns', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: 0, trialFee: 0 })]);
 
@@ -2339,8 +2049,8 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⭐⭐ ZERO IS A PERIOD, for the same reason and by the same guard: `FormatPeriod`'s only test is
-     * `If period <> Null.NullInteger`, so only -1 is withheld and zero prints.
+     * ⭐⭐ ZERO IS A PERIOD, for the same reason and by the same guard: `FormatPeriod`'s only test is `If
+     * period <> Null.NullInteger`, so only -1 is withheld and zero prints.
      */
     it('renders a period of zero as zero in both period columns', () => {
       arrive([roleGroup()], [roleRow(0, { billingPeriod: 0, trialPeriod: 0 })]);
@@ -2350,12 +2060,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⭐⭐ THE TWO SENTINELS, AND ONLY THE TWO SENTINELS, RENDER BLANK.
-     *
-     * `Null.vb` spells an absent single as `Single.MinValue` and an absent integer as -1, and those
-     * are the exact values the legacy formatters withhold. The single sentinel is written here to the
-     * full IEEE-754 value of `Single.MinValue` rather than to a rounded stand-in, because a rounded
-     * literal is a different number and would prove nothing about the boundary.
+     * ⭐⭐ THE TWO SENTINELS, AND ONLY THE TWO SENTINELS, RENDER BLANK. `Null.vb` spells an absent single
+     * as `Single.MinValue` and an absent integer as -1, and those are the exact values the legacy
+     * formatters withhold.
      */
     it('withholds the two sentinels, and marks the period cells as not recorded', () => {
       arrive(
@@ -2370,21 +2077,16 @@ describe('RoleListComponent', () => {
         ],
       );
 
-      // ⚠ THE TWO FEE COLUMNS CARRY THE MARK TOO, AND THE ASYMMETRY THAT PRECEDED IT WAS FOUND BY A
-      // BROWSER PASS RATHER THAN BY READING. The mark reached the period columns first; a run over the
-      // whole 145-role dataset then found that on the one role whose fees are stored NULL the money cells
+      // ⚠ THE TWO FEE COLUMNS CARRY THE MARK TOO, AND THE ASYMMETRY THAT PRECEDED IT WAS FOUND BY A BROWSER
+      // PASS RATHER THAN BY READING. The mark reached the period columns first; a run over the whole
+      // 145-role dataset then found that on the one role whose fees are stored NULL the money cells
       // rendered as empty strings while the count cells beside them on the SAME ROW carried the mark and
-      // its words. A reader heard "not recorded" for the counts and silence for the fees, for one
-      // indistinguishable state.
+      // its words.
       expect(paintedCellUnder('Fee')).toBe('\u2014');
       expect(paintedCellUnder('Trial')).toBe('\u2014');
       expect(clippedCellUnder('Fee')).toBe('not recorded');
       expect(clippedCellUnder('Trial')).toBe('not recorded');
 
-      // ⚠ R-M1: THE TWO PERIOD COLUMNS NOW MARK THE ABSENCE. An empty cell could not distinguish a
-      // period nobody recorded from one nobody had looked at, and the same grid rendered a stored `-3`
-      // as "-3" — two negative periods presented as different kinds of value. The VALUE is unchanged
-      // and still withheld; the cell says so, with the mark painted and the words clipped.
       expect(paintedCellUnder('Billing Every')).toBe('\u2014');
       expect(paintedCellUnder('Trial Every')).toBe('\u2014');
       expect(clippedCellUnder('Billing Every'))
@@ -2393,14 +2095,6 @@ describe('RoleListComponent', () => {
       expect(clippedCellUnder('Trial Every')).toBe('not recorded');
     });
 
-    /**
-     * ⚠ ZERO IS A PRICE AND MUST NEVER REACH THE ABSENT BRANCH.
-     *
-     * `RoleController.vb:L494` discriminates a paid assignment from a free one with
-     * `userRole.ServiceFee > 0.0`, so nought is a role that is deliberately FREE — a real, stored,
-     * meaningful value. Marking it "not recorded" would be a lie about the data, and this case is what
-     * stops the absent-value branch from widening into it.
-     */
     it('renders a zero fee and a zero period as themselves, never as absent', () => {
       arrive(
         [roleGroup()],
@@ -2417,10 +2111,9 @@ describe('RoleListComponent', () => {
 
     /**
      * ⚠ R-M1, THE OTHER HALF: A NEGATIVE PERIOD THAT IS NOT THE SENTINEL STILL RENDERS ITSELF.
-     *
-     * `Roles.ascx.vb:L152-L162` guards on `period <> Null.NullInteger` and nothing else, so a stored
-     * `-3` is data and is displayed. That behaviour is unchanged — what changed is that the sentinel
-     * case beside it is no longer indistinguishable from it.
+     * `Roles.ascx.vb:L152-L162` guards on `period <> Null.NullInteger` and nothing else, so a stored `-3`
+     * is data and is displayed. That behaviour is unchanged — what changed is that the sentinel case
+     * beside it is no longer indistinguishable from it.
      */
     it('renders a negative period that is not the sentinel as itself', () => {
       arrive([roleGroup()], [roleRow(0, { billingPeriod: -3, trialPeriod: -3 })]);
@@ -2432,18 +2125,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ R-M4: AN AMOUNT THE CELL CANNOT STATE EXACTLY SAYS SO, IN WORDS, AND STILL PAINTS ITSELF.
-     *
-     * The column is SQL `money` — exact decimal at the full width of a 64-bit integer — and the wire
-     * carries a JSON number, which is read as an IEEE-754 double. Above `MAX_SAFE_INTEGER / 100` a
-     * double cannot hold an amount to the nearest hundredth, so the figure that arrives has already
-     * moved from the figure that is stored: runtime measurement found `922337203685477.5807` stored
-     * against `922337203685477.63` painted, in the same colour and weight as an exact amount, on the
-     * screen an administrator uses to review what a role costs.
-     *
-     * The rounding happens when the wire is parsed and cannot be undone here, so the cell discloses
-     * rather than corrects. This case pins BOTH halves: the figure is still painted (an operator needs
-     * the magnitude) and the qualifier is present in the accessibility tree.
+     * ⚠ R-M4: AN AMOUNT THE CELL CANNOT STATE EXACTLY SAYS SO, IN WORDS, AND STILL PAINTS ITSELF. The
+     * column is SQL `money` — exact decimal at the full width of a 64-bit integer — and the wire carries
+     * a JSON number, which is read as an IEEE-754 double.
      */
     it('marks a fee too large for a double to state exactly as approximate', () => {
       arrive(
@@ -2464,12 +2148,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ THE R-M4 QUALIFIER MUST NOT WIDEN INTO ORDINARY MONEY.
-     *
-     * Every amount an operator will ever type is exact in a double, so a qualifier appearing on one
-     * would be noise on every row of every page — and would train a reader to ignore it on the one
-     * row where it matters. The threshold is `MAX_SAFE_INTEGER / 100`; this case sits an amount just
-     * BELOW it and one far below it, and asserts silence for both.
+     * ⚠ THE R-M4 QUALIFIER MUST NOT WIDEN INTO ORDINARY MONEY. Every amount an operator will ever type is
+     * exact in a double, so a qualifier appearing on one would be noise on every row of every page — and
+     * would train a reader to ignore it on the one row where it matters.
      */
     it('leaves an exactly representable fee unqualified, however large', () => {
       arrive(
@@ -2485,11 +2166,8 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ NO THOUSANDS SEPARATOR ON THIS SCREEN. The listing formats with `"##0.00"`
-     * (`Roles.ascx.vb` L179) and the role EDITOR formats the same three amounts with `"#,##0.00"`
-     * (`EditRoles.ascx.vb`). That inconsistency is measured, not inferred, and this case pins the
-     * LIST side of it: separating the thousands here would be a visible change to a screen whose
-     * appearance is meant to carry over.
+     * ⚠ NO THOUSANDS SEPARATOR ON THIS SCREEN. The listing formats with `"##0.00"` and the role EDITOR
+     * formats the same three amounts with `"#,##0.00"`.
      */
     it('renders a four-figure fee without a thousands separator', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: 1234.5, trialFee: 1000 })]);
@@ -2501,18 +2179,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⭐ ALL SIX PUBLISHED FREQUENCY CODES, VERBATIM, IN BOTH COLUMNS.
-     *
-     * `RoleController.vb` L540-L547 switches on six characters — N, O, D, W, M and Y — with no
-     * `Case Else`, and `Roles.BillingFrequency` is `char(1)`, so the character IS the stored datum.
-     * `roles.ascx` L50-L52 and L63-L65 bind the raw `DataField`, which is why the legacy grid showed
-     * the letter rather than a word: the `CodeFrequency` lookup table that maps N to "None" and O to
-     * "One-time Fee" exists in the schema and this grid does not join to it.
-     *
-     * Two failure modes are pinned out by rendering the character itself. An enum serialised by name
-     * would arrive as "None" or "OneTimeFee"; an enum serialised by ordinal would arrive as a digit.
-     * Neither is what the legacy screen displayed, and neither is what the contract carries — the
-     * model declares `'N' | 'O' | 'D' | 'W' | 'M' | 'Y'` and the cell prints it unchanged.
+     * ⭐ ALL SIX PUBLISHED FREQUENCY CODES, VERBATIM, IN BOTH COLUMNS. `RoleController.vb` L540-L547
+     * switches on six characters — N, O, D, W, M and Y — with no `Case Else`, and
+     * `Roles.BillingFrequency` is `char(1)`, so the character IS the stored datum.
      */
     it('renders each of the six published frequency codes as the single character it is', () => {
       const codes: readonly BillingFrequency[] = ['N', 'O', 'D', 'W', 'M', 'Y'];
@@ -2528,10 +2197,7 @@ describe('RoleListComponent', () => {
 
       expect(rows()).toHaveSize(codes.length);
 
-      // ⚠ THE PAINTED CHARACTER IS UNCHANGED, which is what this case has always been about. The
-      // expansion added for R-M3 is CLIPPED, so it must not appear in the painted reading — and the
-      // painted reading is taken with clipped content excluded precisely so that a rule which started
-      // painting the word would fail here rather than pass on the strength of the hidden text.
+      // ⚠ THE PAINTED CHARACTER IS UNCHANGED, which is what this case has always been about.
       const painted = (heading: string): readonly string[] =>
         rows().map((row, index) => {
           const cell: HTMLTableCellElement | undefined = Array.from(
@@ -2553,13 +2219,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ R-M3: WHAT THE CHARACTER MEANS REACHES A READER, WITHOUT REACHING THE SCREEN.
-     *
-     * The legacy grid bound the raw field rather than the joined description (`roles.ascx:L50-L52`), so
-     * a reader met an unexplained letter while the role editor two clicks away rendered the same datum
-     * as "Month". The expansion closes that gap at zero visual cost, and it takes its words from the one
-     * shared vocabulary the editor's own select captions are built from — so the two screens cannot
-     * drift apart about what `M` is called.
+     * ⚠ R-M3: WHAT THE CHARACTER MEANS REACHES A READER, WITHOUT REACHING THE SCREEN. The legacy grid
+     * bound the raw field rather than the joined description, so a reader met an unexplained letter while
+     * the role editor two clicks away rendered the same datum as "Month".
      */
     it('clips an expansion of each frequency character for a reader', () => {
       arrive([roleGroup()], [roleRow(0, { billingFrequency: 'M', trialFrequency: 'Y' })]);
@@ -2580,19 +2242,6 @@ describe('RoleListComponent', () => {
       expect(clippedCellUnder('Billing Period')).toBe('');
     });
 
-    /**
-     * ⭐ THE TWO FLAGS ARE BOOLEANS, AND ONE CELL EACH.
-     *
-     * The legacy grid drew two `<asp:image>` elements per flag and chose between them with
-     * `DataBinder.Eval(..., "IsPublic")="true"` — a STRING comparison that only ever worked because
-     * `release.config` L125 compiles the pages with `strict="false"`, letting VB coerce the boolean to
-     * a string before comparing. Ported literally into TypeScript, comparing the boolean member to the
-     * lower-cased word as a string is not merely fragile — it is statically ALWAYS FALSE, since the two
-     * operand types cannot overlap, and every row would have rendered as unchecked.
-     *
-     * So the flag is read as the boolean it is and announced as a word. One cell, no images: an icon
-     * pair conveys nothing to a screen reader, and the wording is the shared resource's own.
-     */
     it('renders both flags as announced words, one cell each', () => {
       arrive([roleGroup()], [roleRow(0, { isPublic: true, autoAssignment: true })]);
 
@@ -2604,10 +2253,7 @@ describe('RoleListComponent', () => {
     /**
      * ⚠ FALSE IS DATA, NOT ABSENCE — and the legacy code is the reason this needs saying. `Null.vb`
      * spells an absent boolean `Return False`, and the companion `IsNull` therefore answers True for a
-     * perfectly ordinary stored `False`. The two are indistinguishable through that helper, so a port
-     * that treated the sentinel as missing would blank every non-public role's cell.
-     *
-     * A role that is not public is a role whose visibility is KNOWN. It renders the negative word.
+     * perfectly ordinary stored `False`.
      */
     it('renders a false flag as the negative word rather than as an empty cell', () => {
       arrive([roleGroup()], [roleRow(0, { isPublic: false, autoAssignment: false })]);
@@ -2620,8 +2266,8 @@ describe('RoleListComponent', () => {
 
     /**
      * ⭐⭐ ROLE ZERO IS A ROLE. `dbo.Roles.RoleID` is declared `IDENTITY(0,1)`, so the first role ever
-     * written to an installation — the Administrators role — has the identifier zero. Any truthiness
-     * test on it would drop the row, or paint it and leave both its commands addressing nothing.
+     * written to an installation — the Administrators role — has the identifier zero. Any truthiness test
+     * on it would drop the row, or paint it and leave both its commands addressing nothing.
      */
     it('paints role zero and addresses both of its commands by that identifier', () => {
       arrive([roleGroup()], [roleRow(0, { roleName: 'Administrators' })]);
@@ -2642,47 +2288,23 @@ describe('RoleListComponent', () => {
     });
   });
 
-
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 8 — STRUCTURAL PARITY WITH THE LEGACY GRID
-  //
-  // What the legacy screen did NOT have is as much a part of the specification as what it did, because
-  // an addition here is an unrequested change of behaviour. Each absence below was measured in
-  // `roles.ascx` rather than assumed.
-  // ---------------------------------------------------------------------------------------------------
+  // What the legacy screen did NOT have is as much a part of the specification as what it did, because an
+  // addition here is an unrequested change of behaviour. Each absence below was measured in `roles.ascx`
+  // rather than assumed.
 
   describe('structural parity', () => {
-    /**
-     * ⚠ THE PAGER IS AN ADDITION, AND THIS CASE RECORDS IT AS ONE RATHER THAN DENYING IT.
-     *
-     * `roles.ascx` declares no `AllowPaging`, no `PagerStyle` visibility and no paging control of any
-     * kind; `Roles.ascx.vb` binds a plain `ArrayList` straight onto the grid at L77 and L91 and mentions
-     * neither a page index, a page size nor a total. This case previously asserted that ABSENCE, and the
-     * reconciliation it described was that the screen asked for "one page wide enough to hold the
-     * tenant's roles" — which is not what the store did: it walked page after page and joined them,
-     * because no single request can be wide enough.
-     *
-     * Runtime testing measured what that cost on a hundred and forty-five roles: an eight-thousand-pixel
-     * document at 320 units wide with no affordance but scrolling, three requests per arrival, the whole
-     * walk re-issued on every Back and after every write. The pager replaced the walk. A tenant of the
-     * size the legacy product shipped — six stock roles — still fits one page and is still offered no
-     * page-to-page affordance, which is what this case now pins: the SUMMARY is present because the
-     * pager owns its own shape, and the STEPS are not.
-     */
     it('draws the pager beneath the grid, and offers no steps when everything fits one page', () => {
       arrive([roleGroup()], [roleRow(0), roleRow(1, { roleName: 'Registered Users' })]);
 
       const pager: Element | null = query('app-pagination');
 
       expect(pager).withContext('mounted unconditionally, so the range summary always shows').not.toBeNull();
-      // Two roles at ten a page is one page. The pager renders its summary and withholds the steps, so
-      // a legacy-sized tenant sees no affordance the legacy screen lacked.
       expect(pager?.querySelectorAll('button') ?? [])
         .withContext('no page-to-page steps for a single page')
         .toHaveSize(0);
     });
 
-    /** The legacy screen filtered by role GROUP alone. There was no text box and no free-text search. */
     it('offers no free-text filter, because the legacy screen had none', () => {
       arrive();
 
@@ -2690,27 +2312,6 @@ describe('RoleListComponent', () => {
       expect(queryAll('input[type="search"]')).toHaveSize(0);
     });
 
-    /**
-     * ⚠ THREE ROW COMMANDS: THE TWO THE LEGACY DECLARED, PLUS A REMOVAL THAT IS AN ADDITION.
-     *
-     * `roles.ascx` L34-L35 declares exactly two `dnn:imagecommandcolumn`s — `Edit` and `UserRoles` —
-     * and the string `commandname="Delete"` appears nowhere in the file. The `cmdDelete` control on the
-     * same page is the ROLE-GROUP removal button (`Roles.ascx.vb:L81-L86`), gated on the selected group
-     * holding no roles; it is not a row command and never was. This case previously asserted that the
-     * listing offered no removal, on the reasoning that adding one would be "a new destructive
-     * affordance".
-     *
-     * It is one, and it is added deliberately: functional parity is a floor rather than a ceiling, the
-     * three sibling listings in this application each carry a row-level removal reached through the same
-     * shared confirmation, and roles was the one listing where the workflow existed but could only be
-     * found by opening a role first. The mis-press hazard is answered by construction — the command
-     * opens the shared destructive dialog, which names what will be removed — rather than by leaving the
-     * workflow hidden.
-     *
-     * The two navigation commands stay ANCHORS and the removal is a BUTTON, because one addresses a
-     * screen and the other changes state, and the removal is placed LAST so it is never the command a
-     * pointer meets first.
-     */
     it('offers three commands per row: two links, then the removal button', () => {
       arrive([roleGroup()], [roleRow(0), roleRow(1, { roleName: 'Registered Users' })]);
 
@@ -2734,13 +2335,8 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * The table carries a caption and NO `summary` attribute.
-     *
-     * MIGRATION: the caption is a net addition — `default.css` styles no caption anywhere in its 1030
-     * lines, because the legacy grid had none. The `summary` attribute the legacy grid DID carry is
-     * deliberately not reproduced: `roles.ascx` L24 sets it to "Roles Design Table", which is a Visual
-     * Studio design-surface artefact rather than a description of anything an operator reads, and the
-     * attribute is obsolete in HTML5 besides. The accessible name is the caption's job.
+     * The table carries a caption and NO `summary` attribute. MIGRATION: the caption is a net addition —
+     * `default.css` styles no caption anywhere in its 1030 lines, because the legacy grid had none.
      */
     it('names the table with a caption and emits no design-surface summary', () => {
       arrive();
@@ -2756,9 +2352,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * The three page-level actions are the legacy module's own three, in its own order:
-     * `Roles.ascx.vb` L307 adds `AddContent.Action`, L308 `AddGroup.Action` and L309
-     * `UserSettings.Action`. Their wording comes from `Roles.ascx.resx` unchanged.
+     * The three page-level actions are the legacy module's own three, in its own order: `Roles.ascx.vb`
+     * L307 adds `AddContent.Action`, L308 `AddGroup.Action` and L309 `UserSettings.Action`. Their wording
+     * comes from `Roles.ascx.resx` unchanged.
      */
     it('projects the legacy module actions, addressed and worded as the legacy declared them', () => {
       arrive();
@@ -2780,22 +2376,12 @@ describe('RoleListComponent', () => {
       expect((queryOrFail<HTMLElement>(host(), 'h1').textContent ?? '').trim()).toBe(PAGE_TITLE);
     });
 
-    /**
-     * ⚠ ONPUSH IS NOT OBSERVABLE FROM OUTSIDE THIS COMPONENT, so it is read from the compiled
-     * definition. See {@link declaresOnPush} for why every behavioural alternative is unavailable
-     * here: the component declares no inputs to move, and signal reads mark a consumer dirty under
-     * either strategy. The declaration is still worth pinning — the non-functional requirements make
-     * it mandatory on every component, and nothing else in this suite would notice its removal.
-     */
+    /** ⚠ ONPUSH IS NOT OBSERVABLE FROM OUTSIDE THIS COMPONENT, so it is read from the compiled definition. */
     it('declares OnPush change detection', () => {
       expect(declaresOnPush(RoleListComponent)).toBeTrue();
     });
 
-    /**
-     * The screen renders projections it cannot write to. Both slices reach the template from the store
-     * as read-only signals, so a component-side mutation is not merely discouraged, it is unavailable:
-     * neither mutator is present on the value at all.
-     */
+    /** The screen renders projections it cannot write to. */
     it('renders read-only projections of the store state, never writable ones', () => {
       arrive();
 
@@ -2812,12 +2398,6 @@ describe('RoleListComponent', () => {
         .toBeTrue();
     });
 
-    /**
-     * ⚠ THE ROW SET IS REPLACED, NEVER MUTATED IN PLACE. The shared table tracks its rows by OBJECT
-     * REFERENCE, so an array mutated in place would leave every previously rendered row identical to
-     * the framework and the grid would keep painting the old rows after a narrowing changed. Replacing
-     * the array is what makes the re-render happen.
-     */
     it('replaces the row set on a re-read rather than mutating it', async () => {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], [roleRow(0)]);
 
@@ -2842,13 +2422,7 @@ describe('RoleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   describe('wording and severity', () => {
-    /**
-     * Arrives with a real, EMPTY group chosen.
-     *
-     * Both preconditions this block needs at once: a real group is what makes the group commands
-     * appear at all (neither pseudo-entry is a resource), and an empty listing is what makes the
-     * removal command appear rather than only the editor.
-     */
+    /** Arrives with a real, EMPTY group chosen. */
     async function arriveWithEmptyGroup(): Promise<void> {
       arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
       await chooseFilter('Paid Services');
@@ -2862,11 +2436,10 @@ describe('RoleListComponent', () => {
     }
 
     /**
-     * ⚠ NO CLAIM OF PERMANENCE, ANYWHERE IN THE CONFIRMATION — and this is a correctness requirement,
-     * not a tone preference. Removal in this domain is frequently NOT destruction: cancelling a paid
-     * role assignment whose trial has already been used sets an expiry date of yesterday and UPDATES
-     * the row, precisely so the trial-used fact survives (`RoleController.vb` L494-L497). Wording that
-     * told an operator the action could not be undone would be false about the system it describes.
+     * ⚠ NO CLAIM OF PERMANENCE, ANYWHERE IN THE CONFIRMATION — and this is a correctness requirement, not
+     * a tone preference. Removal in this domain is frequently NOT destruction: cancelling a paid role
+     * assignment whose trial has already been used sets an expiry date of yesterday and UPDATES the row,
+     * precisely so the trial-used fact survives.
      */
     it('makes no claim of permanence in the removal confirmation', async () => {
       await arriveWithEmptyGroup();
@@ -2893,8 +2466,8 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ THE CONFIRMATION'S PRESENCE IS WHAT "OPEN" MEANS. It exposes no `open` input, so the guard in
-     * the template is the whole of the gating: absent until a removal is pending, present once one is.
+     * ⚠ THE CONFIRMATION'S PRESENCE IS WHAT "OPEN" MEANS. It exposes no `open` input, so the guard in the
+     * template is the whole of the gating: absent until a removal is pending, present once one is.
      */
     it('raises the confirmation only once a removal is pending', async () => {
       await arriveWithEmptyGroup();
@@ -2910,14 +2483,6 @@ describe('RoleListComponent', () => {
       expect(query('app-confirm-dialog')).withContext('abandoned again').toBeNull();
     });
 
-    /**
-     * ⚠ ESCAPE ABANDONS THE REMOVAL, AND NOTHING IS SENT.
-     *
-     * A synthetic event neither moves focus nor takes the user agent's own `<dialog>` cancel path, so
-     * the keydown is dispatched on the dialogue itself and MUST bubble — the handler sits on the
-     * component host, not on the button that happens to hold focus. The key is compared by `key`; a
-     * `keyCode` comparison would be reading a property the platform has deprecated.
-     */
     it('abandons the removal on Escape without sending anything', async () => {
       await arriveWithEmptyGroup();
 
@@ -2935,18 +2500,6 @@ describe('RoleListComponent', () => {
       expect(notifications()).withContext('and nothing was announced').toHaveSize(0);
     });
 
-    /**
-     * ⚠ A REFUSAL OF AUTHORITY IS A WARNING, NOT AN ERROR, AND ITS WORDING IS THE LEGACY SENTENCE.
-     *
-     * `AccessDenied.ascx.vb` raises its message at `ModuleMessageType.YellowWarning` on BOTH of its
-     * branches — L43 for a supplied message and L45 for the resource default — and the legacy severity
-     * vocabulary is genuinely three-valued rather than binary. Flattening a refusal into the error
-     * severity would lose a distinction the original drew deliberately, and it is the distinction
-     * between "you did something wrong" and "you are not the one who may do this".
-     *
-     * The three-way removal guard is proved elsewhere in this suite; what this case adds is that the
-     * refusal an operator READS is the sentence the legacy screen showed, unchanged.
-     */
     it('reports a refusal of authority at warning severity, in the legacy wording', async () => {
       const accessDenied =
         'Either you are not currently logged in, or you do not have access to this content.';
@@ -2969,17 +2522,9 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * ⚠ AN RFC 7807 FIELD KEY IS READ WITH BRACKETS, NEVER WITH A DOT. `errors` is an index signature
-     * and `noPropertyAccessFromIndexSignature` is enabled workspace-wide, so `refusal.errors.RoleGroupName`
-     * does not compile — in this file any more than in the component. The key is therefore held as a
-     * named constant and indexed, which also documents that the casing is the SERVER'S: the key arrives
-     * Pascal-cased from a .NET model-state document while the control is camel-cased, and the shared
-     * reader matches the two case-insensitively rather than either side renaming the other.
-     *
-     * ⚠ MEASURED BEHAVIOUR, NOT THE ONE THAT MIGHT BE ASSUMED: the editor CLOSES the moment a
-     * replacement is submitted, so by the time a refusal lands there is no longer a control to sit
-     * beside and the refusal is delivered as an announcement. Asserting a message beside the field here
-     * would be asserting a screen this component does not present.
+     * ⚠ AN RFC 7807 FIELD KEY IS READ WITH BRACKETS, NEVER WITH A DOT. `errors` is an index signature and
+     * `noPropertyAccessFromIndexSignature` is enabled workspace-wide, so `refusal.errors.RoleGroupName`
+     * does not compile — in this file any more than in the component.
      */
     it('delivers a refused replacement as an announcement, the editor having closed on submission', async () => {
       const refusedKey = 'RoleGroupName';
@@ -3011,21 +2556,7 @@ describe('RoleListComponent', () => {
         .toBeNull();
     });
 
-    /**
-     * ⚠ STORED WORDING IS TEXT, INCLUDING ITS MARKUP.
-     *
-     * The legacy resource values are not clean strings. This screen's own required-name message is
-     * stored as `'<br>You Must Enter a Valid Name'` — a layout instruction sitting inside a sentence,
-     * which was meaningful only because Web Forms wrote the value straight into the page — and a
-     * sibling resource stores `'<br> Invalid effective date'`, break THEN space. One resource value in
-     * this migration's reference set carries a live `<script>` element with a REMOTE `src`, so treating
-     * stored wording as markup is not a theoretical hazard.
-     *
-     * The break is stripped so the sentence reads as a sentence; nothing else is interpreted. Both
-     * halves are asserted, because either alone would pass while the other failed: the words can be
-     * right while a `<br>` element was parsed out of them, and no element can be present while the
-     * characters `<br>` are still visible in the sentence.
-     */
+    /** ⚠ STORED WORDING IS TEXT, INCLUDING ITS MARKUP. The legacy resource values are not clean strings. */
     it('renders stored wording as text, with its layout markup stripped rather than honoured', async () => {
       await arriveWithChosenGroup();
 
@@ -3079,23 +2610,13 @@ describe('RoleListComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF — THE ADDRESS CARRIES THE NARROWING AND THE PAGE
-  //
-  // Runtime testing on the sibling portal listing measured five separate desyncs from keeping this state
-  // privately: pager clicks advanced the grid while the address stayed on the bare route, pressing back
-  // from page three was not possible because paging created no history entry at all, a typed address with a
-  // filter on it issued no request, and a fresh arrival from another screen landed on a page and a narrowing
-  // the operator could not see, because these stores are provided at the application root and OUTLIVE their
-  // routes. This block is the contract that closes all of it for the role listing.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the address', () => {
     /**
-     * Mounts the screen on a tenant with enough roles for the pager to render its steps.
-     *
-     * `arrive` reports a total equal to the number of rows it is given, which is one page - and a pager on
-     * one page correctly withholds its steps, so a case that needs to press one has to arrive differently.
+     * Mounts the screen on a tenant with enough roles for the pager to render its steps. `arrive` reports
+     * a total equal to the number of rows it is given, which is one page - and a pager on one page
+     * correctly withholds its steps, so a case that needs to press one has to arrive differently.
      *
      * @param totalCount The tenant's role count to report.
      */
@@ -3112,12 +2633,10 @@ describe('RoleListComponent', () => {
       await TestBed.inject(Router).navigateByUrl(url);
     }
 
-
     /**
-     * Presses one of the pager's steps by its accessible name, then settles the navigation it starts.
-     *
-     * The real control rather than the component method, so the case exercises the same path an operator
-     * does - the method is `protected` and reaching past that would be asserting an interface nobody uses.
+     * Presses one of the pager's steps by its accessible name, then settles the navigation it starts. The
+     * real control rather than the component method, so the case exercises the same path an operator does
+     * - the method is `protected` and reaching past that would be asserting an interface nobody uses.
      */
     async function pressStep(name: 'First page' | 'Previous page' | 'Next page' | 'Last page'): Promise<void> {
       const step: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
@@ -3161,8 +2680,6 @@ describe('RoleListComponent', () => {
     });
 
     it('omits the default narrowing instead of stating it', async () => {
-      // So the address of a listing nobody has narrowed is the bare route. The measured legacy default is
-      // the UNGROUPED narrowing (`Roles.ascx.vb:L48` initialises to -1, ungrouped per `:L114`).
       await arrive();
 
       await chooseFilter('< All Roles >');
@@ -3186,9 +2703,6 @@ describe('RoleListComponent', () => {
     });
 
     it('restores a whole view from the address on entry: narrowing and page together', async () => {
-      // ⚠ ONE READ, AT THE RIGHT COORDINATE. Restoring the two through the ordinary commands would issue
-      // two reads, and the narrowing would reset the page on its way through - discarding the page the
-      // address had just asked for. This is the case that would catch that.
       await enterAt('/roles?group=all&currentpage=3');
       create();
 
@@ -3252,8 +2766,8 @@ describe('RoleListComponent', () => {
       create();
 
       // ⚠ NOTHING IS READ ON THE FIRST EMISSION, WHICH IS THE CONTRACT. An unusable address is replaced and
-      // the handler returns without reading; the replacement emits again and THAT emission does the read. So
-      // the address has to settle before any request exists to expect.
+      // the handler returns without reading; the replacement emits again and THAT emission does the read.
+      // So the address has to settle before any request exists to expect.
       expect(httpMock.match(() => true))
         .withContext('the uncorrected address reads nothing')
         .toHaveSize(0);
@@ -3275,9 +2789,6 @@ describe('RoleListComponent', () => {
     });
 
     it('leaves a parameter belonging to something else on the address alone', async () => {
-      // ⚠ THE CASE THAT PROTECTS `?userId=`. This screen can be narrowed to one account by a route-bound
-      // input reading that parameter. Reconciliation examines only the keys its own writer produces, so an
-      // unusable page beside a foreign parameter corrects the page and keeps the account.
       await enterAt('/roles?userId=7&currentpage=1');
       create();
       await settleAddress();

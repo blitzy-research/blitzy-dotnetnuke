@@ -1,61 +1,16 @@
 <!--
-  The dynamic profile editor - the screen behind `users/:userId/profile`, rendered in both of its modes.
-
-  There is no field list in this template and there cannot be one: the property set is declared by the tenant
-  and arrives from the API, so every label, bound, requirement and pattern is bound from data. The legacy
-  markup was the same in this respect - `Website/admin/Users/Profile.ascx` is a single
-  `dnn:ProfileEditorControl` whose attributes are the entire specification, and it named no field either.
-
-  This template owns the four regions and their order - the heading, the failure surface, then exactly one of
-  loading, nothing-declared, read-only or editable - the per-category grouping and its keyboard-operable
-  disclosure, the projection of one control per declared property into the shared field wrapper, and the
-  action row.
-
-  It owns nothing else, and none of the following is restated here: the wording, which
-  `user-profile.component.ts` holds measured verbatim from the legacy resource file; the form, its validators
-  and its messages, which the component builds; the layout and the field chrome, which the paired stylesheet
-  and `styles/_forms.scss` own, so no inline presentation attribute or literal measurement appears below; the
-  label, required marker, help disclosure and message region, which the shared field wrapper owns including
-  the normalisation of legacy punctuation and break markup; and the live region and severity of a failure,
-  which the shared error banner owns.
-
-  Accessibility, at no visual cost: no landmark element is emitted, because the application shell owns each
-  exactly once; each category is a field set with a caption, so every group is named from the category the
-  tenant declared; each disclosure is a real button reporting `aria-expanded`; every control is named by a
-  real label and an invalid one says so on itself; and view mode renders values as read-only text, so there
-  is no editing affordance to withdraw.
+  There is no field list in this template and there cannot be one: the property set is declared by the
+  tenant and arrives from the API, so every label, bound, requirement and pattern is bound from data.
 -->
 
 <!--
-  MIGRATION: every string rendered here is interpolated plain text, and that is a security boundary rather
-  than a stylistic preference. Legacy wording is untrusted markup by measurement, so no raw-HTML property
-  binding, no sanitiser bypass and no pre-escaped member appears anywhere in this file, and the component
-  exposes none to reach for. The legacy application reached the same conclusion by hand:
-  `Website/admin/Security/AccessDenied.ascx.vb` HTML-encoded its query-string message before displaying it.
-  This screen's own resource file happens to contain no raw tags, but the rule applies regardless, because
-  the runtime property list and its wording come from the API rather than from that file.
+  Every string rendered here is interpolated plain text, and that is a security boundary rather than a
+  stylistic preference.
 -->
 
 <!--
-  MIGRATION: the legacy screen carried two separate title strings, and both are rendered, at the two levels
-  the shared page header offers.
-
-  The heading is `ProfileTitle.Text`, measured verbatim as `Edit Profile - {0} (Id: {1})` and interpolated
-  with the account name and then its identifier. `Profile.ascx.vb` formatted exactly that for an
-  administrator and hid the row otherwise; this route is administrator-only, so it always renders - in BOTH
-  modes, because the legacy code assigned it regardless of `EditorMode`, so a legacy operator reading a
-  profile also saw the word "Edit" there. A caller-supplied heading still wins, per the component's contract.
-
   The supporting line is the mode-dependent control title the legacy framework drew for the module:
-  "Manage Profile" against "View Profile". A caller-supplied supporting line wins over it.
-
-  MIGRATION: `User.UserID.ToString` inside the legacy format call is an implicit conversion the admin pages
-  were permitted only because they compiled with strict checking off; the component performs it explicitly.
-
-  MIGRATION: the cross-screen action this container offered - "Manage Profile Properties" - is NOT rendered
-  as a link. The component declares no router-link directive, so a link written here would either navigate
-  nowhere or force a full document load, and a full load would discard the memory-held session and sign the
-  operator out mid-edit. The empty state below names the destination in prose instead.
+  "Manage Profile" against "View Profile".
 -->
 <app-page-header
   [title]="pageTitle()"
@@ -63,76 +18,38 @@
 />
 
 <!--
-  The failure surface, rendered above the content so it is the first thing after the heading and is never
-  scrolled past. The shared banner owns the live region, the severity and the per-field breakdown, and
-  renders nothing when there is no problem, so it needs no guard. `problem()` is already narrowed to this
-  screen's own two commands, so a failure raised elsewhere never appears as though the profile had failed.
-
-  A refusal is additionally announced at WARNING severity through the notification service, never at danger
-  severity. That is the legacy severity: `AccessDenied.ascx.vb` used the warning message type in both
-  branches of its load handler and the error type in neither.
+  The failure surface, rendered above the content so it is the first thing after the heading and is
+  never scrolled past. The shared banner owns the live region, the severity and the per-field breakdown,
+  and renders nothing when there is no problem, so it needs no guard.
 -->
 <app-error-banner [problem]="problem()" />
 
-<!--
-  MIGRATION: the legacy layout table becomes a CSS grid stack, in both modes. The outer element in
-  `Profile.ascx` is a presentational `table` - zero cell spacing, zero cell padding, no border - and no
-  `table`, `tr` or `td` element is emitted by this screen in either mode: the sequence is a grid stack and
-  the two spacer rows are a real gap declared in the paired stylesheet. The two-column label-and-control
-  arrangement was never that element either; it was produced inside the excluded editor control by its
-  label-width and control-width attributes, whose measured values resolve to tokens in the stylesheet.
-
-  The loading and empty branches render directly on the host, whose stylesheet declares the same grid flow as
-  `.user-profile`; the two content branches carry that class on the element that also carries the form, so
-  the group stack and the action row share one rhythm without an extra wrapper.
--->
+<!-- The legacy layout table becomes a CSS grid stack, in both modes. -->
 @if (addressUnreadable()) {
 <!--
-    ⚠ THIS BRANCH SITS BEFORE THE EMPTY-PROPERTIES BRANCH, AND THE ORDER IS THE FIX. `hasProperties()`
-    is false in two unrelated situations - the tenant declares none, and nothing was ever fetched - and
-    an unreadable identifier produces the second, because no request is issued for a key that cannot be
-    parsed. With this branch absent, `/users/abc/profile` therefore claimed "This site declares no
-    profile properties" on a tenant declaring TWELVE: not merely unhelpful but factually wrong about the
-    configuration, and it sent the operator to fix something that was not broken.
-
-    The spinner branch is also below this one, deliberately: nothing is loading, so offering a spinner
-    would suggest a request that is never going to be made.
-  -->
+  ⚠ THIS BRANCH SITS BEFORE THE EMPTY-PROPERTIES BRANCH, AND THE ORDER MATTERS. `hasProperties()` is
+  false in two unrelated situations - the tenant declares none, and nothing was ever fetched - and an
+  unreadable identifier produces the second, because no request is issued for a key that cannot be
+  parsed.
+-->
   <p class="user-profile__notice">{{ unreadableAddressMessage }}</p>
 } @else if (loading()) {
   <app-loading-spinner label="Loading profile…" />
 } @else if (!hasProperties()) {
 <!--
-    Reached when the tenant declares no profile property at all, which is a legitimate configuration rather
-    than a failure - hence an empty state and not an error banner. The message names the screen that fixes it
-    in prose rather than importing a route from a sibling feature folder.
-  -->
+  Reached when the tenant declares no profile property at all, which is a legitimate configuration
+  rather than a failure - hence an empty state and not an error banner. The message names the screen
+  that fixes it in prose rather than importing a route from a sibling feature folder.
+-->
   <app-empty-state [message]="noPropertiesMessage" />
 } @else if (exceedsSubmissionLimit()) {
-<!--
-    The form is withheld deliberately, and this branch sits before both content branches. A profile write
-    carries EVERY declared property, because it replaces rather than merges, and the endpoint refuses a
-    request carrying more than its bound - so for a tenant past that bound no save on this screen can ever
-    succeed, and offering the form anyway invites an operator to fill in something that will be refused
-    whole.
-
-    It is an empty state rather than an error banner because nothing has failed: the site is configured in a
-    way this write cannot serve, and the message says which numbers are in play and where the declarations
-    are managed. View mode is withheld too, because showing a read-only profile while hiding the reason would
-    leave the operator with no explanation for why the editor never appears.
-  -->
+<!-- The form is withheld deliberately, and this branch sits before both content branches. -->
   <app-empty-state [message]="tooManyPropertiesNotice()" />
 } @else if (mode() === 'view') {
 <!--
-    VIEW MODE, which is what `ViewProfile.ascx` asked for: two legacy pages were one control in two
-    configurations, and they are ONE component in two modes for that reason.
-
-    No form element and no action row is emitted, which honours `ShowUpdate="False"` structurally rather than
-    by disabling anything. Values are rendered as read-only TEXT rather than as disabled controls, because a
-    control is an editing affordance - one that looks inert still invites an edit that cannot be saved, and a
-    disabled control is excluded from the form's value, which would make the same markup mean two different
-    things in the two modes.
-  -->
+  VIEW MODE, which is what `ViewProfile.ascx` asked for: two legacy pages were one control in two
+  configurations, and they are ONE component in two modes for that reason.
+-->
   <div class="user-profile">
     <div class="user-profile__groups">
       @for (section of sections(); track section.key) {
@@ -147,11 +64,10 @@
               (click)="toggleSection(section.key)"
             >
 <!--
-                A geometric marker rather than a raster asset: no legacy image is carried
-                across, and the quarter turn that indicates the expanded state is applied
-                by the stylesheet through `aria-expanded`, so the affordance and the
-                announcement can never disagree.
-              -->
+  A geometric marker rather than a raster asset: no legacy image is carried across, and the quarter turn
+  that indicates the expanded state is applied by the stylesheet through `aria-expanded`, so the
+  affordance and the announcement can never disagree.
+-->
               <svg
                 class="user-profile__toggle-icon"
                 viewBox="0 0 8 8"
@@ -167,9 +83,9 @@
 
           @if (!isCollapsed(section.key)) {
 <!--
-              A description list, so the association between a property name and its value
-              is structural and survives with no styling at all.
-            -->
+  A description list, so the association between a property name and its value is structural and
+  survives with no styling at all.
+-->
             <dl [id]="sectionBodyId(section.key)" class="user-profile__values">
               @for (value of section.values; track value.definition.propertyDefinitionId) {
                 <dt>{{ labelFor(value) }}</dt>
@@ -184,30 +100,23 @@
 } @else {
   <form class="user-profile" [formGroup]="form()" (ngSubmit)="onSubmit()">
     <div class="user-profile__groups">
-<!-- MIGRATION: two of this screen's resource keys contain a space, and both are handled
-        explicitly rather than left to fail silently. The four category `.Header` values are
-        byte-identical to the `PropertyCategory` values they head, so the category string is
-        rendered STRAIGHT out of the declaration and no key is composed or parsed - a heading
-        containing a space therefore cannot break. The other is the empty option of a
-        list-backed control; the component publishes its wording so it survives the
-        migration, and this screen renders no list-backed control for a profile value yet.
-      -->
+<!--
+  Two of this screen's resource keys contain a space, and both are handled explicitly rather than left
+  to fail silently.
+-->
       @for (section of sections(); track section.key) {
 <!--
-          A grouped field set with a caption, the target equivalent of the legacy
-          `groupByMode="Section"` with `groupHeaderIncludeRule="True"`. The shared component
-          library is closed at ten members and holds no section component, so the grouping is
-          expressed in native markup instead. The hairline the legacy section-head control
-          drew is a border declared against the token vocabulary in the paired stylesheet,
-          because a rule drawn in markup is presentation masquerading as content.
-        -->
+  A grouped field set with a caption, the target equivalent of the legacy `groupByMode="Section"` with
+  `groupHeaderIncludeRule="True"`. No shared component covers a captioned field grouping, so the
+  grouping is expressed in native markup instead.
+-->
         <fieldset class="user-profile__group">
           <legend>
-<!-- MIGRATION: the legacy collapse control carried `tabindex="-1"` on both its
-              image button and its help affordance, so a keyboard user could not reach it at
-              all. It is a real button here with no tab index of its own, which reverses an
-              accessibility defect at no visual cost.
-            -->
+<!--
+  The legacy collapse control carried `tabindex="-1"` on both its image button and its help affordance,
+  so a keyboard user could not reach it at all. It is a real button here with no tab index of its own,
+  which reverses an accessibility defect at no visual cost.
+-->
             <button
               type="button"
               class="user-profile__toggle"
@@ -228,59 +137,27 @@
           </legend>
 
 <!--
-            A collapsed stack is REMOVED, not hidden: the user agent's
-            `[hidden] { display: none }` rule is weaker than any author rule and
-            `.user-profile__fields` declares `display: grid`, so a hidden stack would remain
-            visible. Removal is also why the disclosure carries no `aria-controls` reference
-            - the referenced element does not exist while it is collapsed.
-          -->
+  A collapsed stack is REMOVED, not hidden: the user agent's `[hidden] { display: none }` rule is weaker
+  than any author rule and `.user-profile__fields` declares `display: grid`, so a hidden stack would
+  remain visible.
+-->
           @if (!isCollapsed(section.key)) {
             <div [id]="sectionBodyId(section.key)" class="user-profile__fields">
               @for (value of section.values; track value.definition.propertyDefinitionId) {
                 @if (valueControl(value); as control) {
 <!--
-                    The shared form field owns the label, the required marker, the help
-                    disclosure and the error region, including stripping one trailing colon
-                    from the label and resolving any legacy break markup a message carries.
+  Requiredness is taken from the DECLARATION's own flag, never from the presence of a `.Required`
+  message, so a property the tenant added is treated exactly like a seeded one.
+-->
 
-                    Requiredness is taken from the DECLARATION's own flag, never from the
-                    presence of a `.Required` message, so a property the tenant added is
-                    treated exactly like a seeded one.
-                  -->
-
-<!-- MIGRATION: the legacy wording travels through unchanged, defects and
-                    all, because domain-logic preservation forbids opportunistic correction.
-                    Four measured oddities reach the operator exactly as they always did: the
-                    `MiddleName` help text is literally its own label, colon included; the
-                    `Unit` help misspells "apartment"; the `Cell` message says "Cell Phone"
-                    where its label says "Cell/Mobile" and the `Fax` message says "Fax
-                    number" where its label says "Fax"; and the `PreferredLocale` message
-                    lower-cases a word its label capitalises.
-
-                    MIGRATION: the legacy help affordance sat INSIDE the label element
-                    (`labelcontrol.ascx` L3-L5) with a negative tab index, so clicking the
-                    help icon also focused the control and a keyboard user could not reach
-                    it. The shared component un-nests it, which the legacy codebase itself
-                    already shipped in `Website/controls/helpbuttoncontrol.ascx`. Its help
-                    panel is the legacy `Help` class, whose measured appearance at
-                    `default.css` L424-L439 declares all FOUR borders — including the
-                    bottom one at L436. Its pale-yellow ground is NOT reproduced: that value
-                    is absent from the design specification's nine-colour table, so the shared
-                    component paints the panel on the vocabulary's secondary surface instead, a
-                    recorded visible divergence. The shared component owns all of that, and
-                    this template only supplies the text.
-                  -->
+<!--
+  The legacy help affordance sat INSIDE the label element with a negative tab index, so clicking the
+  help icon also focused the control and a keyboard user could not reach it.
+-->
                   <!--
-                    ⚠ `form-field--stacked` IS NOT A STYLE CHOICE, IT IS U-M7's FIX, AND IT IS APPLIED HERE
-                    AND NOT TO THE VISIBILITY FIELD BELOW ON PURPOSE. The label on THIS field is
-                    `labelFor(value)` — a property name authored by the tenant, of unbounded length. The
-                    shared field's two-column arrangement sizes its label column from a measure taken off
-                    fixed admin captions, so a tenant-authored name meets that measure by wrapping, and
-                    wraps WORSE the wider the viewport gets because the column stops growing while the
-                    stacked arrangement below the breakpoint does not. Measured: three lines at 768 and
-                    above against one below 767. The variant keeps the stacked arrangement at every width,
-                    so the label always has the whole content width. The visibility field below keeps the
-                    default because "Visible to" is application wording that was measured and fits.
+                    ⚠ `form-field--stacked` IS NOT A STYLE CHOICE, IT IS U-M7's FIX, AND IT IS APPLIED
+                    HERE AND NOT TO THE VISIBILITY FIELD BELOW ON PURPOSE. The label on THIS field is
+                    `labelFor(value)` — a property name authored by the tenant, of unbounded length.
                   -->
                   <app-form-field
                     class="form-field--stacked"
@@ -291,23 +168,11 @@
                     [error]="errorsFor(value)"
                   >
                     @if (isMultiline(value)) {
-<!-- MIGRATION: rich text is reduced to a plain multi-line text box, a
-                        deliberate functional reduction rather than an omission. The legacy
-                        `Biography` property was edited through the FCK editor provider,
-                        which is out of scope, and its help text still says "Use the Editor
-                        to enter a short Biography" because that is the wording the
-                        operator knows. No rich-text control is substituted here: no
-                        toolbar, no editable container, and no trusted-HTML binding — the
-                        value is bound as TEXT and nothing on this screen renders it as
-                        markup.
-
-                        TWO KINDS OF PROPERTY REACH THIS BRANCH. One is the seeded
-                        rich-text property, which arrives with a declared length of zero
-                        and is recognised by name rather than by its unreadable data-type
-                        integer. The other is any property the tenant allowed several
-                        hundred characters for, which is prose by size. Both get the same
-                        plain box; neither gets an editor.
-                      -->
+<!--
+  TWO KINDS OF PROPERTY REACH THIS BRANCH. One is the seeded rich-text property, which arrives with a
+  declared length of zero and is recognised by name rather than by its unreadable data-type integer. The
+  other is any property the tenant allowed several hundred characters for, which is prose by size.
+-->
                       <textarea
                         [id]="controlId(value)"
                         [rows]="multilineRowsFor(value)"
@@ -317,33 +182,10 @@
                         [attr.aria-invalid]="hasError(value) ? 'true' : null"
                       ></textarea>
                     } @else {
-                      <!-- MIGRATION: A TEXT CONTROL FOR EVERY DECLARED DATA TYPE, and this is
-                        a reported functional reduction rather than a shortcut. The
-                        declaration's `dataType` is a plain integer on both sides of the
-                        boundary: in the legacy schema it is a foreign key into the `Lists`
-                        table resolved BY NAME, and `Library/Components/Lists` is out of
-                        scope, so the integer arrives unresolved and its value is a
-                        database-assigned entry identifier that is not stable between
-                        installations. A hardcoded identifier-to-control map would silently
-                        render the WRONG control on any installation whose list seeded in a
-                        different order, so the thirteen legacy control kinds — time zone,
-                        locale, country, region, list, date, date-time, true/false,
-                        integer, rich text and page among them — are not offered. A text
-                        control is what the legacy editor fell back to for every type it
-                        had no specialised control for, and the declared LENGTH together
-                        with the measured seeded-rich-text set — never the type — chooses
-                        between one line and several.
-
-                        MIGRATION: the null-date sentinel renders as NOTHING. The legacy null
-                        contract defines it as the minimum date value and it survives on the
-                        wire, so a date nobody ever set would otherwise appear as
-                        `01/01/0001` as though somebody had chosen it. The component blanks it
-                        before it reaches either mode.
-
-                        `maxlength` is published only when a bound was actually declared: the
-                        schema defaults the declared length to zero, which is the ABSENCE of a
-                        bound rather than a bound of nothing, and `maxlength="0"` would stop
-                        the operator typing at all.
+                      <!--
+                        The null-date sentinel renders as NOTHING. The legacy null contract defines it
+                        as the minimum date value and it survives on the wire, so a date nobody ever set
+                        would otherwise appear as `01/01/0001` as though somebody had chosen it.
                       -->
                       <input
                         type="text"
@@ -359,30 +201,11 @@
                   @if (visibilityOffered()) {
                     @if (visibilityControl(value); as visibility) {
                       <div class="user-profile__visibility">
-                        <!-- MIGRATION: THE AFFORDANCE IS RESOLVED, NOT ASSUMED. `Profile.ascx.vb`
-                          L59-L63 computed the tenant's `Profile_DisplayVisibility` setting
-                          AND the viewer being the subject of the profile, and both halves are
-                          resolved by `visibilityOffered` - the policy from the account-policy
-                          read, the identity from the signed-in session. An earlier revision
-                          bound an input alone, which no route supplies, so this control never
-                          appeared on the routed screen whatever the tenant had configured.
-
-                          ⚠ AN ADMINISTRATOR EDITING SOMEBODY ELSE'S PROFILE NEVER SEES IT, and
-                          the second half of the legacy predicate is why: visibility is a choice
-                          the account holder makes about their own data, and an administrator
-                          could otherwise change who can see it without the holder knowing.
-
-                          The submitted payload still carries every property's visibility
-                          whether or not this control is offered, so withholding it never
-                          silently rewrites a choice the account already made.
-                        -->
                         <app-form-field label="Visible to" [for]="visibilityId(value)">
 <!--
-                            `ngValue` rather than `value`: the control holds a number, and a
-                            plain value binding would write the option back as a string, so
-                            the submitted visibility would stop matching the codes the API
-                            declares.
-                          -->
+  `ngValue` rather than `value`: the control holds a number, and a plain value binding would write the
+  option back as a string, so the submitted visibility would stop matching the codes the API declares.
+-->
                           <select [id]="visibilityId(value)" [formControl]="visibility">
                             @for (option of visibilityOptions; track option.code) {
                               <option [ngValue]="option.code">{{ option.label }}</option>
@@ -400,44 +223,12 @@
       }
     </div>
 
-<!--
-      THE ACTION ROW BELONGS TO THE EDITABLE BRANCH AND CARRIES NO FURTHER GUARD OF ITS OWN,
-      which is a correctness requirement rather than a simplification. Reaching this point
-      already establishes both halves of the only condition that could apply: the
-      `!hasProperties()` branch above was not taken, so there IS something to save, and the
-      `mode() === 'view'` branch was not taken, so this is not the read-only mode that
-      `ShowUpdate="False"` asked for.
-
-      Guarding this row on a strict `mode() === 'edit'` test renders the form with NO SAVE
-      AFFORDANCE AT ALL on the real route. The `:userId/profile` leaf in
-      `features/user/user.routes.ts` reaches this screen through `loadComponent` with no
-      `mode` in its route data, and the router is configured with component input binding,
-      which assigns every declared input from the matched route - so `mode` is assigned
-      `undefined` and the input's own `'edit'` default does not survive. `undefined` is not
-      `'view'`, so the editable branch is entered; `undefined` is not `'edit'`, so the actions
-      would be suppressed, leaving a screen that is editable and unsavable. That is a
-      functional-parity regression against `Profile.ascx`, whose update affordance was visible
-      unless a host explicitly set `ShowUpdate="False"`.
-
-      No component test can catch it: under a test harness no route binds the input, so the
-      `'edit'` default survives and the stricter guard passes.
-    -->
     <div class="user-profile__actions">
-<!-- MIGRATION: the update action is text-only. The legacy affordance was an image
-        link pointing at a legacy raster asset, and none is carried across - the only static
-        asset in scope is the site icon - so the icon is not substituted with a lookalike.
-
-        MIGRATION: the wording is "Update", which is what the legacy button showed, and it
-        does NOT come from this screen's own resource file: `cmdUpdate.Text` is absent there
-        and resolves from the global fallback `SharedResources.resx`. The resource chain is
-        two-level, and reading only the local file would have found no wording at all.
-
-        The legacy button declared no `causesvalidation` attribute, which defaults to true -
-        so the update DID validate, and it does here: an invalid form is not submitted and
-        instead reveals the messages for controls the operator never visited. The legacy
-        administrator bypass, which treated an administrator as valid unconditionally, is
-        deliberately not reproduced, and the server validates independently in either case.
-      -->
+<!--
+  The legacy button declared no `causesvalidation` attribute, which defaults to true so the update DID
+  validate, and it does here: an invalid form is not submitted and instead reveals the messages for
+  controls the operator never visited.
+-->
       <button type="submit" [disabled]="saving()"
           [attr.aria-busy]="saving() ? 'true' : null">
         {{ saving() ? 'Saving…' : 'Update' }}

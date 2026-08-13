@@ -16,73 +16,29 @@ using Frequency = DnnMigration.Domain.Enums.BillingFrequency;
 namespace DnnMigration.UnitTests.Application;
 
 /// <summary>
-/// Pins the paid-membership term engine of <see cref="RoleService"/> - the single most intricate piece
-/// of date arithmetic in the migration - together with the assignment and removal rules that surround
-/// it, against recording doubles for every collaborator and a frozen clock.
+/// Pins the paid-membership term engine of <see cref="RoleService"/> - the single most intricate piece of
+/// date arithmetic in the migration - together with the assignment and removal rules that surround it,
+/// against recording doubles for every collaborator and a frozen clock.
 /// </summary>
 /// <remarks>
-/// <para>
-/// WHY THIS SUITE EXISTS ALONGSIDE THE BROADER ROLE SUITE. AAP 0.4.1.1 places a role-service suite in
-/// the <c>Application</c> folder and AAP 0.5.1.5 states its charter precisely: mocked repositories,
-/// asserting the outcome reasons that replaced the legacy by-reference status arguments. This file
-/// discharges that charter by concentrating on ONE thing the legacy code did and did badly - deriving
-/// when a role membership starts and stops - and it asserts each rule of that derivation separately, so
-/// a failure names the broken rule rather than merely reporting that assignment is broken.
-/// </para>
-/// <para>
-/// THE LEGACY SHAPE, AND WHY IT SPLIT IN TWO. <c>RoleController.vb</c> L489-L557 is one procedure with a
-/// boolean switch: passing the cancel flag expired or deleted a membership, and omitting it derived and
-/// wrote the dates. Those are two operations wearing one name, and the migrated contract separates them
-/// into <see cref="RoleService.AssignUserToRoleAsync"/> (the L503-L555 arm) and
-/// <see cref="RoleService.RemoveUserFromRoleAsync"/> (the L493-L501 arm). Both arms are covered here,
-/// and each is measured against the legacy line it reproduces.
-/// </para>
-/// <para>
 /// THE CLOCK IS INJECTED, ALWAYS. The legacy engine read the ambient machine clock FOUR separate times
-/// within one derivation - the expiry seed at L505, the effective-date comparison at L530, and the
-/// expiry comparison and reassignment at L533-L534 - so a request that crossed a tick between two of
-/// them could clear one bound against one instant and seed the other from a different one. The migrated
-/// engine reads <see cref="IClock.UtcNow"/> exactly once. Every test below freezes that reading at
-/// <see cref="Now"/> and asserts against it, so nothing here can flake at a midnight, month or year
-/// boundary. No test in this file reads a machine clock, and that absence is deliberate rather than
-/// incidental: a date-arithmetic suite that consulted the real clock would be untrustworthy precisely
-/// when it mattered.
-/// </para>
-/// <para>
-/// SENTINELS ARE HONOURED AT THE BOUNDARY, NEVER IN THE MODEL (AAP Rule T7). Three legacy sentinels are
-/// load-bearing here and each is asserted: the absent-integer marker of minus one, which is NOT the
-/// migrated absence marker and is proved not to be; the absent-date marker of the minimum date value,
-/// which the request boundary reads as absence; and the empty string that the legacy reader produced for
-/// a null character column, whose migrated counterpart is a null enumeration value and whose handling is
-/// a measured behavioural difference recorded below. Two identifier seeds are equally load-bearing: a
-/// role identifier of zero is legitimate because the column is seeded from zero, and a portal identifier
-/// of minus one is legitimate because that column is seeded from minus one - so neither may be mistaken
-/// for an unset value.
-/// </para>
-/// <para>
-/// SCOPE DISCIPLINE. Nothing here duplicates a sibling suite. The monetary floor lives with the portal
-/// service, automatic enrolment on account creation lives with the account service, permission
-/// evaluation lives with the security suites, rule-for-rule validator parity lives with the validation
-/// suites, projection round-trips live with the mapping suite, and anything needing a database lives in
-/// the other test project. The eight obsolete delegating members retained for binary compatibility at
-/// <c>RoleController.vb</c> L845-L888 produce no migrated surface, so no test here targets one; the
-/// canonical members they forwarded to are tested instead.
-/// </para>
+/// within one derivation - the expiry seed at L505, the effective-date comparison at L530, and the expiry
+/// comparison and reassignment at L533-L534 - so a request that crossed a tick between two of them could
+/// clear one bound against one instant and seed the other from a different one.
 /// </remarks>
 public class RoleServiceApplicationTests
 {
     /// <summary>
     /// The tenant under test. Minus one is a REAL portal identifier, not an absence marker: the column is
     /// declared <c>IDENTITY (-1, 1)</c> in the baseline schema, so the first portal an installation ever
-    /// creates bears it, and it collides exactly with the legacy absent-integer sentinel. Using it here
-    /// means every tenant-scoped assertion below is made against the value most likely to be mishandled.
+    /// creates bears it, and it collides exactly with the legacy absent-integer sentinel.
     /// </summary>
     private const int PortalId = -1;
 
     /// <summary>
-    /// The role under test. Zero is a REAL role identifier: <c>Roles.RoleID</c> is declared
-    /// <c>IDENTITY (0, 1)</c>, so the first role bears zero and it must never be read as unset merely
-    /// because it equals the CLR default for its type.
+    /// The role under test. Zero is a REAL role identifier: <c>Roles.RoleID</c> is declared <c>IDENTITY (0,
+    /// 1)</c>, so the first role bears zero and it must never be read as unset merely because it equals the
+    /// CLR default for its type.
     /// </summary>
     private const int RoleId = 0;
 
@@ -126,37 +82,31 @@ public class RoleServiceApplicationTests
     /// The frozen instant every derivation is measured against, chosen rather than picked at random.
     /// </summary>
     /// <remarks>
-    /// The thirty-first of January is deliberate: a one-month offset from it lands on the twenty-eighth
-    /// of February, which is the calendar clamping the legacy month interval performed and which a naive
-    /// thirty-day substitution would silently break. The time component is deliberately non-zero so that
-    /// the removal path's truncation to a whole date is observable rather than assumed, and the kind is
-    /// Coordinated Universal Time because the migrated clock speaks nothing else.
+    /// The thirty-first of January is deliberate: a one-month offset from it lands on the twenty-eighth of
+    /// February, which is the calendar clamping the legacy month interval performed and which a naive
+    /// thirty-day substitution would silently break.
     /// </remarks>
     private static readonly DateTime Now = new(2026, 1, 31, 15, 9, 26, DateTimeKind.Utc);
 
     /// <summary>
-    /// The perpetual-term date. The legacy engine assigned this literal for the one-off frequency
-    /// (<c>RoleController.vb</c> L542) and it is externally observable in every existing row, so it is
-    /// carried through unchanged rather than converted into an absent expiry.
+    /// The perpetual-term date. The legacy engine assigned this literal for the one-off frequency and it is
+    /// externally observable in every existing row, so it is carried through unchanged rather than
+    /// converted into an absent expiry.
     /// </summary>
     private static readonly DateTime PerpetualExpiry = new(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// Each of the SIX legacy frequency codes is the character the column actually stores, and the
-    /// migrated enumeration's underlying value is that character rather than an arbitrary ordinal.
+    /// Each of the SIX legacy frequency codes is the character the column actually stores, and the migrated
+    /// enumeration's underlying value is that character rather than an arbitrary ordinal.
     /// </summary>
     /// <param name="code">The single-character code exactly as the column holds it.</param>
     /// <param name="expected">The migrated member the code must resolve to.</param>
     /// <remarks>
-    /// MIGRATION: the codes are DATA, never identifiers, and this test is what stops a future rename from
-    /// passing review. <c>Roles.BillingFrequency</c> and <c>Roles.TrialFrequency</c> are both declared
-    /// <c>char(1) NULL</c> in the baseline schema, the terminal chain leaves them with no foreign key and
-    /// no check constraint, and the six characters below are the literal bytes already sitting in every
-    /// existing installation. Renaming a member would not fail a build - it would silently mis-read live
-    /// rows - so the round trip is asserted here in both directions. The plan text names only the day,
-    /// week, month and year codes; the never and one-off codes are equally load-bearing, the first
-    /// because it doubles as the no-trial guard and the second because it encodes a perpetual term, and
-    /// both are covered.
+    /// The codes are DATA, never identifiers, and this test is what stops a future rename from passing
+    /// review. <c>Roles.BillingFrequency</c> and <c>Roles.TrialFrequency</c> are both declared <c>char(1)
+    /// NULL</c> in the baseline schema, the terminal chain leaves them with no foreign key and no check
+    /// constraint, and the six characters below are the literal bytes already sitting in every existing
+    /// installation.
     /// </remarks>
     [Theory]
     [InlineData("N", Frequency.None)]
@@ -221,14 +171,7 @@ public class RoleServiceApplicationTests
             () => _ = new RoleService(roles, portals, users, permissions, unitOfWork, clock, cache, currentUser, null!));
     }
 
-    /// <summary>
-    /// The day code offsets the expiry by the period counted in days.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: replaces the day-interval call the Visual Basic runtime supplied at
-    /// <c>RoleController.vb</c> L543, whose import at L25 is the only occurrence in the whole in-scope
-    /// legacy surface and is removed entirely. The migrated arithmetic is the framework's own day offset.
-    /// </remarks>
+    /// <summary>The day code offsets the expiry by the period counted in days.</summary>
     [Fact]
     public async Task AssignUserToRole_DayFrequency_OffsetsTheExpiryByThePeriodInDays()
     {
@@ -245,15 +188,7 @@ public class RoleServiceApplicationTests
         harness.UnitOfWork.Verify(unit => unit.SaveChangesAsync(CancellationToken.None), Times.Once);
     }
 
-    /// <summary>
-    /// The week code offsets the expiry by SEVEN DAYS PER PERIOD, not by a week interval.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: replaces <c>RoleController.vb</c> L544, which deliberately used a DAY interval
-    /// multiplied by seven rather than any week interval. The distinction is not cosmetic - the migrated
-    /// arithmetic must multiply and add days to stay equivalent - so this test asserts the multiplication
-    /// explicitly as well as the resulting literal.
-    /// </remarks>
+    /// <summary>The week code offsets the expiry by SEVEN DAYS PER PERIOD, not by a week interval.</summary>
     [Fact]
     public async Task AssignUserToRole_WeekFrequency_OffsetsTheExpiryBySevenDaysPerPeriod()
     {
@@ -273,12 +208,6 @@ public class RoleServiceApplicationTests
     /// The month code offsets the expiry by the period counted in months, preserving the legacy calendar
     /// clamping when the target month is shorter than the source month.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: replaces <c>RoleController.vb</c> L545. The frozen instant is the thirty-first of
-    /// January precisely so this test proves the clamping: a one-month term lands on the twenty-eighth of
-    /// February, which is what the legacy month interval produced and what a thirty-day substitution
-    /// would silently get wrong.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_MonthFrequency_OffsetsTheExpiryByThePeriodInMonthsAndClampsTheDay()
     {
@@ -300,12 +229,6 @@ public class RoleServiceApplicationTests
     /// The year code offsets the expiry by the period counted in years, and the migrated implementation's
     /// twelve-months-per-year form is proved equivalent to the framework's own year offset.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: replaces <c>RoleController.vb</c> L546. The migrated engine expresses a year as twelve
-    /// months so that one clamping helper serves both codes; this test pins that choice by asserting the
-    /// result against the framework's year offset as well as against a literal, so the two can never
-    /// drift apart unnoticed.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_YearFrequency_OffsetsTheExpiryByThePeriodInYears()
     {
@@ -324,20 +247,6 @@ public class RoleServiceApplicationTests
     /// <summary>
     /// A twelve-month period and a one-year period reach the same instant, including across a leap day.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The leap case is the one where a year offset and a naive three-hundred-and-sixty-five-day offset
-    /// disagree, so it is asserted rather than assumed. A one-year term from the twenty-ninth of February
-    /// clamps onto the twenty-eighth, exactly as the legacy year interval did.
-    /// </para>
-    /// <para>
-    /// MIGRATION: SEC-F5. The leap day is placed on the CLOCK rather than submitted as an expiry. It used
-    /// to be submitted, because a submitted bound was the base the term was offset from; a submitted bound
-    /// is now stored as given, so the only base a derivation has is the current instant - and moving the
-    /// clock is how this suite states one. The property under examination is unchanged: it is the offset
-    /// helper's calendar arithmetic, not where the base came from.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_YearFrequency_ClampsALeapDayOntoTheTwentyEighth()
     {
@@ -358,16 +267,7 @@ public class RoleServiceApplicationTests
         stored.ExpiryDate.Should().Be(new DateTime(2029, 2, 28, 15, 9, 26, DateTimeKind.Utc));
     }
 
-    /// <summary>
-    /// The never code stores NO expiry at all, so the membership does not lapse.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>RoleController.vb</c> L541 assigned the absent-date sentinel here - the minimum date
-    /// value, published as the legacy null-date constant. Absence is carried as a null date in the
-    /// migrated model rather than as that sentinel, because the sentinel is absence and not a real
-    /// instant (AAP Rule T7). The sentinel survives only where a wire contract is externally observable,
-    /// which an unbounded expiry is not.
-    /// </remarks>
+    /// <summary>The never code stores NO expiry at all, so the membership does not lapse.</summary>
     [Fact]
     public async Task AssignUserToRole_NoneFrequency_StoresNoExpiry()
     {
@@ -383,15 +283,7 @@ public class RoleServiceApplicationTests
         stored.GetStatus(Now).Should().Be(RoleStatus.Active);
     }
 
-    /// <summary>
-    /// The one-off code stores the perpetual far-future date, and does NOT consult the period.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>RoleController.vb</c> L542 assigned the literal thirty-first of December 9999. That
-    /// value is a REAL, externally observable date sitting in existing rows, so it is carried through
-    /// unchanged and is never quietly converted into an absent expiry - the two mean different things to
-    /// a legacy reader and are deliberately not conflated.
-    /// </remarks>
+    /// <summary>The one-off code stores the perpetual far-future date, and does NOT consult the period.</summary>
     [Fact]
     public async Task AssignUserToRole_OneTimeFrequency_StoresThePerpetualFarFutureDate()
     {
@@ -412,9 +304,7 @@ public class RoleServiceApplicationTests
     /// Every one of the six codes derives a bound without throwing, whichever character the column holds.
     /// </summary>
     /// <param name="code">The single-character code exactly as the column holds it.</param>
-    /// <param name="expiresEventually">
-    /// Whether the code yields a bounded term. Only the never code does not.
-    /// </param>
+    /// <param name="expiresEventually">Whether the code yields a bounded term.</param>
     /// <remarks>
     /// The individual arithmetic is pinned by the six preceding tests; this one drives the whole table
     /// through the service from the stored CHARACTER rather than from a member name, which is the form a
@@ -440,19 +330,11 @@ public class RoleServiceApplicationTests
         stored.ExpiryDate.HasValue.Should().Be(expiresEventually);
     }
 
-
     /// <summary>
-    /// An ABSENT period short-circuits the whole frequency table and yields no expiry, whatever
-    /// frequency the role declares.
+    /// An ABSENT period short-circuits the whole frequency table and yields no expiry, whatever frequency
+    /// the role declares.
     /// </summary>
     /// <param name="code">The frequency code the role declares alongside its absent period.</param>
-    /// <remarks>
-    /// MIGRATION: <c>RoleController.vb</c> L537 tested the period against the legacy absent-integer
-    /// sentinel and assigned the absent-date sentinel BEFORE the L540 selection was reached, so the
-    /// frequency was never consulted. That ordering is reproduced exactly. The one-off code is included
-    /// among the cases specifically to prove the short-circuit wins over the perpetual far-future date -
-    /// which is the case a reordering of the two rules would break while every other case still passed.
-    /// </remarks>
     [Theory]
     [InlineData("N")]
     [InlineData("O")]
@@ -486,18 +368,6 @@ public class RoleServiceApplicationTests
     /// The legacy absent-integer sentinel of MINUS ONE is NOT the migrated absence marker, and is proved
     /// not to be by pairing it with the one-off code.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: MEASURED BEHAVIOURAL DIFFERENCE, DELIBERATE AND RECORDED. The legacy engine could only
-    /// say "no period" by storing minus one, because <c>RoleInfo.vb</c> L203 and L218 declared both
-    /// periods as non-nullable integers; the terminal columns are <c>[TrialPeriod] [int] NULL</c> and
-    /// <c>[BillingPeriod] [int] NULL</c>, so the migrated model says it with a null and the schema wins
-    /// (AAP Rule T4). Consequently a literal minus one is now an ORDINARY NEGATIVE PERIOD rather than an
-    /// absence marker, and it reaches the frequency table instead of short-circuiting it. This test pins
-    /// that, and pairing minus one with the one-off code makes the difference unmistakable: the migrated
-    /// engine answers the perpetual date, where the legacy engine would have answered no expiry at all.
-    /// The distinction matters because minus one is simultaneously a legitimate portal identifier, so
-    /// treating it as "absent" wherever it appears is precisely the conflation Rule T7 forbids.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_MinusOnePeriod_IsARealPeriodAndNotTheAbsenceMarker()
     {
@@ -519,10 +389,10 @@ public class RoleServiceApplicationTests
     /// rather than overflowing.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: a validated request cannot submit a period at or below zero, but a row written before
-    /// those rules existed can hold one, and the engine is reached with stored values. The legacy day
-    /// interval would have thrown for an extreme value; the migrated helper clamps in both directions,
-    /// which is hardening rather than a change of business rule and is asserted here so it cannot regress.
+    /// A validated request cannot submit a period at or below zero, but a row written before those rules
+    /// existed can hold one, and the engine is reached with stored values. The legacy day interval would
+    /// have thrown for an extreme value; the migrated helper clamps in both directions, which is hardening
+    /// rather than a change of business rule and is asserted here so it cannot regress.
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_ExtremeNegativePeriod_ClampsAtTheEarliestStorableInstant()
@@ -545,13 +415,10 @@ public class RoleServiceApplicationTests
     /// </summary>
     /// <param name="code">The offsetting frequency code under test.</param>
     /// <remarks>
-    /// MIGRATION: the week case is the dangerous one and is the reason the migrated engine widens before
-    /// it multiplies. Multiplying the largest storable period by seven in thirty-two-bit arithmetic wraps
-    /// to a negative day count, which would have moved an expiry silently INTO THE PAST - a membership
-    /// cancelling itself on creation. The day, month and year cases raised a range fault instead, which
-    /// surfaced as a server error naming no field. Both faults are replaced by a clamp, and the clamp
-    /// resolves upward to the perpetual date because that value is already this domain's encoding of an
-    /// unbounded term.
+    /// The week case is the dangerous one and is the reason the migrated engine widens before it
+    /// multiplies. Multiplying the largest storable period by seven in thirty-two-bit arithmetic wraps to a
+    /// negative day count, which would have moved an expiry silently INTO THE PAST - a membership
+    /// cancelling itself on creation.
     /// </remarks>
     [Theory]
     [InlineData("D")]
@@ -574,14 +441,9 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// When the trial has NOT been consumed and the trial frequency is not the never code, the TRIAL
-    /// terms govern the expiry and the billing terms are ignored.
+    /// When the trial has NOT been consumed and the trial frequency is not the never code, the TRIAL terms
+    /// govern the expiry and the billing terms are ignored.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: reproduces the selection at <c>RoleController.vb</c> L521-L523. The fixture declares a
-    /// fourteen-day trial ahead of a one-month billing term, and the two produce visibly different dates,
-    /// so this test cannot pass by accident if the branches were transposed.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_TrialNotYetUsed_LetsTheTrialTermsGovern()
     {
@@ -603,11 +465,6 @@ public class RoleServiceApplicationTests
     /// When the trial HAS already been consumed, the BILLING terms govern - and the consumed fact is read
     /// from the stored row, never from anything the caller submits.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: reproduces <c>RoleController.vb</c> L515 priming the flag from the stored membership and
-    /// L524-L526 selecting the billing terms. Nothing on the request contract can reset the flag, which is
-    /// what stops a cancelled subscriber restarting a trial.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_TrialAlreadyUsed_LetsTheBillingTermsGovern()
     {
@@ -629,13 +486,6 @@ public class RoleServiceApplicationTests
     /// A trial frequency of the NEVER code means "no trial", so the billing terms govern even though the
     /// trial has not been consumed.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: this is the second, independent responsibility the never code carries at
-    /// <c>RoleController.vb</c> L521, where the guard reads "the trial frequency is not the never code".
-    /// The terminal projection applies the same test when it gates the trial fee, period and frequency
-    /// behind a comparison against that code, so dropping the member would break trial selection in two
-    /// layers at once. It is therefore asserted separately from the consumed-trial case above.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_TrialFrequencyIsTheNeverCode_LetsTheBillingTermsGovern()
     {
@@ -654,31 +504,14 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// An ABSENT trial frequency lets the billing terms govern - the resolution of a legacy expression
-    /// that did not short-circuit, and a measured behavioural difference.
+    /// An ABSENT trial frequency lets the billing terms govern - the resolution of a legacy expression that
+    /// did not short-circuit, and a measured behavioural difference.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// MIGRATION: MEASURED BEHAVIOURAL DIFFERENCE, DELIBERATE AND RECORDED IN <c>MIGRATION_NOTES.md</c>.
-    /// <c>RoleController.vb</c> L521 reads
-    /// <c>If IsTrialUsed = False And role.TrialFrequency.ToString &lt;&gt; "N" Then</c>, and the operator
-    /// is the NON-SHORT-CIRCUITING one, so the right-hand side was evaluated even when the left-hand side
-    /// was already false. That never faulted in the legacy world for two reasons that both stopped
-    /// holding at the migration boundary: <c>RoleInfo.vb</c> L188 declared the property as a string, and
-    /// the legacy reader coerced a null column to the legacy null-string constant, which is the EMPTY
-    /// STRING and not a null. The consequence was that a role whose trial frequency column was null
-    /// compared empty against the never code, the comparison succeeded, and the TRIAL terms governed a
-    /// role that declared no trial at all.
-    /// </para>
-    /// <para>
-    /// The column is genuinely <c>char(1) NULL</c>, so the migrated property is a nullable enumeration and
-    /// an absent value is a null rather than an empty string. The migrated guard therefore requires a
-    /// present frequency before the trial can govern, and an absent one falls to the BILLING terms. That
-    /// is a different answer from the legacy one, it is the answer the column's own nullability implies,
-    /// and it is asserted here rather than being left to be discovered. The explicit conversion the legacy
-    /// line performed on an already-string property - a coercion the administration screens' relaxed
-    /// compilation mode permitted - has no migrated counterpart at all.
-    /// </para>
+    /// <c>RoleController.vb</c> L521 reads <c>If IsTrialUsed = False And role.TrialFrequency.ToString
+    /// &lt;&gt; "N" Then</c>, and the operator is the NON-SHORT-CIRCUITING one, so the right-hand side was
+    /// evaluated even when the left-hand side was already false.
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_AbsentTrialFrequency_LetsTheBillingTermsGovern()
@@ -703,14 +536,6 @@ public class RoleServiceApplicationTests
     /// An absent trial frequency is evaluated without faulting even when the trial has already been
     /// consumed, which is the branch the legacy non-short-circuiting operator made reachable.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the companion case to the test above. Because <c>RoleController.vb</c> L521 used the
-    /// non-short-circuiting operator, its right-hand side ran even on the already-consumed branch, so a
-    /// naive translation to a short-circuiting operator would change WHEN the property is touched as well
-    /// as what the comparison yields. The migrated guard reaches the same answer by pattern-matching the
-    /// nullable value rather than by dereferencing it, so neither ordering can fault; this test proves the
-    /// combination that would have thrown had the migrated property been dereferenced instead.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_AbsentTrialFrequencyAndConsumedTrial_DoesNotFault()
     {
@@ -728,26 +553,14 @@ public class RoleServiceApplicationTests
         harness.ExistingAssignment!.ExpiryDate.Should().Be(Now.AddMonths(1));
     }
 
-
     /// <summary>
     /// An effective date already in the PAST is stored EXACTLY AS SUBMITTED, so a backdated grant is
     /// recorded as the caller stated it.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F5 REPLACED A FACT ASSERTING THE OPPOSITE, and the correction is a correction of
-    /// ATTRIBUTION. The discarded-start-gate rule is real, but it lives at <c>RoleController.vb</c>
-    /// L530-L532 inside <c>UpdateUserRole</c> - a member that declares no date parameters and reads every
-    /// bound it works from out of the STORED assignment at L513-L515. The member the legacy screen called
-    /// with a caller's own dates is <c>AddUserRole</c> at L295-L315, which assigns both bounds to the row
-    /// verbatim on the insert branch and on the update branch alike. Applying the stored-bound rule to a
-    /// submitted bound discarded the caller's instruction while answering that it had been accepted.
-    /// </para>
-    /// <para>
     /// The membership is still ACTIVE, which is the substantive property the withdrawn fact was reaching
     /// for: a start date in the past opens the membership rather than gating it, whether it is recorded or
     /// cleared. What changes is that the store now says WHEN it opened.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_PastEffectiveDate_IsStoredExactlyAsSubmitted()
@@ -771,11 +584,6 @@ public class RoleServiceApplicationTests
     /// <summary>
     /// An effective date in the FUTURE is preserved exactly, so a membership can be granted ahead of time.
     /// </summary>
-    /// <remarks>
-    /// The negative half of the clearing rule at <c>RoleController.vb</c> L530: only a PAST value is
-    /// cleared, and asserting the future case separately is what proves the comparison is a comparison
-    /// rather than an unconditional clear.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_FutureEffectiveDate_IsPreservedExactly()
     {
@@ -799,26 +607,11 @@ public class RoleServiceApplicationTests
     /// A SUBMITTED expiry date is stored exactly as submitted, whether it is already in the past or still
     /// in the future, and the role's term is not added to it.
     /// </summary>
-    /// <param name="offsetDays">
-    /// How far the submitted bound sits from the frozen instant. Both signs are asserted, because the two
-    /// previously took different wrong turns: a past bound was advanced to the present and then extended,
-    /// while a future bound was used as the base the term was added to.
-    /// </param>
+    /// <param name="offsetDays">How far the submitted bound sits from the frozen instant.</param>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F5 REPLACED TWO FACTS WITH THIS ONE, for the attribution reason recorded on the
-    /// effective-date fact above: <c>RoleController.vb</c> L533-L534 clamps the STORED bound inside
-    /// <c>UpdateUserRole</c>, which accepts no submitted dates, whereas the member the screen called
-    /// (<c>AddUserRole</c>, L295-L315) stored what it was given. Running the derivation over a caller's
-    /// own bound meant a stated end date came back a period later on a 2xx response - the most costly
-    /// shape of this defect, because the stored value was plausible and the caller had no reason to
-    /// re-read it.
-    /// </para>
-    /// <para>
     /// The derivation itself is not withdrawn and is asserted by the frequency facts above, all of which
     /// submit no bound. The two cases are separate because they are reached through different members in
     /// the legacy source, and this fact pins which one a caller's date reaches.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(-30)]
@@ -843,19 +636,9 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// The legacy ABSENT-DATE MARKER submitted for either bound is read as absence at the request
-    /// boundary, and is never stored as a real first-of-January-0001 instant.
+    /// The legacy ABSENT-DATE MARKER submitted for either bound is read as absence at the request boundary,
+    /// and is never stored as a real first-of-January-0001 instant.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the marker is the legacy null-date constant, which is the MINIMUM DATE VALUE and not a
-    /// null - the legacy properties were non-nullable dates, so a caller had no other way to say
-    /// "unbounded". A caller built against that contract still submits it, and the boundary translates it
-    /// (AAP Rule T7) so that no layer below carries sentinel knowledge. This case is measured in the legacy
-    /// tree: the private automatic-enrolment helper at <c>RoleController.vb</c> L76 passes the marker for
-    /// BOTH bounds, and the account-creation path does the same, so an installation's rows genuinely
-    /// contain it. The migrated contract must therefore accept the minimum date value for both bounds
-    /// without either rejecting it or preserving it as a real date.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_LegacyAbsentDateMarker_IsReadAsAbsenceForBothBounds()
     {
@@ -880,17 +663,6 @@ public class RoleServiceApplicationTests
     /// Submitting the absent-date marker for both bounds reaches THE SAME stored outcome as submitting
     /// neither, so translating the marker changes no answer.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: this is the assertion that makes the boundary translation safe to reason about. The
-    /// marker is always in the past, so the clamping would already have cleared a marker effective bound
-    /// and advanced a marker expiry bound to the current instant - which is exactly the offset base an
-    /// ABSENT expiry produces. Reading the marker as absence therefore states a reason that was previously
-    /// only implied, and this test proves the equivalence rather than asserting it in prose: were the two
-    /// requests ever to diverge, a caller written against the legacy non-nullable date contract would
-    /// silently start receiving different terms from one written against the migrated nullable one. The
-    /// automatic-enrolment helper at <c>RoleController.vb</c> L76 and the account-creation path both submit
-    /// the marker for both bounds, so this is the shape existing callers actually use.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_AbsentDateMarker_MatchesSubmittingNoBoundsAtAll()
     {
@@ -921,16 +693,9 @@ public class RoleServiceApplicationTests
     }
 
     /// <summary>
-    /// The absent-date marker is recognised even when a time component has been attached to it, because
-    /// the comparison is made on the date part alone.
+    /// The absent-date marker is recognised even when a time component has been attached to it, because the
+    /// comparison is made on the date part alone.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy emptiness tests compared the date part against the marker's date part and
-    /// carried the source comment that this avoids subtle time differences. A caller that copied the
-    /// marker through a legacy object may present it with a time attached, so an exact-equality test would
-    /// let such a value through and store the year one as a real bound. The date-part comparison is
-    /// preserved and asserted.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_AbsentDateMarkerCarryingATime_IsStillReadAsAbsence()
     {
@@ -953,23 +718,10 @@ public class RoleServiceApplicationTests
     /// NOT throw - a legacy shape preserved deliberately rather than corrected.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MEASURED LEGACY SHAPE, ANNOTATED AND DELIBERATELY NOT FIXED (Minimal Change Clause item 1). The
-    /// selection at <c>RoleController.vb</c> L540-L547 has NO default arm - L547 closes it immediately
-    /// after the year case - so a character outside the six simply fell through and the bound kept the
-    /// value the normalisation above had given it. The migrated switch reproduces that with a discard arm
-    /// yielding the same local, so an unrecognised character is still not an error.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the terminal columns carry no check constraint and no foreign key, so the store accepts
-    /// any single character and an unrecognised one is genuinely reachable from live data. Preserving the
-    /// non-throwing shape means such a row is still readable and still assignable, where a throw would
-    /// have turned one bad character into a failed operation. The DIFFERENCE from the legacy answer is the
-    /// value that survives: the legacy engine seeded its local from the ambient instant at L505, so an
-    /// unrecognised character stored an expiry equal to NOW - a membership that lapsed the moment it was
-    /// created - whereas the migrated engine seeds from the request and stores NO expiry when none was
-    /// submitted. That is the sane reading of the same code path and is recorded rather than absorbed.
-    /// </para>
+    /// The terminal columns carry no check constraint and no foreign key, so the store accepts any single
+    /// character and an unrecognised one is genuinely reachable from live data. Preserving the non-throwing
+    /// shape means such a row is still readable and still assignable, where a throw would have turned one
+    /// bad character into a failed operation.
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_UnrecognisedFrequencyCharacter_DoesNotThrowAndLeavesTheBoundAlone()
@@ -990,11 +742,6 @@ public class RoleServiceApplicationTests
     /// An unrecognised frequency character preserves a submitted FUTURE bound unchanged, which is the other
     /// half of the fall-through shape.
     /// </summary>
-    /// <remarks>
-    /// The discard arm yields the normalised local, so a bound the caller supplied survives untouched
-    /// rather than being replaced by a derived one. Asserting both halves is what pins the arm as a
-    /// pass-through rather than as a silent clear.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_UnrecognisedFrequencyCharacter_PreservesASubmittedFutureBound()
     {
@@ -1013,15 +760,7 @@ public class RoleServiceApplicationTests
         stored.ExpiryDate.Should().Be(submitted);
     }
 
-    /// <summary>
-    /// A member who does NOT yet hold the role has an assignment STAGED, and nothing is revised.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: the insert half of the branch at <c>RoleController.vb</c> L550-L555, which tested a local
-    /// identifier against minus one to decide between revising the row it had read and calling the
-    /// assignment member. The migrated engine tests the read row for null instead, which removes the
-    /// sentinel from the decision entirely while reaching the same two arms.
-    /// </remarks>
+    /// <summary>A member who does NOT yet hold the role has an assignment STAGED, and nothing is revised.</summary>
     [Fact]
     public async Task AssignUserToRole_MemberDoesNotHoldTheRole_StagesANewAssignment()
     {
@@ -1056,12 +795,6 @@ public class RoleServiceApplicationTests
     /// A member who ALREADY holds the role has the two bounds revised in place, and no second assignment is
     /// staged - so the operation is idempotent in exactly the way the legacy upsert was.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the revise half of the branch at <c>RoleController.vb</c> L550-L552, and the upsert shape
-    /// of the assignment member at L295-L315. Exactly two members are writable on a renewal: the identity
-    /// columns are untouched because a renewal is not a move, and the consumed-trial fact is untouched
-    /// because nothing a caller submits may reset it.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_MemberAlreadyHoldsTheRole_RevisesTheBoundsInPlace()
     {
@@ -1092,21 +825,9 @@ public class RoleServiceApplicationTests
     /// The whole derivation is driven by ONE reading of the injected clock, so no two rules within a single
     /// assignment can disagree about what "now" means.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy engine read the ambient machine clock four times inside one derivation -
-    /// <c>RoleController.vb</c> L505, L530, L533 and L534 - and a request that crossed a tick between two
-    /// of them could clear one bound against one instant and seed the other from a different one. The
-    /// migrated engine reads once. This test proves the reading is taken from the injected abstraction, and
-    /// the count assertion is what stops a future edit reintroducing a second, independent reading.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_ReadsTheInjectedClockExactlyOnce()
     {
-        // MIGRATION: SEC-F5. BOTH SHAPES ARE ASSERTED, because there are now two of them. A submitted
-        // bound leaves the derivation early, and an edit that moved the reading down beside the offset
-        // would then read the clock ZERO times on that path - which no single-shape assertion would
-        // notice, and which would quietly reintroduce a second reading site the day a caller-independent
-        // value was needed above it. The shape that runs the whole derivation is asserted alongside it.
         Harness derived = Harness.Ready();
         derived.LookupRole = TermRole(Frequency.Day, period: 7);
 
@@ -1142,11 +863,6 @@ public class RoleServiceApplicationTests
     /// Moving the injected clock moves every derived bound with it, which is the property that makes this
     /// engine testable at all.
     /// </summary>
-    /// <remarks>
-    /// The legacy engine had no time abstraction whatsoever, so no assertion of this kind could be written
-    /// against it. Re-deriving the same request against a second frozen instant proves the engine consults
-    /// the abstraction rather than a machine clock: a machine-clock read would answer identically for both.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_DerivedBoundsFollowTheInjectedClock()
     {
@@ -1164,7 +880,6 @@ public class RoleServiceApplicationTests
         stored.ExpiryDate.Should().NotBe(Now.AddDays(7));
     }
 
-
     /// <summary>
     /// Each expected assignment failure is reported as a NAMED REASON on the outcome, and nothing is
     /// committed - which is what replaced the legacy by-reference status arguments.
@@ -1174,12 +889,10 @@ public class RoleServiceApplicationTests
     /// <param name="memberExists">Whether the account resolves within that tenant.</param>
     /// <param name="expectedCode">The reason code the outcome must carry.</param>
     /// <remarks>
-    /// MIGRATION: the legacy procedures returned nothing at all and reported status by mutating a
-    /// by-reference argument, so a caller could not distinguish an applied change from a discarded one.
-    /// The migrated members return an outcome carrying a stable machine-readable code, and NO migrated
-    /// member exposes a by-reference or output parameter of any kind. The three cases are asserted in the
-    /// order the service resolves them, because that order is itself a contract: the tenant is proved
-    /// before the role, and the role before the account.
+    /// The legacy procedures returned nothing at all and reported status by mutating a by-reference
+    /// argument, so a caller could not distinguish an applied change from a discarded one. The migrated
+    /// members return an outcome carrying a stable machine-readable code, and NO migrated member exposes a
+    /// by-reference or output parameter of any kind.
     /// </remarks>
     [Theory]
     [InlineData(false, true, true, PortalNotFoundCode)]
@@ -1218,11 +931,6 @@ public class RoleServiceApplicationTests
     /// A role belonging to a DIFFERENT tenant is reported as missing rather than assigned, so tenant
     /// isolation cannot be crossed by supplying a foreign identifier.
     /// </summary>
-    /// <remarks>
-    /// The terminal role read filtered on the role identifier AND the portal identifier together, so a
-    /// foreign row simply did not come back. The migrated read keeps the portal as a CONDITION rather than
-    /// as a hint, and this test proves the refusal survives.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_RoleBelongsToAnotherTenant_IsReportedAsMissing()
     {
@@ -1257,12 +965,10 @@ public class RoleServiceApplicationTests
     /// the legacy trail survives the change of storage mechanism.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy screens reached the event log through its controller with the key
+    /// The legacy screens reached the event log through its controller with the key
     /// <c>USER_ROLE_CREATED</c>, and every record carried the acting account. The log store itself is
     /// outside the migration scope, so the record is emitted through the audit abstraction instead and the
-    /// stable event NAME is what carries the audit intent forward. The acting account still comes from the
-    /// credential rather than from a request body. The cache invalidation replaces the legacy coarse
-    /// portal-wide and host-wide clears with one EXPLICIT, member-keyed eviction.
+    /// stable event NAME is what carries the audit intent forward.
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_OnCommit_InvalidatesTheMemberAndRecordsTheAuditEvent()
@@ -1295,26 +1001,6 @@ public class RoleServiceApplicationTests
     /// A renewal is recorded under its OWN event name, because the member already held the role and nothing
     /// was granted.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required a renewal to carry the same
-    /// USER_ROLE_CREATED name as a first assignment on the reasoning that "the legacy member was an upsert and
-    /// raised one key for both arms, so inventing a second name would be a fabrication rather than fidelity".
-    /// Fidelity to a legacy limitation is not fidelity to the legacy MEANING: the legacy enumeration declares
-    /// USER_ROLE_CREATED and USER_ROLE_DELETED with nothing between them, so the legacy code had no better
-    /// option, and reproducing its workaround reproduced a false statement rather than a behaviour.
-    /// </para>
-    /// <para>
-    /// The cost was concrete. A trail in which the same account appears to have been granted the same role
-    /// five times cannot be used to count grants, and - the question that actually follows an incident - it
-    /// cannot answer WHEN access was first given, because every renewal is indistinguishable from the original
-    /// grant unless the reader knows to filter on a property they may not know exists.
-    /// </para>
-    /// <para>
-    /// The <c>Renewed</c> property is KEPT rather than replaced, so an existing search on it still matches and
-    /// a reader filtering on either the name or the property sees the same distinction.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_Renewal_IsRecordedUnderItsOwnEventNameAndFlagged()
     {
@@ -1341,31 +1027,7 @@ public class RoleServiceApplicationTests
     /// day from TODAY, and does NOT delete the row - so the consumed-trial fact survives.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces <c>RoleController.vb</c> L494-L497 verbatim in effect. The legacy line offset
-    /// by minus one day from <c>Date.Today()</c> - a DATE, not a timestamp - and the truncation is
-    /// preserved so the row reads as already lapsed for the WHOLE of the current day rather than only after
-    /// the current hour. The frozen instant deliberately carries a non-zero time component so this test can
-    /// prove the truncation rather than assume it.
-    /// </para>
-    /// <para>
-    /// MIGRATION: two substitutions are recorded rather than absorbed. The Visual Basic runtime's
-    /// date-offset intrinsic becomes the framework's own day offset, which is the only reason the legacy
-    /// runtime import at L25 could be removed at all; and the legacy reading was server-LOCAL whereas the
-    /// injected clock is Coordinated Universal Time only, so the back-dated bound can name a different
-    /// calendar day from the one a legacy installation would have produced for the same real instant. The
-    /// second difference is accepted deliberately - a local-zone stamp is not comparable between hosts -
-    /// and it is precisely why the clock is injected here.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the fee is read from the ROLE where the legacy line appeared to read it from the
-    /// membership. The two are the SAME value and this is a shape change rather than a behavioural one:
-    /// <c>UserRoleInfo</c> declares <c>Inherits RoleInfo</c> (<c>UserRoleInfo.vb</c> L42-L43), so the fee
-    /// the legacy line reached was <c>RoleInfo.ServiceFee</c> (L164) inherited onto the membership class,
-    /// and the membership table itself carries no fee column at all. Splitting that single legacy class
-    /// into a role entity and a membership entity along the real table boundaries is what moves the read
-    /// to its owning record, and the value it yields is unchanged.
-    /// </para>
+    /// Two substitutions are recorded rather than absorbed.
     /// </remarks>
     [Fact]
     public async Task RemoveUserFromRole_PaidAndTrialConsumed_ExpiresOneDayBeforeTodayInsteadOfDeleting()
@@ -1400,12 +1062,6 @@ public class RoleServiceApplicationTests
     /// The expiring removal reports an ADVISORY reason on its successful outcome, which is the only way a
     /// caller learns that the row was expired rather than withdrawn.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy procedure took the expiring arm inside the same removal member and reported
-    /// ONE outcome to its caller, so the two effects were indistinguishable. The advisory reason on a
-    /// SUCCESS - not a failure - is how the distinction is surfaced without changing the operation's
-    /// result.
-    /// </remarks>
     [Fact]
     public async Task RemoveUserFromRole_ExpiringArm_CarriesAnAdvisoryReasonOnSuccess()
     {
@@ -1434,15 +1090,6 @@ public class RoleServiceApplicationTests
     /// </summary>
     /// <param name="serviceFee">The role's fee, or null when the role declares none.</param>
     /// <param name="trialUsed">Whether the membership records a consumed trial, or null when unrecorded.</param>
-    /// <remarks>
-    /// MIGRATION: the guard at <c>RoleController.vb</c> L494 is a conjunction of THREE conditions - the
-    /// membership exists, the fee is strictly greater than zero, and the trial has been consumed - and the
-    /// else arm at L500 deletes. Each falsifying combination is asserted separately because a single
-    /// combined case would not say which condition had been mis-transcribed. A fee of exactly zero is
-    /// included deliberately: zero is not greater than zero, and a free role is legitimate. An unrecorded
-    /// consumed-trial value is included because the migrated column is nullable and a null must read as
-    /// "not consumed" rather than faulting.
-    /// </remarks>
     [Theory]
     [InlineData(9.99, false)]
     [InlineData(null, true)]
@@ -1475,7 +1122,6 @@ public class RoleServiceApplicationTests
         record.Properties.Should().ContainKey("Expired")
             .WhoseValue.Should().Be(false.ToString(CultureInfo.InvariantCulture));
     }
-
 
     /// <summary>
     /// A membership the member does not hold is reported as missing, and neither arm of the removal runs.
@@ -1511,41 +1157,16 @@ public class RoleServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F5. <c>SecurityRoles.ascx.vb</c> L522-L526 cleared both date boxes for exactly this
-    /// pairing before reading them, and L528-L539 then substituted the absent-date marker for each empty
-    /// box, so the legacy assignment member received absence for both however the operator had filled the
-    /// form in. The comparison is typed here; the legacy one compared an <c>Integer</c> against a
-    /// <c>String</c> and relied on Option Strict being off.
-    /// </para>
-    /// <para>
     /// Enforcing it became NECESSARY, not merely faithful, once a submitted bound was honoured. While the
     /// derivation silently rewrote every submitted bound, this pairing was protected by accident - a
     /// portal's administrators role carries no term, so a submitted expiry was discarded on its way
-    /// through. Honouring it would put an expiry on the tenant's only administrative membership, and when
-    /// that lapsed the tenant would have no administrator at all: the same self-inflicted lockout the
-    /// protected-role guard exists to prevent, reached by a different route.
-    /// </para>
-    /// <para>
-    /// The bounds are discarded rather than the request refused, because discarding is what the screen did.
-    /// A refusal would be a new behaviour, and it would break the enrolment of an administrator by a caller
-    /// that submits the two dates on every assignment it makes.
-    /// </para>
+    /// through.
     /// </remarks>
     [Fact]
     public async Task AssignUserToRole_PortalAdministratorToTheAdministratorRole_DiscardsSubmittedBounds()
     {
         Harness harness = Harness.Ready();
 
-        // THE ROLE IS SHAPED THE WAY PORTAL PROVISIONING ACTUALLY SHAPES IT, which is what makes this fact
-        // able to fail. Provisioning writes a tenant's three system roles with a MONTH frequency and a
-        // period of ZERO - measured against a provisioned tenant, not assumed - so the derivation would
-        // read a period that is present and zero, add zero months to the current instant, and produce an
-        // expiry of NOW. An earlier revision of this rule passed absence THROUGH the derivation rather
-        // than around it, and against this shape that yielded an administrators-role membership already
-        // expired when it was written; the tenant's own administrator was then refused by the
-        // authorisation handler on its very next request, because assignment validity windows are what the
-        // handler reads. A role carrying no terms at all could not distinguish the two implementations.
         var administratorRole = new Role
         {
             RoleId = AdministratorRoleId,
@@ -1583,12 +1204,6 @@ public class RoleServiceApplicationTests
     /// DIFFERENT role has them stored verbatim, and so does a different account in the administrators role.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy condition is a conjunction - the administrator AND the administrators role - so asserting
-    /// each half separately is what proves it is a conjunction rather than either half on its own. Without
-    /// this, a guard keyed on the account alone, or on the role alone, would pass the fact above while
-    /// silently discarding bounds a caller legitimately submitted.
-    /// </remarks>
     [Fact]
     public async Task AssignUserToRole_ProtectedBoundsApplyOnlyToThatOnePairing()
     {
@@ -1629,13 +1244,6 @@ public class RoleServiceApplicationTests
     /// <summary>
     /// Removing the portal's DESIGNATED ADMINISTRATOR from that portal's ADMINISTRATOR ROLE is refused.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the first of exactly two cases the protected-assignment rule refuses, measured at
-    /// <c>RoleController.vb</c> L741 and duplicated in its twin at L764. It is enforced INSIDE the
-    /// operation rather than exposed as a question a caller may ask and then ignore (AAP Rule T2); the
-    /// legacy screen used the same rule only to decide whether to reveal a button, which is a presentation
-    /// concern and never the authoritative enforcement.
-    /// </remarks>
     [Fact]
     public async Task RemoveUserFromRole_PortalAdministratorFromTheAdministratorRole_IsRefused()
     {
@@ -1665,10 +1273,9 @@ public class RoleServiceApplicationTests
     /// is.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the second of the two protected cases. It is unconditional in the member's identity,
-    /// which is why it is asserted with an ordinary member rather than with the administrator - a
-    /// transcription that accidentally conjoined the two rules would still pass the administrator case and
-    /// fail here.
+    /// The second of the two protected cases. It is unconditional in the member's identity, which is why it
+    /// is asserted with an ordinary member rather than with the administrator - a transcription that
+    /// accidentally conjoined the two rules would still pass the administrator case and fail here.
     /// </remarks>
     [Fact]
     public async Task RemoveUserFromRole_AnyMemberFromTheRegisteredRole_IsRefused()
@@ -1773,12 +1380,6 @@ public class RoleServiceApplicationTests
     /// A committed removal invalidates the member's cache entry explicitly, on BOTH the expiring and the
     /// deleting arm.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy path cleared caches coarsely, portal-wide and host-wide, which discarded far
-    /// more than the change warranted. The migrated eviction names the one member whose role set changed,
-    /// and this test asserts the coarse clears are NOT reached - the assertion that makes the refinement
-    /// verifiable rather than merely claimed.
-    /// </remarks>
     [Fact]
     public async Task RemoveUserFromRole_OnCommit_InvalidatesOnlyTheAffectedMember()
     {
@@ -1811,12 +1412,10 @@ public class RoleServiceApplicationTests
     /// role identifier of zero - without mistaking either for an unset value.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the two seeds are the sharpest sentinel collision in the whole migration.
-    /// <c>Portals.PortalID</c> is seeded from MINUS ONE, which is exactly the legacy absent-integer
-    /// sentinel, and <c>Roles.RoleID</c> is seeded from ZERO, which is the CLR default for its type. A
-    /// migrated layer that read either as "absent" would refuse the very first portal and the very first
-    /// role an installation ever created. Every other test in this file already uses both seeds; this one
-    /// states the requirement outright so the reason cannot be lost if the constants are ever changed.
+    /// The two seeds are the sharpest sentinel collision in the whole migration. <c>Portals.PortalID</c> is
+    /// seeded from MINUS ONE, which is exactly the legacy absent-integer sentinel, and <c>Roles.RoleID</c>
+    /// is seeded from ZERO, which is the CLR default for its type. A migrated layer that read either as
+    /// "absent" would refuse the very first portal and the very first role an installation ever created.
     /// </remarks>
     [Fact]
     public async Task BothWritePaths_AcceptTheLegitimateIdentifierSeeds()
@@ -1848,13 +1447,6 @@ public class RoleServiceApplicationTests
     /// The role listing answers a TYPED, PAGED envelope rather than the legacy untyped collection, and the
     /// paid-membership columns survive the projection.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: nine legacy read members returned an untyped collection and two returned a bare string
-    /// array, so a caller learned nothing about the shape it received and paging was reported through a
-    /// by-reference total. The migrated reads answer a typed envelope carrying its items and its total
-    /// together. Preserving the paid-membership columns through the projection is a functional-parity
-    /// requirement rather than an optional extra, so they are asserted here.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_AnswersATypedPagedEnvelopeCarryingThePaidMembershipColumns()
     {
@@ -1892,12 +1484,6 @@ public class RoleServiceApplicationTests
     /// A failed listing exposes no value at all, so a caller that skipped its own success check is stopped
     /// rather than handed a default envelope.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: this is the structural replacement for the legacy by-reference status argument. A legacy
-    /// caller that ignored the status still received a collection and could not tell a genuine empty result
-    /// from a failed one. Reading the value of a failed outcome is now a programming error and is reported
-    /// as one.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_FailedOutcome_ExposesNoValue()
     {
@@ -1919,11 +1505,6 @@ public class RoleServiceApplicationTests
     /// <summary>
     /// A member's role set is answered as a typed read-only list rather than as the legacy string array.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: two legacy members answered a bare array of role NAMES, which forced every caller to
-    /// re-read the role to learn anything else about it. The migrated read answers the same projection the
-    /// listing uses, so a caller has the paid-membership terms in hand.
-    /// </remarks>
     [Fact]
     public async Task ListUserRoles_AnswersATypedReadOnlyList()
     {
@@ -1957,7 +1538,6 @@ public class RoleServiceApplicationTests
         outcome.IsSuccess.Should().BeTrue();
         Assert.Empty(outcome.Value);
     }
-
 
     /// <summary>
     /// Builds a paid role whose BILLING term is the supplied frequency and period and which declares no
@@ -2016,9 +1596,7 @@ public class RoleServiceApplicationTests
         TrialPeriod = null,
     };
 
-    /// <summary>
-    /// Builds a member of the tenant under test.
-    /// </summary>
+    /// <summary>Builds a member of the tenant under test.</summary>
     /// <param name="userId">The account identifier to carry.</param>
     /// <returns>An account satisfying the columns the store declares as required.</returns>
     private static User Member(int userId = UserId) => new()
@@ -2032,15 +1610,10 @@ public class RoleServiceApplicationTests
         IsApproved = true,
     };
 
-    /// <summary>
-    /// Builds one stored membership.
-    /// </summary>
+    /// <summary>Builds one stored membership.</summary>
     /// <param name="userId">The account the membership belongs to.</param>
     /// <param name="roleId">The role the membership names.</param>
-    /// <param name="trialUsed">
-    /// Whether the trial has been consumed. Null models the column's own nullability, which must read as
-    /// "not consumed" rather than faulting.
-    /// </param>
+    /// <param name="trialUsed">Whether the trial has been consumed.</param>
     /// <param name="effectiveDate">When the membership takes effect, or null for no start bound.</param>
     /// <param name="expiryDate">When it lapses, or null for an unbounded membership.</param>
     /// <returns>A stored membership row.</returns>
@@ -2062,9 +1635,7 @@ public class RoleServiceApplicationTests
             User = Member(userId),
         };
 
-    /// <summary>
-    /// Builds an assignment request for the member under test.
-    /// </summary>
+    /// <summary>Builds an assignment request for the member under test.</summary>
     /// <param name="effectiveDate">The submitted start bound, or null to submit none.</param>
     /// <param name="expiryDate">The submitted end bound, or null to let the role's terms derive one.</param>
     /// <returns>A well-formed assignment request.</returns>
@@ -2086,12 +1657,6 @@ public class RoleServiceApplicationTests
     /// Assembles the service over eight recording doubles and a FROZEN clock, exposing every answer the
     /// service can receive as mutable state so a test describes its world declaratively.
     /// </summary>
-    /// <remarks>
-    /// Only Domain and Application abstractions are doubled. Nothing here reaches a database context, an
-    /// object-relational mapper, a web host or an ambient request, and the assembled subject is the real
-    /// service rather than a stand-in - so every assertion in this file is made against the production
-    /// derivation itself.
-    /// </remarks>
     private sealed class Harness
     {
         private Harness()
@@ -2220,12 +1785,8 @@ public class RoleServiceApplicationTests
             harness.Portals
                 .Setup(repository => repository.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
-            // MIGRATION: SEC-F3/SEC-F5. The READ is gated by the same existence flag as the PROBE, so the
-            // harness describes ONE world. Several members now read the tenant row rather than probing for
-            // it - they need its designations - and a harness that answered "no such tenant" to the probe
-            // while handing out a row to the read would let a test assert a refusal that production could
-            // not produce, or miss one it does. A test may still clear the row alone, which is how it says
-            // "the tenant is there but carries no designation".
+            // /The READ is gated by the same existence flag as the PROBE, so the harness describes ONE
+            // world.
             harness.Portals
                 .Setup(repository => repository.GetByIdAsync(
                     It.IsAny<int>(),
@@ -2365,9 +1926,6 @@ public class RoleServiceApplicationTests
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
                 .Callback<AuditEvent>(harness.AuditRecords.Add);
 
-            // The clock is FROZEN. No test in this file may observe a moving instant, because a
-            // date-arithmetic suite that could straddle a midnight, month or year boundary would fail
-            // unpredictably and for a reason unrelated to the rule it asserts.
             harness.Clock.SetupGet(clock => clock.UtcNow).Returns(Now);
 
             return harness;

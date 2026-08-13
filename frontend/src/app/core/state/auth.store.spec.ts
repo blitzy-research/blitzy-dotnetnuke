@@ -1,130 +1,7 @@
 /**
- * Specification for `core/state/auth.store.ts`.
- *
- * Four properties of that store are load-bearing, and each of them is a property no
- * compiler can check, so each is proven here by exercising the store against a mock
- * transport rather than by reading it:
- *
- * 1. The verification ladder is PROGRESSIVE AND STATEFUL, and its revealed state flips
- *    only for a verification refusal — never for an ordinary refused credential, a
- *    refusal to authorise, a rate-limiter rejection or a server fault.
- * 2. The legacy sign-in defect recorded below is CORRECTED: a locked-out account is
- *    refused, and the two insecure-default-credential outcomes are completed sign-ins
- *    carrying an advisory rather than refusals.
- * 3. NO READABLE MEMBER OF THE STORE HOLDS A CREDENTIAL. Not the access token, not the
- *    renewal token, not the submitted password.
- * 4. Every projection is genuinely read-only, so a consumer cannot write to it.
- *
- * ## Provenance of every assertion below
- *
- * `Website/DesktopModules/AuthenticationServices/DNN/Login.ascx.vb:L160-L197` is the
- * only place in the legacy application where the ladder existed. Supporting sources
- * are `Library/Components/Users/Membership/UserLoginStatus.vb:L23-L31` for the outcome
- * vocabulary, `Library/Components/Shared/Null.vb:L36-L85` for the sentinel contract,
- * `Website/admin/Security/AccessDenied.ascx.vb:L41-L47` for the severity a refusal is
- * presented at, and `Website/release.config` for the session lifetime and the
- * credential policy. The legacy tree contains no automated test of any kind, so
- * nothing here is ported — it is authored against those sources.
- *
- * ## Migration context this specification makes observable
- *
- * 1. THE SIGN-IN DEFECT IS CORRECTED. `Login.ascx.vb:L187` reads
- *    `authenticated = (loginStatus <> UserLoginStatus.LOGIN_FAILURE)`, and because the
- *    branch at L168 consumes only the not-approved outcome, EVERY other non-zero
- *    outcome fell through and counted as authenticated — ordinal 3 (locked out),
- *    ordinal 5 and ordinal 6 all admitted the caller. Ordinal 3 is now a refusal;
- *    ordinals 5 and 6 are successes carrying an advisory.
- * 2. THE LADDER IS REPRODUCED AS A SIGNAL. L171 branches on whether the field had
- *    already been revealed, which in the legacy survived a postback through control
- *    state. Exactly three codes existed — L175 and L180 `"EnterCode"`, L178
- *    `"InvalidCode"`, L184 `"UserNotAuthorized"` — and exactly three exist now.
- * 3. THE HUMAN-VERIFICATION CHALLENGE IS DROPPED. L162 gated the whole handler on
- *    `If (UseCaptcha And ctlCaptcha.IsValid) OrElse (Not UseCaptcha)`; the control
- *    belongs to a tree this migration excludes. The compensating control is a request
- *    rate limiter on the credential endpoints, whose rejection is proven below to be a
- *    calm state of its own rather than a fault.
- * 4. CONTROL STATE AND SESSION STATE ARE ELIMINATED. Across the five in-scope
- *    `Library/Components` trees there are exactly FOUR control-state sites, all
- *    carrying one key, all in `Library/Components/Users/UserModuleBase.vb` (L469,
- *    L491, L498, L503), and no server-session site at all. One fact survives, and it
- *    is the ladder's revealed state.
- * 5. CUSTODY OF THE SESSION IS THE CUSTODIAN'S. `core/services/token-storage.service.ts`
- *    keeps it in memory only. The specifications below prove there is exactly ONE copy
- *    of a credential in the application and that the store is not a second one.
- * 6. RENEWAL AFTER A REFUSED REQUEST IS THE INTERCEPTOR'S. That policy belongs to
- *    `core/interceptors/auth.interceptor.ts`; it is proven below that this store never
- *    renews on its own initiative, only when a caller asks.
- * 7. SIGNING OUT HAS NO STATELESS COUNTERPART TO THE LEGACY COOKIE CLEAR. It is
- *    renewal-credential revocation plus local discard, and the discard is proven to
- *    happen on success, on failure and on an early unsubscribe alike.
- * 8. THE SINGLE-VALUED LEGACY POST-CREDENTIAL OUTCOME BECAME THREE INDEPENDENT
- *    BOOLEANS. `Library/Components/Users/Membership/UserValidStatus.vb` could report
- *    exactly one of five states; more than one advisory can now be true at once, and a
- *    specification below proves it.
- * 9. THE TENANT'S REGISTRATION MODE IS NOT CONSULTED CLIENT-SIDE. The legacy gate at
- *    L170 read `PortalRegistrationType.VerifiedRegistration` from ambient per-request
- *    page state; the renamed enumeration is declared in `core/models/portal.model.ts`
- *    alone and is deliberately neither imported here nor by the store, because the
- *    SERVER already applied that fact when it chose which of the three codes to emit.
- * 10. THE NUMERIC OUTCOME VOCABULARY NEVER CROSSES THE WIRE. `auth.model.ts` declares
- *    it as reference wording only; a specification below proves the store keys on the
- *    string code carried by the document's `type` member and on nothing else.
- * 11. THE SESSION LIFETIME IS PARITY WITH `Website/release.config:L147`,
- *    `<forms name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/>`.
- *    The number is a server setting; only the absolute instant the server stamped
- *    crosses the wire, and it is proven below to be retained byte for byte. Nothing
- *    here computes an expiry, reads a clock or decodes a token.
- * 12. THE CREDENTIAL POLICY IS PRESERVED RATHER THAN TIGHTENED, and RETRIEVAL IS
- *    ABOLISHED. `release.config` registered the membership provider with
- *    `enablePasswordRetrieval="true"` (L239) and `passwordFormat="Encrypted"` (L245)
- *    against a decryption key committed to source control at L91-L92, so every stored
- *    credential was recoverable by anyone with repository access. A specification below
- *    proves the store publishes no retrieval command. Policy enforcement is the
- *    server's and the form's; the store surfaces no policy metadata that could
- *    contradict either, so no policy specification belongs here.
- * 13. A REFUSAL DISCLOSES ONLY A CODE. The legacy drew no distinction between an
- *    unknown account and an incorrect credential, and a specification below proves two
- *    attempts with different account names publish identical state.
- * 14. A REFUSAL IS A WARNING, NOT A FAULT. `AccessDenied.ascx.vb` performs no
- *    permission check at all and BOTH branches of its handler use the yellow-warning
- *    message type — L43 for the message arriving on the query string, which it renders
- *    encoded after decoding, and L45 for the localised default.
- * 15. LOCALISATION IS NOT PORTED. No translation runtime is present in this workspace
- *    and none is referenced here; the legacy resource files are wording reference only.
- * 16. IMPLICIT COERCIONS ARE MADE EXPLICIT. The 39 legacy administrative code-behinds
- *    compiled with strict type checking DISABLED — `release.config:L125`,
- *    `<compilation debug="false" strict="false">` — so they could legally rely on late
- *    binding and silent narrowing. Strict TypeScript is what forces each such coercion
- *    to surface, and typing every fixture below as the real contract interface is part
- *    of that forcing function: a mistyped member is a compile error rather than an
- *    undefined value discovered at run time.
- *
- * ## Harness notes
- *
- * - The framework is Karma with Jasmine, which is what the validation command's
- *   browser argument selects. No other test framework, spy library or assertion
- *   library is referenced.
- * - The real authentication service runs against the mock transport, so each
- *   specification proves the path, the method, the request body AND the store's
- *   handling of the response in one pass.
- * - EVERY ASSERTED PATH IS RELATIVE. The build target that compiles this file declares
- *   no file replacement, so the production configuration is in play and its base is the
- *   relative `/api/v1`. The proxy that serves the bundle forwards that prefix to the
- *   interface on the same origin, so no absolute origin is correct here and none
- *   appears.
- * - No effect is scheduled by the store — every derivation is a computed projection
- *   and reads synchronously — so no effect-flushing primitive is called. Verified
- *   against the installed `@angular/core` 19.2.25, where the testing harness exposes
- *   `flushEffects` and no tick primitive at all.
- * - Deterministic throughout: no clock read, no randomness and no real network. No
- *   web-storage interface, no cookie jar and no client-side database is referenced, so
- *   this file cannot normalise a custody violation by accident. The one mechanism that
- *   genuinely waits — the bounded withdrawal-retry ladder — is driven under `fakeAsync`
- *   with `tick`, so its delays are virtual and its cases assert an exact number of
- *   attempts rather than racing a real interval.
- * - ZERO-BASED PAGE INDEXING IS DELIBERATELY NOT EXERCISED HERE. This store paginates
- *   nothing: authentication has no list, no page size and no total count. Its absence
- *   is a property of the subject, not an omission in this specification.
+ * Specification for `core/state/auth.store.ts`. Four properties of that store are load-bearing, and each
+ * of them is a property no compiler can check, so each is proven here by exercising the store against a
+ * mock transport rather than by reading it: 1.
  */
 
 import { provideHttpClient } from '@angular/common/http';
@@ -141,12 +18,7 @@ import { isContractViolation } from '../utils/decode.util';
 import { AUTH_STORE_PHASES, AuthStore, REVOCATION_FAILED_MESSAGE } from './auth.store';
 import { SESSION_ENDED_MESSAGE, SessionTeardownService } from './session-teardown.service';
 
-// ---------------------------------------------------------------------------
 // PATHS
-//
-// Relative, and asserted as written. The base is the production one because the
-// build target that compiles this file replaces no file.
-// ---------------------------------------------------------------------------
 
 const LOGIN_URL = '/api/v1/auth/login';
 
@@ -156,25 +28,17 @@ const LOGOUT_URL = '/api/v1/auth/logout';
 
 const ME_URL = '/api/v1/auth/me';
 
-// ---------------------------------------------------------------------------
 // THE FAILURE-CODE CHANNEL
-//
-// A code travels inside the problem document's `type` member behind this prefix and
-// on NO other member. The lowercase spelling is the literal the workspace's own
-// resolver matches, and it is reproduced here rather than approximated: a document
-// whose `type` misses the prefix yields no code at all, which would leave the ladder
-// untouched and make a ladder specification silently vacuous.
-// ---------------------------------------------------------------------------
 
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
-/** Legacy `"EnterCode"` (`Login.ascx.vb:L175` and L180). */
+/** Legacy `"EnterCode"`. */
 const VERIFICATION_REQUIRED_CODE = 'auth.verification_required';
 
-/** Legacy `"InvalidCode"` (`Login.ascx.vb:L178`). */
+/** Legacy `"InvalidCode"`. */
 const VERIFICATION_CODE_INVALID_CODE = 'auth.verification_code_invalid';
 
-/** Legacy `"UserNotAuthorized"` (`Login.ascx.vb:L184`). */
+/** Legacy `"UserNotAuthorized"`. */
 const ACCOUNT_NOT_APPROVED_CODE = 'auth.account_not_approved';
 
 /** Wording carried with the verification-required outcome. */
@@ -187,35 +51,24 @@ const VERIFICATION_CODE_INVALID_MESSAGE = 'Invalid Verification Code';
 const ACCOUNT_NOT_APPROVED_MESSAGE = 'You are not currently authorized to login to this site.';
 
 /**
- * A refused credential, which is deliberately OUTSIDE the closed verification
- * vocabulary — reaching the ladder with it would be the defect this file guards
- * against.
+ * A refused credential, which is deliberately OUTSIDE the closed verification vocabulary — reaching the
+ * ladder with it would be the defect this file guards against.
  */
 const INVALID_CREDENTIALS_CODE = 'auth.invalid_credentials';
 
-/** Legacy outcome ordinal 3, which `Login.ascx.vb:L187` admitted and which is refused now. */
 const ACCOUNT_LOCKED_OUT_CODE = 'auth.account_locked_out';
 
 /**
- * The legacy message literal, spelled exactly as `Login.ascx.vb:L175` spelled it.
- *
- * Present as a NEGATIVE fixture. The legacy spelling is no longer a code, so a
- * document carrying it must leave the ladder alone; asserting that is what proves the
- * ladder keys on the migrated vocabulary rather than on a string that merely looks
- * familiar.
+ * The legacy message literal, spelled exactly as `Login.ascx.vb:L175` spelled it. Present as a NEGATIVE
+ * fixture.
  */
 const LEGACY_ENTER_CODE_LITERAL = 'EnterCode';
 
-// ---------------------------------------------------------------------------
 // CREDENTIAL-SHAPED FIXTURES
-//
-// ⚠ OBVIOUSLY FAKE, WITHOUT EXCEPTION. The legacy anti-pattern is a real decryption
-// key committed to source control at `Website/release.config:L91-L92`, identical in
-// the development configuration, which — combined with reversible storage and
-// retrieval both enabled — made every stored credential recoverable by anyone who
-// could read the repository. No value below could be mistaken for a real secret, and
-// every one of them exists so a specification can prove the store does NOT hold it.
-// ---------------------------------------------------------------------------
+// ⚠ OBVIOUSLY FAKE, WITHOUT EXCEPTION. The legacy anti-pattern is a real decryption key committed to source
+// control at `Website/release.config:L91-L92`, identical in the development configuration, which — combined
+// with reversible storage and retrieval both enabled — made every stored credential recoverable by anyone
+// who could read the repository.
 
 const FAKE_ACCESS_TOKEN = 'fake-access-token-not-a-real-credential';
 
@@ -233,13 +86,7 @@ const OTHER_ACCOUNT_NAME = 'no-such-account';
 
 const SUBMITTED_VERIFICATION_CODE = 'wrong-code';
 
-/**
- * The expiry instant, as an absolute instant in Coordinated Universal Time.
- *
- * A LITERAL, never a computation. Deriving it from a clock read would make the
- * specification's outcome depend on when it ran, and asserting a DURATION rather than
- * the instant would test arithmetic this store deliberately does not perform.
- */
+/** The expiry instant, as an absolute instant in Coordinated Universal Time. */
 const EXPIRES_AT_UTC = '2100-01-01T00:00:00.000Z';
 
 /** A rotated instant, so a renewal can be told from the sign-in that preceded it. */
@@ -249,75 +96,36 @@ const EXPIRES_AT_UTC_ROTATED = '2100-01-02T00:00:00.000Z';
 // DIAGNOSTIC FIXTURES
 // ---------------------------------------------------------------------------
 
-/**
- * The identifier the server validated for the request.
- *
- * The operator's only join key between a browser-side report and a server-side
- * record, which is why a specification below proves it survives into the store's
- * failure slice rather than being reduced away.
- */
+/** The identifier the server validated for the request. */
 const CORRELATION_ID = 'correlation-id-for-this-attempt';
 
 /** The framework's own request identifier, which is a different value in a different format. */
 const TRACE_ID = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01';
 
-/**
- * A message carrying an executable payload.
- *
- * NOT hypothetical. Unescaping the 37 in-scope legacy resource files first — a naive
- * search finds nothing — shows 76 values carrying markup, four of them carrying a
- * script element, including a live one in the site-settings resource file under the
- * advertising key. A message reaching this store is therefore untrusted text, and the
- * store's contract is to hold it inert.
- */
+/** A message carrying an executable payload. NOT hypothetical. */
 const SCRIPT_BEARING_DETAIL = '<script>alert(1)</script>';
 
-/** The legacy leading break tag, in the spelling used by `Website/admin/Portal/Signup.ascx.vb`. */
 const UNCLOSED_BREAK_DETAIL = '<br>The account could not be created.';
 
-/** The same tag in the spelling used by `Website/admin/Users/User.ascx.vb:L187`. */
 const CLOSED_BREAK_DETAIL = '<br/>The account could not be created.';
 
-/**
- * A per-field key, reproduced with the server's own casing.
- *
- * The keys name model members rather than serialised members, so they are NOT
- * lower-camel-cased on the way out. A fixture that camel-cased this would read as
- * absent at run time with no compile error, which is exactly the trap the bracket-access
- * specification below exists to close.
- */
+/** A per-field key, reproduced with the server's own casing. */
 const MODEL_STATE_KEY = 'UserName';
 
-// ---------------------------------------------------------------------------
 // THE RESPONSE ENVELOPE
-//
-// Every successful payload arrives wrapped, so a fixture that returned a bare
-// contract object would be unwrapped into `undefined` and every downstream assertion
-// would pass vacuously against absent data. The wrapper is declared locally rather
-// than imported: it is declared in the paging model, which this file has no other
-// reason to reach into, and the shape needed here is two members wide.
-// ---------------------------------------------------------------------------
 
 interface SuccessEnvelope<T> {
   readonly data: T;
   readonly meta: null;
 }
 
-// ---------------------------------------------------------------------------
 // FACTORIES
-//
-// Functions rather than shared constants, so no specification can observe a value a
-// previous one mutated. Each is typed as the real contract interface, which is what
-// makes a misspelled member — the single-lowercase-letter identity-casing trap in
-// particular — a compile error rather than an undefined value at run time.
-// ---------------------------------------------------------------------------
+// Functions rather than shared constants, so no specification can observe a value a previous one mutated.
 
 /**
- * An identity.
- *
- * The default tenant key is ZERO, which is a real key rather than a tidy one: the
- * tenant table's key column is seeded at minus one, so both minus one and zero
- * identify real tenants and neither may be read as absence.
+ * An identity. The default tenant key is ZERO, which is a real key rather than a tidy one: the tenant
+ * table's key column is seeded at minus one, so both minus one and zero identify real tenants and neither
+ * may be read as absence.
  */
 function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
   return {
@@ -345,10 +153,8 @@ function credentials(overrides: Partial<LoginRequest> = {}): LoginRequest {
 }
 
 /**
- * A credential-exchange payload, wrapped.
- *
- * All three advisories default to `false`, because `false` is DATA on this contract
- * and a fixture that omitted them would not compile.
+ * A credential-exchange payload, wrapped. All three advisories default to `false`, because `false` is
+ * DATA on this contract and a fixture that omitted them would not compile.
  */
 function credentialPayload(
   overrides: Partial<LoginResponse> = {},
@@ -378,12 +184,7 @@ function failureType(code: string): string {
   return `${FAILURE_TYPE_PREFIX}${code}`;
 }
 
-/**
- * A problem document carrying a code.
- *
- * The five standard members are always present so the document narrows, and the
- * diagnostic members are supplied per specification.
- */
+/** A problem document carrying a code. */
 function refusal(code: string, status: number, overrides: Partial<ProblemDetails> = {}): ProblemDetails {
   return {
     type: failureType(code),
@@ -395,13 +196,7 @@ function refusal(code: string, status: number, overrides: Partial<ProblemDetails
   };
 }
 
-/**
- * A problem document carrying NO code.
- *
- * The document members are all optional by specification, and an intermediary between
- * the browser and the interface can answer with a body this application never wrote,
- * so a codeless refusal is a real case rather than a contrived one.
- */
+/** A problem document carrying NO code. */
 function codelessRefusal(status: number, overrides: Partial<ProblemDetails> = {}): ProblemDetails {
   return {
     title: 'The request was refused.',
@@ -429,11 +224,8 @@ function fieldRefusal(): ValidationProblemDetails {
 // ---------------------------------------------------------------------------
 
 /**
- * The sorted member names of a request body.
- *
- * The body arrives loosely typed from the mock transport, so it is narrowed to
- * `unknown` on the way in and tested structurally. Sorted so an assertion does not
- * depend on the order a contract happens to declare its members in.
+ * The sorted member names of a request body. The body arrives loosely typed from the mock transport, so
+ * it is narrowed to `unknown` on the way in and tested structurally.
  *
  * @param body A request body.
  * @returns The member names, sorted, or nothing when the body is not an object.
@@ -447,23 +239,6 @@ function bodyMemberNames(body: unknown): readonly string[] {
 }
 
 /**
- * Whether a value, or anything nested inside it, contains a secret.
- *
- * Recursive on purpose. A credential could leak as a whole slice, as one member of a
- * held contract object, or as one entry of a held list, and a check that only compared
- * whole strings would miss the latter two.
- *
- * ⚠ CYCLE-SAFE, AND THAT IS A CORRECTION RATHER THAN DEFENSIVENESS. This helper used to
- * state outright that there was no cycle to guard against, on the reasoning that every
- * value the store publishes is a primitive, a frozen list of strings or a flat contract
- * object. That held for the store's SLICES and stopped holding the moment the sweep
- * reached a collaborator that holds a framework object: the store's notifier now holds
- * the application's zone, and a zone references its own parent and children, so the walk
- * recursed until the stack was exhausted. The fix is to remember what has been visited
- * rather than to narrow the walk, because narrowing it is what would weaken the
- * assertion the sweep exists to make. Revisiting a value cannot reveal a secret that
- * visiting it the first time did not.
- *
  * @param value Anything the store published.
  * @param secret The fixture value that must not appear.
  * @param seen The object graph already walked, so a cycle terminates.
@@ -498,31 +273,18 @@ function containsSecret(value: unknown, secret: string, seen = new WeakSet<objec
 }
 
 /**
- * The store's two injected collaborators, excluded from the custody sweep below.
- *
- * Excluded because they are not slices of this store and because ONE OF THEM HOLDS A
- * CREDENTIAL BY DESIGN — the custodian is the single place a session lives, and
- * reaching through it would assert the opposite of what the sweep is for. What the
- * sweep proves is that the store is not a SECOND copy.
+ * The store's two injected collaborators, excluded from the custody sweep below. Excluded because they
+ * are not slices of this store and because ONE OF THEM HOLDS A CREDENTIAL BY DESIGN — the custodian is
+ * the single place a session lives, and reaching through it would assert the opposite of what the sweep
+ * is for.
  */
 const COLLABORATOR_MEMBERS: readonly string[] = Object.freeze(['auth', 'tokenStorage']);
 
 /**
- * Every value the store makes readable, by member name.
- *
- * The mechanism, stated plainly because it is unusual: a signal is a zero-argument
- * function held as an own member of the instance, so enumerating the instance's own
- * members and invoking each zero-argument function-valued one reads EVERY slice the
- * store carries — including the ones it declares private, since that keyword vanishes
- * at run time. That breadth is the point. A sweep restricted to the members it happened
- * to know the names of would not notice a credential copied into a slice nobody thought
- * to name, and a leak into a private slice is still a leak. A member that is not a
- * zero-argument function is reported as it stands, so a credential parked in a plain
- * field is caught too.
- *
- * The cast is a structural read of an instance whose member names are known only at run
- * time. It widens rather than narrows, so it asserts nothing about the shape and cannot
- * conceal a type error.
+ * Every value the store makes readable, by member name. The mechanism, stated plainly because it is
+ * unusual: a signal is a zero-argument function held as an own member of the instance, so enumerating the
+ * instance's own members and invoking each zero-argument function-valued one reads EVERY slice the store
+ * carries — including the ones it declares private, since that keyword vanishes at run time.
  *
  * @param store The store to read.
  * @returns Each readable member name paired with the value it yielded.
@@ -553,10 +315,8 @@ function readableMembers(store: AuthStore): readonly (readonly [string, unknown]
 }
 
 /**
- * The member names whose readable value contains a secret.
- *
- * Returned as names rather than as a boolean so a failure reports WHICH member leaked,
- * which is the difference between a diagnosis and a puzzle.
+ * The member names whose readable value contains a secret. Returned as names rather than as a boolean so
+ * a failure reports WHICH member leaked, which is the difference between a diagnosis and a puzzle.
  *
  * @param store The store to read.
  * @param secret The fixture value that must not appear.
@@ -579,12 +339,8 @@ describe('AuthStore', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
-        // ⚠ ORDER IS LOAD-BEARING. The real transport is registered first and the
-        // mock backend second, because the mock REPLACES the backend the first
-        // provider installed. Reversing the two leaves the real backend in place and
-        // the specifications below would attempt live requests — which, against a
-        // relative path with no server behind it, fails in a way that reads like a
-        // defect in the store rather than a defect in this harness.
+        // ⚠ ORDER IS LOAD-BEARING. The real transport is registered first and the mock backend second,
+        // because the mock REPLACES the backend the first provider installed.
         provideHttpClient(),
         provideHttpClientTesting(),
         AuthStore,
@@ -600,19 +356,16 @@ describe('AuthStore', () => {
   });
 
   afterEach(() => {
-    // ⚠ MANDATORY. Without it an unflushed request, or one nobody expected, passes
-    // in silence — and a specification that proves the store issued NO request is
-    // worth nothing unless something checks that claim at the end.
+    // ⚠ MANDATORY. Without it an unflushed request, or one nobody expected, passes in silence — and a
+    // specification that proves the store issued NO request is worth nothing unless something checks that
+    // claim at the end.
     httpMock.verify();
   });
 
-  // -------------------------------------------------------------------------
   // SHARED SEQUENCES
-  //
-  // A sign-in is TWO requests: the credential exchange, then an identity read
-  // carrying the freshly issued credential as a header. Both must be answered or the
-  // verification above fails, so every path that signs in goes through one of these.
-  // -------------------------------------------------------------------------
+  // A sign-in is TWO requests: the credential exchange, then an identity read carrying the freshly issued
+  // credential as a header. Both must be answered or the verification above fails, so every path that signs
+  // in goes through one of these.
 
   /**
    * Answers the identity read that follows a credential exchange.
@@ -653,10 +406,6 @@ describe('AuthStore', () => {
   /**
    * Attempts a sign-in that the server refuses.
    *
-   * Asserts the rejection itself, because the store re-throws every failure unchanged
-   * so a caller can still act on it — and an unhandled rejection would surface as a
-   * suite-level error rather than as this specification's outcome.
-   *
    * @param body The document to answer with, or null for a response carrying no body.
    * @param status The transport status.
    * @param statusText The transport status text.
@@ -678,9 +427,6 @@ describe('AuthStore', () => {
   /**
    * Resolves to the rejection reason, or null when the promise resolved instead.
    *
-   * Returning the reason rather than asserting inside a callback keeps every expectation in
-   * the body of the case, where a failure is attributed to the case that caused it.
-   *
    * @param pending The in-flight command.
    * @returns The rejection reason, or null.
    */
@@ -699,7 +445,6 @@ describe('AuthStore', () => {
     httpMock.expectNone(ME_URL);
   }
 
-  // -------------------------------------------------------------------------
   describe('harness and initial state', () => {
     it('resolves the store, the mock transport and both collaborators from one injector', () => {
       expect(store).toBeInstanceOf(AuthStore);
@@ -735,17 +480,11 @@ describe('AuthStore', () => {
     });
 
     it('reports no severity while nothing has failed', () => {
-      // Distinct from reporting the mildest severity. Nothing has failed, so there is
-      // nothing to present at any forcefulness, and a banner keyed on this must show
-      // nothing rather than show something calm.
       expect(store.severity()).toBeNull();
       expect(store.supportReference()).toBeNull();
     });
 
     it('changes no state and issues no request for a command that is never subscribed', () => {
-      // Every command body is deferred, so building one has no effect. Without that,
-      // a command built and discarded would leave the store reporting itself busy
-      // forever and a spinner keyed on it would never stop.
       store.login(credentials());
       store.refreshSession();
       store.logout();
@@ -765,7 +504,6 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   describe('login', () => {
     it('posts the credentials to the relative versioned path, with no absolute origin', async () => {
       const inFlight = firstValueFrom(store.login(credentials()));
@@ -814,9 +552,9 @@ describe('AuthStore', () => {
     });
 
     it('sends no human-verification member and no authentication-type discriminator', async () => {
-      // The legacy call took EIGHT arguments, of which a literal authentication-type
-      // discriminator and a challenge-adjacent argument both disappear with the single
-      // bearer-credential path. A discriminator that can hold one value is not modelled.
+      // The legacy call took EIGHT arguments, of which a literal authentication-type discriminator and a
+      // challenge-adjacent argument both disappear with the single bearer-credential path. A discriminator
+      // that can hold one value is not modelled.
       const inFlight = firstValueFrom(
         store.login(credentials({ verificationCode: SUBMITTED_VERIFICATION_CODE })),
       );
@@ -839,15 +577,9 @@ describe('AuthStore', () => {
     });
 
     it('hands the request to the authentication service unaltered rather than building its own', async () => {
-      // Proves the division of labour: the store sequences, the service transports. If
-      // the store enriched the request - an account name for a log line, a tenant hint -
-      // the argument seen here would differ from the argument passed in.
-      //
-      // ⚠ ASSERTED ON THE REQUEST ARGUMENT, NOT ON THE WHOLE ARGUMENT LIST. The service also
-      // accepts an optional TENANT SELECTOR, which the sign-in screen resolves from the address
-      // and hands through for an arrival host that matches no alias row. It is a separate
-      // argument precisely so it cannot be smuggled into the credential body, and this case is
-      // about the body: the selector's own absence is asserted immediately below.
+      // Proves the division of labour: the store sequences, the service transports. If the store enriched
+      // the request - an account name for a log line, a tenant hint the argument seen here would differ
+      // from the argument passed in.
       const spy = spyOn(auth, 'login').and.callThrough();
       const request = credentials({ verificationCode: SUBMITTED_VERIFICATION_CODE });
 
@@ -868,9 +600,8 @@ describe('AuthStore', () => {
     });
 
     it('reads the identity through a second request instead of trusting the credential payload', async () => {
-      // The identity is fetched with the credential just issued rather than taken from
-      // the exchange body, so the entitlements the store publishes are the ones the
-      // server will actually enforce.
+      // The identity is fetched with the credential just issued rather than taken from the exchange body,
+      // so the entitlements the store publishes are the ones the server will actually enforce.
       const inFlight = firstValueFrom(store.login(credentials()));
 
       httpMock.expectOne(LOGIN_URL).flush(credentialPayload());
@@ -964,21 +695,7 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE VERIFICATION LADDER
-  //
-  // A faithful reproduction of `Login.ascx.vb:L168-L185`, and the reason it is
-  // PROGRESSIVE rather than a lookup from code to message: L171 reads
-  // `If Not rowVerification1.Visible Then`, so the legacy branched on whether the
-  // field had ALREADY been revealed. The first refusal revealed it and asked for a
-  // code (L173, L174, L175); only a SUBSEQUENT refusal could judge what had been
-  // typed into it (L177, L178). A flat mapping would lose that progression, and the
-  // ladder would silently restart at its first rung on every attempt.
-  //
-  // The revealed state is therefore the ONE piece of legacy control state that
-  // survives the migration, and it lives in the store rather than on a component
-  // precisely so navigation destroying a component cannot reset it.
-  // -------------------------------------------------------------------------
   describe('verification ladder', () => {
     it('reveals the field on the first refusal that asks for a verification code', async () => {
       await refuseSignIn(refusal(VERIFICATION_REQUIRED_CODE, 401), 401, 'Unauthorized');
@@ -996,11 +713,6 @@ describe('AuthStore', () => {
     });
 
     it('reports the invalid-code outcome only once the field is already on screen', async () => {
-      // ⚠ THE PROGRESSION, MADE OBSERVABLE. The server may report an invalid code on
-      // the very first attempt, and the ladder still answers "enter your code" —
-      // because `Login.ascx.vb` tests VISIBILITY at L171 before it inspects what was
-      // typed at L177. Judging content that has not been asked for yet would be the
-      // flat mapping this ladder exists to avoid.
       await refuseSignIn(
         refusal(VERIFICATION_CODE_INVALID_CODE, 401),
         401,
@@ -1054,11 +766,6 @@ describe('AuthStore', () => {
     });
 
     it('treats an omitted code and an empty code identically', async () => {
-      // The legacy absent-text marker IS the empty string — `Null.vb:L71-L75` has the
-      // body `Return ""`, not `Return Nothing` — so an empty code and an absent one
-      // were always one branch. The two spellings are interchangeable in the legacy
-      // source itself: `Signup.ascx.vb:L227` tests against a literal empty string while
-      // L315 tests against the marker, in the same file.
       await refuseSignIn(refusal(VERIFICATION_REQUIRED_CODE, 401), 401, 'Unauthorized');
 
       await refuseSignIn(
@@ -1097,11 +804,8 @@ describe('AuthStore', () => {
     });
 
     it('never reveals the field when the tenant does not verify registrations', async () => {
-      // The legacy gate at L170 read the tenant's registration mode from ambient
-      // per-request page state and produced `"UserNotAuthorized"` at L184 when it was
-      // anything else. That fact is the SERVER's to apply — it already applied it when
-      // it chose this code — so the renamed enumeration, which is declared in the
-      // portal model alone, is neither imported here nor consulted by the store.
+      // The legacy gate at L170 read the tenant's registration mode from ambient per-request page state and
+      // produced `"UserNotAuthorized"` at L184 when it was anything else.
       await refuseSignIn(refusal(ACCOUNT_NOT_APPROVED_CODE, 401), 401, 'Unauthorized');
 
       expect(store.verificationRequired())
@@ -1114,14 +818,10 @@ describe('AuthStore', () => {
     });
 
     it('leaves the field hidden for every failure outside the closed verification vocabulary', async () => {
-      // ⚠ THE NEGATIVE HALF OF THE PROOF, WITHOUT WHICH THE POSITIVE HALF SHOWS
-      // NOTHING. A signal that flipped for an ordinary refused credential would put a
-      // verification field in front of someone who simply mistyped a password, and a
-      // specification that only ever fed it the code that SHOULD flip it could not
-      // tell the difference.
-      //
-      // The revealed state is never cleared by a failure, so these can run in sequence:
-      // if any single entry flipped it, every later assertion would fail too.
+      // ⚠ THE NEGATIVE HALF OF THE PROOF, WITHOUT WHICH THE POSITIVE HALF SHOWS NOTHING. A signal that
+      // flipped for an ordinary refused credential would put a verification field in front of someone who
+      // simply mistyped a password, and a specification that only ever fed it the code that SHOULD flip it
+      // could not tell the difference.
       const entries: readonly (readonly [string, ProblemDetails | null, number, string])[] = [
         ['a refused credential', refusal(INVALID_CREDENTIALS_CODE, 401), 401, 'Unauthorized'],
         ['a refusal carrying no document at all', null, 401, 'Unauthorized'],
@@ -1188,9 +888,6 @@ describe('AuthStore', () => {
     });
 
     it('presents every rung of the ladder as a warning rather than a fault', async () => {
-      // Nothing is broken when someone is asked for a code, so nothing may be presented
-      // as though it were. The legacy authority is `AccessDenied.ascx.vb`, whose two
-      // branches at L43 and L45 both use the yellow-warning message type.
       await refuseSignIn(refusal(VERIFICATION_REQUIRED_CODE, 401), 401, 'Unauthorized');
 
       expect(store.verificationPrompt()?.severity).toBe('warning');
@@ -1203,24 +900,9 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE CORRECTED SIGN-IN OUTCOME MAPPING
-  //
-  // `Login.ascx.vb:L187` reads `authenticated = (loginStatus <> UserLoginStatus.LOGIN_FAILURE)`.
-  // The branch above it at L168 consumes ONLY the not-approved outcome, so every other
-  // non-zero outcome fell into that else arm and counted as authenticated. Three
-  // outcomes were admitted that way: ordinal 3, a locked-out account, and ordinals 5
-  // and 6, the two sign-ins with the product's well-known default credentials.
-  //
-  // The seven outcomes are mapped deliberately server-side now — ordinal 3 becomes a
-  // refusal to authorise, and ordinals 5 and 6 become COMPLETED sign-ins carrying a
-  // security advisory. The correction is forced by the target's transport semantics
-  // rather than chosen, which is exactly why it is annotated rather than absorbed.
-  //
-  // ⚠ EVERY ASSERTION HERE IS ON AN ADVISORY BOOLEAN OR A TRANSPORT STATUS, NEVER ON A
-  // NUMERIC OUTCOME. The numeric vocabulary is declared as reference wording and never
-  // crosses the wire, so it is deliberately not imported by this file.
-  // -------------------------------------------------------------------------
+  // The seven outcomes are mapped deliberately server-side now — ordinal 3 becomes a refusal to authorise,
+  // and ordinals 5 and 6 become COMPLETED sign-ins carrying a security advisory.
   describe('sign-in outcome mapping', () => {
     it('refuses a locked-out account instead of admitting it', async () => {
       await refuseSignIn(refusal(ACCOUNT_LOCKED_OUT_CODE, 403), 403, 'Forbidden');
@@ -1277,10 +959,8 @@ describe('AuthStore', () => {
     });
 
     it('carries more than one advisory at once, which the single-valued legacy outcome could not', async () => {
-      // The legacy post-credential check reported exactly one of five states, with
-      // precedence deciding which. Three INDEPENDENT booleans replace it, so a consumer
-      // must render each on its own terms instead of switching on a single value — and
-      // that difference is only observable if more than one can be true together.
+      // The legacy post-credential check reported exactly one of five states, with precedence deciding
+      // which.
       await signIn(credentialPayload({ mustChangePassword: true, passwordExpiring: true }));
 
       expect(store.mustChangePassword()).toBe(true);
@@ -1306,13 +986,6 @@ describe('AuthStore', () => {
     });
 
     it('reports the session RESTRICTED for either blocking advisory', async () => {
-      // ⚠ THE DISTINCTION BETWEEN "AN ADVISORY IS PRESENT" AND "THE SERVER WILL REFUSE WORK".
-      // While either of these two holds, the API refuses very nearly every read the console
-      // performs — measured for an outstanding credential change: GET api/v1/users/{id},
-      // .../services, api/v1/users/settings, api/v1/portals and api/v1/modules each answered
-      // 403 auth.remediation_required. So this predicate decides where a caller can go at all,
-      // which is why it mirrors the server's own: AuthenticationRemediationState.IsRequired is
-      // MustChangePassword || MustUpdateProfile.
       await signIn(credentialPayload({ mustChangePassword: true }));
       expect(store.sessionRestricted()).toBe(true);
 
@@ -1322,10 +995,6 @@ describe('AuthStore', () => {
     });
 
     it('does NOT report the session restricted for the informational advisory alone', async () => {
-      // An approaching expiry asks for nothing and blocks nothing. Folding it in would divert
-      // the caller to a remediation screen with nothing to remediate, and the server would then
-      // answer every request on that screen normally — so the diversion would be the client's
-      // invention rather than the server's requirement.
       await signIn(credentialPayload({ passwordExpiring: true }));
 
       expect(store.hasAdvisory())
@@ -1345,12 +1014,9 @@ describe('AuthStore', () => {
     });
 
     it('clears a satisfied CREDENTIAL advisory without issuing a request', async () => {
-      // ⚠ WHY THIS IS NOT A RENEWAL. `POST api/v1/users/{id}/password` deliberately revokes every
-      // refresh token the account holds, so the token this client is holding is dead the instant
-      // the change succeeds. Renewing with it answers 401, this store treats a refused renewal as
-      // a session that is over and DISCARDS it, and the caller is signed out seconds after doing
-      // exactly what the server demanded — observed end to end in a browser. `expectNone` is what
-      // keeps that regression from returning.
+      // ⚠ WHY THIS IS NOT A RENEWAL. `POST api/v1/users/{id}/password` deliberately revokes every refresh
+      // token the account holds, so the token this client is holding is dead the instant the change
+      // succeeds.
       await signIn(credentialPayload({ mustChangePassword: true, mustUpdateProfile: true }));
 
       store.noteCredentialRemediated();
@@ -1410,12 +1076,6 @@ describe('AuthStore', () => {
     });
 
     it('retains a false advisory as data rather than reading it as absent', async () => {
-      // ⚠ `false` IS DATA. In the legacy null contract the absence test reported true
-      // for `false` itself, so a legacy `false` and a legacy "unknown" were
-      // indistinguishable. Every boolean on this contract is a plain non-nullable
-      // boolean precisely because admitting a third state would advertise a distinction
-      // the source data cannot make. The serialiser is configured never to elide a
-      // default, so `false` arrives on the wire rather than being dropped.
       await signIn(credentialPayload());
 
       const session = tokenStorage.session();
@@ -1437,9 +1097,8 @@ describe('AuthStore', () => {
     });
 
     it('reports every advisory as false while nobody is signed in', async () => {
-      // The same answer as "no advisory", which is the correct one for a gate: an
-      // unauthenticated caller is stopped by the authentication check, not by an
-      // advisory.
+      // The same answer as "no advisory", which is the correct one for a gate: an unauthenticated caller is
+      // stopped by the authentication check, not by an advisory.
       expect(store.mustChangePassword()).toBe(false);
       expect(store.passwordExpiring()).toBe(false);
       expect(store.mustUpdateProfile()).toBe(false);
@@ -1485,16 +1144,10 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // CUSTODY
-  //
-  // Custody belongs to `core/services/token-storage.service.ts`, which keeps the
-  // session in MEMORY ONLY. That is a stated non-functional requirement rather than a
-  // preference, and the store's part in it is negative: it must not become a second
-  // copy. No web-storage interface, no cookie jar and no client-side database is
-  // referenced anywhere in this file, so nothing here can normalise a violation of
-  // that by accident.
-  // -------------------------------------------------------------------------
+  // Custody belongs to `core/services/token-storage.service.ts`, which keeps the session in MEMORY ONLY.
+  // That is a stated non-functional requirement rather than a preference, and the store's part in it is
+  // negative: it must not become a second copy.
   describe('credential custody', () => {
     it('exposes no readable member holding the access credential', async () => {
       await signIn();
@@ -1521,9 +1174,6 @@ describe('AuthStore', () => {
     });
 
     it('writes exactly one copy of the session across a whole sign-in', async () => {
-      // ⚠ THE CUSTODIAN'S WRITE METHOD IS CALLED ONCE, BY THE SERVICE THAT PERFORMED
-      // THE EXCHANGE. A second call would mean a second copy, and a second copy is a
-      // second thing to forget to clear.
       const spy = spyOn(tokenStorage, 'store').and.callThrough();
 
       await signIn();
@@ -1532,11 +1182,6 @@ describe('AuthStore', () => {
     });
 
     it('publishes the expiry instant exactly as the server stamped it', async () => {
-      // An absolute instant, passed through as the string the contract publishes. No
-      // parse, no clock read and no lapsed-or-valid verdict — and deliberately no
-      // assertion on a DURATION, because asserting sixty minutes here would test
-      // arithmetic the client does not perform. The lifetime itself is parity with
-      // `release.config:L147`, and it is a server setting.
       await signIn();
 
       expect(store.accessTokenExpiresAt()).toBe(EXPIRES_AT_UTC);
@@ -1544,9 +1189,8 @@ describe('AuthStore', () => {
     });
 
     it('reports the presence of a session rather than re-deciding its validity', async () => {
-      // Reports what the custodian reports. An access credential that has lapsed still
-      // yields true, because the correct response to lapsing is to renew — which
-      // requires the session to still be here.
+      // Reports what the custodian reports. An access credential that has lapsed still yields true, because
+      // the correct response to lapsing is to renew — which requires the session to still be here.
       await signIn();
 
       expect(store.isAuthenticated()).toBe(tokenStorage.isAuthenticated());
@@ -1579,16 +1223,10 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // SIGNING OUT
-  //
-  // The legacy cookie clear has no stateless counterpart: it took effect at once,
-  // whereas a signed bearer credential cannot be recalled once issued. Signing out is
-  // therefore revocation of the RENEWAL credential plus a local discard. The server
-  // keeps no deny-list, and the already-issued access credential stays technically
-  // valid until it lapses — which is why that lifetime is short and why the expiry
-  // instant is published rather than left implicit.
-  // -------------------------------------------------------------------------
+  // The legacy cookie clear has no stateless counterpart: it took effect at once, whereas a signed bearer
+  // credential cannot be recalled once issued. Signing out is therefore revocation of the RENEWAL
+  // credential plus a local discard.
   describe('logout', () => {
     it('revokes the renewal credential and carries nothing else in the request', async () => {
       await signIn();
@@ -1613,9 +1251,6 @@ describe('AuthStore', () => {
     });
 
     it('discards the session locally even when the revocation request fails', async () => {
-      // A person who asks to sign out must end up signed out on this device. Leaving
-      // the session in place because a revocation request failed would be the opposite
-      // of what they asked for, and they could not act on the error in any case.
       await signIn();
 
       const inFlight = firstValueFrom(store.logout());
@@ -1697,27 +1332,10 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // RENEWAL
-  //
-  // ⚠ RENEWING AFTER A REFUSED REQUEST IS NOT THIS STORE'S JOB. That policy — deciding
-  // WHEN a renewal is warranted, and what a refused one means for the request that
-  // provoked it — belongs to `core/interceptors/auth.interceptor.ts`, which the store
-  // references by path and never imports. No interceptor is registered in this harness, so
-  // any renewal seen below could only have come from the store itself, which is what makes
-  // the negative assertions binding.
-  //
-  // MIGRATION: COALESCING concurrent renewals, by contrast, IS this store's, and moved here
-  //   from `core/services/auth.service.ts`. The thing being coalesced is the session, and
-  //   abandoning an in-flight renewal and advancing the session generation are two halves of
-  //   one act — a slot held by any other owner could be reached by neither. The cases for it
-  //   are in their own group further down, and they came with the responsibility.
-  //
-  // The store still exposes a renewal COMMAND, so a caller may renew deliberately — a
-  // route resolver re-establishing a session after a reload, for instance. That is
-  // caller-driven, and it is tested separately from the automatic behaviour the store
-  // must not have.
-  // -------------------------------------------------------------------------
+  // ⚠ RENEWING AFTER A REFUSED REQUEST IS NOT THIS STORE'S JOB. That policy — deciding WHEN a renewal is
+  // warranted, and what a refused one means for the request that provoked it — belongs to
+  // `core/interceptors/auth.interceptor.ts`, which the store references by path and never imports.
   describe('renewal', () => {
     it('does not renew the session when an unrelated request is refused', async () => {
       await signIn();
@@ -1797,16 +1415,9 @@ describe('AuthStore', () => {
     });
 
     it('discards the session when a renewal is refused, and explains it without quoting the wire', async () => {
-      // ⚠ THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE OPPOSITE WAS THE DEFECT. It required the
-      // renewal's own problem document to be RECORDED, on the reasoning that the sign-in screen
-      // needs it in order to explain why the caller is back at it. That screen duly rendered it,
-      // and what an operator saw — measured in a browser — was "Unauthorized" over "The refresh
-      // token is not valid." over a bare correlation identifier: an account of a credential they
-      // never knew existed, for something they had not done.
-      //
-      // The requirement was right and the mechanism was wrong. The ending is explained by the one
-      // owner of the session boundary instead, in wording chosen for a person, and the refusal's
-      // own document goes no further than the caller that asked.
+      // ⚠ THE RENEWAL'S OWN PROBLEM DOCUMENT IS NOT RECORDED. Recording it - on the reasoning that the
+      // sign-in screen needs it in order to explain why the caller is back at it - is what this case
+      // refuses.
       await signIn();
 
       const inFlight = firstValueFrom(store.refreshSession());
@@ -1847,15 +1458,9 @@ describe('AuthStore', () => {
     });
 
     it('reports a renewal that had nothing to renew from, and reports it as an ending', async () => {
-      // A renewal with no credential to present fails before any request is made, so there is no
-      // document and no status to describe it by — the case that used to prove `recordFailure`
-      // marks a failure even when it carries no details.
-      //
-      // ⚠ THAT PROOF MOVED RATHER THAN DISAPPEARING, and it moved because it was in the wrong
-      // place. The invariant belongs to a REFUSED SIGN-IN, where the recorded failure is what the
-      // sign-in screen shows; it is covered there. Reaching it through a renewal asserted something
-      // else entirely — that an ended session presents as a refused sign-in attempt — which is what
-      // put "The refresh token is not valid." in front of an operator who had not signed in.
+      // ⚠ THAT PROOF MOVED RATHER THAN DISAPPEARING, and it moved because it was in the wrong place. The
+      // invariant belongs to a REFUSED SIGN-IN, where the recorded failure is what the sign-in screen
+      // shows; it is covered there.
       const inFlight = firstValueFrom(store.refreshSession());
 
       await expectAsync(inFlight).toBeRejected();
@@ -1899,10 +1504,6 @@ describe('AuthStore', () => {
     });
 
     it('lets a freshly read identity take precedence over the snapshot taken at issue time', async () => {
-      // The copy inside the stored session is a snapshot taken when the credentials were
-      // issued, so an entitlement granted afterwards does not appear in it until the
-      // session is renewed. A deliberate re-read is how a caller learns about it without
-      // renewing.
       await signIn();
 
       expect(store.roles()).toEqual(['Administrators']);
@@ -1922,14 +1523,9 @@ describe('AuthStore', () => {
     });
 
     it('exposes no member that decides an authorisation question', () => {
-      // ⚠ THE ROLE AND PERMISSION LISTS DECIDE NOTHING. They exist so a screen can avoid
-      // offering an action the server would refuse. THE SERVER IS AUTHORITATIVE: it
-      // re-authorises every request against stored state and answers with a refusal to
-      // authorise, and nothing here may stand in for that.
-      //
-      // Two closed, non-interchangeable vocabularies also apply — the persisted
-      // permission keys are not the server's authorisation policy names, and there is no
-      // deny prefix in this generation of the product, so nothing here parses one.
+      // ⚠ THE ROLE AND PERMISSION LISTS DECIDE NOTHING. They exist so a screen can avoid offering an action
+      // the server would refuse. THE SERVER IS AUTHORITATIVE: it re-authorises every request against stored
+      // state and answers with a refusal to authorise, and nothing here may stand in for that.
       expect('hasPermission' in store).toBe(false);
       expect('isInRole' in store).toBe(false);
       expect('can' in store).toBe(false);
@@ -1938,11 +1534,9 @@ describe('AuthStore', () => {
     });
 
     it('exposes no credential-recovery command', () => {
-      // Retrieval is ABOLISHED rather than ported. The legacy provider was registered
-      // with retrieval enabled and reversible storage, against a key committed to source
-      // control, so every stored credential was recoverable by anyone with repository
-      // access. An administrative reset is the only remedy now, and it belongs to the
-      // user store rather than here.
+      // Retrieval is ABOLISHED rather than ported. The legacy provider was registered with retrieval
+      // enabled and reversible storage, against a key committed to source control, so every stored
+      // credential was recoverable by anyone with repository access.
       expect('retrievePassword' in store).toBe(false);
       expect('getPassword' in store).toBe(false);
       expect('recoverPassword' in store).toBe(false);
@@ -1959,22 +1553,9 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // FAILURE REPORTING
-  //
-  // The whole structured document is kept, never reduced to a sentence. It carries the
-  // failure code, the per-field dictionary and the support reference an operator needs,
-  // and collapsing it to text would discard all three. Wording belongs to
-  // the workspace's form-errors utility, under `core/utils`; this store keeps the
-  // document and the classifications derived from it.
-  // -------------------------------------------------------------------------
   describe('failure reporting', () => {
     it('retains the framework trace identifier a report has to quote', async () => {
-      // ⚠ REQUIRED, NOT OPTIONAL. The identifier is derived server-side and appears on
-      // the response, on the request envelope in the server's log and on every audit
-      // event the request produced, so it is the operator's only join key between a
-      // browser-side report and a server-side record. Reducing this slice to a sentence
-      // would throw it away.
       await refuseSignIn(
         refusal(INVALID_CREDENTIALS_CODE, 401, { traceId: TRACE_ID }),
         401,
@@ -1986,9 +1567,6 @@ describe('AuthStore', () => {
     });
 
     it('prefers the correlation identifier the server validated over the framework one', async () => {
-      // Two independent values in different formats, of which only the former appears in
-      // the server's own records. Both are RETAINED; the preference decides only which
-      // one a person is asked to quote.
       await refuseSignIn(
         refusal(INVALID_CREDENTIALS_CODE, 401, {
           correlationId: CORRELATION_ID,
@@ -2012,12 +1590,6 @@ describe('AuthStore', () => {
     });
 
     it('presents a refusal to authorise as a warning rather than a fault', async () => {
-      // The legacy authority is `AccessDenied.ascx.vb`: 50 lines that perform NO
-      // permission check and only present a denial, whose handler at L41-L47 uses the
-      // yellow-warning message type on BOTH branches — L43 for the message arriving on
-      // the query string, rendered encoded after decoding, and L45 for the localised
-      // default. Presenting this in danger styling would tell a person something is
-      // broken when the system is working exactly as configured.
       await refuseSignIn(codelessRefusal(403), 403, 'Forbidden');
 
       expect(store.severity()).toBe('warning');
@@ -2037,20 +1609,12 @@ describe('AuthStore', () => {
     });
 
     it('reports the rate-limiter rejection as its own calm state rather than a fault', async () => {
-      // The compensating control for the dropped human-verification challenge is a
-      // request rate limiter on the credential paths, partitioned by calling address.
-      // Nothing has failed when it rejects — the caller has simply attempted too often —
-      // so it is reported separately from a refused credential and presented calmly. The
-      // retry hint accompanying such a rejection arrives on a response header rather than
-      // in the body, so no slice here carries one.
+      // The compensating control for the dropped human-verification challenge is a request rate limiter on
+      // the credential paths, partitioned by calling address.
       await refuseSignIn(codelessRefusal(429), 429, 'Too Many Requests');
 
       expect(store.rateLimited()).toBe(true);
       expect(store.failureStatus()).toBe(429);
-      // The INFORMATIONAL severity, not a warning: the shared classification treats a
-      // rate-limit refusal as quieter than an ordinary refusal, because nothing was rejected
-      // on its merits and the only action is to wait. The rule lives in one place so this
-      // status cannot reach an operator as two different severities from two surfaces.
       expect(store.severity()).toBe('info');
       expect(store.hasFailure()).toBe(true);
       expect(store.verificationRequired())
@@ -2065,10 +1629,9 @@ describe('AuthStore', () => {
     });
 
     it('reads per-field failures with bracket access, which the index signature requires', async () => {
-      // ⚠ BRACKET ACCESS, ALWAYS. The member is an index signature and this workspace
-      // enables the compiler option that makes dot access on one an error, deliberately:
-      // a key is only ever known at run time, and dot access would let a typo compile as
-      // a silent absent value.
+      // ⚠ BRACKET ACCESS, ALWAYS. The member is an index signature and this workspace enables the compiler
+      // option that makes dot access on one an error, deliberately: a key is only ever known at run time,
+      // and dot access would let a typo compile as a silent absent value.
       await refuseSignIn(fieldRefusal(), 422, 'Unprocessable Content');
 
       const errors = store.validationErrors();
@@ -2087,11 +1650,9 @@ describe('AuthStore', () => {
     });
 
     it('holds message text as an inert plain string, laundering nothing', async () => {
-      // Unescaping the 37 in-scope legacy resource files first — a naive search finds
-      // nothing — shows 76 values carrying markup, four of them carrying a script
-      // element, including a live one in the site-settings resource file. A message
-      // reaching this store is untrusted text, so it is held as a string and never as a
-      // trusted-markup wrapper. Nothing here sanitises it, marks it safe, or renders it.
+      // Unescaping the 37 in-scope legacy resource files first — a naive search finds nothing — shows 76
+      // values carrying markup, four of them carrying a script element, including a live one in the
+      // site-settings resource file.
       await refuseSignIn(
         refusal(INVALID_CREDENTIALS_CODE, 401, { detail: SCRIPT_BEARING_DETAIL }),
         401,
@@ -2105,11 +1666,6 @@ describe('AuthStore', () => {
     });
 
     it('keeps the legacy leading break tag in both of its spellings rather than pre-stripping it', async () => {
-      // The legacy prefixed messages with a break tag in TWO spellings — the unclosed
-      // form in `Website/admin/Portal/Signup.ascx.vb` at L193, L214, L221 and L323, and
-      // the self-closing form in `Website/admin/Users/User.ascx.vb:L187`. Stripping is
-      // the form-errors utility's job, at the point of presentation. The store keeps the
-      // raw document, so a consumer that needs the original still has it.
       await refuseSignIn(
         refusal(INVALID_CREDENTIALS_CODE, 401, { detail: UNCLOSED_BREAK_DETAIL }),
         401,
@@ -2128,11 +1684,8 @@ describe('AuthStore', () => {
     });
 
     it('discloses only a code, never which credential was wrong', async () => {
-      // ⚠ A SECURITY PROPERTY, PRESERVED DELIBERATELY. The legacy flow drew no
-      // distinction between an unknown account and an incorrect credential, and neither
-      // does this. Two attempts with different account names must publish IDENTICAL
-      // state — if the store enriched a failure with the submitted name, or told the two
-      // cases apart, these two readings would differ.
+      // ⚠ A SECURITY PROPERTY, PRESERVED DELIBERATELY. The legacy flow drew no distinction between an
+      // unknown account and an incorrect credential, and neither does this.
       const body = refusal(INVALID_CREDENTIALS_CODE, 401);
 
       await refuseSignIn(body, 401, 'Unauthorized', credentials({ username: ACCOUNT_NAME }));
@@ -2189,26 +1742,10 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // SENTINEL FIDELITY
-  //
-  // ⚠ THE MEASURED LEGACY NULL CONTRACT, from `Library/Components/Shared/Null.vb:L36-L85`:
-  // the 16-bit and 32-bit integer markers are BOTH minus one (L36-L40, L41-L45), the byte
-  // marker is 255 (L46-L50), the floating and decimal markers are the minimum value
-  // (L51-L65), the date marker is the minimum date (L66-L70), THE STRING MARKER IS THE
-  // EMPTY STRING — the body is literally `Return ""` (L71-L75) — the boolean marker is
-  // false (L76-L80) and the identifier marker is the empty one (L81-L85). Its absence
-  // test reports true for every one of those. 168 in-scope call sites depend on it.
-  //
-  // The collision that makes this section necessary: the tenant key column is seeded at
-  // minus one, so MINUS ONE IS SIMULTANEOUSLY A REAL TENANT AND THE LEGACY MARKER FOR
-  // "no integer", and zero is a real tenant too. Absence is therefore expressed as null
-  // and never as zero or minus one. A guard written as a truthiness test, or as a
-  // comparison against zero, would reject two real tenants.
-  //
-  // The serialiser is configured never to elide a default, precisely so zero, the empty
-  // string and false all arrive on the wire instead of vanishing.
-  // -------------------------------------------------------------------------
+  // The collision that makes this section necessary: the tenant key column is seeded at minus one, so MINUS
+  // ONE IS SIMULTANEOUSLY A REAL TENANT AND THE LEGACY MARKER FOR "no integer", and zero is a real tenant
+  // too. Absence is therefore expressed as null and never as zero or minus one.
   describe('sentinel fidelity', () => {
     it('retains a tenant key of zero rather than reading it as absent', async () => {
       await signIn(credentialPayload({ user: currentUser({ portalId: 0 }) }));
@@ -2239,9 +1776,9 @@ describe('AuthStore', () => {
     });
 
     it('distinguishes having no identity from holding an identity whose tenant key is zero', async () => {
-      // THE WHOLE POINT OF THE NULL CONVENTION, in one specification. Before signing in
-      // there is no tenant to report and the answer is null; after signing in the answer
-      // is the number the server sent, even when that number is zero.
+      // THE WHOLE POINT OF THE NULL CONVENTION, in one specification. Before signing in there is no tenant
+      // to report and the answer is null; after signing in the answer is the number the server sent, even
+      // when that number is zero.
       expect(store.portalId()).toBeNull();
       expect(store.currentUser()).toBeNull();
 
@@ -2257,10 +1794,6 @@ describe('AuthStore', () => {
     });
 
     it('retains an empty string rather than normalising it away', async () => {
-      // The legacy marker for an absent string IS the empty string, and the two spellings
-      // are used interchangeably in one legacy file — `Signup.ascx.vb:L227` tests against
-      // a literal empty string while L315 tests against the marker. Neither is rewritten
-      // into the other here.
       await signIn(
         credentialPayload({
           user: currentUser({ displayName: '', portalName: '', email: '' }),
@@ -2276,9 +1809,9 @@ describe('AuthStore', () => {
     });
 
     it('retains empty role and permission lists sent by the server', async () => {
-      // An identity with no entitlement is a real identity. Reporting it the same way as
-      // "nobody is signed in" would let a screen offer nothing to a caller who is signed
-      // in — and, worse, let a guard mistake the two.
+      // An identity with no entitlement is a real identity. Reporting it the same way as "nobody is signed
+      // in" would let a screen offer nothing to a caller who is signed in — and, worse, let a guard mistake
+      // the two.
       await signIn(credentialPayload({ user: currentUser({ roles: [], permissions: [] }) }));
 
       expect(store.isAuthenticated()).toBe(true);
@@ -2318,19 +1851,10 @@ describe('AuthStore', () => {
   // PHASE OWNERSHIP AND CANCELLATION
   // -------------------------------------------------------------------------
   /**
-   * ⚠ THE DEFECT THESE CASES PIN IS A PERMANENTLY BUSY STORE.
-   *
-   * Every command is a cold observable the CALLER subscribes to, and that caller is normally a
-   * component. When the component is destroyed mid-flight — a navigation away from the sign-in
-   * screen, a route change during an identity read — the subscription is torn down. Neither
-   * `tap` nor `catchError` runs on unsubscription, so a phase set on subscribe was never
-   * returned to idle: the store stayed `authenticating` or `loadingIdentity` for the remainder
-   * of the application's life, and every derived busy projection stayed busy with it. A submit
-   * button that never re-enables is the visible symptom.
-   *
-   * `finalize` alone would trade that for the mirror defect, so the release is TICKETED: a
-   * command may only return the store to idle while nothing has claimed the phase since. Both
-   * halves are asserted below, and the second half is the one a naive fix would fail.
+   * ⚠ THE DEFECT THESE CASES PIN IS A PERMANENTLY BUSY STORE. Every command is a cold observable the
+   * CALLER subscribes to, and that caller is normally a component. When the component is destroyed
+   * mid-flight — a navigation away from the sign-in screen, a route change during an identity read — the
+   * subscription is torn down.
    */
   // =========================================================================
   // TENANT ADMINISTRATION — THE ONE ANSWER THE APPLICATION ASKS
@@ -2345,12 +1869,9 @@ describe('AuthStore', () => {
     });
 
     it('reports administration when the server derives it, with no role of that name held', async () => {
-      // ⚠ THE CORRECTION THIS PROJECTION EXISTS FOR. Administration is conferred by
-      // `Portals.AdministratorRoleId`, a per-tenant COLUMN naming whichever role administers
-      // that tenant — and `Roles.RoleName` is an ordinary updatable column. So a legitimate
-      // administrator routinely holds a role list containing nothing called `Administrators`,
-      // and the API's `IsPortalAdministratorAsync` resolves the designated role ID against the
-      // caller's active assignments rather than comparing any name.
+      // ⚠ THE REASON THIS PROJECTION EXISTS. Administration is conferred by
+      // `Portals.AdministratorRoleId`, a per-tenant COLUMN naming whichever role administers that tenant —
+      // and `Roles.RoleName` is an ordinary updatable column.
       await signIn(
         credentialPayload({
           user: currentUser({
@@ -2368,10 +1889,6 @@ describe('AuthStore', () => {
     });
 
     it('reports NO administration for a caller holding the literal administrator role name', async () => {
-      // ⚠ THE REGRESSION TEST. Three screens and the route gate each used to answer this
-      // question for themselves by testing the role list for `Administrators`. A role of that
-      // name may belong to a DIFFERENT tenant, and the tenant in hand may designate another
-      // role entirely — so the name is right about the word and wrong about the portal.
       await signIn(
         credentialPayload({
           user: currentUser({
@@ -2389,12 +1906,10 @@ describe('AuthStore', () => {
     });
 
     it('reports administration for a host account whose derived fact is false', async () => {
-      // ⚠ THE HOST ARM, AND WHY THIS IS NOT SIMPLY THE DERIVED FACT. The API's own handler
-      // opens with `if (account.IsSuperUser) return true` — a host account administers every
-      // tenant — but the sign-in and renewal responses carry an authority-minimised snapshot
-      // in which the derived fact is FALSE while the host flag is present and true. Reading
-      // the derived fact alone would withhold every administrative affordance from a host
-      // account for the whole window between signing in and the current-account read landing.
+      // ⚠ THE HOST ARM, AND WHY THIS IS NOT SIMPLY THE DERIVED FACT. The API's own handler opens with `if
+      // (account.IsSuperUser) return true` — a host account administers every tenant — but the sign-in and
+      // renewal responses carry an authority-minimised snapshot in which the derived fact is FALSE while
+      // the host flag is present and true.
       await signIn(
         credentialPayload({
           user: currentUser({
@@ -2480,15 +1995,8 @@ describe('AuthStore', () => {
         .withContext('an abandoned renewal must not leave the store refreshing for good')
         .toBe('idle');
 
-      // ⚠ AND THE RENEWAL ITSELF DELIBERATELY SURVIVES, which is the one place cancellation is
-      // the WRONG response. The authentication service shares one renewal between every caller
-      // with `refCount: false` precisely so that abandoning one subscriber does not abandon the
-      // renewal for the others still waiting on it — and because a rotated refresh token that
-      // was issued but never stored would be presented again on the next attempt and read by
-      // the server as a replay, which revokes the whole token family. So the phase is released
-      // by the ticket while the request continues, and the epoch check inside the service is
-      // what keeps its eventual result from committing against a session it no longer belongs
-      // to. Answered here rather than left outstanding so `verify()` has nothing to report.
+      // ⚠ AND THE RENEWAL ITSELF DELIBERATELY SURVIVES, which is the one place cancellation is the WRONG
+      // response.
       const renewals = httpMock.match(REFRESH_URL);
 
       expect(renewals.length).toBe(1);
@@ -2505,11 +2013,7 @@ describe('AuthStore', () => {
       answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
     });
 
-    // ⚠ THE MIRROR DEFECT, and the reason the release is ticketed rather than unconditional. An
-    // operator who abandons one sign-in and immediately starts another must see the SECOND one
-    // reported as in flight; a bare `finalize` would have the first one's cleanup reset the
-    // phase the second had just claimed, so the screen would report idle while a request was
-    // genuinely outstanding.
+    // ⚠ THE MIRROR DEFECT, and the reason the release is ticketed rather than unconditional.
     it('does not let an abandoned command reset a phase claimed after it', async () => {
       const abandoned = store
         .login({ username: 'first', password: FAKE_PASSWORD })
@@ -2556,11 +2060,10 @@ describe('AuthStore', () => {
   // IDENTITY LIFETIME
   // -------------------------------------------------------------------------
   /**
-   * ⚠ AN IDENTITY IS A DESCRIPTION OF ONE PARTICULAR SESSION and has no meaning apart from
-   * one. `currentUser` PREFERS the fetched identity over the copy inside the stored session, so
-   * a stale write wins the disagreement — which meant one account's roles, display name and
-   * e-mail address could be on screen while another account's credentials were the ones being
-   * sent. These cases pin the fix at each of the three writers.
+   * ⚠ AN IDENTITY IS A DESCRIPTION OF ONE PARTICULAR SESSION and has no meaning apart from one.
+   * `currentUser` PREFERS the fetched identity over the copy inside the stored session, so a stale write
+   * wins the disagreement — which meant one account's roles, display name and e-mail address could be on
+   * screen while another account's credentials were the ones being sent.
    */
   describe('identity lifetime', () => {
     it('discards an identity read that lands after the session ended', async () => {
@@ -2617,10 +2120,8 @@ describe('AuthStore', () => {
 
       store.logout().subscribe();
 
-      // ⚠ NOT AWAITED. The point is that the identity is already gone at this instant - before
-      // the revocation round trip completes. The previous arrangement discarded in a
-      // `finalize`, leaving the account's display name and records on screen for the whole
-      // duration of the request, unbounded on a slow or failing network.
+      // ⚠ NOT AWAITED. The point is that the identity is already gone at this instant - before the
+      // revocation round trip completes.
       expect(store.currentUser())
         .withContext('sign-out takes effect locally when it is asked for, not when it answers')
         .toBeNull();
@@ -2634,23 +2135,8 @@ describe('AuthStore', () => {
   // THE SESSION'S FOOTPRINT BEYOND THIS STORE
   // -------------------------------------------------------------------------
   /**
-   * ⚠ ENDING A SESSION'S AUTHORITY IS NOT THE SAME AS ERASING ITS FOOTPRINT.
-   *
-   * Discarding the token and the identity projection stops the application ACTING as the
-   * account. It does not empty the four domain stores, each of which is `providedIn: 'root'`
-   * and therefore holds ONE instance that outlives the session it was populated for — and a
-   * single-page application is not reloaded between sign-outs, so the same instances carry
-   * straight across to the next account.
-   *
-   * Each of those stores had a `reset()` written for exactly this moment and NOTHING CALLED
-   * ANY OF THEM, so signing out left the previous operator's tenant listings, the account
-   * record they had open, the role assignments naming other accounts, and a serialised export
-   * of a module's data in memory. These cases pin the fan-out at every path that ends a
-   * session.
-   *
-   * The fan-out is asserted through a spy on `SessionTeardownService.purge` rather than by
-   * populating four stores here: what belongs to this store is WHETHER IT DELEGATES, and what
-   * the delegate then does is proven in `session-teardown.service.spec.ts`.
+   * ⚠ ENDING A SESSION'S AUTHORITY IS NOT THE SAME AS ERASING ITS FOOTPRINT. Discarding the token and the
+   * identity projection stops the application ACTING as the account.
    */
   describe('session footprint', () => {
     it('purges the domain stores when signing out', async () => {
@@ -2660,10 +2146,8 @@ describe('AuthStore', () => {
 
       store.logout().subscribe();
 
-      // ⚠ NOT AWAITED, for the same reason as the identity case above: the purge must happen
-      // when sign-out is ASKED FOR, not when the revocation round trip answers. On a slow or
-      // failing network the gap between those two is unbounded, and for its whole duration
-      // the previous account's records would still be readable from the domain stores.
+      // ⚠ NOT AWAITED, for the same reason as the identity case above: the purge must happen when sign-out
+      // is ASKED FOR, not when the revocation round trip answers.
       expect(purge)
         .withContext('signing out empties the domain stores immediately')
         .toHaveBeenCalledTimes(1);
@@ -2682,9 +2166,9 @@ describe('AuthStore', () => {
         .expectOne(LOGOUT_URL)
         .flush({ title: 'Service Unavailable' }, { status: 503, statusText: 'Service Unavailable' });
 
-      // A server that cannot revoke the renewal credential does not get to keep the previous
-      // operator's data on this device. The local discard is unconditional precisely because
-      // it is the one part of signing out that cannot fail.
+      // A server that cannot revoke the renewal credential does not get to keep the previous operator's
+      // data on this device. The local discard is unconditional precisely because it is the one part of
+      // signing out that cannot fail.
       expect(purge)
         .withContext('an unreachable server does not leave the footprint behind')
         .toHaveBeenCalledTimes(1);
@@ -2695,9 +2179,6 @@ describe('AuthStore', () => {
 
       const purge = spyOn(sessionTeardown, 'purge').and.callThrough();
 
-      // ⚠ THE ACCOUNT-REPLACEMENT PATH, which does not pass through `logout` at all. Signing
-      // in while a session is held discards that session eagerly, so without this the previous
-      // account's listings would remain behind the new account's screens.
       const replacement = firstValueFrom(store.login({ username: 'other', password: 'Secret-2' }));
 
       expect(purge)
@@ -2725,9 +2206,9 @@ describe('AuthStore', () => {
 
       await expectAsync(refused).toBeRejected();
 
-      // Purging only on SUCCESS would leave the previous account's data in memory for the whole
-      // duration of a failed attempt — which is exactly the case where the person at the
-      // keyboard is LEAST likely to be the previous operator.
+      // Purging only on SUCCESS would leave the previous account's data in memory for the whole duration of
+      // a failed attempt — which is exactly the case where the person at the keyboard is LEAST likely to be
+      // the previous operator.
       expect(purge)
         .withContext('a failed sign-in still ends the session it displaced')
         .toHaveBeenCalledTimes(1);
@@ -2772,9 +2253,9 @@ describe('AuthStore', () => {
 
       await expectAsync(renewal).toBeResolved();
 
-      // A successful renewal is the SAME session continuing. Purging here would discard the
-      // listings the operator is looking at every time their token rotated, which is a
-      // functional regression rather than a hardening.
+      // A successful renewal is the SAME session continuing. Purging here would discard the listings the
+      // operator is looking at every time their token rotated, which is a functional regression rather than
+      // a hardening.
       expect(purge)
         .withContext('renewing a session does not discard the work in progress')
         .not.toHaveBeenCalled();
@@ -2807,16 +2288,6 @@ describe('AuthStore', () => {
   // -------------------------------------------------------------------------
   describe('read-only surface', () => {
     it('publishes every projection without a writer', () => {
-      // ⚠ THE PROOF IS MEMBER PRESENCE, NOT AN ATTEMPTED WRITE. A writable signal carries
-      // both a set and an update member; a read-only projection carries neither. Testing
-      // presence is exact and needs no cast, whereas calling a writer through a cast
-      // would only prove that the cast compiled.
-      //
-      // Every slice is private and exposed through a projection, so a consumer is
-      // STRUCTURALLY unable to mutate this store — the only way state changes is a
-      // command. That also means an update replaces a value rather than mutating it,
-      // which is what lets a consumer using the on-push change-detection strategy observe
-      // a change at all.
       const projections: readonly (readonly [string, () => unknown])[] = [
         ['phase', store.phase],
         ['isBusy', store.isBusy],
@@ -2871,35 +2342,8 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE SESSION LIFETIME
-  //
-  // The store is the SINGLE owner of the session lifecycle, and these cases pin the properties
-  // that ownership exists to provide. Each one was a defect before the responsibilities were
-  // gathered here: a renewal could resurrect a session after a sign-out, a renewal left the
-  // identity projection reporting the previous sign-in, and an unsubscribed command left the
-  // phase reporting work that was no longer happening.
-  //
-  // ⚠ WHAT SUPERSESSION LOOKS LIKE HERE, AND WHY IT IS NOT A REJECTION. A superseded renewal
-  // COMPLETES for its own subscriber and WRITES NOTHING SHARED. The credential store is the
-  // owner of the session generation, and every write in this file is conditioned on the
-  // generation the command captured still being current; a command that loses that test simply
-  // has no effect. That is the guarantee the resurrection defect needed - the rotated pair must
-  // not be adopted - and it is asserted directly below, on the stored credential and on the
-  // published identity, rather than on the shape of the caller's notification. Asserting a
-  // rejection instead would pin a mechanism rather than the property, and would say nothing
-  // about whether anything was stored.
-  // -------------------------------------------------------------------------
   describe('session lifetime', () => {
     it('adopts nothing from a renewal that completes after the session has been signed out', async () => {
-      // ⚠ THE RESURRECTION CASE. Signing out advances the session generation, so a renewal
-      // already past its own refusal check cannot store the rotated pair it is carrying.
-      //
-      // MIGRATION: the renewal used to be held by the authentication service, and signing out
-      //   merely nulled that reference. Nulling a reference does not cancel the shared source
-      //   behind it, so the renewal went on to complete and STORED a rotated session after the
-      //   operator had signed out - leaving them signed in against their explicit instruction,
-      //   with credentials the server had just issued.
       await signIn();
 
       const renewal = firstValueFrom(store.refreshSession());
@@ -2915,9 +2359,9 @@ describe('AuthStore', () => {
         .withContext('the sign-out took effect immediately, not when the renewal settled')
         .toBeFalse();
 
-      // Only now does the server answer the renewal, with a perfectly valid rotated pair, and
-      // the identity read the renewal chains is answered too - so nothing is left outstanding
-      // and the assertions below describe a settled store rather than a mid-flight one.
+      // Only now does the server answer the renewal, with a perfectly valid rotated pair, and the identity
+      // read the renewal chains is answered too - so nothing is left outstanding and the assertions below
+      // describe a settled store rather than a mid-flight one.
       renewalRequest.flush(
         credentialPayload({
           accessToken: FAKE_ACCESS_TOKEN_ROTATED,
@@ -2941,9 +2385,6 @@ describe('AuthStore', () => {
     });
 
     it('adopts nothing from a renewal that completes after the session was ended terminally', async () => {
-      // The same guarantee reached the other way: `endSession` is what the authentication
-      // interceptor calls on a terminal refusal, and it must supersede an outstanding renewal
-      // exactly as a sign-out does.
       await signIn();
 
       const renewal = firstValueFrom(store.refreshSession());
@@ -2992,8 +2433,6 @@ describe('AuthStore', () => {
     });
 
     it('leaves a deliberate sign-out with nothing to explain when a renewal is superseded', async () => {
-      // A sign-out the operator asked for is not a failure, so a renewal superseded BY that
-      // sign-out must not leave a banner behind explaining something nobody did wrong.
       await signIn();
 
       const renewal = firstValueFrom(store.refreshSession());
@@ -3021,8 +2460,6 @@ describe('AuthStore', () => {
     });
 
     it('does not advance the verification ladder when a sign-in is superseded', async () => {
-      // The ladder is what reveals the verification field and words the prompt. A sign-in that
-      // was superseded says nothing about the operator's credentials, so it must not move it.
       const first = firstValueFrom(store.login(credentials()));
       const firstRequest = httpMock.expectOne(LOGIN_URL);
 
@@ -3030,7 +2467,6 @@ describe('AuthStore', () => {
       const second = firstValueFrom(store.login(credentials()));
       const secondRequest = httpMock.expectOne(LOGIN_URL);
 
-      // The superseded attempt is refused only afterwards.
       firstRequest.flush(refusal(INVALID_CREDENTIALS_CODE, 401), {
         status: 401,
         statusText: 'Unauthorized',
@@ -3073,9 +2509,9 @@ describe('AuthStore', () => {
     });
 
     it('keeps a recorded failure when a session is ended terminally, and clears it on reset', async () => {
-      // The sign-in screen the operator is about to be sent to reads the recorded problem in
-      // order to explain why they are back at it, so ending a session must not discard it.
-      // `reset` is the operation that clears both.
+      // The sign-in screen the operator is about to be sent to reads the recorded problem in order to
+      // explain why they are back at it, so ending a session must not discard it. `reset` is the operation
+      // that clears both.
       await refuseSignIn(refusal(INVALID_CREDENTIALS_CODE, 401), 401, 'Unauthorized');
 
       expect(store.hasFailure()).toBeTrue();
@@ -3108,26 +2544,6 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // COALESCING AND THE SHARED RENEWAL SLOT
-  //
-  // MIGRATION: this whole group arrived with a responsibility rather than being written
-  //   fresh. The slot used to live on `core/services/auth.service.ts`, alongside custody of
-  //   the session it renewed, and these properties were specified beside it there. Minimal
-  //   Change Clause item 5 confines a service to API communication, so the slot moved to the
-  //   session's owner and its specification moved with it.
-  //
-  // WHY A SLOT EXISTS AT ALL. The renewal credential ROTATES ON USE. Six list requests
-  // expiring together would each present the same credential; the first rotates it and the
-  // other five present one that has already been spent, which the server treats as a replay
-  // and answers by revoking the account's whole credential family — signing the operator out
-  // precisely because the client tried to keep them signed in.
-  //
-  // TWO ENTRY POINTS, AND THE DIFFERENCE IS BOOKKEEPING. `renewSession` is the primitive: it
-  // coalesces, commits once, and touches nothing else. `refreshSession` wraps it and adds the
-  // phase claim, the failure record and the discard, which is what a caller that ASKED to
-  // renew needs and what the refused-request path must not have.
-  // -------------------------------------------------------------------------
   describe('coalescing and the shared renewal slot', () => {
     it('answers two simultaneous renewals with one request', async () => {
       await signIn();
@@ -3191,10 +2607,10 @@ describe('AuthStore', () => {
       answerIdentityRead(FAKE_ACCESS_TOKEN_ROTATED);
       await first;
 
-      // ⚠ THE SETTLED OBSERVABLE MUST NOT BE REPLAYED. `shareReplay` with no reference
-      // counting keeps a buffered value indefinitely, so a slot that was never released would
-      // hand every future caller the SAME rotated pair — a credential the server has already
-      // spent — for the rest of the application's life.
+      // ⚠ THE SETTLED OBSERVABLE MUST NOT BE REPLAYED. `shareReplay` with no reference counting keeps a
+      // buffered value indefinitely, so a slot that was never released would hand every future caller the
+      // SAME rotated pair — a credential the server has already spent — for the rest of the application's
+      // life.
       const second = firstValueFrom(store.renewSession());
       const renewal = httpMock.expectOne(REFRESH_URL);
 
@@ -3220,9 +2636,9 @@ describe('AuthStore', () => {
         .flush(codelessRefusal(401), { status: 401, statusText: 'Unauthorized' });
       await expectAsync(refused).toBeRejected();
 
-      // Nothing is held now, so a later renewal has no credential to present — which is
-      // itself the proof that the slot was released rather than replayed: a held slot would
-      // have answered from its buffer instead of failing on the missing credential.
+      // Nothing is held now, so a later renewal has no credential to present — which is itself the proof
+      // that the slot was released rather than replayed: a held slot would have answered from its buffer
+      // instead of failing on the missing credential.
       await expectAsync(firstValueFrom(store.renewSession())).toBeRejected();
       httpMock.expectNone(REFRESH_URL);
     });
@@ -3237,9 +2653,9 @@ describe('AuthStore', () => {
       httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
       await signOut;
 
-      // The abandoned renewal still arrives, because the shared source stays subscribed. Its
-      // commit is epoch-suppressed, and the case below the group proves that; what THIS case
-      // proves is that the slot no longer holds it.
+      // The abandoned renewal still arrives, because the shared source stays subscribed. Its commit is
+      // epoch-suppressed, and the case below the group proves that; what THIS case proves is that the slot
+      // no longer holds it.
       inFlight.flush(credentialPayload({
           accessToken: FAKE_ACCESS_TOKEN_ROTATED,
           refreshToken: FAKE_RENEWAL_TOKEN_ROTATED,
@@ -3296,10 +2712,8 @@ describe('AuthStore', () => {
     });
 
     it('issues no request, and throws nothing synchronously, when no credential is held', async () => {
-      // Posting an empty credential would be answered 400, which a caller could not tell
-      // apart from a genuine rejection of a real one. The failure is produced LAZILY inside
-      // the returned observable, because the refused-request path reaches this inside a
-      // `catchError` and must be able to rely on getting an observable back.
+      // Posting an empty credential would be answered 400, which a caller could not tell apart from a
+      // genuine rejection of a real one.
       const renewal = store.renewSession();
 
       httpMock.expectNone(REFRESH_URL);
@@ -3330,9 +2744,6 @@ describe('AuthStore', () => {
     });
 
     it('leaves a newer session alone when an older renewal is refused', async () => {
-      // ⚠ THE SHARPEST CASE IN THIS GROUP, and the reason the primitive exists separately
-      // from the deliberate command: the command discards unconditionally, which here would
-      // sign out an operator whose own sign-in had just succeeded.
       await signIn();
 
       const refused = firstValueFrom(store.renewSession());
@@ -3355,10 +2766,9 @@ describe('AuthStore', () => {
     });
 
     it('records nothing and claims no phase when the primitive is used', async () => {
-      // The bookkeeping difference between the two entry points, asserted rather than
-      // described. A failure record here would put a stale message in front of an operator
-      // who never asked to renew, and a phase claim would make an unrelated screen report
-      // itself busy.
+      // The bookkeeping difference between the two entry points, asserted rather than described. A failure
+      // record here would put a stale message in front of an operator who never asked to renew, and a phase
+      // claim would make an unrelated screen report itself busy.
       await signIn();
 
       const refused = firstValueFrom(store.renewSession());
@@ -3379,41 +2789,11 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // REVOCATION REPORTING
-  //
-  // MIGRATION: the sign-out POLICY moved here from `core/services/auth.service.ts`, and it
-  //   arrived corrected. That service ended its revocation with a handler that swallowed the
-  //   failure and completed successfully, so a 400, a 429, a 503 or a dropped connection was
-  //   indistinguishable from a clean withdrawal — a renewal credential still live on the
-  //   server for its full lifetime, reported as ended. Absorbing the failure was never the
-  //   defect: a person who asked to sign out must end up signed out, and erroring here would
-  //   leave them looking at a screen that behaves as though they had not. CLAIMING SUCCESS was
-  //   the defect. The transport now propagates the refusal and this store absorbs it
-  //   DELIBERATELY, recording it and saying so.
-  // -------------------------------------------------------------------------
-  // =========================================================================
-  // WHO REPORTS A REFUSED RENEWAL
-  //
-  // `core/services/auth.service.ts` marks every credential request as reported by its caller, which
-  // stopped the global announcer in `core/interceptors/error.interceptor.ts` reporting a refused
-  // sign-in twice and a rate-limited one three times. A renewal, though, has NO SCREEN: it happens
-  // behind whatever the operator is doing, so nothing binds its outcome and moving ownership without
-  // giving it an owner would have turned a duplicate report into no report at all. This store is
-  // that owner, and these cases are what stop the silence coming back.
-  // =========================================================================
+  // The sign-out POLICY moved here from `core/services/auth.service.ts`, and it arrived corrected.
 
   describe('renewal reporting', () => {
     it('words a refused renewal in shared wording, and lets the ending itself have the last word', async () => {
-      // ⚠ WHAT THIS CASE ASSERTS CHANGED, BECAUSE A SPY COUNT WAS NEVER THE QUESTION. It used to
-      // require exactly one call to the announcer and stop there. That passed while an operator saw
-      // NOTHING: the notice is raised inside the renewal, and every path that reaches a refused
-      // renewal then tears the session down — and the teardown empties the queue before it does
-      // anything else. A call count cannot tell those two outcomes apart; the queue can.
-      //
-      // So both halves are asserted. This store still WORDS the refusal, which is what a future
-      // caller renewing WITHOUT ending the session would be reported by. And what an operator is
-      // actually left holding is one notice, raised by the owner of the boundary that was crossed.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       for (const status of [429, 500, 503]) {
@@ -3449,14 +2829,9 @@ describe('AuthStore', () => {
     });
 
     it('says why the session ended when authority itself is refused, without wording it here', async () => {
-      // ⚠ THIS CASE ONCE REQUIRED TOTAL SILENCE, on the reasoning that "arriving at the sign-in
-      // screen IS the report". Measured in a browser, it was not: the teardown was complete and
-      // correct and BOTH live regions were empty, so somebody mid-task reached a sign-in form with
-      // no account, no work and no explanation, and a non-visual operator had nothing at all.
-      //
-      // The silence is still correct HERE, and for the reason the old comment gave — anything queued
-      // inside the renewal is erased by the teardown that follows it. So the sentence comes from the
-      // boundary owner, after the erasure, and this store adds nothing on top of it.
+      // The silence is still correct HERE, and for the reason the old comment gave — anything queued inside
+      // the renewal is erased by the teardown that follows it. So the sentence comes from the boundary
+      // owner, after the erasure, and this store adds nothing on top of it.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       await signIn();
@@ -3509,16 +2884,6 @@ describe('AuthStore', () => {
     });
 
     it('says nothing about a renewal belonging to a session that has already been replaced', async () => {
-      // The epoch guard the announcement sits behind. A renewal begun before a sign-out arrives
-      // afterwards and must neither clear the session that replaced it nor tell the operator that
-      // something failed: from where they are standing, nothing did.
-      //
-      // ⚠ THIS IS ALSO THE CASE THAT CAUGHT THE BOUNDARY-OWNER SENTENCE BEING RAISED TOO WIDELY.
-      // The discard in `refreshSession` used to be unconditional, which was harmless while it only
-      // re-emptied stores a replacement had already emptied — and stopped being harmless the moment
-      // an unasked-for ending began EXPLAINING itself, because a renewal refused after a deliberate
-      // sign-out would have told the operator their session had ended, about a session that no
-      // longer existed, in answer to a request they never made.
       const notify = spyOn(notifications, 'notify').and.callThrough();
 
       await signIn();
@@ -3550,11 +2915,9 @@ describe('AuthStore', () => {
     it('completes the sign-out and reports the revocation as outstanding when it is refused', async () => {
       const warning = spyOn(notifications, 'warning').and.callThrough();
 
-      // SEC-F14. 400 IS NO LONGER IN THIS SET, AND ITS REMOVAL IS THE POINT. A malformed or unknown
-      // credential is TERMINAL: the server has said the value can never name a session, so there is no
-      // residue to report and no retry that could help - reporting one would leave a notice nothing could
-      // ever clear. A 429 or a 503 may still have left the session live, so both are still reported and the
-      // credential is retained for `retryOutstandingRevocation`.
+      // 400 IS NO LONGER IN THIS SET, AND ITS REMOVAL IS THE POINT. A malformed or unknown credential is
+      // TERMINAL: the server has said the value can never name a session, so there is no residue to report
+      // and no retry that could help - reporting one would leave a notice nothing could ever clear.
       for (const status of [429, 503]) {
         warning.calls.reset();
 
@@ -3575,26 +2938,6 @@ describe('AuthStore', () => {
         expect(store.revocationOutstanding())
           .withContext(`a ${status} means the credential may still be live, and it is reported`)
           .toBeTrue();
-        /*
-         * ⚠ THIS ASSERTION IS INVERTED FROM WHAT IT USED TO BE, and the inversion is the point.
-         *
-         * It previously required this method to announce {@link REVOCATION_FAILED_MESSAGE} itself, and
-         * carried a comment arguing the reprieve made the statement survive the redirect to the sign-in
-         * screen. Both halves were wrong, and a real browser proved it: the one path that reaches
-         * `logout()` is `SessionLifecycleService.signOut`, which runs its teardown in a `finalize` — so
-         * the message queue is emptied AFTER this method speaks, twice, and a statement raised here was
-         * measured living 10 ms and never rendering a single frame. A reprieve cannot help, because it
-         * survives a change of SCREEN and a teardown is a change of SESSION.
-         *
-         * So the property worth guarding is the opposite one: this method must record the residue and
-         * say NOTHING, leaving the announcement to the actor that outlives the teardown. Asserting the
-         * silence is what stops the announcement being "helpfully" moved back here, which is a change
-         * no other specification would notice — the message would still be raised, and still be
-         * invisible.
-         *
-         * The durable half of the report is asserted immediately above: `revocationOutstanding()` is a
-         * signal the sign-in screen renders, and it is what makes the residue survivable at all.
-         */
         expect(warning)
           .withContext(
             'the store records the residue but must not announce it: anything it raises here is ' +
@@ -3653,9 +2996,6 @@ describe('AuthStore', () => {
     });
 
     it('does not record the refused withdrawal as a session failure', async () => {
-      // The failure record is read by the sign-in screen to explain why a caller is back at
-      // it, and a failed WITHDRAWAL is not a reason they were signed out — they asked to be.
-      // It is reported as its own boolean instead.
       await signIn();
 
       const signOut = firstValueFrom(store.logout());
@@ -3681,22 +3021,7 @@ describe('AuthStore', () => {
       expect(warning).not.toHaveBeenCalled();
     });
 
-    // ---------------------------------------------------------------------
     // HOW LONG THE REPORT LIVES
-    //
-    // ⚠ THE CASES THAT EXIST BECAUSE THE REPORT USED TO OUTLIVE ITS SESSION. It was cleared
-    // by exactly one thing — a later sign-out whose withdrawal SUCCEEDED — so after a single
-    // refused withdrawal the sign-in screen carried the warning indefinitely: still there
-    // after the next successful sign-in, still there when the next expiry returned somebody
-    // to that screen, and still above the form for whoever typed in it next. A sentence about
-    // a session two boundaries ago, presented as though it described theirs.
-    //
-    // The lifetime is now exactly ONE SESSION BOUNDARY: raised by a withdrawal that could not
-    // be confirmed, and retired by the next boundary of any kind — a new attempt beginning, a
-    // confirmed later withdrawal, or the store being reset. These cases pin both ends of that
-    // interval, because a report retired too early says nothing when it should and one retired
-    // too late says the wrong thing to the wrong person.
-    // ---------------------------------------------------------------------
 
     it('retires the report the moment a new attempt BEGINS, not when it succeeds', async () => {
       await signIn();
@@ -3713,9 +3038,9 @@ describe('AuthStore', () => {
 
       const nextAttempt = firstValueFrom(store.login(credentials()));
 
-      // ⚠ ASSERTED WHILE THE CREDENTIAL EXCHANGE IS STILL IN FLIGHT. Clearing on success
-      // would leave the previous session's warning standing above the form for the whole
-      // duration of the attempt — which is precisely when somebody is reading that form.
+      // ⚠ ASSERTED WHILE THE CREDENTIAL EXCHANGE IS STILL IN FLIGHT. Clearing on success would leave the
+      // previous session's warning standing above the form for the whole duration of the attempt — which is
+      // precisely when somebody is reading that form.
       expect(store.revocationOutstanding())
         .withContext('retired at the start of the attempt, before its outcome is known')
         .toBeFalse();
@@ -3729,9 +3054,9 @@ describe('AuthStore', () => {
     });
 
     it('keeps the report retired when that new attempt is REFUSED', async () => {
-      // The other half of clearing at the start: a refused attempt must not inherit the
-      // warning either. The person at the keyboard has already been shown it once, and
-      // re-presenting it beside a rejected sign-in reads as an explanation of the rejection.
+      // The other half of clearing at the start: a refused attempt must not inherit the warning either. The
+      // person at the keyboard has already been shown it once, and re-presenting it beside a rejected
+      // sign-in reads as an explanation of the rejection.
       await signIn();
 
       const refused = firstValueFrom(store.logout());
@@ -3769,12 +3094,9 @@ describe('AuthStore', () => {
     });
 
     it('raises the report only in the withdrawal request FAILING, so the discard cannot erase it', async () => {
-      // ⚠ THE ORDERING CASE, and the reason clearing on every boundary is safe at all.
-      // Sign-out discards the session — which retires this report — BEFORE it posts the
-      // withdrawal, so a naive reading suggests the clear could race ahead of the report it is
-      // meant to raise. It cannot, because the flag is set in that same request's failure
-      // handler, strictly after the discard. Asserted across the boundary rather than argued:
-      // false while the withdrawal is unanswered, true once it is refused.
+      // ⚠ THE ORDERING CASE, and the reason clearing on every boundary is safe at all. Sign-out discards
+      // the session — which retires this report — BEFORE it posts the withdrawal, so a naive reading
+      // suggests the clear could race ahead of the report it is meant to raise.
       await signIn();
 
       const inFlight = firstValueFrom(store.logout());
@@ -3794,51 +3116,20 @@ describe('AuthStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // CONTRACT ENFORCEMENT AT THE COMPOSITION POINT
-  //
-  // MIGRATION: both decoders existed and NEITHER HAD A PRODUCTION CONSUMER. The transport
-  //   asserted its own response types through the type argument, which is a promise the
-  //   compiler makes on the server's behalf and cannot keep. The values concerned become a
-  //   bearer header, the shell's caption, and the role and permission lists a screen uses to
-  //   decide which actions to offer — and the response crosses a reverse proxy, so
-  //   same-origin is not the same as in-process. The transport decodes now, and these cases
-  //   prove the refusal reaches the composition point and leaves nothing half-established.
-  // -------------------------------------------------------------------------
-  // -------------------------------------------------------------------------
-  // OUTSTANDING WITHDRAWALS, AND THE DRAIN THAT RETIRES THEM
-  //
-  // ⚠ SEC-03. EVERY CASE IN THIS SECTION EXISTS BECAUSE THE MECHANISM IT EXERCISES WAS DEAD.
-  // The store retained a credential after a refused sign-out and published a bounded retry for
-  // it, and a security review found that NOTHING in the application ever called that retry and
-  // that no specification ever exercised it — so every refused withdrawal was retained and then
-  // left retained, and the session it named stayed renewable until its absolute expiry. Worse,
-  // the retention was a single slot, so a second sign-out overwrote the first session's
-  // credential and abandoned it silently.
-  //
-  // Two properties are therefore under test here and neither was before: that the drain actually
-  // withdraws what is held, and that several sessions' credentials survive one another. That the
-  // APPLICATION drives the drain is proven where the caller lives, in
-  // `features/auth/login/login.component.spec.ts` — a case here could only ever prove the method
-  // works when called, which is exactly what was true while it was dead.
-  //
-  // ⚠ THE LADDER IS DRIVEN BY VIRTUAL TIME. The retry delays are real timers, so the cases that
-  // exhaust the ladder run under `fakeAsync` and advance the clock with `tick`. Nothing waits on
-  // a real interval and nothing reads the wall clock, so these remain as deterministic as the
-  // rest of the file.
-  // -------------------------------------------------------------------------
+  // ⚠ EVERY CASE IN THIS SECTION EXISTS BECAUSE THE MECHANISM IT EXERCISES WAS DEAD. The store retained a
+  // credential after a refused sign-out and published a bounded retry for it, and a security review found
+  // that NOTHING in the application ever called that retry and that no specification ever exercised it — so
+  // every refused withdrawal was retained and then left retained, and the session it named stayed renewable
+  // until its absolute expiry.
 
   describe('outstanding withdrawal retries', () => {
     /** The delays the ladder waits between attempts, in the order it waits them. */
     const LADDER_DELAYS_MS = [1_000, 2_000, 4_000];
 
     /**
-     * Signs in without awaiting, for the cases that run under virtual time.
-     *
-     * `fakeAsync` forbids an `async` body, so the promise-based {@link signIn} helper cannot be
-     * used inside one. Every step below is synchronous anyway: the testing backend delivers a
-     * flushed response immediately, so the identity read is issued by the same call that answers
-     * the credential exchange.
+     * Signs in without awaiting, for the cases that run under virtual time. `fakeAsync` forbids an
+     * `async` body, so the promise-based {@link signIn} helper cannot be used inside one.
      *
      * @param payload The credential payload to answer the exchange with.
      */
@@ -3914,9 +3205,6 @@ describe('AuthStore', () => {
     });
 
     it('retires the credential on a terminal refusal WITHOUT retrying it', async () => {
-      // A 400, a 404 or a 422 is the server saying the value can never name a session. Retrying
-      // it would only delay the honest answer, and retaining it would leave a notice nothing
-      // could ever clear.
       for (const status of [400, 404, 422]) {
         await signIn();
         signOutRefused(503);
@@ -4006,9 +3294,9 @@ describe('AuthStore', () => {
 
       const drain = firstValueFrom(store.retryOutstandingRevocation());
 
-      // SEQUENTIAL, and asserted as such: the second attempt cannot have been issued while the
-      // first is unanswered, because the failure being recovered from is usually a rate limit
-      // and firing the whole set at once is the surest way to be refused again.
+      // SEQUENTIAL, and asserted as such: the second attempt cannot have been issued while the first is
+      // unanswered, because the failure being recovered from is usually a rate limit and firing the whole
+      // set at once is the surest way to be refused again.
       answerWithdrawal('fake-first-session-credential', 204);
       answerWithdrawal('fake-second-session-credential', 204);
 
@@ -4046,9 +3334,6 @@ describe('AuthStore', () => {
     }));
 
     it('reports a confirmed sign-out as confirmed only when nothing else is still held', async () => {
-      // ⚠ THE ASYMMETRY THAT USED TO HIDE A RESIDUE. `logout()` set the report to false on any
-      // confirmed withdrawal, so a clean sign-out of the CURRENT session silently retired the
-      // report belonging to an earlier one whose credential was still outstanding.
       await signIn(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
       signOutRefused(503);
 
@@ -4077,9 +3362,6 @@ describe('AuthStore', () => {
       const first = firstValueFrom(store.retryOutstandingRevocation());
       const second = firstValueFrom(store.retryOutstandingRevocation());
 
-      // ONE request, not two. A screen can be initialised twice in quick succession — a
-      // re-entrant navigation, two outlets resolving the same route — and posting the same
-      // withdrawal twice would spend a rate-limit budget proving it.
       answerWithdrawal(FAKE_RENEWAL_TOKEN, 204);
 
       await expectAsync(first).toBeResolved();
@@ -4113,14 +3395,8 @@ describe('AuthStore', () => {
     }));
 
     it('does not raise the previous session\'s report behind a sign-in that has already begun', fakeAsync(() => {
-      /*
-       * The report has a documented lifetime of exactly one session boundary: it is retired the
-       * moment a new attempt BEGINS, so one operator is never shown a sentence about another's
-       * session. A drain outlives that boundary — its ladder can still be climbing when somebody
-       * signs in — so the write is withheld once the epoch has moved. The WITHDRAWALS are not
-       * withheld: the credential names a session that has already ended, and ending it on the
-       * server is correct whoever is signed in by the time the answer arrives.
-       */
+      // The report has a documented lifetime of exactly one session boundary: it is retired the moment a
+      // new attempt BEGINS, so one operator is never shown a sentence about another's session.
       signInSynchronously();
       signOutRefused(503);
       expect(store.revocationOutstanding()).toBeTrue();
@@ -4271,9 +3547,9 @@ describe('AuthStore', () => {
     });
 
     it('refuses a bootstrap identity whose role list is not a list of strings', async () => {
-      // The SECOND request of the sign-in, and the more dangerous of the two to leave
-      // unchecked: a role list arriving as null would fault the first membership test, and
-      // the session would already have been half-composed.
+      // The SECOND request of the sign-in, and the more dangerous of the two to leave unchecked: a role
+      // list arriving as null would fault the first membership test, and the session would already have
+      // been half-composed.
       const inFlight = firstValueFrom(store.login(credentials()));
 
       httpMock.expectOne(LOGIN_URL).flush(credentialPayload());
@@ -4320,11 +3596,6 @@ describe('AuthStore', () => {
       httpMock.expectNone(ME_URL);
       expect(store.isAuthenticated()).toBeFalse();
 
-      // ⚠ AND IT IS REPORTED AS AN ENDING, NOT AS A REFUSED SIGN-IN. This case used to assert a
-      // recorded failure, which the sign-in screen then presented as though the operator had typed
-      // something wrong. A rotated credential arriving blank is a contract violation with no
-      // sentence an operator could act on at all, so it is exactly the case where the boundary
-      // owner's wording is the only usable thing to say.
       expect(store.hasFailure()).toBeFalse();
       expect(notifications.notifications().map((entry) => entry.message)).toEqual([
         SESSION_ENDED_MESSAGE,
@@ -4345,9 +3616,9 @@ describe('AuthStore', () => {
     });
 
     it('admits an empty display name, because the column defaults to one', async () => {
-      // The counterpart to the refusals above. `Users.DisplayName` is NOT NULL defaulting to
-      // the empty string, so the empty-string encoding of absence is a schema constraint here
-      // rather than a data-layer convention, and a stricter rule would refuse real accounts.
+      // The counterpart to the refusals above. `Users.DisplayName` is NOT NULL defaulting to the empty
+      // string, so the empty-string encoding of absence is a schema constraint here rather than a
+      // data-layer convention, and a stricter rule would refuse real accounts.
       await signIn(credentialPayload({ user: currentUser({ displayName: '' }) }));
 
       expect(store.currentUser()?.displayName).toBe('');

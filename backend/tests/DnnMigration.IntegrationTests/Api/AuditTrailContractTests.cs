@@ -16,18 +16,9 @@ namespace DnnMigration.IntegrationTests.Api;
 /// they are read for, and carry nothing sensitive.
 /// </summary>
 /// <remarks>
-/// <para>
-/// The unit suites assert what each service HANDS to the audit contract. That is the right place for the
-/// property set, but it cannot establish the two things that only a composed host can: that the contract
-/// resolves to an implementation at all, and that the implementation's message templates and their
-/// arguments still agree. A template whose placeholders had drifted apart from its arguments would carry
-/// every property and render them in the wrong places, and no unit test could see it.
-/// </para>
-/// <para>
 /// The records are located by event identifier rather than by position, because the whole assembly shares
 /// one host and one sink: other suites are logging while these facts run, so "the last record" would be a
 /// race and "the only record" would be false.
-/// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
@@ -35,10 +26,10 @@ public sealed class AuditTrailContractTests
 {
     /// <summary>Identifier the sign-in outcome event is written under.</summary>
     /// <remarks>
-    /// Written as a literal rather than read from the implementation, because the implementation is internal
-    /// to the persistence assembly AND because a stable identifier is exactly the kind of value that must
-    /// not be able to change without a test noticing. An operator's alert rule addresses an event by this
-    /// number; renumbering it silently detaches whatever was watching it.
+    /// Written as a literal rather than read from the implementation, because the implementation is
+    /// internal to the persistence assembly AND because a stable identifier is exactly the kind of value
+    /// that must not be able to change without a test noticing. An operator's alert rule addresses an event
+    /// by this number; renumbering it silently detaches whatever was watching it.
     /// </remarks>
     private const int SignInOutcomeEventId = 1001;
 
@@ -52,12 +43,6 @@ public sealed class AuditTrailContractTests
     public AuditTrailContractTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>The audit contract resolves from the composed host.</summary>
-    /// <remarks>
-    /// The container is validated when the host is built, so an unregistered contract would already have
-    /// failed every integration fact in the assembly - which is a real guarantee but an accidental one.
-    /// Asserting it here says why it matters: the contract is declared in the layer that cannot name a
-    /// logger and implemented in the layer that can, so nothing but a registration joins the two.
-    /// </remarks>
     [Fact]
     public void AuditTrail_ResolvesFromTheCompositionRoot()
     {
@@ -102,11 +87,6 @@ public sealed class AuditTrailContractTests
             LogEventLevel.Warning,
             "a run of refused sign-ins is the signal an operator wants raised, so a refusal is not merely "
             + "informational");
-        // MIGRATION: the identifying facts are carried as the trail's own uniform members rather than as
-        // per-event property names. The envelope is one fixed template for every event, so an operator
-        // filters the family by this record's number and narrows to a single event by the AuditEvent
-        // property - which is also why the event name asserted here is the LEGACY name, preserved verbatim,
-        // rather than a name this migration coined.
         record.EventName.Should().Be("SignInOutcome");
         record.Properties["AuditEvent"].Should().Be("LOGIN_FAILURE");
         record.Properties["AuditOutcome"]!.ToString().Should().Be("Denied");
@@ -124,10 +104,10 @@ public sealed class AuditTrailContractTests
     /// <summary>An accepted sign-in emits the outcome event at the informational level.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: the legacy audited refusals only, so this is a documented superset. It is asserted because
-    /// a trail that records refusals but not acceptances cannot answer the first question asked of an
-    /// authentication trail - who got in - and because the resolved account identifier is carried here where
-    /// the legacy always wrote its absence sentinel.
+    /// The legacy audited refusals only, so this is a documented superset. It is asserted because a trail
+    /// that records refusals but not acceptances cannot answer the first question asked of an
+    /// authentication trail - who got in - and because the resolved account identifier is carried here
+    /// where the legacy always wrote its absence sentinel.
     /// </remarks>
     [Fact]
     public async Task AcceptedSignIn_EmitsTheOutcomeEventWithTheResolvedAccount()
@@ -177,11 +157,6 @@ public sealed class AuditTrailContractTests
     /// metadata, carrying no credential or directly identifying prose.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The rendered message is asserted as well as the properties, because this is the event with twelve of
-    /// them - the one where a template and its arguments are most likely to drift apart, and where that
-    /// drift would produce a record that looked populated and read as nonsense.
-    /// </remarks>
     [Fact]
     public async Task InstallingATenant_EmitsTheInstallationEvent()
     {
@@ -216,9 +191,6 @@ public sealed class AuditTrailContractTests
         created.Should().NotBeNull();
 
         // Located by the STRUCTURED resource identifier rather than by a substring of the rendered message.
-        // That is the whole point of the change being asserted below: the facts are properties of the event
-        // now, so the installed tenant identifies its own records exactly, whereas a message search could
-        // only ever match them while the facts were being flattened into the sentence.
         IReadOnlyList<LogRecord> installation = RecordedLogs.Snapshot()
             .Skip(firstNewRecord)
             .Where(candidate => candidate.EventId == PortalInstallationEventId
@@ -227,12 +199,7 @@ public sealed class AuditTrailContractTests
                     created!.PortalId.ToString()))
             .ToList();
 
-        // TWO records, deliberately, and this is the assertion that proves it. The legacy installation
-        // raised HOST_ALERT and nothing else (PortalController.vb:L1140-L1141), while the enumeration's own
-        // accurate member for what happened is PORTAL_CREATED. Emitting only one of the two would silently
-        // break one class of reader: an operator whose saved search or alert is written against HOST_ALERT,
-        // or a reader who wants to know specifically that a tenant appeared. Both are emitted from the same
-        // facts, so neither can drift from the other.
+        // TWO records, deliberately, and this is the assertion that proves it.
         installation.Select(candidate => candidate.Properties["AuditEvent"]?.ToString())
             .Should()
             .BeEquivalentTo(
@@ -258,20 +225,8 @@ public sealed class AuditTrailContractTests
         record.Properties["AuditPortalId"].Should().Be(created!.PortalId);
         record.Properties["AuditSubjectUserId"].Should().Be(created.AdministratorId);
 
-        // MIGRATION: DIVERGENCE from the legacy record's shape, and a correction of this suite's own earlier
-        // expectation. The legacy entry held its descriptive facts in ONE column, as a rendered key=value
-        // list, and the first implementation reproduced that shape faithfully - which made every fact
-        // unqueryable: an operator could not ask for IsChildPortal = "False", and any value containing the
-        // separator or the assignment character made the list ambiguous to parse. Each admitted fact is now
-        // attached as a first-class property under an "AuditMetadata_" prefix, so it is addressable by name
-        // and the order it was supplied in is no longer load-bearing.
-        //
-        // The descriptive prose the legacy entry carried is NOT asserted, because it is no longer recorded:
-        // the tenant name, its alias and the administrator's name, user name and address are
-        // caller-authored identifiers with their own retention lifecycle, and an audit store is not that
-        // lifecycle. What replaces them is the pair of stable identifiers already asserted above - the
-        // tenant and the administrator account - which is what makes the record answer "who can now sign in
-        // to this tenant" without copying the tenant's own data into a second store.
+        // MIGRATION: DIVERGENCE from the legacy record's shape, and a correction of this suite's own
+        // earlier expectation.
         record.Properties["AuditMetadata_IsChildPortal"].Should().Be("False");
         record.Properties.Should().NotContainKeys(
             "AuditActorUserName",
@@ -281,16 +236,8 @@ public sealed class AuditTrailContractTests
             "AuditMetadata_AdministratorUsername",
             "AuditMetadata_AdministratorEmail");
 
-        // The two counts are the envelope's own statement about the facts it carries: how many were attached,
-        // and how many were withheld by the admission policy. A withheld fact is the failure mode a property
-        // bag can hide - a key the pipeline refused, silently dropped - so the record reports it rather than
-        // leaving a reader to notice the absence.
-        // MIGRATION: FOUR FACTS, NOT ONE. A second correction widened this record by three admissible
-        // properties - the administrator's numeric key, and presence-only flags for the two free-text members
-        // - so that an auditor can tell WHO can now sign in to the tenant and WHETHER a description and
-        // keywords were asked for, without the caller's own prose reaching the log. The tenant name and alias
-        // that the same correction also recorded are deliberately still absent, for the reason set out
-        // immediately above; the counts below are what would catch either decision drifting.
+        // The two counts are the envelope's own statement about the facts it carries: how many were
+        // attached, and how many were withheld by the admission policy.
         record.Properties["AuditPropertyCount"].Should().Be(
             4,
             "the installation event offers exactly four bounded operational facts, and all are admissible");

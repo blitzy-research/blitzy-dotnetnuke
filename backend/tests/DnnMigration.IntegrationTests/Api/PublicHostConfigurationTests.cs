@@ -7,27 +7,21 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Api;
 
 /// <summary>
-/// Verifies that a deployment configured with a documentation host name is refused at start-up, and that the
-/// names a real deployment legitimately uses are not.
+/// Verifies that a deployment configured with a documentation host name is refused at start-up, and that
+/// the names a real deployment legitimately uses are not.
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: THE PUBLIC IDENTITY OF A DEPLOYMENT WAS AN EXAMPLE WRITTEN INTO TRACKED FILES.
-/// <c>docker/docker-compose.tls.yml</c> set <c>AllowedHosts</c> to <c>dnn.example.com;localhost;127.0.0.1</c>
-/// and the mounted proxy block hard-coded the same name in both of its <c>server_name</c> directives, while
-/// only the cross-origin origin read a variable. A deployment that set that variable - the documented
-/// workflow - therefore ran with a redirect scoped to a name its browsers never send, a certificate matching
-/// no server name, and a host filter that answered <b>400</b> to all of its own traffic. Every one of those
-/// required editing a tracked file to avoid.
+/// THE PUBLIC IDENTITY OF A DEPLOYMENT WAS AN EXAMPLE WRITTEN INTO TRACKED FILES.
+/// <c>docker/docker-compose.tls.yml</c> set <c>AllowedHosts</c> to
+/// <c>dnn.example.com;localhost;127.0.0.1</c> and the mounted proxy block hard-coded the same name in both
+/// of its <c>server_name</c> directives, while only the cross-origin origin read a variable.
 /// </para>
 /// <para>
-/// The overlay now derives all four facts from one required <c>DNN_PUBLIC_HOST</c> value, compose refuses to
-/// create a container when it is unset or blank, and these facts pin the remaining half: that the value most
-/// likely to be present - the template's own illustration - is refused before the process serves anything.
-/// </para>
-/// <para>
-/// The registration surface is exercised rather than a copy of the rules, so a future edit that stops
-/// validating the host filter, or that widens the rejection into names a private deployment uses, fails here.
+/// The overlay now derives all four facts from one required <c>DNN_PUBLIC_HOST</c> value, compose refuses
+/// to create a container when it is unset or blank, and these facts pin the remaining half: that the value
+/// most likely to be present - the template's own illustration - is refused before the process serves
+/// anything.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -35,11 +29,6 @@ public sealed class PublicHostConfigurationTests
 {
     /// <summary>A documentation host name in the host filter stops the host from starting.</summary>
     /// <param name="reservedHost">A name reserved for documentation, in the shapes a template ships.</param>
-    /// <remarks>
-    /// The loopback entries are included in every case, because the container probe depends on them and a
-    /// deployment that made this mistake would still have had them: the defect is one entry among several,
-    /// not a wholly empty setting.
-    /// </remarks>
     [Theory]
     [InlineData("dnn.example.com")]
     [InlineData("example.com")]
@@ -65,13 +54,6 @@ public sealed class PublicHostConfigurationTests
 
     /// <summary>The names a real deployment uses are accepted, including the reserved test domains.</summary>
     /// <param name="permittedHosts">A host-filter value a deployment legitimately ships.</param>
-    /// <remarks>
-    /// This is the more important half. RFC 2606 reserves <c>.test</c>, <c>.invalid</c> and <c>.localhost</c>
-    /// alongside the documentation domains, and a validator that refused them would refuse a private
-    /// deployment on an internal certificate authority, the loopback entries the container health probe
-    /// depends on, and the wildcard that <c>appsettings.json</c> ships as its default - converting a
-    /// hardening measure into an outage.
-    /// </remarks>
     [Theory]
     [InlineData("*")]
     [InlineData("localhost;127.0.0.1")]
@@ -108,9 +90,9 @@ public sealed class PublicHostConfigurationTests
     /// <summary>A documentation host in a permitted browser origin stops the host from starting.</summary>
     /// <param name="reservedOrigin">An origin naming a documentation host.</param>
     /// <remarks>
-    /// The cross-origin allow-list is derived from the same deployment value as the host filter, so the same
-    /// illustration reaches both. It is refused in both places for one reason: a browser can never send it,
-    /// so the policy it configures would admit nothing while appearing configured.
+    /// The cross-origin allow-list is derived from the same deployment value as the host filter, so the
+    /// same illustration reaches both. It is refused in both places for one reason: a browser can never
+    /// send it, so the policy it configures would admit nothing while appearing configured.
     /// </remarks>
     [Theory]
     [InlineData("https://dnn.example.com")]

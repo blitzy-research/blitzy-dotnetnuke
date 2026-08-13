@@ -11,32 +11,23 @@ using Microsoft.Extensions.Primitives;
 namespace DnnMigration.Api.Authorization;
 
 /// <summary>
-/// Settles a <see cref="PermissionRequirement"/> for the current request by naming the tenant and
-/// the item the request addresses and delegating the decision to the application permission
-/// service.
+/// Settles a <see cref="PermissionRequirement"/> for the current request by naming the tenant and the item
+/// the request addresses and delegating the decision to the application permission service.
 /// </summary>
-/// <remarks>
-/// It delegates; it does not decide. No role name is compared here, no assignment row is iterated,
-/// no grant flag is inspected, no deny precedence is applied, no sentinel role is interpreted and
-/// nothing is cached - which is what keeps one answer to a permission question in one place.
-/// MIGRATION: the legacy application asked the same questions imperatively, from inside the page
-/// that needed the answer.
-/// </remarks>
 internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<PermissionRequirement>
 {
     /// <summary>The route value naming the module instance a module-scoped decision is about.</summary>
-    /// <remarks>Spelled exactly as the module routes declare it.</remarks>
     private const string ModuleRouteKey = "moduleId";
 
     /// <summary>
-    /// The route value naming the tab - the page abstraction - a tab-scoped decision is about, and
-    /// the placement a module-scoped decision is about when the route names one.
+    /// The route value naming the tab - the page abstraction - a tab-scoped decision is about, and the
+    /// placement a module-scoped decision is about when the route names one.
     /// </summary>
     private const string TabRouteKey = "tabId";
 
     /// <summary>
-    /// The query value naming one particular placement of a module on a page, used when a module
-    /// has been placed on the same page more than once.
+    /// The query value naming one particular placement of a module on a page, used when a module has been
+    /// placed on the same page more than once.
     /// </summary>
     private const string TabModuleQueryKey = "tabModuleId";
 
@@ -45,19 +36,9 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     /// exist in the resolved tenant at all.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// These are NOT denials, and treating them as denials is what produced the defect this list exists to
-    /// prevent: the permission service establishes that the item exists BEFORE it resolves the caller, so a
-    /// request for an identifier that does not exist was refused even for a host account, and the endpoint -
-    /// which would have answered <c>404 Not Found</c> like every other entity in this API - never ran. A
-    /// caller reading "the authenticated caller is not permitted to perform this operation" for a module
-    /// that simply is not there is told something untrue and pointed at the wrong repair.
-    /// </para>
-    /// <para>
     /// Spelled as literals rather than shared with the application layer deliberately: these strings are
     /// part of that layer's published reason vocabulary, and a compile-time coupling from the API's
     /// authorisation to its internal constants would make either side harder to change than the other.
-    /// </para>
     /// </remarks>
     private static readonly string[] UnknownScopeItemCodes =
     {
@@ -71,40 +52,28 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     private readonly PortalAdministrationEvaluator _tenantBinding;
 
     /// <summary>
-    /// Records why a requirement could not be evaluated, or why an evaluated requirement was not
-    /// met.
+    /// Records why a requirement could not be evaluated, or why an evaluated requirement was not met.
     /// </summary>
-    /// <remarks>
-    /// A requirement this handler cannot evaluate FAILS CLOSED, and silence about that is the
-    /// problem the diagnostics below solve: an unevaluable requirement and a legitimately refused
-    /// one are the same 403 to the caller, so without a record the two cannot be told apart from
-    /// the outside.
-    /// </remarks>
     private readonly ILogger<PermissionAuthorizationHandler> _logger;
 
     /// <summary>
-    /// Creates the handler over the permission service that decides, the caller it decides about,
-    /// and the tenant context used as the last resort for naming the tenant.
+    /// Creates the handler over the permission service that decides, the caller it decides about, and the
+    /// tenant context used as the last resort for naming the tenant.
     /// </summary>
     /// <param name="permissions">The application service that answers permission questions.</param>
-    /// <param name="currentUser">
-    /// The caller on whose behalf the current request is being handled.
-    /// </param>
+    /// <param name="currentUser">The caller on whose behalf the current request is being handled.</param>
     /// <param name="portalContext">
-    /// The tenant context, resolved on demand from the requested host when neither the route nor
-    /// the caller names a tenant.
+    /// The tenant context, resolved on demand from the requested host when neither the route nor the caller
+    /// names a tenant.
     /// </param>
     /// <param name="tenantBinding">
-    /// Reconciles the three tenant identities a request can carry - arrival, route and token - and
-    /// answers the host-account question from stored state.
+    /// Reconciles the three tenant identities a request can carry - arrival, route and token - and answers
+    /// the host-account question from stored state.
     /// </param>
     /// <param name="logger">
-    /// Records why a requirement could not be evaluated, and why an evaluated requirement was
-    /// refused.
+    /// Records why a requirement could not be evaluated, and why an evaluated requirement was refused.
     /// </param>
-    /// <exception cref="ArgumentNullException">
-    /// Thrown when any dependency is <see langword="null"/>.
-    /// </exception>
+    /// <exception cref="ArgumentNullException">Thrown when any dependency is <see langword="null"/>.</exception>
     public PermissionAuthorizationHandler(
         IPermissionService permissions,
         ICurrentUser currentUser,
@@ -126,13 +95,12 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     }
 
     /// <summary>
-    /// Grants the requirement when the caller holds the requested permission on the item the
-    /// current request addresses, and otherwise leaves it ungranted.
+    /// Grants the requirement when the caller holds the requested permission on the item the current
+    /// request addresses, and otherwise leaves it ungranted.
     /// </summary>
     /// <param name="context">The authorisation context.</param>
     /// <param name="requirement">
-    /// The requirement being evaluated, naming the permission and the kind of item it is claimed
-    /// against.
+    /// The requirement being evaluated, naming the permission and the kind of item it is claimed against.
     /// </param>
     protected override async Task HandleRequirementAsync(
         AuthorizationHandlerContext context,
@@ -162,14 +130,7 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
         }
 
         // SEC: THE TOKEN'S TENANT MUST BE THE TENANT BEING EVALUATED, and this test has to come before any
-        // grant is read. ResolvePortalIdAsync prefers the ROUTE's portal, which is correct - the route names
-        // the resource, and a grant must be evaluated against the resource's tenant - but on its own it
-        // means a caller can name any tenant it likes in the route and have its grants looked up there.
-        //
-        // The reconciliation is delegated rather than repeated: the same member the membership policies use
-        // answers it, so the two families of policy cannot disagree about which tenant a request is about. A
-        // host account is exempt and is confirmed against stored state inside it, never from the token's
-        // super-user claim.
+        // grant is read.
         if (!await _tenantBinding.IsTenantBoundAsync(context.User, httpContext.RequestAborted)
             .ConfigureAwait(false))
         {
@@ -181,9 +142,7 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
         }
 
         // PORTAL SCOPE IS DECIDED HERE, BEFORE ANY ROUTE KEY IS SOUGHT, because it is the one scope that
-        // names no item. The tenant it is asked about has already been resolved above and already been
-        // reconciled against the token, which is everything this scope needs; falling through to the route-key
-        // resolution below would refuse it for the absence of a key it never had.
+        // names no item.
         if (requirement.Scope == PermissionScope.Portal)
         {
             Result<bool> capability = await _permissions
@@ -217,9 +176,9 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             return;
         }
 
-        // An endpoint carrying an item-scoped policy but exposing no item key is a registration mistake, not
-        // a permission decision. Refusing is the safe reading of it: the alternative would be to invent a
-        // key and grant against whatever it happened to match.
+        // An endpoint carrying an item-scoped policy but exposing no item key is a registration mistake,
+        // not a permission decision. Refusing is the safe reading of it: the alternative would be to invent
+        // a key and grant against whatever it happened to match.
         if (ReadRouteId(httpContext, routeKey) is not { } scopeId)
         {
             _logger.LogWarning(
@@ -230,14 +189,6 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             return;
         }
 
-        // MIGRATION: the legacy evaluation helpers accepted the first assignment row whose key matched and
-        // ignored whether that row granted or denied, while the permission-string builders sitting in the
-        // same two classes filtered on exactly that flag. The target settles the contradiction beneath this
-        // call, where a denial wins over an allowance for the same principal.
-        //
-        // MIGRATION: a per-user grant used to be encoded as a bracketed sentinel role built by concatenating
-        // the account key into delimited text, then probed through the same role predicate. That encoding is
-        // gone.
         Result<bool> decision = requirement.Scope switch
         {
             PermissionScope.Module => await _permissions
@@ -260,36 +211,22 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
                 .ConfigureAwait(false),
 
             // Unreachable: the requirement validates its scope while policies are being registered, and the
-            // route key above already declined anything undeclared. It exists because the language requires
-            // the switch to be exhaustive, and it denies rather than throwing - a throw at this point would
-            // surface as a server fault where a refusal is the honest answer.
+            // route key above already declined anything undeclared.
             _ => Result<bool>.Success(false)
         };
 
         // Success is tested before the value is read, and in that order only: reading the value of an
-        // unsuccessful outcome throws. An unsuccessful evaluation is a denial, and the reason for it is not
-        // surfaced to the CALLER - a permission probe must not become a channel for describing the
-        // permission model - but it IS recorded, immediately below, because an operator diagnosing a refusal
-        // has nothing else to go on.
-        //
-        // MIGRATION: the legacy pages refused by sending the browser to an access-denied page. Here a
-        // refusal is simply the absence of a grant, which the framework renders as a challenge or a refusal
-        // depending on whether the caller was identified, and whose body a dedicated result handler owns.
+        // unsuccessful outcome throws.
         if (decision.IsSuccess && decision.Value)
         {
             context.Succeed(requirement);
             return;
         }
 
-        // THE ITEM DOES NOT EXIST, WHICH IS NOT A DENIAL. The permission service proves the item's existence
-        // before it resolves the caller, so this point is reached for an identifier that names nothing - and
-        // for a caller who administers the tenant, "nothing is there" is the endpoint's own answer to give,
-        // as a 404, exactly as the portal, user and role endpoints already answer it. Satisfying the
-        // requirement lets the action run and report the absence itself.
-        //
-        // The administration test is what keeps this from becoming an existence oracle: a caller who does
-        // NOT administer the tenant still receives the refusal below, so an unprivileged caller cannot
-        // distinguish "absent" from "not yours" by probing identifiers.
+        // THE ITEM DOES NOT EXIST, WHICH IS NOT A DENIAL. The permission service proves the item's
+        // existence before it resolves the caller, so this point is reached for an identifier that names
+        // nothing - and for a caller who administers the tenant, "nothing is there" is the endpoint's own
+        // answer to give, as a 404, exactly as the portal, user and role endpoints already answer it.
         if (decision.IsFailure
             && decision.Reason?.Code is { } unknownItemCode
             && UnknownScopeItemCodes.Contains(unknownItemCode, StringComparer.Ordinal)
@@ -308,10 +245,6 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             return;
         }
 
-        // Refused, and the reason is recorded because the caller is told nothing beyond the status. A failed
-        // evaluation and an honest refusal are separated by the failure code alone - "not_permitted" where
-        // the grant was simply absent - which is the only thing that distinguishes them once the response
-        // has left.
         _logger.LogInformation(
             "A {Scope} {Permission} requirement was not met for scope {ScopeId} in portal {PortalId}: "
             + "{FailureCode}.",
@@ -322,13 +255,11 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
             decision.IsFailure ? decision.Reason?.Code : "not_permitted");
     }
 
-    /// <summary>
-    /// Maps a scope onto the single route value that names the item it addresses.
-    /// </summary>
+    /// <summary>Maps a scope onto the single route value that names the item it addresses.</summary>
     /// <param name="scope">The scope taken from the requirement.</param>
     /// <returns>
-    /// The route value name, or <see langword="null"/> when the scope is not a declared member,
-    /// which the caller treats as a refusal.
+    /// The route value name, or <see langword="null"/> when the scope is not a declared member, which the
+    /// caller treats as a refusal.
     /// </returns>
     private static string? ResolveRouteKey(PermissionScope scope) => scope switch
     {
@@ -336,43 +267,34 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
         PermissionScope.Tab => TabRouteKey,
 
         // Deliberately keyless, and reached only if the tenant-wide branch above is ever removed. Answering
-        // null here means such a requirement would be refused rather than evaluated against an invented key,
-        // which is the safe reading of a registration that no longer matches this handler.
+        // null here means such a requirement would be refused rather than evaluated against an invented
+        // key, which is the safe reading of a registration that no longer matches this handler.
         PermissionScope.Portal => null,
         _ => null
     };
 
-    /// <summary>
-    /// Reads one route value from the current request and converts it to an item key.
-    /// </summary>
+    /// <summary>Reads one route value from the current request and converts it to an item key.</summary>
     /// <param name="httpContext">The current request.</param>
     /// <param name="routeKey">The route value name to read.</param>
     /// <returns>
-    /// The key, or <see langword="null"/> when the route does not carry the value, carries it
-    /// blank, or carries something that is not an integer.
+    /// The key, or <see langword="null"/> when the route does not carry the value, carries it blank, or
+    /// carries something that is not an integer.
     /// </returns>
     /// <remarks>
-    /// Every parsed key is returned exactly as it parsed: zero is a legitimate page and module key
-    /// in this schema and a negative value is a legitimate portal key, so no value is treated as
-    /// absent, clamped or rejected on its magnitude.
+    /// Every parsed key is returned exactly as it parsed: zero is a legitimate page and module key in this
+    /// schema and a negative value is a legitimate portal key, so no value is treated as absent, clamped or
+    /// rejected on its magnitude.
     /// </remarks>
     private static int? ReadRouteId(HttpContext httpContext, string routeKey) =>
         ParseId(httpContext.Request.RouteValues[routeKey]?.ToString());
 
-    /// <summary>
-    /// Reads one query value from the current request and converts it to an item key.
-    /// </summary>
+    /// <summary>Reads one query value from the current request and converts it to an item key.</summary>
     /// <param name="httpContext">The current request.</param>
     /// <param name="queryKey">The query value name to read.</param>
     /// <returns>
-    /// The key, or <see langword="null"/> when the query does not carry the value, carries it
-    /// blank, carries it more than once, or carries something that is not an integer.
+    /// The key, or <see langword="null"/> when the query does not carry the value, carries it blank,
+    /// carries it more than once, or carries something that is not an integer.
     /// </returns>
-    /// <remarks>
-    /// A repeated query value is treated as absent rather than resolved by preferring one
-    /// occurrence: a request that names two placements has not named one, and picking either would
-    /// decide the permission against an item the caller did not unambiguously address.
-    /// </remarks>
     private static int? ReadQueryId(HttpContext httpContext, string queryKey)
     {
         StringValues values = httpContext.Request.Query[queryKey];
@@ -384,13 +306,11 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     /// Converts request text to an item key without applying any validity rule to the value itself.
     /// </summary>
     /// <param name="rawValue">The text read from the route or the query.</param>
-    /// <returns>
-    /// The key, or <see langword="null"/> when the text is absent, blank or not an integer.
-    /// </returns>
+    /// <returns>The key, or <see langword="null"/> when the text is absent, blank or not an integer.</returns>
     /// <remarks>
-    /// Parsing is culture-invariant because these values are part of a machine-readable address
-    /// rather than text a person typed, so a culture that groups digits or writes signs differently
-    /// must not change which item is addressed.
+    /// Parsing is culture-invariant because these values are part of a machine-readable address rather than
+    /// text a person typed, so a culture that groups digits or writes signs differently must not change
+    /// which item is addressed.
     /// </remarks>
     private static int? ParseId(string? rawValue)
     {
@@ -405,18 +325,18 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     }
 
     /// <summary>
-    /// Names the tenant the decision is about, preferring the addressed tenant over the caller's
-    /// own and falling back to the requested host.
+    /// Names the tenant the decision is about, preferring the addressed tenant over the caller's own and
+    /// falling back to the requested host.
     /// </summary>
     /// <param name="httpContext">The current request.</param>
     /// <returns>
-    /// The tenant key, or <see langword="null"/> when no tenant can be named, which the caller
-    /// treats as a refusal.
+    /// The tenant key, or <see langword="null"/> when no tenant can be named, which the caller treats as a
+    /// refusal.
     /// </returns>
     /// <remarks>
-    /// The host lookup is attempted only when the first two sources are silent, and it is performed
-    /// through the tenant context rather than repeated here, so one alias-matching rule serves the
-    /// whole application.
+    /// The host lookup is attempted only when the first two sources are silent, and it is performed through
+    /// the tenant context rather than repeated here, so one alias-matching rule serves the whole
+    /// application.
     /// </remarks>
     private async Task<int?> ResolvePortalIdAsync(HttpContext httpContext)
     {
@@ -444,14 +364,12 @@ internal sealed class PermissionAuthorizationHandler : AuthorizationHandler<Perm
     /// </summary>
     /// <param name="user">The caller.</param>
     /// <param name="cancellationToken">Abandons the probe when the caller disconnects.</param>
-    /// <returns>
-    /// <see langword="true"/> for a host account or for an administrator of the resolved tenant.
-    /// </returns>
+    /// <returns><see langword="true"/> for a host account or for an administrator of the resolved tenant.</returns>
     /// <remarks>
     /// Delegates to the shared evaluator rather than re-deriving the answer, which is what keeps two
-    /// authorisation components from disagreeing about one request: the evaluator resolves the target tenant
-    /// itself, reconciles it against the token and admits host accounts, and it is the same instance the
-    /// tenant-binding check above already used.
+    /// authorisation components from disagreeing about one request: the evaluator resolves the target
+    /// tenant itself, reconciles it against the token and admits host accounts, and it is the same instance
+    /// the tenant-binding check above already used.
     /// </remarks>
     private Task<bool> AdministersTenantAsync(ClaimsPrincipal? user, CancellationToken cancellationToken) =>
         _tenantBinding.IsPortalAdministratorAsync(user, cancellationToken);

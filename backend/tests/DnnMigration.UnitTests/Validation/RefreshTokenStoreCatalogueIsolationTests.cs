@@ -4,35 +4,7 @@ using Xunit;
 
 namespace DnnMigration.UnitTests.Validation;
 
-/// <summary>
-/// Pins the rule that keeps the durable refresh-token store out of the DotNetNuke catalogue.
-/// </summary>
-/// <remarks>
-/// <para>
-/// <strong>WHY THE RULE WAS REPLACED RATHER THAN EXTENDED.</strong> MIGRATION: SEC-07. It used to refuse the
-/// configuration only when the two connection strings named the same SERVER and the same CATALOGUE, compared as
-/// raw text, and both halves of that leaked.
-/// </para>
-/// <para>
-/// A host is spellable as <c>localhost</c>, <c>127.0.0.1</c>, <c>(local)</c>, <c>.</c>,
-/// <c>tcp:localhost,1433</c>, the machine's own name or a named instance - every pair of those is the same
-/// server while comparing unequal - so the guard was defeated by writing the host differently on one side of
-/// the configuration. And a connection string that omitted <c>Database</c> read as "names no catalogue" and
-/// returned false outright, which waved through the single most dangerous configuration there is: a login
-/// whose DEFAULT catalogue is the DotNetNuke database. AAP rule T4 freezes that schema, and this is the check
-/// that stands between it and a session table.
-/// </para>
-/// <para>
-/// The rule that replaced it asks a question that is decidable from the text: name the catalogue explicitly, do
-/// not name a system catalogue, and do not name the application's. Canonicalising host spellings is a problem
-/// with no end and no way to know it is finished; comparing catalogue names is one ordinal comparison and
-/// cannot be spelled around.
-/// </para>
-/// <para>
-/// These are unit tests because the rule is a pure function of two strings. They are the tests that would have
-/// failed against the previous rule, which is what makes them worth writing.
-/// </para>
-/// </remarks>
+/// <summary>Pins the rule that keeps the durable refresh-token store out of the DotNetNuke catalogue.</summary>
 public sealed class RefreshTokenStoreCatalogueIsolationTests
 {
     /// <summary>The application's own catalogue, as the deployment templates name it.</summary>
@@ -46,10 +18,9 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
     /// <param name="sessionConnection">The session connection string to judge.</param>
     /// <remarks>
     /// Every row here PASSED the previous rule. The first names the same host in a different notation, the
-    /// second uses the loopback address, the third the legacy local alias, the fourth the shorthand for it, the
-    /// fifth a transport prefix and a port, and the sixth the alternative keyword for the catalogue itself.
-    /// Each addresses a database that may well be the DotNetNuke one, and a textual server comparison called
-    /// every one of them a different server.
+    /// second uses the loopback address, the third the legacy local alias, the fourth the shorthand for it,
+    /// the fifth a transport prefix and a port, and the sixth the alternative keyword for the catalogue
+    /// itself.
     /// </remarks>
     [Theory]
     [InlineData("Server=HOST.DOCKER.INTERNAL;Database=DotNetNuke;User Id=api;Password=secret")]
@@ -68,15 +39,10 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
     }
 
     /// <summary>
-    /// A session connection string that names no catalogue at all is refused rather than treated as isolated.
+    /// A session connection string that names no catalogue at all is refused rather than treated as
+    /// isolated.
     /// </summary>
     /// <param name="sessionConnection">The session connection string to judge.</param>
-    /// <remarks>
-    /// THE BYPASS THAT MATTERED MOST. An absent catalogue used to make the comparison return false, so the
-    /// configuration was accepted - and a connection string with no catalogue resolves to the login's default,
-    /// which for a login created for this application is routinely the DotNetNuke database itself. The rule
-    /// could not have been weaker in the case where it mattered more.
-    /// </remarks>
     [Theory]
     [InlineData("Server=sql,1433;User Id=api;Password=secret;Encrypt=True")]
     [InlineData("Server=sql,1433;User Id=api;Password=secret;Database=")]
@@ -91,9 +57,9 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
     /// <summary>A session catalogue that is one of the server's own administrative databases is refused.</summary>
     /// <param name="catalogue">The catalogue named.</param>
     /// <remarks>
-    /// <c>tempdb</c> earns its place twice: a table created there does not survive a restart, so a deployment
-    /// naming it would run process-local sessions under a durable provider's name and believe otherwise - the
-    /// exact confusion the provider setting exists to prevent.
+    /// <c>tempdb</c> earns its place twice: a table created there does not survive a restart, so a
+    /// deployment naming it would run process-local sessions under a durable provider's name and believe
+    /// otherwise - the exact confusion the provider setting exists to prevent.
     /// </remarks>
     [Theory]
     [InlineData("master")]
@@ -115,11 +81,6 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
     /// An application connection string that names no catalogue is refused, because the isolation cannot be
     /// established against it.
     /// </summary>
-    /// <remarks>
-    /// Fail-closed rather than fail-silent. The alternative - accepting the session catalogue because the other
-    /// side of the comparison is unknown - is how the previous rule behaved, and it is the branch that made the
-    /// rule bypassable.
-    /// </remarks>
     [Fact]
     public void AnApplicationConnectionNamingNoCatalogue_IsRefused()
     {
@@ -133,10 +94,10 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
 
     /// <summary>A distinctly named session catalogue on the same server is accepted.</summary>
     /// <remarks>
-    /// The positive case, and it is what makes the refusals above evidence of a rule rather than of a blanket
-    /// veto. Sharing one server is the ordinary deployment - a small catalogue beside the application's - and
-    /// nothing about it breaches rule T4, because no object of this migration's is created in the frozen
-    /// schema.
+    /// The positive case, and it is what makes the refusals above evidence of a rule rather than of a
+    /// blanket veto. Sharing one server is the ordinary deployment - a small catalogue beside the
+    /// application's - and nothing about it breaches rule T4, because no object of this migration's is
+    /// created in the frozen schema.
     /// </remarks>
     [Fact]
     public void ADistinctlyNamedSessionCatalogueOnTheSameServer_IsAccepted()
@@ -161,13 +122,6 @@ public sealed class RefreshTokenStoreCatalogueIsolationTests
     }
 
     /// <summary>The setting that authorised runtime table creation is no longer part of this type.</summary>
-    /// <remarks>
-    /// MIGRATION: SEC-05. Its name survives as a constant only so the host can REFUSE a configuration that
-    /// still sets it - binding ignores unknown keys, so a deployment relying on runtime creation would
-    /// otherwise have had its setting silently disregarded and learned of the change from a failed sign-in.
-    /// This pins that the property itself is gone, which is the fact that makes the store's probe-only
-    /// behaviour structural rather than conditional.
-    /// </remarks>
     [Fact]
     public void TheRuntimeTableCreationSettingIsGoneAndOnlyItsNameRemains()
     {

@@ -12,30 +12,12 @@ const SCRIPT_ELEMENT_MESSAGE = '<script type="text/javascript">alert(1)</script>
 
 const UNISSUED_ID = 4242;
 
-/**
- * The message-length bound the service documents on its own `MAX_MESSAGE_LENGTH`
- * constant. Mirrored rather than imported, because the service keeps its bounds
- * module-private and widening its exported surface merely to be observable from a
- * spec would be the wrong trade; restating the figure makes an accidental change to
- * the bound fail loudly here.
- */
+/** The message-length bound the service documents on its own `MAX_MESSAGE_LENGTH` constant. */
 const MAX_MESSAGE_LENGTH = 1024;
 
-/**
- * The queue-depth bound the service documents on its own
- * `MAX_QUEUED_NOTIFICATIONS` constant. Mirrored for the same reason as
- * {@link MAX_MESSAGE_LENGTH}.
- */
+/** The queue-depth bound the service documents on its own `MAX_QUEUED_NOTIFICATIONS` constant. */
 const MAX_QUEUED_NOTIFICATIONS = 25;
 
-/**
- * A single astral-plane character, which JavaScript stores as a surrogate *pair* -
- * two UTF-16 code units, so `'\u{1F600}'.length === 2`.
- *
- * Used to prove that applying a code-unit bound never leaves half a pair behind.
- * A lone surrogate is not a representable character, so a consumer rendering it as
- * text content would show U+FFFD in place of the final character.
- */
 const ASTRAL_CHARACTER = '\u{1F600}';
 
 describe('NotificationService', () => {
@@ -96,23 +78,12 @@ describe('NotificationService', () => {
     });
 
     it('refuses an empty message instead of queueing it', () => {
-      // The legacy model had no distinct "absent string": the sentinel for a
-      // missing string was the empty string itself -
-      // `Library/Components/Shared/Null.vb` L71-L75 returns `""` from
-      // `NullString`. That is precisely why `''` is refused rather than stored:
-      // it is the legacy representation of ABSENT, so a caller passing it is
-      // reporting that it has no message, and the faithful response to "no
-      // message" is to raise no notification at all.
       service.notify('info', '');
 
       expect(service.notifications()).toEqual([]);
     });
 
     it('refuses a whitespace-only message, in every spelling of blank', () => {
-      // Whitespace-only input is absent in exactly the same sense as `''`: it
-      // has no readable content and would render as an empty alert. Each of
-      // these is refused independently, so no single spelling of blank slips
-      // through a check written against another.
       for (const blank of ['', ' ', '   ', '\t', '\n', '\r\n', ' \t \n ']) {
         service.notify('info', blank);
       }
@@ -121,9 +92,6 @@ describe('NotificationService', () => {
     });
 
     it('keeps a padded but nonblank message, padding intact', () => {
-      // The emptiness test runs against a trimmed copy while the ORIGINAL is
-      // stored, so surrounding whitespace on a message that does have content is
-      // preserved rather than being collateral damage of the blank check.
       service.notify('info', ' kept ');
 
       expect(service.notifications().length).toBe(1);
@@ -131,10 +99,6 @@ describe('NotificationService', () => {
     });
 
     it('does not consume an id for a refused message', () => {
-      // The counter's contract is that it never REISSUES an id, not that it
-      // counts call attempts. Leaving it untouched on a refusal keeps the ids of
-      // real entries gapless, so a rejected call cannot be mistaken for, or
-      // inferred as, a dismissal.
       service.notify('info', '   ');
       service.notify('info', '');
       service.notify('info', 'first real message');
@@ -155,10 +119,6 @@ describe('NotificationService', () => {
     });
 
     it('collapses an immediate repetition into one row, and re-issues it', () => {
-      // ⚠ THE PREVIOUS BEHAVIOUR WAS MEASURED AS A DEFECT. Two identical calls produced two rows a
-      // person could not tell apart, and the role membership screen produced THREE for a single
-      // fault - so an operator read the same sentence three times to learn that it said the same
-      // thing three times. The repeat is collapsed onto the newest entry instead.
       service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
 
       const first = service.notifications()[0].id;
@@ -167,9 +127,9 @@ describe('NotificationService', () => {
 
       expect(service.notifications().length).withContext('one row, not two').toBe(1);
 
-      // RE-ISSUED rather than left alone: a person who caused the outcome a second time must be
-      // told a second time, and a live region announces an entry by its identity, so the entry has
-      // to be a new one for the second occurrence to be announced at all.
+      // RE-ISSUED rather than left alone: a person who caused the outcome a second time must be told a
+      // second time, and a live region announces an entry by its identity, so the entry has to be a new one
+      // for the second occurrence to be announced at all.
       expect(service.notifications()[0].id).withContext('a fresh identifier').not.toBe(first);
       expect(service.notifications()[0].message).toBe(LEGACY_ACCESS_DENIED_TEXT);
     });
@@ -212,16 +172,9 @@ describe('NotificationService', () => {
 
     it('keeps a repeat that differs in whether it outlives a navigation', () => {
       // ⚠ THIS MEMBER WAS MISSING FROM THE IDENTITY TEST, AND THE CONSEQUENCE WAS A LOST MESSAGE. It is
-      // stored on the entry and it governs whether the sweep discards it, so two entries agreeing on
-      // every other member are still different reports when one claims the exemption and the other does
-      // not - and collapsing them imposed the FIRST one's opinion on the second. An entry raised to be
-      // READ AFTER A REDIRECT was therefore folded into an identical earlier one that had not claimed the
-      // exemption, and then swept away by the very navigation it existed to survive: the operator was
-      // redirected and the explanation was gone.
-      //
-      // The two shapes genuinely meet in one queue rather than only in a test. A session ending
-      // un-asked-for raises its sentence to survive the redirect that follows, while ordinary refusals
-      // raise wording without any such claim.
+      // stored on the entry and it governs whether the sweep discards it, so two entries agreeing on every
+      // other member are still different reports when one claims the exemption and the other does not - and
+      // collapsing them imposed the FIRST one's opinion on the second.
       service.notify('warning', 'the same words', null, false);
       service.notify('warning', 'the same words', null, true);
 
@@ -231,8 +184,8 @@ describe('NotificationService', () => {
     });
 
     it('collapses a repeat that agrees on the navigation opinion too', () => {
-      // The narrowing above must not become a licence to keep every repeat. Two entries agreeing on
-      // every stored member are still one report and are still collapsed, which is what keeps a genuinely
+      // The narrowing above must not become a licence to keep every repeat. Two entries agreeing on every
+      // stored member are still one report and are still collapsed, which is what keeps a genuinely
       // duplicated raise from appearing twice.
       service.notify('warning', 'the same words', null, true);
       service.notify('warning', 'the same words', null, true);
@@ -254,9 +207,6 @@ describe('NotificationService', () => {
     });
 
     it("expresses an authorisation denial at 'warning' rather than 'error'", () => {
-      // Pins the vocabulary rather than the mapping: which severity a given
-      // failure earns is the caller's decision, so all this proves is that a
-      // denial can be expressed as a warning and not only as an error.
       service.notify('warning', LEGACY_ACCESS_DENIED_TEXT);
 
       const entry: AppNotification = service.notifications()[0];
@@ -322,9 +272,6 @@ describe('NotificationService', () => {
 
       service.dismiss(UNISSUED_ID);
 
-      // Compared by value, never by reference: dismiss filters unconditionally
-      // and so publishes a fresh array even when nothing matched, and that
-      // allocation is a detail the service does not promise.
       expect(service.notifications()).toEqual(before);
     });
 
@@ -357,21 +304,13 @@ describe('NotificationService', () => {
 
       service.clear();
 
-      // Identity, not value: a redundant clear has to publish the very same
-      // reference for the signal's default comparison to suppress the
-      // notification, so toBe is the only assertion with meaning here.
+      // Identity, not value: a redundant clear has to publish the very same reference for the signal's
+      // default comparison to suppress the notification, so toBe is the only assertion with meaning here.
       expect(service.notifications()).toBe(before);
     });
   });
 
-  /*
-   * The screen-lifetime rule, which exists because two severities deliberately never expire on a
-   * timer. That exemption is correct while the operator is on the screen the fault belongs to, and
-   * was a leak the moment they left it: a refusal raised on one screen sat over an unrelated one
-   * indefinitely, still telling the operator to correct fields that were no longer present. One
-   * measured instance had a stale warning outlive a 200, a 201, a 204, three route changes, a search
-   * and two complete success-toast lifetimes.
-   */
+  // The screen-lifetime rule, which exists because two severities deliberately never expire on a timer.
   describe('dismissStale', () => {
     it('discards the entries that described the screen just left', () => {
       service.warning('Correct the highlighted fields.');
@@ -442,10 +381,9 @@ describe('NotificationService', () => {
 
       service.notify('info', 'appended');
 
-      // Load-bearing for components using the on-push change-detection strategy:
-      // a snapshot already read stays as it was, and the next read yields a
-      // different array. An in-place push would leave the reference identical
-      // and the view stale.
+      // Load-bearing for components using the on-push change-detection strategy: a snapshot already read
+      // stays as it was, and the next read yields a different array. An in-place push would leave the
+      // reference identical and the view stale.
       expect(before.length).toBe(0);
       expect(service.notifications()).not.toBe(before);
     });
@@ -470,11 +408,6 @@ describe('NotificationService', () => {
 
   describe('plain-text handling', () => {
     it('stores a script element as opaque text, character for character', () => {
-      // The queue neither escapes nor sanitises, because it never treats a
-      // message as markup; the defence lives at the render boundary, where text
-      // interpolation escapes the value. This spec therefore asserts storage
-      // only - it imports no sanitisation API and inserts nothing into the
-      // document.
       service.notify('error', SCRIPT_ELEMENT_MESSAGE);
 
       expect(service.notifications()[0].message).toBe(SCRIPT_ELEMENT_MESSAGE);
@@ -490,13 +423,6 @@ describe('NotificationService', () => {
   });
 
   describe('severity aliases', () => {
-    /*
-     * Each alias forwards EVERY argument explicitly, absent ones included, which is the convention
-     * the `error()` case below already records. The two trailing arguments therefore appear in these
-     * expectations: `null` for "no support reference" and `false` for "does not outlive the next
-     * change of screen". Both defaults are the safe ones, and asserting them here is what stops a
-     * future edit from making an alias quietly grant a reprieve no caller asked for.
-     */
     it("success() delegates to notify with 'success' and adds nothing else", () => {
       const notify = spyOn(service, 'notify').and.callThrough();
 
@@ -540,12 +466,6 @@ describe('NotificationService', () => {
 
       service.error('Something failed');
 
-      // The explicit third argument is the ABSENCE of a support reference, forwarded
-      // rather than omitted. `error` is the one alias that accepts a reference, because
-      // a failure is the only outcome that has one to quote, and it passes on whatever
-      // it was given - here, nothing. "Adds nothing else" is therefore still exactly
-      // what this asserts: no severity substitution, no wording change, and no
-      // reference invented on the caller's behalf.
       expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', null);
     });
 
@@ -582,19 +502,17 @@ describe('NotificationService', () => {
   });
 
   describe('message length bound', () => {
-    // A notification message is not always composed by this application. The error
-    // interceptor builds one from a server `ProblemDetails` payload, whose `detail`
-    // and `errors` members are remote input, so message length is not under the
-    // application's control. These specs pin the bound that closes that exposure.
+    // A notification message is not always composed by this application. The error interceptor builds one
+    // from a server `ProblemDetails` payload, whose `detail` and `errors` members are remote input, so
+    // message length is not under the application's control.
 
     it('stores a message of exactly the bound in full', () => {
       const atBound = 'a'.repeat(MAX_MESSAGE_LENGTH);
 
       service.notify('error', atBound);
 
-      // The bound is inclusive: at the limit nothing is removed, so the fixtures
-      // above - all far shorter - are untouched by it and every verbatim spec in
-      // this file continues to describe real behaviour.
+      // The bound is inclusive: at the limit nothing is removed, so the fixtures above - all far shorter -
+      // are untouched by it and every verbatim spec in this file continues to describe real behaviour.
       expect(service.notifications()[0].message).toBe(atBound);
     });
 
@@ -611,10 +529,6 @@ describe('NotificationService', () => {
 
       service.notify('error', overLong);
 
-      // Asserted as an exact slice rather than merely "starts with", because the
-      // `AppNotification.message` contract forbids substitution: a truncated
-      // message must contain nothing the caller did not supply. An appended
-      // marker would also be a display decision, which belongs to the consumer.
       expect(service.notifications()[0].message).toBe(overLong.slice(0, MAX_MESSAGE_LENGTH));
     });
 
@@ -642,9 +556,6 @@ describe('NotificationService', () => {
 
       const stored = service.notifications()[0].message;
 
-      // The complementary case to the spec above: stepping back is applied only
-      // when it is needed, so a pair that fits is retained in full and the bound
-      // is reached exactly.
       expect(stored.length).toBe(MAX_MESSAGE_LENGTH);
       expect(stored.endsWith(ASTRAL_CHARACTER)).toBeTrue();
     });
@@ -665,12 +576,6 @@ describe('NotificationService', () => {
   });
 
   describe('support reference', () => {
-    // The defect these specs pin: the reference used to be concatenated onto the
-    // message by the caller and the composed string was bounded afterwards, so
-    // truncation removed the reference from exactly the long-`detail` failures that
-    // most needed it. The reference is now bounded separately and appended after the
-    // message has been cut, which is what makes it unreachable by the cut.
-
     it('survives truncation of an over-long message', () => {
       const overLong = 'a'.repeat(MAX_MESSAGE_LENGTH * 4);
 
@@ -737,8 +642,8 @@ describe('NotificationService', () => {
 
   describe('queue depth bound', () => {
     /**
-     * Queues `count` entries whose messages are their 1-based call ordinals, so
-     * that the retained window can be identified precisely afterwards.
+     * Queues `count` entries whose messages are their 1-based call ordinals, so that the retained window
+     * can be identified precisely afterwards.
      *
      * @param count How many entries to queue.
      */
@@ -775,9 +680,8 @@ describe('NotificationService', () => {
 
       const messages = service.notifications().map((entry) => entry.message);
 
-      // The very first entry is gone and the newest is present: eviction is
-      // oldest-first, so the queue is a window over the most recent notifications
-      // rather than a snapshot of the earliest ones.
+      // The very first entry is gone and the newest is present: eviction is oldest-first, so the queue is a
+      // window over the most recent notifications rather than a snapshot of the earliest ones.
       expect(messages).not.toContain('1');
       expect(messages[0]).toBe('2');
       expect(messages[messages.length - 1]).toBe(String(MAX_QUEUED_NOTIFICATIONS + 1));
@@ -800,11 +704,6 @@ describe('NotificationService', () => {
 
       const ids = service.notifications().map((entry) => entry.id);
 
-      // Ids count calls, not surviving entries: the counter advances once per
-      // `notify` regardless of whether an entry was evicted, so the retained ids
-      // are the contiguous tail ending at the total number of calls. Nothing is
-      // rewound and nothing is reused, which is what keeps a `@for` track key and
-      // a captured `dismiss` argument sound.
       expect(ids).toEqual(
         Array.from({ length: MAX_QUEUED_NOTIFICATIONS }, (_unused, index) =>
           total - MAX_QUEUED_NOTIFICATIONS + index + 1,
@@ -826,9 +725,6 @@ describe('NotificationService', () => {
       queueSequentially(MAX_QUEUED_NOTIFICATIONS + 1);
       const depthAfterFilling = service.notifications().length;
 
-      // Id 1 was evicted rather than dismissed, so it is absent for a different
-      // reason than the unknown-id specs cover - the outcome must still be a
-      // no-op rather than an error.
       expect(() => service.dismiss(1)).not.toThrow();
       expect(service.notifications().length).toBe(depthAfterFilling);
     });
@@ -850,9 +746,8 @@ describe('NotificationService', () => {
 
       service.notify('info', 'overflowing');
 
-      // Eviction must not become a hidden in-place mutation: an `OnPush` consumer
-      // that already read the queue depends on the reference changing, and on the
-      // snapshot it holds staying exactly as it was.
+      // Eviction must not become a hidden in-place mutation: an `OnPush` consumer that already read the
+      // queue depends on the reference changing, and on the snapshot it holds staying exactly as it was.
       expect(service.notifications()).not.toBe(before);
       expect(before.length).toBe(MAX_QUEUED_NOTIFICATIONS);
       expect(before[0].message).toBe('1');

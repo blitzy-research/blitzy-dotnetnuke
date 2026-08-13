@@ -9,52 +9,16 @@ namespace DnnMigration.Infrastructure.Services;
 /// log event.
 /// </summary>
 /// <remarks>
-/// <para>
-/// WHY THIS LIVES HERE. Logging is a framework concern and this is the innermost layer that may take a
-/// dependency on one: <c>Microsoft.Extensions.Logging.Abstractions</c> arrives with the persistence packages
-/// this project already declares, so no manifest entry is added to obtain it, and the Application layer above
-/// - whose package surface is fixed - reaches it through the Domain contract instead.
-/// </para>
-/// <para>
 /// EVERY VALUE IS A STRUCTURED PROPERTY AND THE TEMPLATE IS A CONSTANT. Nothing is interpolated into the
-/// message, so no supplied value can become part of a message template and no newline in a value can forge a
-/// second log line. Combined with the contract's signature - which admits no message, exception or object -
-/// this makes it impossible for credential material, request payloads or exception text to be written through
-/// this route.
-/// </para>
-/// <para>
-/// LEVEL CHOICE IS DELIBERATE. Every member of the enumeration is a warning: none of them fails the caller's
-/// request, so error would over-report, and none of them is routine, so information would leave them
-/// invisible under a normal production filter. They are exactly the class of event an operator wants surfaced
-/// without being paged.
-/// </para>
-/// <para>
-/// IT NEVER THROWS. The contract requires that, because every call site has already decided the occurrence
-/// does not warrant failing the request; a recorder that threw would turn those into the failures they were
-/// judged not to be. The only work performed is a bounded scan of a short string and one logger call.
-/// </para>
+/// message, so no supplied value can become part of a message template and no newline in a value can forge
+/// a second log line.
 /// </remarks>
 internal sealed class SecurityDiagnostics : ISecurityDiagnostics
 {
-    /// <summary>
-    /// The longest reason code that is written. Anything longer is treated as not being a code.
-    /// </summary>
-    /// <remarks>
-    /// Sixty-four characters comfortably admits every failure code this solution defines - the longest is well
-    /// under half of it - and every exception type name in the framework, while excluding anything
-    /// sentence-shaped. The bound exists so that a caller which mistakenly passes an exception's message has
-    /// it discarded rather than written, which is a guarantee this type enforces rather than documents.
-    /// </remarks>
+    /// <summary>The longest reason code that is written. Anything longer is treated as not being a code.</summary>
     private const int MaximumReasonCodeLength = 64;
 
-    /// <summary>
-    /// The substitute written when a supplied reason code is not code-shaped.
-    /// </summary>
-    /// <remarks>
-    /// A substitute rather than an omission, deliberately: the occurrence itself is still worth recording, and
-    /// a distinctive placeholder additionally makes the mistaken call site findable by searching the logs -
-    /// which an omission would not.
-    /// </remarks>
+    /// <summary>The substitute written when a supplied reason code is not code-shaped.</summary>
     private const string RejectedReasonCode = "unrecognised-code";
 
     private readonly ILogger<SecurityDiagnostics> _logger;
@@ -91,25 +55,21 @@ internal sealed class SecurityDiagnostics : ISecurityDiagnostics
         catch (Exception)
         {
             // The contract is a last-resort signal for conditions that deliberately do not fail a request.
-            // A logging provider that throws must not reverse that decision. Audit-delivery failures have
-            // an independent in-memory health counter; other diagnostics have no safe third logging channel,
-            // so containment is the only truthful fallback here.
+            // A logging provider that throws must not reverse that decision.
         }
     }
 
-    /// <summary>
-    /// Reduces a supplied reason code to something that is certainly a code.
-    /// </summary>
+    /// <summary>Reduces a supplied reason code to something that is certainly a code.</summary>
     /// <param name="reasonCode">The value the caller supplied.</param>
     /// <returns>
-    /// The value unchanged when it has the shape of a code, <see langword="null"/> when none was supplied, and
-    /// <see cref="RejectedReasonCode"/> when the value is not code-shaped.
+    /// The value unchanged when it has the shape of a code, <see langword="null"/> when none was supplied,
+    /// and <see cref="RejectedReasonCode"/> when the value is not code-shaped.
     /// </returns>
     /// <remarks>
-    /// The permitted set is ASCII letters, digits, and the four separators codes in this solution actually use
-    /// - dot, underscore, hyphen and colon. Everything else is excluded, which in particular excludes the
-    /// space, the newline and the carriage return: a value carrying any of those is prose or a forged log line
-    /// rather than a code, and is precisely what must not be written.
+    /// The permitted set is ASCII letters, digits, and the four separators codes in this solution actually
+    /// use - dot, underscore, hyphen and colon. Everything else is excluded, which in particular excludes
+    /// the space, the newline and the carriage return: a value carrying any of those is prose or a forged
+    /// log line rather than a code, and is precisely what must not be written.
     /// </remarks>
     private static string? Sanitise(string? reasonCode)
     {

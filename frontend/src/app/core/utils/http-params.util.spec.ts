@@ -1,53 +1,4 @@
-//
-// Specification for the query-parameter serialisation helpers of the dnn-migration
-// administration front end.
-//
-// ---------------------------------------------------------------------------
 // WHY THIS SUITE EXISTS, AND WHY IT IS PLAIN JASMINE
-// ---------------------------------------------------------------------------
-// The module under test is a set of pure functions over immutable values. It takes no
-// dependency, performs no request and touches no browser API, so nothing here needs a
-// testing module, a fixture or a component harness - and importing one would make the
-// suite slower and its failures harder to read for no gain. Every expectation below is
-// a direct call.
-//
-// The suite also serves a second, structural purpose. `tsconfig.app.json` compiles by
-// IMPORT GRAPH - it declares `files: ["src/main.ts"]` and includes only declaration
-// files - so a utility that no service imports yet is silently NOT type-checked by a
-// production build. `tsconfig.spec.json` includes `src/**/*.spec.ts`, so this file is
-// what puts the module under test into a gated compile. A clean production build alone
-// would prove nothing about it.
-//
-// ---------------------------------------------------------------------------
-// WHAT IS ACTUALLY AT RISK, MEASURED
-// ---------------------------------------------------------------------------
-// The legacy DotNetNuke 4.9.0 VB.NET tree shipped no automated tests of any kind, so
-// there is no assertion to port. What there is, is a null contract that makes the
-// obvious implementation of a parameter builder WRONG:
-//
-//   * `Library/Components/Shared/Null.vb` L41-L45 defines the integer "absent" marker
-//     as MINUS ONE and L36-L40 defines the 16-bit one identically; L71-L75 defines the
-//     string marker as the EMPTY STRING (its body is literally `Return ""`); L76-L80
-//     defines the boolean marker as `False`.
-//   * `01.00.00.SqlDataProvider` L77 seeds the portal identity at MINUS ONE - so the
-//     first portal really is numbered -1 and the second 0 - and L115, L140 and L221
-//     seed the role, page and module identities at ZERO.
-//   * `Website/admin/Security/Roles.ascx.vb` L112 and L114 give the role-group filter
-//     the values -2 and -1, and L129 defaults it to -2.
-//
-// A builder written as `if (value) { ... }` drops 0, -1, "" and false while looking
-// perfectly idiomatic, and the resulting request returns 200 with the wrong records.
-// That single failure mode is what the bulk of this suite pins down.
-//
-// The other three risks pinned here:
-//   * the page index is ZERO-BASED on the wire and must not be shifted by one in
-//     either direction (`Website/admin/Users/Users.ascx.vb` L51 counted from one and
-//     L265/L269/L271/L274 subtracted one before calling down);
-//   * search text must reach the wire UNDECORATED, because the trailing per-cent sign
-//     the legacy call sites appended (same lines, and `Portals.ascx.vb` L142) is now
-//     composed by the repository, and a second one would change which rows match;
-//   * the deliberately unpaged endpoints must receive no page coordinate at all.
-//
 
 import { HttpParams } from '@angular/common/http';
 
@@ -83,10 +34,7 @@ const PAGING_PARAM_NAMES: readonly string[] = [
   QUERY_PARAM.sortDir,
 ];
 
-/**
- * Spellings from other paging schemes. None may ever appear: this API is offset-paged,
- * and a cursor or a skip-and-take pair would be an unrequested behavioural change.
- */
+/** Spellings from other paging schemes. */
 const FOREIGN_PAGING_PARAM_NAMES: readonly string[] = [
   'cursor',
   'continuationToken',
@@ -594,22 +542,11 @@ describe('http-params.util', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // WHICH TRANSPORT AN ACCOUNT SEARCH TAKES
-  // -------------------------------------------------------------------------
-  // This is the CWE-598 compensator, and its correctness is entirely a property of the
-  // predicate: a value classified as non-identifying travels in the request target, which
-  // is written to browser history, to every proxy access log and to the server's own access
-  // log - all of them at an END of the encrypted channel, so transport security does not
-  // reach them.
-  //
-  // The predicate applies two DIFFERENT tests and the asymmetry is the substance of these
-  // cases. The four NAMED filters are present only when a search mode naming a person has
-  // been chosen, so their mere presence is the signal and testing their content would flip
-  // the transport for the single input an operator produces by clearing the box. The paging
-  // contract's GENERIC `query` is present on every listing and may legitimately be blank, so
-  // presence says nothing and non-blankness is the signal. Using one test for all five
-  // breaks one of the two cases, whichever test is chosen.
+  // This is the CWE-598 compensator, and its correctness is entirely a property of the predicate: a value
+  // classified as non-identifying travels in the request target, which is written to browser history, to
+  // every proxy access log and to the server's own access log - all of them at an END of the encrypted
+  // channel, so transport security does not reach them.
   describe('identifiesAPerson - which searches must leave the request target', () => {
     it('classifies a listing that names nobody as non-identifying', () => {
       expect(identifiesAPerson()).toBe(false);
@@ -641,10 +578,6 @@ describe('http-params.util', () => {
       );
     });
 
-    // The finding this pins: the generic member is matched by the server as a SUBSTRING across
-    // the login name, the display name AND the electronic-mail address, so a search through it
-    // reaches the same rows the named filters reach. It used to be ignored here entirely, so a
-    // query-only search stayed on the GET and put the identifier in the request target.
     it('classifies a non-blank generic query as identifying', () => {
       expect(identifiesAPerson({ query: 'ada' })).toBe(true);
       expect(identifiesAPerson({ query: 'ada@example.test' })).toBe(true);
@@ -684,10 +617,6 @@ describe('http-params.util', () => {
       });
     });
 
-    // The sort direction is sent as the MEMBER NAME, which is the vocabulary the query string
-    // accepts. The server binds this body with a converter pinned to the same names, so one
-    // contract member has one spelling on both transports; sending the ordinal here instead
-    // would give it two.
     it('names the sort direction rather than numbering it', () => {
       expect(userSearchBody({ sortBy: 'username', sortDir: 'Ascending' }).sortDir).toBe('Ascending');
       expect(userSearchBody({ sortBy: 'username', sortDir: 'Descending' }).sortDir).toBe(

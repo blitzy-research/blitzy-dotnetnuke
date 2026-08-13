@@ -1,264 +1,10 @@
-<!--
-  THE PORTAL CREATION AND EDIT SCREEN.
-
-  Structure, measured line by line from `Website/admin/Portal/signup.ascx` (115 lines,
-  read in full): two section heads delimit two groups of fields, then a pair of command
-  buttons, then a closing note. Everything below reproduces that order.
-
-  ============================================================================
-  MIGRATION ANNOTATION 1 - THE SEMANTIC INVERSION. DO NOT SWAP THESE TWO LABELS.
-  ============================================================================
-  The legacy `txtPortalName` box collected the ALIAS and the legacy `txtTitle` box
-  collected the NAME. Four independent measurements agree, and all four were verified
-  against this checkout rather than taken on trust:
-
-    1. `Library/Components/Portal/PortalController.vb:L980` declares `CreatePortal`
-       with `PortalName` as its FIRST parameter and `PortalAlias` as its twelfth;
-    2. `Website/admin/Portal/Signup.ascx.vb:L274` passes `txtTitle.Text` into that
-       first position, while `strPortalAlias` - assigned from `txtPortalName.Text` at
-       L197 and L204 - goes into the `PortalAlias` position;
-    3. `signup.ascx:L39` binds the label `plPortalAlias` ("Portal Alias:") to
-       `controlname="txtPortalName"`;
-    4. corroborating from the sibling screen, `SiteSettings.ascx.resx` labels
-       `txtPortalName` as `plPortalName.Text` = "Title:".
-
-  So the ALIAS control is labelled "Portal Alias:" and the TITLE control is labelled
-  "Title:". A swap here compiles, submits, and silently writes every new portal's alias
-  into its title column with no diagnostic anywhere.
-
-  A related trap sits in the resource file and is deliberately unused: `Signup.ascx.resx`
-  also carries `plPortalName.Text` = "Portal Name:", but `signup.ascx` declares no
-  `plPortalName` control at all - its thirteen labels are `plType`, `plPortalAlias`,
-  `plHomeDirectory`, `plTitle`, `plDescription`, `plKeyWords`, `plTemplate`,
-  `plFirstName`, `plLastName`, `plUsername`, `plPassword`, `plConfirm` and `plEmail` -
-  so that entry is orphaned and reproducing it would label a field the legacy screen
-  never labelled that way.
-
-  ============================================================================
-  MIGRATION ANNOTATION 2 - THE LEGACY LAYOUT TABLES ARE GONE.
-  ============================================================================
-  `signup.ascx:L5-L6` opens with `class="Settings" cellSpacing="2" cellPadding="2"
-  width="560" summary="Host Settings Design Table"`, and the two inner containers
-  `tblPortal` (L10-L11) and `tblSecurity` (L75-L76) are both `width="525"
-  cellPadding="2" cellSpacing="0" summary="Basic Settings Design Table"`. That
-  `summary` wording is the tell: these are LAYOUT containers, not tabular data - 68
-  such declarations exist across the in-scope screens against 8 genuine data grids -
-  so none of them survives as tabular markup. The layout here is CSS Grid and Flexbox
-  declared in the paired stylesheet, and the measured pixel metrics (560, 525, the
-  150-wide label cells and the 300-wide boxes) are design tokens there rather than
-  values in this template. The one measured metric that stays in the markup is the
-  `rows="3"` on the two multi-line boxes, because that is a control attribute and not
-  a style.
-
-  ============================================================================
-  MIGRATION ANNOTATION 3 - `dnn:sectionhead` BECOMES `fieldset` + `legend`.
-  ============================================================================
-  `signup.ascx:L8-L9` and `L73-L74` declare two `dnn:sectionhead` controls, each
-  `includerule="True" cssclass="Head"` and each naming the container it collapsed.
-  The shared component inventory is CLOSED AT TEN MEMBERS and holds no collapsible
-  section affordance; an eleventh member would widen a settled contract for a single
-  caller, so none is added. The two groups become semantic field sets instead, whose
-  legends carry the measured wording verbatim - `PortalSetup.Text` = "Portal Setup"
-  and `SecuritySettings.Text` = "Security Settings". Nothing here collapses, so no
-  toggle and no expanded-state attribute is declared: announcing a disclosure that
-  does not exist would be worse than announcing none.
-
-  ============================================================================
-  MIGRATION ANNOTATION 4 - THE EIGHT VALIDATION MESSAGES LOSE THEIR BREAK MARKUP.
-  ============================================================================
-  All eight legacy `asp:requiredfieldvalidator` declarations resolve their wording
-  through the suffix-embedded convention `ResourceKey="val<Field>.ErrorMessage"`, and
-  every one of the eight stored values OPENS WITH BREAK MARKUP - measured, not
-  assumed. That markup was vertical spacing expressed as content, for a validator that
-  rendered inline after a postback. It is stripped: the wording is carried across as
-  plain text by the component, spacing is the stylesheet's concern, and this template
-  emits no break element anywhere. The eighth message left with the field it guarded;
-  see annotation 9.
-
-  Note that the alias message reads "Portal Name Is Required." even though the field it
-  guards is the ALIAS. That is the measured legacy wording, it is what the operator
-  read, and functional parity requires keeping it verbatim rather than correcting it.
-
-  NO CONTROL CARRIES THE NATIVE `required` ATTRIBUTE, AND THE REASON IS THAT A RULE MUST
-  HAVE ONE HOME. A `required` attribute beside a `formControlName` is not inert markup:
-  the framework's own required-validator directive matches on it and installs a SECOND
-  `Validators.required` on the control. The component already declares the whole
-  validator set, and declares requiredness as a TOTAL map over every control precisely so
-  that the decision is made in one place and adding a control forces an answer rather
-  than inheriting one by silence. Restating the rule here would put a second copy of it
-  in the template, where nothing keeps the two in step.
-
-  So the template declares the STATE and never the RULE: `aria-required` on each of the
-  seven controls, plus the shared wrapper's required marker, which renders a glyph for
-  sighted readers and a hidden word for everyone else. The seven marked controls are
-  exactly the measured validator set.
-
-  Verified rather than assumed, because the reasoning would be different if it were not
-  true: the framework adds `novalidate` to every form it manages - the directive's
-  selector is `form:not([ngNoForm]):not([ngNativeValidate])` - and the rendered form does
-  carry it. Native constraint validation is therefore switched off either way, so this
-  choice is about where the rule lives and NOT about a browser bubble pre-empting the
-  measured sentences. Those eight sentences were confirmed to render, on a real headless
-  browser, after a submission attempt on an empty form.
-
-  ============================================================================
-  MIGRATION ANNOTATION 5 - `Note.Text` IS RE-AUTHORED AS REAL MARKUP.
-  ============================================================================
-  See the note at the foot of the creation form. Resource text is UNTRUSTED MARKUP:
-  measured across the 37 in-scope resource files, 76 of 1111 entries carry an HTML tag,
-  and the decisive one is `Advertising.Text` in
-  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx`, which holds a LIVE
-  Google AdSense script block with a remote source. The tags are stored XML-escaped, so
-  a naive search returns nothing and would wrongly clear the risk. Consequently every
-  string this template displays is either interpolated plain text or authored here as
-  real elements. No raw-markup binding, no sanitiser bypass and no trusted-markup
-  wrapper appears below, and the component deliberately exposes no markup-bearing
-  member for one to bind to.
-
-  ============================================================================
-  MIGRATION ANNOTATION 6 - HELP IS A BLOCK BELOW THE LABEL, AND IT IS REACHABLE.
-  ============================================================================
-  `Website/controls/labelcontrol.ascx` is 11 lines and the whole of the legacy control
-  this replaces: a `label` holding the help affordance and the label text, a literal
-  break element, then a panel classed `Help` holding the help text. So help was a
-  SIBLING BLOCK BELOW THE LABEL and never a tool tip - which is why no `title`
-  attribute appears anywhere below. The break element is not reproduced; it was spacing
-  expressed as content.
-
-  The legacy control withdrew the affordance from the tab order with a NEGATIVE TAB
-  INDEX twice over, on the link button at L3 and again on the image nested inside it at
-  L4, so legacy help was operable by pointer only and unreachable by keyboard. THE
-  TARGET REVERSES THAT DEFECT: help text is handed to the shared field wrapper through
-  its `help` input, which renders a real button that Tab reaches and both Enter and
-  Space activate. `~/images/help.gif` is not carried across - no image asset is in
-  scope - so the wrapper draws an inline vector instead.
-
-  ============================================================================
-  MIGRATION ANNOTATION 7 - THE MULTI-LINE FIELDS ARE PLAIN TEXT AREAS.
-  ============================================================================
-  `signup.ascx:L56-L57` and `L61-L62` declare `textmode="MultiLine" rows="3"` on the
-  description and keywords boxes. The legacy rich-text editor provider is out of scope,
-  so no editor is substituted and the measured row count and character limit are
-  preserved. A deliberate functional reduction rather than an oversight.
-
-  ============================================================================
-  MIGRATION ANNOTATION 8 - TWO LEGACY ERROR SURFACES BECOME ONE, AND IT IS NET-NEW.
-  ============================================================================
-  The legacy screen carried TWO: `lblMessage`, a label classed `NormalRed` at L17, and
-  `lstResults`, a data list at L18-L28 declared `visible="False" width="100%"
-  cellpadding="4"` whose header template read "Validation Results". Both collapse into
-  the single shared failure surface below, which derives its own severity, title,
-  sentence, per-field list and support reference from the RFC 7807 document and carries
-  its own live region.
-
-  That surface is NET-NEW RATHER THAN A TRANSLATION, and the measurement is
-  unambiguous: `asp:ValidationSummary` occurs ZERO times in the entire `Website/` tree.
-  There is no predecessor to port, so nobody should go looking for one.
-
-  ============================================================================
-  MIGRATION ANNOTATION 9 - THE FIELDS THE LEGACY SCREEN SHOWED THAT ARE GONE.
-  ============================================================================
-  Each is a documented functional reduction with a measured reason, and NONE is
-  rendered below:
-
-    * the TEMPLATE selector `cboTemplate`, its description label
-      `lblTemplateDescription` and its required validator `valTemplate`
-      (`signup.ascx:L65-L69`). The list was populated by ENUMERATING THE FILE SYSTEM
-      for `*.template`, and no portal-template endpoint exists to replace it. The
-      contract member is still required, so the component supplies a constant;
-    * the HOME DIRECTORY box `txtHomeDirectory` and its Customize / Auto Generate
-      toggle `btnCustomizeHomeDir` (L44-L48). The filesystem subsystem is out of scope,
-      so there is nothing to browse and no directory to create; the member is sent as
-      null, which the API documents as a request for the server-side default;
-    * the DEMO-SIGNUP instruction label `lblInstructions` (L13) and its `DemoMessage`
-      wording, which read the excluded host-settings subsystem;
-    * the CHILD-PATH COLLISION diagnostic `ChildExists`, which tested a physical
-      directory;
-    * the CONFIRMATION MAIL diagnostics `SendMail.Error` and `UnknownSendMail.Error`,
-      for which no mail endpoint exists - and both of which embed anchor markup, a
-      second reason not to carry them into a template that renders text;
-    * the `AdminMissing` and `PortalMissing` diagnostics, which belonged to the dropped
-      template enumeration.
-
-  The wide operational surface the sibling settings screen carries - hosting fee, disk
-  space, page and account quota, activity-history retention, expiry date, skins, pages,
-  payment processor, advertising - is likewise absent. It belongs to the settings
-  screen, which writes the settings projection.
-
-  ============================================================================
-  MIGRATION ANNOTATION 10 - THE IMAGE BUTTONS BECOME TEXT BUTTONS.
-  ============================================================================
-  `signup.ascx:L113-L114` declares both commands as image buttons, `~/images/save.gif`
-  and `~/images/lt.gif`. No image asset is in scope, so both are text buttons carrying
-  their measured wording. See the action row for the mode-dependent submit label and
-  for the cancel control's deliberate exemption from validation.
-
-  ============================================================================
-  MIGRATION ANNOTATION 11 - THE TITLE IS INTENTIONALLY NOT REQUIRED.
-  ============================================================================
-  `signup.ascx:L51-L52` declares `txtTitle` with NO validator of any kind, and the same
-  is true of the description and the keywords. Adding a requiredness rule to any of the
-  three would refuse a submission the legacy screen accepted, so none is added and the
-  required marker is withheld from all three. Exactly seven controls are marked
-  required, which is the measured validator set less the one that left with the
-  template field.
-
-  ============================================================================
-  WHAT THIS TEMPLATE DOES NOT DO
-  ============================================================================
-  It builds no URL, assembles no query string, reads no configured base and performs no
-  business rule. Every value it shows and every decision it branches on is published by
-  the paired component class; every character limit is bound from that class's single
-  published source, so an attribute and its validator cannot disagree. Localisation is
-  not ported - the resource files are the authority for WORDING only, no translation
-  runtime is introduced, and the strings below are authored directly here.
-
-  It also emits NO document landmark. The application shell owns each of those exactly
-  once, and a second one inside a routed screen would put two of the same landmark in
-  one document.
-
-  ============================================================================
-  THREE HELP ATTRIBUTES EXCEED THE 120-COLUMN GUIDE, UNAVOIDABLY.
-  ============================================================================
-  The portal-type sentence is 143 characters and the keywords sentence is 128, so both
-  exceed the guide even completely unindented - and a newline placed inside an HTML
-  attribute value becomes PART of that value, which would corrupt wording that has to
-  stay byte-exact, the keywords double space most of all. The wording cannot be moved to
-  the component either: it publishes character limits precisely because they carry a
-  rule, and deliberately publishes no label or help text so that one sentence has one
-  home. The measured wording therefore wins over a soft formatting guide - which the
-  workspace's own editor configuration describes as editor-facing, states that no step of
-  the build or test run reads, and which already carves out an exception for whitespace
-  sensitivity in templates for exactly this class of reason.
--->
 <section class="portal-form">
   <!--
-    The heading, whose wording is mode-dependent and is resolved by the component: the
-    measured `AddPortal.Text` = "Add New Portal" when creating - which
-    `Signup.ascx.vb:L47` set as the module title through exactly that key - and the
-    measured `ControlTitle_edit.Text` = "Edit Portals" when editing. The template
-    branches on nothing to obtain it.
-
-    No action projects into the header slot: the legacy screen declared its two commands
-    at L113-L114, OUTSIDE both containers and after them, so they are the form's own
-    action row and are authored there.
+    No action projects into the header slot: the legacy screen declared its two commands at L113-L114,
+    OUTSIDE both containers and after them, so they are the form's own action row and are authored
+    there.
   -->
-  <!--
-    ⚠ THE HEADER NOW CARRIES TWO THINGS IT DID NOT: an identity and a way out sideways.
-
-    The heading reads "Edit Portals" whichever tenant is open, so the screen named none of
-    them. The stored name goes beside it, which is what the sibling settings screen already
-    does — the same affordance, not a new one — and it renders nothing at all in creation mode
-    or while the read is in flight, because the shared header collapses an absent subtitle.
-
-    The two links project into the header's action slot, which is where that component
-    documents page-level actions belong; they are NOT the form's own commands and must not
-    join the action row at the foot, which submits and cancels. They carry the shared
-    page-action class so they read as the console's other page actions do.
-
-    Withheld entirely in creation mode: neither sibling exists until the portal does, and a
-    link to `/portals/undefined/aliases` resolves to the wildcard route.
-  -->
+  <!-- ⚠ THE HEADER NOW CARRIES TWO THINGS IT DID NOT: an identity and a way out sideways. -->
   <app-page-header [title]="heading()" [subtitle]="portalName()">
     @if (settingsLink(); as settings) {
       <a class="page-action portal-form__sibling" [routerLink]="settings">{{
@@ -273,44 +19,18 @@
     }
   </app-page-header>
 
-  <!--
-    The failure surface. Renders nothing when there is no problem document. See
-    annotation 8: it owns its own live region, so no live-region attribute is declared
-    here, and it resolves its own sentence, so the component's failure wording is NOT
-    also rendered - the notification queue carries that, and one sentence must not
-    appear twice by two mechanisms.
-  -->
+  <!-- The failure surface. Renders nothing when there is no problem document. -->
   <app-error-banner [problem]="problem()" />
 
   @if (addressUnreadable()) {
-    <!--
-      The address carries something that is not a portal identifier.
-
-      ⚠ THIS BRANCH EXISTS BECAUSE ITS ABSENCE WAS THE MOST CONSEQUENTIAL DEFECT ON THIS SCREEN.
-      An unreadable identifier used to select the `@else` creation branch below, so `/portals/abc`
-      presented the live tenant-provisioning form - twelve enabled controls including the six
-      administrator-credential fields, and a working Create Portal command - under a heading
-      offering to add a new portal, while the sidebar marked Portals active and nothing anywhere on
-      the screen indicated a fault. No request was issued either, so the server never had the
-      chance to disagree.
-
-      It is checked BEFORE both modes, not after, because the two modes between them cover every
-      value and would otherwise leave this state unreachable. Nothing is fetched here, so the
-      failure surface above renders empty and needs no guard of its own.
-    -->
+    <!-- The address carries something that is not a portal identifier. -->
     <p class="portal-form__notice">{{ unreadableAddressMessage }}</p>
   } @else if (isEditMode()) {
     <!--
-      EDIT MODE RENDERS THREE CONTROLS, AND THE COUNT IS DELIBERATE. The update contract
-      declares no alias member - a portal's host names are a sub-resource with a screen
-      of their own - the portal type is decided once at provisioning, and the legacy edit
-      screen never carried an administrator block at all. The creation form and the edit
-      form are separate objects of separate types, so a field belonging to one mode
-      cannot physically appear in the other's request.
-
-      The form element is rendered even while the portal is being read or after the read
-      failed, so the cancel control is always reachable; the fields themselves wait for a
-      record. The legacy screen likewise rendered both commands unconditionally.
+      EDIT MODE RENDERS THREE CONTROLS, AND THE COUNT IS DELIBERATE. The update contract declares no
+      alias member - a portal's host names are a sub-resource with a screen of their own - the portal
+      type is decided once at provisioning, and the legacy edit screen never carried an administrator
+      block at all.
     -->
     <form class="portal-form__form" [formGroup]="editForm" (ngSubmit)="onSubmit()">
       @if (loading()) {
@@ -320,19 +40,6 @@
           <legend class="portal-form__legend"><h2>Portal Setup</h2></legend>
 
           <div class="portal-form__grid">
-            <!--
-              The NAME control, labelled "Title:". See annotation 1 - this is the
-              control the legacy `txtTitle` box was, and on the sibling settings screen
-              the same column is edited through `txtPortalName`.
-
-              NOT REQUIRED, and on this mode the authority is `sitesettings.ascx` rather
-              than annotation 11's `signup.ascx`: it declares two validators on 568 lines,
-              both comparison checks, and none of them a presence check. An earlier
-              revision required it here alone, mirroring a `NotEmpty()` the update
-              contract carried; that rule is withdrawn as a parity break, because the
-              legacy write path stored a blank title as the empty string rather than
-              refusing it. The component's own note carries the citations.
-            -->
             <app-form-field
               label="Title:"
               for="portal-form-title"
@@ -366,11 +73,9 @@
             </app-form-field>
 
             <!--
-              "Keywords:" with a LOWER-CASE `w`. The markup attribute at
-              `signup.ascx:L60` reads "KeyWords:" and the resource value reads
-              "Keywords:"; the resource value wins, because that is what the running
-              application displayed. Its help sentence carries a DOUBLE SPACE after
-              "comma." and is reproduced exactly.
+              "Keywords:" with a LOWER-CASE `w`. The markup attribute at `signup.ascx:L60` reads
+              "KeyWords:" and the resource value reads "Keywords:"; the resource value wins, because
+              that is what the running application displayed.
             -->
             <app-form-field
               label="Keywords:"
@@ -411,53 +116,10 @@
 
         <div class="portal-form__grid">
           <!--
-            The portal type. Rendered horizontally, as `signup.ascx:L33` declared
-            `repeatdirection="Horizontal"`, and defaulting to Parent exactly as
-            `Signup.ascx.vb:L101` set it. Not required: a radio group always holds one
-            of its two values, so requiredness cannot fail.
-
-            THE VALUES ARE LOAD-BEARING DATA, NOT LABELS. `signup.ascx:L34-L35` declares
-            them as "P" and "C", and every legacy branch tests them literally, so they
-            are bound from the component's typed pairs rather than written here as bare
-            string attributes - a bare attribute would not be checked against the
-            control's type. The framework's radio value accessor CONSUMES that binding
-            as a directive input and does not reflect it onto the element, so an
-            automated check must select a radio by its `id` and never by a value
-            attribute.
-
-            ACCESSIBLE NAMING, stated because there were two valid answers. Both radios
-            carry the SAME `name`, which is what makes the pair one stop in the tab order
-            with arrow-key movement between the options; it is spelled identically to the
-            control name, which is the condition the framework requires when both are
-            present. The group's accessible NAME then comes from the shared field
-            wrapper, which already labels its control slot from the visible label text.
-            A second, competing group role is deliberately NOT declared here: it would
-            either duplicate that name or need a reference to an identifier the wrapper
-            owns and does not publish, and a dangling reference is worse than none.
-            Confirmed on a real browser: the pair consumes ONE tab stop, the second radio
-            is never focused by Tab, and each radio is named by its own adjacent label.
-
-            THIS FIELD ALSO PASSES NO `for`, WHICH IS A DELIBERATE TRADE-OFF BETWEEN TWO
-            IMPERFECT OPTIONS, MEASURED ON A REAL BROWSER BEFORE CHOOSING. A radio group
-            has no single element a caption may point at. Naming the FIRST radio would
-            satisfy a markup validator, but a label names exactly one control and
-            activating it ACTIVATES that control - so clicking the words "Portal Type"
-            would silently reset the choice to Parent, and an operator who had chosen
-            Child would lose it by clicking the caption above it. Passing nothing instead
-            costs nothing at all, because the shared wrapper now renders its caption as a
-            plain `span` whenever no `for` is supplied, keeping the `aria-labelledby`
-            wiring it already had. So the group carries the accessible name "Portal Type"
-            through that reference, every radio is named by its own adjacent label, there
-            are ZERO dangling ARIA references, and no element claims an association it
-            does not have - the developer-tools hint about an unassociated label is gone
-            rather than knowingly accepted. Measured on the rendered page after the change:
-            zero bare captions on this screen and zero label-association issues reported.
-
-            MIGRATION: this replaces a SERVER ROUND TRIP. `signup.ascx:L33` declares
-            `AutoPostBack="True"`, so choosing a type posted the whole page back for
-            `Signup.ascx.vb:L342-L352` to prefill the alias with the request's own
-            domain. The browser already knows its host, so the component does it locally
-            and no request is made.
+            THE VALUES ARE LOAD-BEARING DATA, NOT LABELS. `signup.ascx:L34-L35` declares them as "P" and
+            "C", and every legacy branch tests them literally, so they are bound from the component's
+            typed pairs rather than written here as bare string attributes - a bare attribute would not
+            be checked against the control's type.
           -->
           <app-form-field
             label="Portal Type:"
@@ -482,11 +144,7 @@
             </div>
           </app-form-field>
 
-          <!--
-            The ALIAS control, labelled "Portal Alias:" - the legacy `txtPortalName`
-            box. See annotation 1. Required, and its message is the measured
-            "Portal Name Is Required." wording rather than a corrected one.
-          -->
+          <!-- The ALIAS control, labelled "Portal Alias:" - the legacy `txtPortalName` box. -->
           <app-form-field
             label="Portal Alias:"
             for="portal-form-alias"
@@ -505,7 +163,7 @@
             />
           </app-form-field>
 
-          <!-- The NAME control, labelled "Title:". Not required; see annotation 11. -->
+          <!-- The NAME control, labelled "Title:". -->
           <app-form-field
             label="Title:"
             for="portal-form-title"
@@ -538,7 +196,7 @@
             ></textarea>
           </app-form-field>
 
-          <!-- Lower-case `w`, and the double space in the help sentence. See above. -->
+          <!-- Lower-case `w`, and the double space in the help sentence. -->
           <app-form-field
             label="Keywords:"
             for="portal-form-keywords"
@@ -557,10 +215,9 @@
       </fieldset>
 
       <!--
-        THE ADMINISTRATOR BLOCK, RENDERED ONLY WHILE CREATING - which is structural
-        rather than conditional, because it sits inside the creation branch and the edit
-        form declares no control any of these six fields could bind to. The legacy edit
-        screen carried no administrator block either.
+        THE ADMINISTRATOR BLOCK, RENDERED ONLY WHILE CREATING - which is structural rather than
+        conditional, because it sits inside the creation branch and the edit form declares no control
+        any of these six fields could bind to.
       -->
       <fieldset class="portal-form__section">
         <legend class="portal-form__legend"><h2>Security Settings</h2></legend>
@@ -621,17 +278,8 @@
           </app-form-field>
 
           <!--
-            The password pair. `signup.ascx:L94` and `L100` declare `textmode="password"`
-            and `maxlength="20"`. The `textmode` is reproduced; the `maxlength` is NOT,
-            because it mirrored the legacy `Users.Password nvarchar(20)` storage width
-            rather than a credential rule, and that column is gone. The limit is bound
-            from the component's published source, which now carries the API's own
-            ceiling — see `core/utils/credential-bounds.util.ts` for why a limit counted
-            in UTF-16 code units never narrows the API's 256-byte bound.
-
-            `autocomplete="new-password"` on both: this is a credential being created for
-            somebody else, so a browser must not fill the operator's own. Zero visual
-            cost, which is why the precedence order permits it.
+            The password pair. `signup.ascx:L94` and `L100` declare `textmode="password"` and
+            `maxlength="20"`.
           -->
           <app-form-field
             label="Password:"
@@ -652,12 +300,8 @@
           </app-form-field>
 
           <!--
-            The confirmation is CLIENT-ONLY: neither the fifteen-parameter legacy call
-            nor the request contract declares a member for it, so it is compared and
-            discarded. Its field carries both its own requiredness message and the
-            cross-field mismatch wording "The Password Values Entered Do Not Match.",
-            which the component resolves in that order - the legacy check was imperative,
-            at `Signup.ascx.vb:L219-L222`, and is declarative here.
+            The confirmation is CLIENT-ONLY: neither the fifteen-parameter legacy call nor the request
+            contract declares a member for it, so it is compared and discarded.
           -->
           <app-form-field
             label="Confirm:"
@@ -677,12 +321,6 @@
             />
           </app-form-field>
 
-          <!--
-            `type="email"` is deliberately NOT used. The legacy box carried a
-            required-field validator and no pattern of any kind, so a browser-enforced
-            format check would refuse addresses the legacy operator could enter. The API
-            applies its own format rule and its verdict is reported against this field.
-          -->
           <app-form-field
             label="Email:"
             for="portal-form-email"
@@ -703,20 +341,7 @@
         </div>
       </fieldset>
 
-      <!--
-        The action row. See annotation 10 for why neither control carries an image.
-
-        The submit control is NOT disabled on invalidity: the legacy buttons were always
-        enabled and validation ran on click, so pressing submit is how an operator asks
-        to be told what is wrong, and disabling it would hide every field message behind
-        a control that cannot be pressed. It is disabled only while a write is in flight,
-        and it reports that state to assistive technology as well as visually.
-
-        The cancel control is `type="button"`, so it can never submit the form, which is
-        the faithful translation of the measured `causesvalidation="False"` at
-        `signup.ascx:L114`. Nothing is marked touched on the way out and no field message
-        appears.
-      -->
+      <!-- The action row. -->
       <div class="portal-form__actions">
         <button type="submit" [disabled]="!canSubmit()" [attr.aria-busy]="saving()">
           {{ submitLabel() }}
@@ -731,14 +356,7 @@
         }
       </div>
 
-      <!--
-        THE CLOSING NOTE, RE-AUTHORED AS REAL MARKUP - annotation 5. The stored
-        `Note.Text` value is HTML, and the legacy renderer assigned it straight to a Web
-        Forms label, which emits it unencoded. Here the emphasis is an authored element
-        and the sentence is literal text, so nothing is bound, nothing is sanitised and
-        nothing could execute. Shown while creating only, because it speaks about
-        creation.
-      -->
+      <!-- THE CLOSING NOTE, RE-AUTHORED AS REAL MARKUP - annotation 5. -->
       <p class="portal-form__note">
         <strong>*Note:</strong> Once your portal is created, you will need to login using
         the Administrator information specified above.

@@ -9,9 +9,7 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Persistence;
 
-/// <summary>
-/// Covers the role repository, its groups and its account assignments.
-/// </summary>
+/// <summary>Covers the role repository, its groups and its account assignments.</summary>
 /// <remarks>
 /// <para>
 /// Almost every assertion here works inside a tenant this suite creates through the repository rather than
@@ -20,8 +18,8 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// count or ordering assertion dependent on which other suite happened to run first.
 /// </para>
 /// <para>
-/// Role identifiers begin at zero in this schema, so a role identifier of zero is a real role rather than an
-/// unset value. The assertions below never treat it as absent, and the assignment created through the
+/// Role identifiers begin at zero in this schema, so a role identifier of zero is a real role rather than
+/// an unset value. The assertions below never treat it as absent, and the assignment created through the
 /// navigation property exists specifically to prove that a brand-new role can be referenced before its
 /// identifier is known.
 /// </para>
@@ -162,10 +160,9 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            // MIGRATION: uniqueness needs no dedicated member. IX_RoleName is UNIQUE over
-            // (PortalID, RoleName), so GetRoleByName (membership DataProvider.vb:L94) can match at most
-            // one row and the row it matches IS the answer - including which role holds the name, which
-            // a boolean could not report.
+            // Uniqueness needs no dedicated member. IX_RoleName is UNIQUE over (PortalID, RoleName), so
+            // GetRoleByName can match at most one row and the row it matches IS the answer - including
+            // which role holds the name, which a boolean could not report.
             Role? taken = await roles.GetByNameAsync(portalId, roleName);
             taken.Should().NotBeNull();
             taken!.RoleId.Should().Be(roleId, "the match names the role holding the name, so an edit can recognise itself");
@@ -184,10 +181,6 @@ public sealed class RoleRepositoryTests
 
     /// <summary>Only the roles marked for automatic assignment are returned.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is the set every newly registered account joins, so a role appearing here by mistake would grant
-    /// access to everyone who signs up.
-    /// </remarks>
     [Fact]
     public async Task GetByPortalIdAsync_CarriesTheAutoAssignmentFlag()
     {
@@ -202,10 +195,9 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            // MIGRATION: the membership provider had no auto-assigned procedure - it exposed
-            // GetPortalRoles(PortalId) alone (DataProvider.vb:L91) and the caller tested the column. The
-            // flag is therefore asserted on the rows this read returns, which is where the legacy
-            // behaviour actually lived.
+            // The membership provider had no auto-assigned procedure - it exposed GetPortalRoles(PortalId)
+            // alone and the caller tested the column. The flag is therefore asserted on the rows this read
+            // returns, which is where the legacy behaviour actually lived.
             List<Role> automatic = (await roles.GetByPortalIdAsync(portalId))
                 .Where(role => role.AutoAssignment)
                 .ToList();
@@ -251,38 +243,20 @@ public sealed class RoleRepositoryTests
             IReadOnlyList<Role> page = await roles.GetByPortalIdAsync(portalId);
 
             // Ordered by name, matching the terminal GetPortalRoles ORDER BY R.RoleName
-            // (04.08.00.SqlDataProvider:L41). The owned subset is selected because the same procedure
-            // also admits installation-wide roles, which the next assertion covers explicitly.
+            // (04.08.00.SqlDataProvider:L41). The owned subset is selected because the same procedure also
+            // admits installation-wide roles, which the next assertion covers explicitly.
             page.Where(role => role.PortalId == portalId).Select(role => role.RoleId)
                 .Should().Equal(new[] { first, second, third });
 
             // Nothing belonging to another tenant may appear. Expressed as "no row owned by a different
-            // portal" rather than as a positive predicate, so the assertion still means something when
-            // the installation happens to define no host role at all.
+            // portal" rather than as a positive predicate, so the assertion still means something when the
+            // installation happens to define no host role at all.
             page.Where(role => role.PortalId != portalId && role.PortalId != null)
                 .Should().BeEmpty("a tenant listing may not disclose another tenant's roles");
 
             IReadOnlyList<Role> elsewhere = await roles.GetByPortalIdAsync(UnknownPortalId);
             elsewhere.Where(role => role.PortalId != null).Should().BeEmpty();
             elsewhere.Select(role => role.RoleId).Should().NotContain(first);
-
-            // MIGRATION: THE READ CARRIES A PREDICATE THAT THE TERMINAL COLUMN LEAVES UNSATISFIABLE, and
-            // this suite used to fabricate a row to exercise it. The terminal GetPortalRoles filters on
-            // ( R.PortalId = @PortalId OR R.PortalId is null ) at 04.08.00.SqlDataProvider:L40, and the
-            // repository reproduces that predicate faithfully - but Roles.PortalID is int NOT NULL in the
-            // terminal schema (01.00.05.SqlDataProvider:2749, corroborated by the fresh-install snapshot at
-            // DotNetNuke.Schema.SqlDataProvider:6209), so no installation can hold such a row and the null
-            // branch can never be true.
-            //
-            // The earlier version of this test inserted a role with PortalId = null and asserted that the
-            // listing returned it. It passed only because Schema/DnnSchema.sql had drifted to declaring the
-            // column NULL, which measuring against Schema/TerminalSchema.manifest exposed. Asserting
-            // behaviour over data production cannot hold is worse than asserting nothing, because it reads
-            // downstream as proof of a capability that does not exist. The constraint that makes the branch
-            // unreachable is proved instead by LegacySchemaFidelityTests
-            // Roles_RefusesARoleThatBelongsToNoPortal, and the rollback on that refusal by the sibling test
-            // below. The predicate itself stays in the repository because the legacy procedure wrote it and
-            // the Minimal Change Clause protects that, not because anything can exercise it.
         }
         finally
         {
@@ -295,11 +269,6 @@ public sealed class RoleRepositoryTests
 
     /// <summary>The host-wide listing crosses tenant boundaries, as the argument-less legacy read did.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Realises membership <c>DataProvider.vb:L92 GetRoles()</c>, which took no argument and applied no
-    /// filter. It is the one role read that is deliberately not tenant-scoped, so a caller answering a
-    /// question about one portal must not reach for it.
-    /// </remarks>
     [Fact]
     public async Task GetAllAsync_ReturnsRolesFromEveryTenant()
     {
@@ -317,8 +286,8 @@ public sealed class RoleRepositoryTests
             IReadOnlyList<Role> everything = await roles.GetAllAsync();
 
             // The three roles this test created, and the seeded tenant's own, are all present - which is
-            // what "no filter" means and is exactly why this member is not the one a tenant-scoped
-            // caller should use.
+            // what "no filter" means and is exactly why this member is not the one a tenant-scoped caller
+            // should use.
             everything.Select(role => role.RoleId).Should()
                 .Contain(first).And.Contain(second).And.Contain(third)
                 .And.Contain(_fixture.Seed.AdministratorRoleId);
@@ -337,13 +306,6 @@ public sealed class RoleRepositoryTests
 
     /// <summary>Only the tenant's public roles are offered for subscription.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Realises membership <c>DataProvider.vb:L115 GetServices(PortalId, UserId)</c>. The terminal
-    /// procedure at <c>04.05.00.SqlDataProvider:L36-L37</c> filters on
-    /// <c>R.PortalId = @PortalId and R.IsPublic = 1</c>, so a private role must never appear here: it
-    /// would offer a subscription to a grouping the tenant never published. The portal condition is a
-    /// strict equality there, so installation-wide roles are excluded as well.
-    /// </remarks>
     [Fact]
     public async Task GetSubscribableRolesAsync_ReturnsOnlyThePublicRoles()
     {
@@ -385,10 +347,6 @@ public sealed class RoleRepositoryTests
 
     /// <summary>A group filter selects that group's roles and the group navigation is loaded.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The group name is projected alongside each role, so the navigation has to be loaded by the listing
-    /// rather than left for a caller to fetch one row at a time.
-    /// </remarks>
     [Fact]
     public async Task GetRolesByGroupAsync_SelectsThatGroupAndLoadsItsNavigation()
     {
@@ -404,7 +362,6 @@ public sealed class RoleRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-            // Realises membership DataProvider.vb:L105 GetRolesByGroup(RoleGroupId, PortalId).
             IReadOnlyList<Role> inGroup = await roles.GetRolesByGroupAsync(groupId, portalId);
 
             inGroup.Should().ContainSingle();
@@ -466,9 +423,6 @@ public sealed class RoleRepositoryTests
 
                 (await roles.GetRoleGroupsAsync(UnknownPortalId)).Should().BeEmpty();
 
-                // MIGRATION: group-name uniqueness is settled over this list. The membership provider
-                // exposed GetRoleGroups(portalId) (DataProvider.vb:L104) and no existence procedure, so
-                // the comparison was always the caller's.
                 listed.Should().Contain(entry => entry.RoleGroupName == firstName);
                 (await roles.GetRoleGroupsAsync(_fixture.Seed.PortalId)).Should()
                     .NotContain(entry => entry.RoleGroupName == firstName,
@@ -499,8 +453,6 @@ public sealed class RoleRepositoryTests
         using IServiceScope scope = _fixture.Services.CreateScope();
         IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
 
-        // Realises membership DataProvider.vb:L109 GetUserRole(PortalID, UserId, RoleId), in that
-        // argument order.
         UserRole? assignment = await roles.GetUserRoleAsync(
             _fixture.Seed.PortalId,
             _fixture.Seed.AdminUserId,
@@ -515,22 +467,15 @@ public sealed class RoleRepositoryTests
         (await roles.GetUserRoleAsync(_fixture.Seed.PortalId, UnknownUserId, _fixture.Seed.AdministratorRoleId))
             .Should().BeNull();
 
-        // MIGRATION: dbo.UserRoles has no portal column, so the tenant anchor is taken from the role the
-        // assignment points at. A real assignment asked about under another tenant is therefore absent,
-        // which is what stops one tenant answering another tenant's membership question.
+        // Dbo.UserRoles has no portal column, so the tenant anchor is taken from the role the assignment
+        // points at. A real assignment asked about under another tenant is therefore absent, which is what
+        // stops one tenant answering another tenant's membership question.
         (await roles.GetUserRoleAsync(UnknownPortalId, _fixture.Seed.AdminUserId, _fixture.Seed.AdministratorRoleId))
             .Should().BeNull();
     }
 
     /// <summary>Assignments resolve by login name, and the role name narrows the answer optionally.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Realises membership <c>DataProvider.vb:L111 GetUserRolesByUsername(PortalID, Username,
-    /// Rolename)</c>. The legacy role argument was optional and a null meant "every role", which is why
-    /// it is the one nullable argument on the contract. An empty string is a different question: the
-    /// legacy no-string marker WAS the empty string, so it narrows to a role of that name rather than
-    /// widening to all of them, and the two must not be conflated.
-    /// </remarks>
     [Fact]
     public async Task GetUserRolesByUsernameAsync_ResolvesByLoginNameAndNarrowsByRoleName()
     {
@@ -706,30 +651,11 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// WHAT THIS ORACLE CHANGED AND WHY. An earlier revision asserted that the REPOSITORY reproduced
-    /// <c>Null.GetNull</c> - that it read a submitted <c>DateTime.MinValue</c> as absence before staging.
-    /// That translation is a subscription rule and <c>RoleService.NormalizeLegacyDateMarker</c> already
-    /// owned it, so the persistence layer held a second implementation of one rule: two copies that agree
-    /// until one is amended, and then disagree on exactly the case that prompted the amendment. Rule T2
-    /// gives interpretation to the Application layer, so the repository copy was removed and this test now
-    /// pins the contract that replaced it - a write member decides nothing.
-    /// </para>
-    /// <para>
     /// THE THIRD ASSERTION IS THE LOAD-BEARING ONE. Both columns are <c>datetime</c>, whose range begins at
     /// 1753-01-01, so 0001-01-01 is not merely absent from them but UNSTORABLE. Proving that the store
-    /// refuses it is what makes the Application-layer translation demonstrably necessary rather than
-    /// merely tidy, and it proves that nothing between the entity and the column silently hides the marker
-    /// - which is precisely the guarantee <c>UserRoleConfiguration</c> claims by installing no value
-    /// conversion. It also has to be an INTEGRATION assertion: an in-memory store accepts 0001-01-01
-    /// happily and would prove nothing at all.
-    /// </para>
-    /// <para>
-    /// The marker carries a time component, because the legacy emptiness test compared DATE PARTS ONLY
-    /// (<c>Null.vb</c> L183-L186, "this avoids subtle time differences") and a value copied out of a
-    /// legacy object may well have one attached. The Application-layer rule matches that comparison; here
-    /// the value serves only to prove the column rejects it.
-    /// </para>
+    /// refuses it is what makes the Application-layer translation demonstrably necessary rather than merely
+    /// tidy, and it proves that nothing between the entity and the column silently hides the marker - which
+    /// is precisely the guarantee <c>UserRoleConfiguration</c> claims by installing no value conversion.
     /// </remarks>
     [Fact]
     public async Task Assignment_StagesBothBoundsExactlyAsSupplied()
@@ -772,10 +698,7 @@ public sealed class RoleRepositoryTests
                 assignment.Should().NotBeNull();
 
                 // A real bound, so the null that follows cannot be mistaken for the value simply never
-                // having changed. It is stated in the PAST deliberately: the repository must persist it
-                // unchanged rather than advancing it to the present instant, because that is what keeps the
-                // expire-rather-than-delete cancellation - which back-dates an expiry by one day - reachable
-                // at all.
+                // having changed.
                 assignment!.ExpiryDate = realExpiry;
                 await roles.UpdateUserRoleAsync(assignment);
                 await unitOfWork.SaveChangesAsync();
@@ -854,10 +777,9 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is how a role that automatically assigns itself enrols the existing membership at the moment it is
-    /// created. The identifier is not known until the save happens, and it may turn out to be zero, which is
-    /// indistinguishable from an unset value. Referring to the role object instead leaves the store to fill in
-    /// the identifier, so the pattern is correct whatever value the identity column produces.
+    /// This is how a role that automatically assigns itself enrols the existing membership at the moment it
+    /// is created. The identifier is not known until the save happens, and it may turn out to be zero,
+    /// which is indistinguishable from an unset value.
     /// </remarks>
     [Fact]
     public async Task AddAsync_ThroughTheNavigation_SavesARoleAndItsFirstMemberTogether()
@@ -880,9 +802,9 @@ public sealed class RoleRepositoryTests
                     IsPublic = true,
                 };
 
-                // Both stagings return a bare task: neither yields the generated key, which is exactly
-                // what lets the role and its first member commit as one unit even though the key is not
-                // known until they do.
+                // Both stagings return a bare task: neither yields the generated key, which is exactly what
+                // lets the role and its first member commit as one unit even though the key is not known
+                // until they do.
                 await roles.AddAsync(role);
                 await roles.AddUserRoleAsync(new UserRole { UserId = _fixture.Seed.MemberUserId, Role = role });
 
@@ -909,9 +831,9 @@ public sealed class RoleRepositoryTests
     /// <summary>Removing a role takes its memberships with it.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The cascade is declared in the schema rather than performed by the application. Leaving the membership
-    /// rows behind would leave assignments naming a role that no longer exists, and the permission evaluation
-    /// resolves role names by joining through exactly those rows.
+    /// The cascade is declared in the schema rather than performed by the application. Leaving the
+    /// membership rows behind would leave assignments naming a role that no longer exists, and the
+    /// permission evaluation resolves role names by joining through exactly those rows.
     /// </remarks>
     [Fact]
     public async Task DeleteAsync_TakesTheRolesMembershipsWithIt()
@@ -950,33 +872,7 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The terms are asserted together rather than one per test because they are one commercial
-    /// statement: a fee without its period and frequency does not describe a subscription, and a mapping
-    /// that carried the fee but dropped the period would leave a role priced but never billed. The group
-    /// is reassigned in the same amendment, so the update path is proven to move a role between groups
-    /// and not merely to rewrite its own columns.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE LEGACY UPDATE TOOK THIRTEEN POSITIONAL ARGUMENTS AND DISAGREED WITH ITS OWN STORE.
-    /// Membership <c>DataProvider.vb</c> declared
-    /// <c>UpdateRole(RoleId, RoleGroupId, Description, ServiceFee As Single, BillingPeriod As String,
-    /// BillingFrequency As String, TrialFee As Single, TrialPeriod As Integer, TrialFrequency As String,
-    /// IsPublic, AutoAssignment, RSVPCode, IconFile)</c> - a floating-point fee and a STRING billing
-    /// period - while <c>RoleInfo.vb</c> exposed <c>BillingPeriod</c> as an <c>Integer</c> and the
-    /// terminal schema declares it <c>int NULL</c>. Under Rule T4 the store settles the disagreement, so
-    /// the amendment below works in <c>decimal?</c> fees and <c>int?</c> periods and never in a
-    /// <c>Single</c> or a numeric string. The positional list itself is gone: the entity carries the
-    /// terms and one member stages it.
-    /// </para>
-    /// <para>
-    /// The fee is deliberately 999.99, the largest value a <c>decimal(5, 2)</c> column could hold. It is
-    /// asserted here because that narrower type is what an early reading of the baseline DDL suggests -
-    /// <c>01.00.00.SqlDataProvider</c> declares <c>[ServiceFee] [decimal](5, 2) NULL</c> - whereas the
-    /// TERMINAL schema this suite runs against declares <c>money</c>, which the sibling assertion on a
-    /// five-figure fee proves. Both facts matter: the ceiling value must round-trip exactly, and no
-    /// assertion here may claim a ceiling the running store does not in fact impose.
-    /// </para>
+    /// The fee is deliberately 999.99, the largest value a <c>decimal(5, 2)</c> column could hold.
     /// </remarks>
     [Fact]
     public async Task UpdateAsync_AmendsEveryPaidMembershipTerm()
@@ -1067,21 +963,9 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// This is the half of the update path that a round-trip test alone never reaches. Writing a value and
     /// reading it back proves the column is bound; writing an absence over a value proves the binding
-    /// carries absence too, which is what a role reverting from paid to free requires. Every term
-    /// involved is optional in the terminal schema - <c>BillingPeriod</c> and <c>TrialPeriod</c> are
-    /// <c>int NULL</c>, the two frequencies are <c>char(1) NULL</c>, and <c>RSVPCode</c> and
-    /// <c>IconFile</c> are nullable text - so the entity models each of them as a nullable CLR type and
-    /// nothing here has to recognise a sentinel to express "no value" (Rule T7).
-    /// </para>
-    /// <para>
-    /// The group membership is cleared in the same amendment. MIGRATION: the legacy row expressed "in no
-    /// group" as the <c>Null.NullInteger</c> marker -1 rather than as SQL <c>NULL</c>, and -1 is
-    /// simultaneously a legitimate <c>Portals.PortalID</c>, so the marker was never safe to read as
-    /// absence. The target models the relationship as <c>int?</c> and the absence is a genuine null.
-    /// </para>
+    /// carries absence too, which is what a role reverting from paid to free requires.
     /// </remarks>
     [Fact]
     public async Task UpdateAsync_ClearsTheOptionalTermsBackToAbsent()
@@ -1176,12 +1060,6 @@ public sealed class RoleRepositoryTests
 
     /// <summary>A role group is renamed and redescribed through its own update member.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The group members are read back afterwards to prove the amendment did not disturb them. The legacy
-    /// <c>UpdateRoleGroup(RoleGroupId, GroupName, Description)</c> carried exactly these two mutable
-    /// values and nothing else, so a target that also touched the group's roles would be doing more than
-    /// the member it stands in for.
-    /// </remarks>
     [Fact]
     public async Task UpdateRoleGroupAsync_RenamesTheGroupWithoutDisturbingItsRoles()
     {
@@ -1252,30 +1130,6 @@ public sealed class RoleRepositoryTests
     /// <param name="frequency">The member under test.</param>
     /// <param name="storedCode">The character the column must hold for that member.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: ALL SIX CODES ARE LOAD-BEARING, NOT FOUR. The legacy
-    /// <c>Library/Components/Security/Roles/RoleController.vb</c> branches on the literal characters
-    /// <c>N</c>, <c>O</c>, <c>D</c>, <c>W</c>, <c>M</c> and <c>Y</c> in one <c>Select Case</c>, and the two
-    /// non-interval codes carry as much meaning as the four intervals: <c>N</c> assigned the legacy
-    /// absent-date marker, meaning the membership never lapses, and <c>O</c> assigned the literal
-    /// <c>New System.DateTime(9999, 12, 31)</c>, meaning a single fee buys perpetual access. A migration
-    /// that carried only the four interval codes would silently reprice every free and every one-off role
-    /// in an existing installation.
-    /// </para>
-    /// <para>
-    /// The stored character is asserted directly rather than inferred from the round-trip, because a
-    /// conversion that persisted the enumeration's ORDINAL would round-trip perfectly through this same
-    /// code path while writing bytes no existing DotNetNuke database contains and no legacy procedure can
-    /// read. The character is the contract; the member is an alias for it. That is also why the members
-    /// carry the code points as their values, which the <c>ushort</c> base of the enumeration permits.
-    /// </para>
-    /// <para>
-    /// Both frequency columns are exercised with the same code in one row, because they are two
-    /// independent columns sharing one conversion and a mapping that bound only the billing column would
-    /// otherwise pass.
-    /// </para>
-    /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
     [InlineData(BillingFrequency.None, "N")]
@@ -1347,44 +1201,11 @@ public sealed class RoleRepositoryTests
     /// <param name="storedCode">A single character an existing installation is known to hold.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// THIS IS THE MOST CONSEQUENTIAL ASSERTION IN THIS FILE, and the reason is in the shipped data rather
     /// than in the code. <c>Roles.BillingFrequency</c> is <c>char(1) NULL</c>, which accepts any single
     /// character, and the installation seed in <c>01.00.00.SqlDataProvider</c> takes that literally: the
     /// Administrators role is inserted with <c>BillingFrequency = '4'</c> and the Registered Users role
-    /// with <c>'0'</c>. Neither is in <c>{N, O, D, W, M, Y}</c>. A strict <c>Enum.Parse</c>, or a
-    /// conversion that raised on an unrecognised code, would therefore be unable to read the two roles
-    /// present in every single installation - including the Administrators role, whose key is the target
-    /// of <c>Portals.AdministratorRoleId</c> and whose membership the tenant-administration policy grants
-    /// on. Role administration would fail at the read, before any business rule ran.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE LEGACY SWITCH HAD NO <c>Case Else</c>, AND THE TARGET REPRODUCES ITS TOLERANCE
-    /// WITHOUT REPRODUCING ITS SILENCE. An unrecognised code fell through every arm of the legacy
-    /// <c>Select Case</c> and left the expiry date exactly as it was - it did not raise, did not clear the
-    /// value and did not substitute a default. The target conversion is tolerant in the same direction and
-    /// CARRIES the unrecognised character rather than resolving it to a declared member: the enumeration is
-    /// backed by <c>ushort</c> and each member IS its own code point, so any stored character is
-    /// representable exactly and the write direction casts the identical character back.
-    /// </para>
-    /// <para>
-    /// MIGRATION: an earlier revision normalised an unrecognised code to the member whose meaning is "not
-    /// billed", on the reasoning that a frequency nobody can understand should generate no billing event.
-    /// That reading was defensible in isolation and wrong in context, for two measured reasons. A role
-    /// update rewrites both frequency columns from the materialised value, so editing an unrelated field
-    /// silently rewrote a stored <c>'4'</c> as <c>'N'</c> - destroying data AAP Rule T4 makes authoritative.
-    /// And it was not even behaviour-preserving: the legacy trial test was
-    /// <c>TrialFrequency.ToString() &lt;&gt; "N"</c> (<c>RoleController.vb</c> L521), which an unrecognised
-    /// character SATISFIES, so normalising to None flipped whether the trial governed the derived expiry.
-    /// The preservation is asserted below, in the read-modify-write shape that the normalisation could not
-    /// have survived.
-    /// </para>
-    /// <para>
-    /// Both codes are read through the ordinary repository members, single and listing, so the tolerance is
-    /// proven on the paths the application actually uses rather than on a bespoke query. The unrecognised
-    /// character is placed in the column by an <c>UPDATE</c> because no code path in the target can write
-    /// one - which is the point: the target never produces such a row, and must still read one.
-    /// </para>
+    /// with <c>'0'</c>.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -1435,11 +1256,7 @@ public sealed class RoleRepositoryTests
                 .Select(role => role.BillingFrequency)
                 .Should().Equal(carried);
 
-            // MIGRATION: the resolution is deliberately NOT null. A null frequency means "this role
-            // carries no frequency at all", which is what an untouched legacy column means; the seeded
-            // rows do carry a character, and flattening the two cases together would lose the fact that
-            // something unreadable was stored. The distinction is asserted here so that a later change to
-            // the conversion cannot quietly merge them.
+            // The resolution is deliberately NOT null.
             (await ReadStoredBillingFrequencyAsync(roleId)).Should().Be(
                 storedCode,
                 "reading the row does not rewrite it");
@@ -1459,26 +1276,10 @@ public sealed class RoleRepositoryTests
     /// <param name="storedTrial">The trial character to plant, deliberately different from the billing one.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// THIS IS THE ASSERTION THAT DISTINGUISHES A TOLERANT READ FROM A LOSSLESS ONE, and it is the one that
-    /// matters, because a tolerant-but-lossy read passes every test that only reads. A role update writes
-    /// both frequency columns from whatever the read materialised, so a read that resolved an unrecognised
-    /// character to a declared member turned every unrelated edit into a silent, irreversible rewrite of
-    /// authoritative legacy data. AAP Rule T4 makes the existing database authoritative; nothing in this
-    /// migration may edit a column the caller did not ask to change.
-    /// </para>
-    /// <para>
     /// The two columns are planted with DIFFERENT characters on purpose. A single shared character would
     /// let a conversion that read one column and wrote both pass, and the two columns are the same store
     /// type over the same vocabulary bound by the same shared converter instance - so proving they move
     /// independently is what proves neither is being written from the other.
-    /// </para>
-    /// <para>
-    /// The characters are the ones every installation ships: <c>'4'</c> on the Administrators role and
-    /// <c>'0'</c> on the Registered Users role (<c>01.00.00.SqlDataProvider</c> L7192 and L7194). Only a
-    /// direct statement can plant them, because no code path in the target produces such a character - and
-    /// that is the point: the target never writes one and must never destroy one either.
-    /// </para>
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -1558,9 +1359,7 @@ public sealed class RoleRepositoryTests
     /// <remarks>
     /// The companion to the case above, and the harder half. A TRACKED role writes only the columns the
     /// caller changed, so preservation there follows from the change tracker as much as from the
-    /// conversion. A DETACHED role is written in full, so every column goes to the store including both
-    /// frequencies - which means only a genuinely lossless conversion can leave them intact. Reading in one
-    /// scope and writing in another is what makes the instance detached.
+    /// conversion.
     /// </remarks>
     [Fact]
     public async Task UnrecognisedStoredBillingCode_SurvivesADetachedUpdate()
@@ -1622,31 +1421,10 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: EVERY LEGACY INSERT RETURNED THE GENERATED KEY; NONE OF THESE DOES. Each legacy
-    /// procedure ended in <c>SCOPE_IDENTITY()</c> and its provider member was declared
-    /// <c>As Integer</c> - <c>AddRole</c>, <c>AddRoleGroup</c> and <c>AddUserRole</c> alike - so the
-    /// caller received the key at the moment of the call and the call therefore had to be its own
-    /// transaction. The target inverts that: <c>AddAsync</c> returns a bare <c>Task</c>, stages an
-    /// intention, and the key appears on the entity only once <c>IUnitOfWork.SaveChangesAsync</c> has run.
-    /// That is what allows one commit to span the several tables a tenant creation writes, and it is why
-    /// no member of this contract can return an <c>int</c>. The absence of a return value is proven at
-    /// compile time by the staging calls in this file being statements rather than assignments.
-    /// </para>
-    /// <para>
-    /// The proof of "not yet persisted" is the SEPARATE-SCOPE READ, not the numeric value of the key.
-    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so zero is a legitimate role identifier and an
-    /// unwritten entity is indistinguishable from the first role of an installation by inspecting the
-    /// property alone. The uncommitted value is asserted as well, but only as the CLR default it is, with
-    /// the visibility check carrying the actual claim.
-    /// </para>
-    /// <para>
-    /// <c>Entity{TId}.IdentityIsPersisted</c> is deliberately NOT asserted to become true after the
-    /// commit. Nothing in this solution declares it automatically - there is no interceptor and no
-    /// post-save hook calling <c>MarkIdentityPersisted</c> - so it remains false on an entity the store
-    /// has just written, and a test asserting otherwise would be asserting a mechanism that does not
-    /// exist.
-    /// </para>
+    /// EVERY LEGACY INSERT RETURNED THE GENERATED KEY; NONE OF THESE DOES. Each legacy procedure ended in
+    /// <c>SCOPE_IDENTITY()</c> and its provider member was declared <c>As Integer</c> - <c>AddRole</c>,
+    /// <c>AddRoleGroup</c> and <c>AddUserRole</c> alike - so the caller received the key at the moment of
+    /// the call and the call therefore had to be its own transaction.
     /// </remarks>
     [Fact]
     public async Task AddAsync_StagesTheRoleAndTheKeyArrivesOnlyWithTheCommit()
@@ -1720,22 +1498,8 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// This is the commit boundary the whole staging arrangement exists for, exercised across all three
-    /// tables this contract owns. The legacy engine could not express it: each of
-    /// <c>AddRoleGroup</c>, <c>AddRole</c> and <c>AddUserRole</c> was a separate procedure returning its
-    /// own <c>SCOPE_IDENTITY()</c>, so the caller had to commit the group before it could name it in the
-    /// role, and commit the role before it could name it in the assignment. A failure between two of
-    /// those calls left the tenant holding a group with no roles, or a role with no members, with no
-    /// mechanism to undo it.
-    /// </para>
-    /// <para>
-    /// The two dependent rows refer to their parents through NAVIGATIONS rather than through keys, which
-    /// is the only formulation that works before the keys exist. It is also the formulation that survives
-    /// the identity seeds of this schema unharmed: the group's key may legitimately be zero and so may
-    /// the role's, so any code that waited for a non-zero key before wiring up a child would wait for
-    /// ever on the first group and the first role of an installation.
-    /// </para>
+    /// tables this contract owns.
     /// </remarks>
     [Fact]
     public async Task OneSaveChanges_CommitsAGroupARoleAndItsFirstMemberTogether()
@@ -1849,30 +1613,8 @@ public sealed class RoleRepositoryTests
     /// <param name="expected">The classification both the staged and the stored membership must report.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The classification itself is a pure Domain method taking the instant as a parameter, so it needs no
-    /// database to exercise. What needs one is the claim that the classification is STABLE ACROSS
-    /// PERSISTENCE: the two bounds are SQL Server <c>datetime</c> columns, whose resolution is coarser
-    /// than a CLR <c>DateTime</c>, and a membership that reported one status in memory and another after a
-    /// round-trip would be an authorisation answer that changed when nothing about the grant did. Both
-    /// bounds are therefore whole days, which <c>datetime</c> represents exactly, and both readings are
-    /// asserted against the same fixed instant.
-    /// </para>
-    /// <para>
-    /// The instant is far in the future so that the write-path normalisation does not consume the cases.
-    /// An effective bound already in the past is deliberately cleared to null on the way to the store -
-    /// the legacy <c>If EffectiveDate &lt; Now Then EffectiveDate = Null.NullDate</c> - so a case built
-    /// around a past start would arrive as an unbounded one and would prove the wrong thing.
-    /// </para>
-    /// <para>
-    /// MIGRATION: BOTH BOUNDS ARE INCLUSIVE, AND EXPIRY OUTRANKS A START THAT HAS NOT ARRIVED. The
-    /// inclusive reading is the measured behaviour of the terminal <c>GetRolesByUser</c> predicate, which
-    /// admits a membership sitting exactly on either bound, so the zero-offset case below is in force
-    /// rather than lapsed. The precedence matters because the two bounds really can contradict each other:
-    /// the cancellation path back-dates the expiry by a day and never touches the effective date, so a
-    /// cancelled future membership exists in ordinary data. Reporting it as pending would tell an
-    /// administrator it was about to begin.
-    /// </para>
+    /// database to exercise.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -1958,19 +1700,9 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> and <c>UserRoles.UserRoleID</c> is
-    /// <c>IDENTITY(1, 1)</c>, so within this one contract zero is a legitimate role key and is not a
-    /// legitimate assignment key. Neither fact is safe to generalise from the other, and code that
-    /// standardised on either reading would be wrong half the time here: rejecting zero as invalid makes
-    /// the Administrators role of every installation unaddressable, while accepting it as an assignment
-    /// key admits a value the store never issues.
-    /// </para>
-    /// <para>
-    /// The seeds are read from the catalogue as well as observed through the repository, because a suite
-    /// running against a database whose seeds had been normalised would otherwise pass while proving
-    /// nothing about the schema the application must actually work with.
-    /// </para>
+    /// <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> and <c>UserRoles.UserRoleID</c> is <c>IDENTITY(1,
+    /// 1)</c>, so within this one contract zero is a legitimate role key and is not a legitimate assignment
+    /// key.
     /// </remarks>
     [Fact]
     public async Task IdentitySeeds_MakeZeroARoleKeyButNeverAnAssignmentKey()
@@ -2011,27 +1743,9 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: THE LEGACY WRITE PATH TURNED BOTH OF THESE INTO <c>NULL</c>, AND THE TARGET DOES NOT.
-    /// <c>Null.vb</c> defines <c>NullString</c> as the EMPTY STRING and <c>NullBoolean</c> as
-    /// <see langword="false"/>, and <c>Null.GetNull</c> substituted <c>DBNull</c> for any value equal to
-    /// the marker for its type. An empty description and a false flag were therefore both persisted as
-    /// <c>NULL</c> by the legacy layer, which made "the administrator cleared this field" and "this field
-    /// was never set" the same stored row, and made a false flag indistinguishable from an unknown one.
-    /// </para>
-    /// <para>
-    /// The target writes what it is given. That is a deliberate divergence in the stored bytes rather than
-    /// an oversight, and it is the right way round: the two boolean columns are <c>NOT NULL</c> in the
-    /// terminal schema, so <c>false</c> has a home in them and nothing is lost, while
-    /// <c>UserRoles.IsTrialUsed</c> is genuinely nullable and is modelled <c>bool?</c> precisely so that a
-    /// legacy <c>NULL</c> remains representable and is not silently read as "no trial used". Both halves
-    /// are asserted, because the divergence is only safe if the nullable column really does keep its null.
-    /// </para>
-    /// <para>
     /// Evidence that the legacy store is full of such empty strings rather than nulls, so that reading one
-    /// back as a null would be a live behavioural change: the seeded tenant row holds <c>HostFee</c> as
-    /// an empty string, and the seeded module rows hold their authorised-role lists the same way.
-    /// </para>
+    /// back as a null would be a live behavioural change: the seeded tenant row holds <c>HostFee</c> as an
+    /// empty string, and the seeded module rows hold their authorised-role lists the same way.
     /// </remarks>
     [Fact]
     public async Task EmptyStringsAndFalseFlagsAreStoredRatherThanCollapsedToNull()
@@ -2084,9 +1798,9 @@ public sealed class RoleRepositoryTests
                 stored.AutoAssignment.Should().BeFalse();
             }
 
-            // The nullable flag on the assignment keeps its null, which is the other half of the trade:
-            // the divergence above is only acceptable because absence remains expressible where the
-            // schema genuinely permits it.
+            // The nullable flag on the assignment keeps its null, which is the other half of the trade: the
+            // divergence above is only acceptable because absence remains expressible where the schema
+            // genuinely permits it.
             using (IServiceScope assigning = _fixture.Services.CreateScope())
             {
                 IRoleRepository roles = assigning.ServiceProvider.GetRequiredService<IRoleRepository>();
@@ -2129,33 +1843,11 @@ public sealed class RoleRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <strong>This test replaces one that asserted the opposite, and the correction is the point.</strong>
-    /// It used to insert a role with <c>PortalId = null</c> and assert that every tenant's listing returned
-    /// it, on the strength of <c>Roles.PortalID</c> being <c>int NULL</c>. That declaration was wrong:
-    /// <c>Schema/DnnSchema.sql</c> had drifted, and measuring it against the independently derived
-    /// <c>Schema/TerminalSchema.manifest</c> showed the terminal column is <c>int NOT NULL</c>
-    /// (<c>01.00.05.SqlDataProvider:2749</c>, corroborated by the fresh-install snapshot at
-    /// <c>DotNetNuke.Schema.SqlDataProvider:6209</c>). The old test therefore proved a capability no
-    /// installation has, and it could only ever have passed against a fixture that was itself wrong.
-    /// </para>
-    /// <para>
     /// <strong>What is asserted here instead is a repository property rather than a schema one.</strong>
     /// That the column refuses the row is proved by <c>LegacySchemaFidelityTests</c>
     /// <c>Roles_RefusesARoleThatBelongsToNoPortal</c>; what this adds is that the refusal is CLEAN - the
     /// unit of work leaves nothing behind, and a subsequent read through a fresh scope sees precisely the
-    /// roles that existed before the attempt. A half-applied write would be invisible to the schema
-    /// assertion and visible only here.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the repository still reproduces the terminal listing predicate
-    /// <c>( R.PortalId = @PortalId OR R.PortalId is null )</c>
-    /// (<c>04.08.00.SqlDataProvider:L40</c>) and the strict equality of the single read
-    /// (<c>04.00.04.SqlDataProvider:L311-L336</c>). Against a faithful installation the null branch of the
-    /// first is unsatisfiable, so the asymmetry between the two is unobservable. It is preserved because the
-    /// legacy procedures wrote it and the Minimal Change Clause protects them, and it is recorded as
-    /// unobservable rather than left looking like tested behaviour.
-    /// </para>
+    /// roles that existed before the attempt.
     /// </remarks>
     [Fact]
     public async Task GetByPortalIdAsync_IsUnaffectedByARefusedRoleThatBelongsToNoTenant()
@@ -2366,9 +2058,7 @@ public sealed class RoleRepositoryTests
         await unitOfWork.SaveChangesAsync();
     }
 
-    /// <summary>
-    /// Counts the membership rows of a role whose two bounds are both SQL <c>NULL</c>.
-    /// </summary>
+    /// <summary>Counts the membership rows of a role whose two bounds are both SQL <c>NULL</c>.</summary>
     /// <param name="roleId">The role to count.</param>
     /// <returns>The number of unbounded membership rows.</returns>
     private Task<int> CountNullBoundsAsync(int roleId)
@@ -2445,9 +2135,7 @@ public sealed class RoleRepositoryTests
         affected.Should().Be(1, "the role this test created is the only row addressed");
     }
 
-    /// <summary>
-    /// Counts the role rows whose optional subscription terms are all null.
-    /// </summary>
+    /// <summary>Counts the role rows whose optional subscription terms are all null.</summary>
     /// <param name="roleId">The role to examine.</param>
     /// <returns>One when every optional term of that role is null, otherwise zero.</returns>
     private Task<int> CountClearedTermsAsync(int roleId)
@@ -2480,9 +2168,7 @@ public sealed class RoleRepositoryTests
             new Dictionary<string, object?> { ["roleId"] = roleId });
     }
 
-    /// <summary>
-    /// Counts the role rows whose two flag columns hold a stored false rather than a null.
-    /// </summary>
+    /// <summary>Counts the role rows whose two flag columns hold a stored false rather than a null.</summary>
     /// <param name="roleId">The role to examine.</param>
     /// <returns>One when both flags are present and false, otherwise zero.</returns>
     private Task<int> CountStoredFalseFlagsAsync(int roleId)
@@ -2538,21 +2224,12 @@ public sealed class RoleRepositoryTests
     }
 
     /// <summary>
-    /// The two currency columns round-trip a value larger than a two-decimal-place column could
-    /// hold, which is what distinguishes the legacy <c>money</c> type from a narrower numeric type.
+    /// The two currency columns round-trip a value larger than a two-decimal-place column could hold, which
+    /// is what distinguishes the legacy <c>money</c> type from a narrower numeric type.
     /// </summary>
     /// <remarks>
     /// This test exists because a mapping that is correct in the entity configuration can still be
-    /// contradicted by the schema the suite runs against, and nothing else here would notice. The
-    /// legacy terminal DDL declares both columns as <c>money</c> -
-    /// <c>01.00.04.SqlDataProvider:1326</c> and <c>01.00.05.SqlDataProvider:2752</c> rebuild
-    /// <c>Roles</c> with "ServiceFee money NULL", and every procedure that carries the value through
-    /// <c>04.00.04.SqlDataProvider</c> declares "@ServiceFee money". A narrower column such as
-    /// <c>decimal(5,2)</c> accepts every fee the rest of this suite uses, because those are all
-    /// 9.99 or 19.99, and overflows only on a figure no other test supplies. The value below is
-    /// deliberately above that ceiling so the column type itself is under assertion, and the read
-    /// happens in a fresh scope so the value is returned by the database rather than by the change
-    /// tracker.
+    /// contradicted by the schema the suite runs against, and nothing else here would notice.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]

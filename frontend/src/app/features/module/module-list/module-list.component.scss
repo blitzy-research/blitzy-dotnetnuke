@@ -1,56 +1,13 @@
-// Component stylesheet for the module listing screen, served by the route /modules.
-//
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
-// component's own content attribute, so a class name that drifts does not error - it silently
-// matches nothing and the screen renders unstyled. The template must therefore emit exactly
-// this vocabulary:
-//
-//     .module-list
-//     .module-list__action
-//     .module-list__search
-//     .module-list__status
-//     .module-list__row-command
-//     .module-list__row-command--danger
-//
-// The surface is deliberately flat - one block class plus element and modifier classes, no
-// deep descendant chains and no piercing selector. The shared page header, search control,
-// grid, pager, banner and dialogue each own their own appearance; this file places them and
-// styles only the affordances THIS screen declares.
-//
-// ⚠ PROJECTED CONTENT KEEPS THE SCOPING OF THE COMPONENT THAT DECLARES IT, which is why the
-// page-level actions and the four row commands are styled HERE and not in the page header's or
-// the grid's stylesheet. Those components cannot reach what they host, and this one cannot
-// reach into them.
-
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  ROOT
-// -----------------------------------------------------------------------------
-// The block class is on a wrapper rather than the host because the confirmation dialogue and
-// the four cell templates are siblings of it: the dialogue is promoted out of the layout flow
-// when it opens and the cell templates render into the grid's own cells, so neither may inherit
-// this screen's vertical rhythm.
-//
-// Body type is declared here and inherited by every region below rather than restated per rule,
-// and it is declared on the component rather than left to a global base rule: without it the
-// browser falls back to its own serif default for every heading, cell and command.
+// ROOT
 .module-list {
   display: grid;
 
-  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in
-  // `portal-list.component.scss` for the measured failure: an implicit single-column track
-  // takes an automatic `min-content` minimum, the shared grid's `min-inline-size: 40rem`
-  // therefore sets the track, and this region inflates past the column its parent offered so
-  // the table container's `overflow-x: auto` has nothing to clip. On THIS screen the
-  // consequence was sharper than a clipped table, because the screen is usually empty: the
-  // shared empty-state panel centres itself on the 640px table rather than on the viewport, so
-  // at 320px its icon, its "Nothing to Display" heading and its message all painted at x≈337 —
-  // the only content the screen had to offer was entirely off screen. The Search submit and
-  // both date sort controls went with it, and "Import Module" was clipped at 768px.
-  //
-  // The token's zero floor lets the track yield completely, so the overflow returns to the
-  // element that causes it and the container's scroll affordance works again.
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in `portal-list.component.scss` for the
+  // measured failure: an implicit single-column track takes an automatic `min-content` minimum, the shared
+  // grid's `min-inline-size: 40rem` therefore sets the track, and this region inflates past the column its
+  // parent offered so the table container's `overflow-x: auto` has nothing to clip.
   grid-template-columns: var(--grid-track-fluid);
 
   gap: var(--space-4);
@@ -59,25 +16,13 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FILTER
-// -----------------------------------------------------------------------------
-// A maximum rather than a fixed measure, so the control stays fluid on a handset and stops
-// short of a full desktop width - a single-line filter stretched across a wide viewport reads
-// as a form field for something much longer than a search term. Reading `breakpoint()` for a
-// raw width is the sanctioned use of that function; writing a media query by hand is what is
-// barred.
+// THE FILTER
 .module-list__search {
   display: block;
   max-inline-size: mx.breakpoint('sm');
 }
 
-// -----------------------------------------------------------------------------
-//  THE FAILURE AFFORDANCE ROW
-// -----------------------------------------------------------------------------
-// The banner above it is already a framed surface, so this region carries no frame of its own -
-// a second frame around a single command would read as a nesting level that does not exist. Its
-// child is left at its own content width rather than stretched.
+// THE FAILURE AFFORDANCE ROW
 .module-list__status {
   display: flex;
   flex-wrap: wrap;
@@ -85,50 +30,6 @@
   align-items: center;
 }
 
-// -----------------------------------------------------------------------------
-//  ACTIONS
-// -----------------------------------------------------------------------------
-// One rule for the two page-level links and the failure dismissal, because all three are the
-// same kind of thing: a compact text command. A link and a button are given the same box, the
-// same type and the same reset so that they cannot be told apart by appearance - the difference
-// between them is semantic, not visual.
-//
-// MIGRATION: the legacy admin action affordance is retained AS TEXT and is deliberately not
-// promoted to a filled button. The measured legacy admin command is a text style, declared at
-// `Website/Portals/_default/default.css:L442` as family, size and weight only - no background, no
-// border, no padding - and drawn as an UNDERLINED LINK in the brand colour by the anchor rules
-// that follow it at `:L450` (link), `:L456` (visited) and `:L468` (active). A filled-button rule
-// with a grey background and horizontal padding does exist separately in that stylesheet at
-// `:L475-L483`, and it carries exactly ONE reference across the whole of `Website/` - the admin
-// action bars did not use it - so promoting these three affordances to filled buttons would be an
-// unrequested visual change of precisely the kind the Minimal Change Clause forbids.
-//
-// The focus ring is re-included even though the global reset already applies it to every anchor
-// and button. The mixin is documented as idempotent for exactly this reason, and stating it on
-// the affordance keeps the ring correct if the element ever becomes something the reset does not
-// cover - which is what the sibling portal listing does too, so the two screens indicate focus
-// identically.
-//
-// ⚠ `inline-flex` IS THE DECLARED INTENT AND IS BLOCKIFIED TO `flex` AT RUN TIME - measured in a
-// real browser, not assumed. All four affordances carrying this class are flex items today: the
-// two page-level links are projected into the shared page header's action row, which is a flex
-// container, and the Retry and Dismiss commands sit inside this screen's own status row, which is a
-// flex container declared below. CSS blockifies a flex item, so the computed value observed is
-// `flex` rather than `inline-flex` and the horizontal separation actually comes from those
-// containers' own `gap`. The declaration is kept rather than deleted because it states the correct
-// intent for a compact text command and becomes load-bearing the moment either parent returns to
-// block flow, and because the sibling portal listing declares it identically - dropping it here
-// alone would make the two screens diverge for no rendered benefit.
-//
-// ⚠ THE TARGET FLOOR IS RESTATED HERE BECAUSE THIS CLASS IS WORN BY BOTH AN ANCHOR AND A BUTTON.
-// "Add Module" and "Import Module" are ANCHORS; Retry and Dismiss are BUTTONS. The global form
-// partial states the comfortable floor through the bare `button` element selector, so the buttons
-// inherited it and the anchors did not - measured 44.00 px against 25.50 px, two affordances wearing
-// one class in one action row at two different sizes. A rule enforced by ELEMENT TYPE is not
-// enforced at all, so the floor belongs where the ROLE is declared.
-//
-// Centring rather than a bare minimum height: a minimum height on a non-flex box leaves the text at
-// the top and the remainder is dead space, so the control would MEASURE 44 px and still LOOK 25 px.
 .module-list__action {
   display: inline-flex;
   align-items: center;
@@ -143,14 +44,6 @@
   color: var(--color-primary);
   font: inherit;
 
-  // Pinned here as well as on the shared `page-action` rule. The `font` shorthand above sets
-  // line-height too, and at class + attribute weight it outranks the shared rule - so without
-  // this line the shared pin is silently defeated on this screen and the height falls back to
-  // whatever the wrapper happens to declare. Today that is the same tight value, so THIS
-  // DECLARATION CHANGES NO MEASURED VALUE: the actions measure 24.00px either way. It exists so
-  // the shared rule's guarantee is a guarantee rather than a coincidence, and so the standalone
-  // commands wearing this class - the failure region's, which carry no `page-action` - get the
-  // same line box.
   line-height: var(--line-height-tight);
 
   text-decoration: none;
@@ -158,37 +51,19 @@
 
   @include mx.focus-ring;
 
-  // ⚠ UNGATED, for the reason recorded at length on the equivalent rule in
-  // `portal-list.component.scss`. In short: this rule outranks the shared `.page-action:hover`,
-  // and the resting block above re-declares `color` and `text-decoration` at a weight that TIES
-  // the shared hover rule and wins on document order - so gating this one did not fall back to
-  // the shared treatment, it removed the treatment entirely. Measured in a browser reporting
-  // `(hover: hover) and (pointer: fine)` as false: "Add Module" and "Import Module" stayed
-  // `text-decoration-line: none` and `rgb(0, 51, 102)` while hovered, against `underline` and
-  // `rgb(37, 86, 154)` on /users and /roles. Both selectors here are anchors or buttons that
-  // the global `a:hover` and `button:hover` already reach unguarded, so ungating introduces no
-  // state that was not already reachable.
+  // ⚠ UNGATED, for the reason recorded at length on the equivalent rule in `portal-list.component.scss`.
   &:hover {
-    // The primary-hover token rather than the legacy hover colour for this affordance: that
-    // legacy value is the very colour the token vocabulary assigns to the danger role and uses
-    // for error text, so reusing it would paint an ordinary action in the colour that means
-    // something went wrong.
+    // The primary-hover token rather than the legacy hover colour for this affordance: that legacy value is
+    // the very colour the token vocabulary assigns to the danger role and uses for error text, so reusing
+    // it would paint an ordinary action in the colour that means something went wrong.
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
-  // suppression without replacement is what leaves a control with no visible response at
-  // all. `background-color: transparent` above weighs (0,1,0) while the global
-  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
-  // outranks one type selector, so the shared press tint was already losing before a
-  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
-  // states, and where the control is a link rather than a button there was no global rule
-  // to lose in the first place. The value is the shared selection tint, so the press reads
-  // the same here as on every other control in the console; nothing new is invented.
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
   &:active {
     background-color: var(--color-selected);
   }
-
 }
 
 // -----------------------------------------------------------------------------
@@ -267,52 +142,16 @@
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and
-  // suppression without replacement is what leaves a control with no visible response at
-  // all. `background-color: transparent` above weighs (0,1,0) while the global
-  // `button:active { background-color: var(--color-selected) }` weighs (0,1,1) — one class
-  // outranks one type selector, so the shared press tint was already losing before a
-  // pointer arrived. Measured: this control was BYTE-IDENTICAL in its pressed and resting
-  // states. The value is the shared selection tint, so the press reads the same here as on
-  // every other control in the console; nothing new is invented.
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
   &:active {
     background-color: var(--color-selected);
   }
-
 }
 
-// The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command
-// reads "Delete", its accessible name names the placement, and it opens a confirmation before
-// anything is removed.
-//
-// A colour change only. A destructive command that also moved or resized would be a different
-// affordance in a different place, which is how a reader mis-clicks the one command that cannot
-// be undone.
-//
-// ⚠ THE HOVER HOLDS THE RESTING COLOUR STILL, AND MOVING IT IS WHAT BREAKS THE CONTRAST. This
-// text sits a step below body size, so it needs 4.5:1, and the bright danger value measures
-// 4.00:1 on the plain row, 3.45:1 on the alternating surface and 2.61:1 on the selected tint -
-// failing on every row background this grid can paint, and failing worst on the row the operator
-// actually chose. The darker text variant measures 7.20:1, 6.21:1 and 4.70:1 against those same
-// three, so it passes everywhere. `_tokens.scss` states the rule outright where it declares the
-// bright value: danger TEXT resolves to the text variant, and the bright value "must never be
-// used for a text colour again" - it is a border and indicator colour only, which is how every
-// other consumer in the workspace uses it.
-//
-// MIGRATION: THE LEGACY HOVER INK IS DELIBERATELY NOT REPRODUCED, and this is the same corrected
-// defect the global reset already records for every anchor rather than a new opinion.
-// `Website/Portals/_default/default.css:L462` declares the legacy admin command's hover state as
-// an underline over the bright legacy red - and that red is byte-for-byte the value this
-// vocabulary carries as its DANGER colour - so hovering any legacy admin command, destructive or
-// not, turned its text the very colour that meant something had gone wrong. The UNDERLINE is
-// therefore kept as the hover cue and the ink is held still, which has the further merit of
-// remaining visible to a reader who cannot distinguish the two reds from one another at all.
-//
-// ⚠ RE-DECLARED, NOT INHERITED. The rule above sets `color: var(--color-primary-hover)` on
-// `.module-list__row-command:hover`, which carries a pseudo-class this rule's RESTING selector
-// does not and therefore outranks it. Omitting the colour here would consequently not "keep" the
-// danger colour - it would hand the destructive command the ordinary action's blue on hover.
-// Naming it makes the intent true rather than merely stated.
+// The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command reads
+// "Delete", its accessible name names the placement, and it opens a confirmation before anything is
+// removed.
 .module-list__row-command--danger {
   color: var(--color-danger);
 
@@ -322,123 +161,16 @@
   }
 }
 
-// =============================================================================
-//  DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//
-// MIGRATION: THIS SCREEN HAS NO LEGACY ANCESTOR, so there is no legacy appearance to preserve and
-// every value here is a design-system value rather than a measured one. Measured, not assumed:
-// `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO across that entire directory,
-// which holds only `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds,
-// one icon and `App_LocalResources`; `Website/admin/Modules/modulesettings.ascx` contains NINE
-// `<table>` elements and ZERO data grids, every one of those tables being a layout table declared
-// with a design-table summary. What IS carried across is the CONVENTION of the legacy admin grids -
-// commands first, identity next, dates last, commands drawn as text rather than as filled buttons -
-// taken from `Website/admin/Portal/portals.ascx:L13-L19`, which is also the source of this screen's
-// column order. The rules above are deliberately the same shape as the sibling portal listing's for
-// that reason: two listings that behaved differently under hover or focus would read as two
-// different applications.
-//
-// MIGRATION: CELL AND COMMAND SPACING IS ENTIRELY NET-NEW, because the legacy grid had no spacing
-// CSS at all to carry forward. The whole legacy grid block at
-// `Website/Portals/_default/default.css:L131-L171` declares ZERO padding, margin, width, height and
-// border properties - it is nothing but background, colour, family, size and weight - and every
-// scrap of the legacy cell spacing came instead from a MARKUP ATTRIBUTE, `CellPadding="2"` at
-// `Website/admin/Portal/portals.ascx:L14`. A presentation value carried in markup has no target
-// equivalent, so the spacing here resolves to the shared 4px spacing scale, which is itself a net
-// addition: the legacy stylesheets declare no spacing system whatsoever. Every rounded corner
-// likewise resolves to the shared radius scale, another net addition - the legacy design is
-// square-cornered, and `border-radius` occurs zero times across every stylesheet under `Website/`.
-//
-// MIGRATION: THE PAGER SEPARATOR WAS MARKUP AND BECOMES A SPACING TOKEN. The legacy screen spaced
-// its grid off its pager with a literal pair of line breaks - `<br><br>` on its own line at
-// `Website/admin/Portal/portals.ascx:L57`, sitting between the grid's close at `:L56` and the paging
-// control at `:L58`. Layout-by-entity is exactly the practice this migration replaces: the gap is
-// declared once as a design token on the root rule above and applied uniformly between every region
-// of the screen, so no separator element appears anywhere in the template.
-//
-// MIGRATION: THE LEGACY ALTERNATING-ROW DEFECT IS RECORDED AND NOT REPRODUCED. The alternating-row
-// rule at `Website/Portals/_default/default.css:L131-L138` paints white and then sets its text
-// colour to red at `:L134`, and `Website/admin/Portal/portals.ascx:L17` points the portal grid's
-// alternating rows straight at it - so every SECOND row of that grid rendered its text in the same
-// red the stylesheet reserves for validation failure. That is a defect and not a design: a stripe
-// is a positional cue and must not borrow the vocabulary of an error, and colour must never be the
-// sole carrier of meaning. The Minimal Change Clause forbids opportunistically FIXING a discovered
-// legacy defect, and it is not fixed here - it is simply not carried across, because row striping
-// belongs to the shared grid's own presentation and nothing in this file paints a row. The second
-// measured grid did not stripe in red at all (`Website/admin/Users/users.ascx:L26`), so there was
-// no consistent legacy convention to preserve even had one been wanted.
-//
-// MIGRATION: THE SECOND REFERENCE STYLESHEET CONTRIBUTES NOTHING, and it was measured rather than
-// skimmed. `Website/Portals/_default/portal.css` is 275 lines long and 80 of those lines open a
-// rule, yet it contains ZERO declaration lines, ZERO hex colours and ZERO named colours - every
-// single rule body in the file is empty. It is a selector manifest, not a stylesheet, so no value
-// in this file derives from it and none can. The sole visual provenance for this screen is
-// `default.css`.
-//
-// MIGRATION: TOKEN GAPS ARE REPORTED HERE RATHER THAN FILLED LOCALLY, because inventing a value at
-// the point of use is what the zero-hardcoded-values rule exists to prevent. Three are relevant to
-// this screen and all three are absorbed without a literal:
-//   * NO BASE TEXT COLOUR TOKEN exists. This is deliberate upstream, not an omission: legacy body
-//     text declared no colour at all, so the legacy value simply IS the user agent's default. Every
-//     region here inherits it, and nothing declares a resting text colour except the two command
-//     affordances, which are links and carry the brand colour by role.
-//   * NO DISABLED-TEXT TOKEN exists. Nothing on this screen needs one - the template binds no
-//     `disabled` attribute anywhere, by its own documented choice, so a `:disabled` rule here would
-//     be dead CSS and none is written.
-//   * NO DURATION, EASING OR MOTION TOKEN exists, and the shared mixin surface exports no motion
-//     helper. Consequently NOTHING on this screen transitions or animates. That is the correct
-//     outcome rather than a compromise: `transition`, `animation`, `@keyframes` and `transform` each
-//     occur zero times across every stylesheet under `Website/`, so there is no legacy motion to
-//     preserve, and the hover and focus states change colour, underline and outline instantaneously.
-//
-// MIGRATION: THERE IS NO `prefers-reduced-motion` GUARD IN THIS FILE, AND ITS ABSENCE IS REQUIRED
-// RATHER THAN OVERLOOKED. The shared mixin partial is the ONLY file in the workspace permitted to
-// author a media feature query, its exported surface is closed, and it exports no reduced-motion
-// guard - it instructs a consumer needing any other at-rule to report the gap and degrade instead.
-// Design-system compliance outranks the generic accessibility recommendation here, so no raw query
-// is written. The limitation costs nothing in practice for the reason immediately above: this screen
-// declares no motion of any kind, so there is nothing for a reduced-motion guard to withdraw.
-//
-// No elevation is introduced either: the legacy design is flat - `box-shadow` occurs zero times
-// across every stylesheet under `Website/` - and nothing on this screen needs to read as raised.
-// =============================================================================
-
-// -----------------------------------------------------------------------------
-//  THE ABSENT-VALUE EXPLANATION
-// -----------------------------------------------------------------------------
-//
-// Clipped rather than removed, because the em dash beside it is `aria-hidden` and
-// something has to carry the meaning for a reader who cannot see the glyph. The
-// shared mixin keeps the element in the accessibility tree, which neither
-// `display: none` nor `visibility: hidden` would do.
-//
-// The same pairing, with the same class-name suffix, carries the absent mark on the
-// roles listing's period and fee columns and on the portals listing's tally columns,
-// so one convention answers for all three.
+// THE ABSENT-VALUE EXPLANATION
+// Clipped rather than removed, because the em dash beside it is `aria-hidden` and something has to carry
+// the meaning for a reader who cannot see the glyph. The shared mixin keeps the element in the
+// accessibility tree, which neither `display: none` nor `visibility: hidden` would do.
 .module-list__absent-value {
   @include mx.visually-hidden;
 }
 
-// -----------------------------------------------------------------------------
-//  THE HEADING CELL — A BOUNDED DISPLAY OVER AN UNBOUNDED VALUE
-// -----------------------------------------------------------------------------
-// The column admits 256 characters and a real module in the measured data uses all
-// of them. Because the shared grid lays out with a fixed algorithm across equal
-// columns, that value has nowhere to go but downwards: measured at 1280 the row was
-// 349.250px against 136.750px for its neighbours, and at 320 and 768 it was
-// 593.000px, over four times an ordinary row.
-//
-// `line-clamp` bounds the DISPLAY at four lines. Four rather than one or two
-// deliberately: an ordinary heading in a 102px column already wraps to about three
-// lines, so a tighter clamp would start truncating headings that are not long at
-// all, and the point is to bound the outlier rather than to reformat the column.
-//
-// The full value remains available from the cell's own `title` attribute and from
-// the row's command names, so nothing is hidden - only bounded.
-//
-// `overflow-wrap: anywhere` stays because a heading may be one unbroken token; the
-// clamp bounds the number of lines, not what may start a new one.
+// THE HEADING CELL — A BOUNDED DISPLAY OVER AN UNBOUNDED VALUE
+// The column admits 256 characters and a real module in the measured data uses all of them.
 .module-list__title {
   display: -webkit-box;
   -webkit-box-orient: vertical;

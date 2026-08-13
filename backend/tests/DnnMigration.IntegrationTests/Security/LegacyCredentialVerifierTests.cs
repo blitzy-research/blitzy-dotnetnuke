@@ -149,9 +149,7 @@ public sealed class LegacyCredentialVerifierTests
     /// <remarks>
     /// The refusal is reported as a LEGACY non-match rather than as a current representation, which is the
     /// property the sign-in path depends on: a recognised legacy row is paired with the hasher's decoy so
-    /// that an unmigrated account costs what a migrated one costs. Reporting expiry as "not legacy" would
-    /// hand the stored legacy value to the BCrypt parser, which fails fast, and would make an unmigrated
-    /// account measurably distinguishable by timing.
+    /// that an unmigrated account costs what a migrated one costs.
     /// </remarks>
     [Fact]
     public void ExpiredWindow_FailsClosed()
@@ -170,11 +168,6 @@ public sealed class LegacyCredentialVerifierTests
     }
 
     /// <summary>The final configured instant is inside the window, not after it.</summary>
-    /// <remarks>
-    /// An operator naming a closing instant means "up to and including then", so the comparison is
-    /// inclusive. This fact and the one above are the two sides of the same boundary and are what stop a
-    /// later revision from silently converting an inclusive deadline into an exclusive one.
-    /// </remarks>
     [Fact]
     public void DeadlineInstant_RemainsEnabled()
     {
@@ -196,18 +189,8 @@ public sealed class LegacyCredentialVerifierTests
     /// that produced it.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the one vector in the suite that is NOT constructed from the rule being asserted. The
-    /// stored value below was produced by invoking <c>System.Web.Security.SqlMembershipProvider</c> in a
-    /// Mono 6.12 runtime configured with Triple-DES, and independently checked to contain a prefixed random
-    /// block followed by CBC/PKCS7 ciphertext. Its value is precisely that independence: a fixture built by
-    /// the same helper that the implementation's rule is compared against passes even when the rule itself
-    /// is wrong, whereas this one fails.
-    /// </para>
-    /// <para>
     /// The hexadecimal key is test-vector material only. It is unrelated to every deployment and is
     /// intentionally obvious; production obtains its value exclusively from the deployment secret store.
-    /// </para>
     /// </remarks>
     [Fact]
     public void IndependentlyProducedEncryptedVector_AcceptsOnlyTheMatchingCredential()
@@ -231,10 +214,9 @@ public sealed class LegacyCredentialVerifierTests
 
     /// <summary>A discriminator outside the legacy set is not claimed as legacy and never throws.</summary>
     /// <remarks>
-    /// The membership column is a plain integer, so a row can hold a value no format names. Claiming such
-    /// a row as legacy would route it into the bounded comparison it has no rule for; disclaiming it leaves
-    /// it to the current hasher, which refuses it. Either way the account needs an administrative reset,
-    /// and the point of this fact is that neither path raises.
+    /// The membership column is a plain integer, so a row can hold a value no format names. Claiming such a
+    /// row as legacy would route it into the bounded comparison it has no rule for; disclaiming it leaves
+    /// it to the current hasher, which refuses it.
     /// </remarks>
     [Fact]
     public void UnsupportedFormatDiscriminator_IsNotTreatedAsLegacy()
@@ -259,8 +241,7 @@ public sealed class LegacyCredentialVerifierTests
     /// MIGRATION: a withdrawn parallel implementation answered a malformed key with a quiet refusal on
     /// every verification. Refusing at construction is the stronger behaviour and is what is kept: a
     /// deployment that mistyped its key learns while the application is starting, rather than by way of a
-    /// migration window that appears to be open and admits nobody. The message names the setting and never
-    /// the material.
+    /// migration window that appears to be open and admits nobody.
     /// </remarks>
     [Fact]
     public void InvalidDeploymentKey_IsRefusedAtConstruction()
@@ -306,8 +287,8 @@ public sealed class LegacyCredentialVerifierTests
     }
 
     /// <summary>
-    /// Returns a clock pinned to <see cref="Now"/> so the migration window's boundary is a fact rather
-    /// than a property of the moment the suite happened to run.
+    /// Returns a clock pinned to <see cref="Now"/> so the migration window's boundary is a fact rather than
+    /// a property of the moment the suite happened to run.
     /// </summary>
     /// <returns>A strict clock that answers one instant.</returns>
     private static IClock FixedClock()

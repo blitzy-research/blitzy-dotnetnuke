@@ -1,157 +1,26 @@
-<!--
-  PAGE NAVIGATION FOR A LIST SCREEN.
-
-  Renders a range summary, four step controls and a position readout - or nothing at all.
-  It holds no data, computes nothing and knows nothing about what is being paged. Every
-  number and every boolean below is read ALREADY RESOLVED from the paired component
-  class, which owns the whole of the arithmetic. This template performs none: it contains
-  no arithmetic operator, no comparison and no truthiness test anywhere, which is exactly
-  what makes the single off-by-one between the two page bases impossible to apply twice.
-
-  Zero and minus one are LEGITIMATE VALUES in this data rather than synonyms for absence -
-  `Portals.PortalID` seeds at minus one and `Roles.RoleID`, `Tabs.TabID` and
-  `Modules.ModuleID` seed at zero - so nothing here is tested for truthiness. The single
-  guard below reads the class's own named predicate; a bare truthiness test on the page
-  index or on the total would hide a real state, so neither appears.
-
-  MIGRATION: the boundary is ZERO-BASED and the display is ONE-BASED, and the `+ 1` that
-  reconciles them lives in the paired class ALONE - `pagination.component.ts` L393-L395,
-  `get displayPage(): number { return this.effectivePage + 1; }`. Nothing is added here;
-  `displayPage` is interpolated exactly as it arrives. Two legacy authorities sitting one
-  line apart settle the two bases together: `Website/admin/Portal/Portals.ascx.vb` L142
-  passes `CurrentPage - 1` to the provider, so the DATA base is zero, while L148-L150 hand
-  the pager `TotalRecords`, `PageSize` and the UNMODIFIED one-based `CurrentPage`, so the
-  DISPLAY base is one (L147 is blank - the pager block genuinely begins at L148).
-  `Website/admin/Users/Users.ascx.vb` repeats the subtraction at L265, L269, L271 and
-  L274; both screens seed the one-based counter, at `Portals.ascx.vb` L47 and
-  `Users.ascx.vb` L51; and the legacy query string was one-based too, `Portals.ascx.vb`
-  L219 emitting `"currentpage=" & CurrentPage`. Every VISIBLE number below is therefore
-  already one-based or already absolute, and NO DISPLAY NUMBER CAN REACH A HANDLER: the
-  four handlers take no argument at all, each naming its own target by zero-based index
-  inside the class, so the emitted value is structurally incapable of being a label.
-
-  MIGRATION: as a STYLED control this is a PURE NET ADDITION, because the legacy grids
-  styled a pager they never defined. The legacy grid pager style class is named four times
-  in the in-scope admin markup - `Website/admin/Portal/portals.ascx` L19,
-  `Website/admin/Users/users.ascx` L30, `Website/admin/Security/roles.ascx` L32 and
-  `Website/admin/Users/ProfileDefinitions.ascx` L15 - and defined ZERO times in any `.css`
-  file in the repository. Only two of the eight in-scope grids paged at all, each hosting a
-  `dnn:pagingcontrol` server control (`portals.ascx` L58 and `users.ascx` L83). The
-  renderer behind that control, `Library/Controls/PagingControl.vb`, sits in the EXCLUDED
-  `Library/Controls/**` tree (102 files) and emitted raw HTML strings from string
-  concatenation, so it is a reference for BEHAVIOUR only and no line of it is ported.
-
-  MIGRATION: the legacy control's STRUCTURE is reproduced and its page-number window is
-  not. `PagingControl.vb` L177-L183 rendered first, previous, a window of page links,
-  next and last in that order, inside a two-cell row whose left half held the status
-  left-aligned and whose right half held the links right-aligned (L153-L156). That order
-  and that two-part split are both kept - the readout occupies the slot the page links
-  occupied, and the paired stylesheet's `space-between` reproduces the 50/50 halves
-  without a table. The ten-link window (`PageLinksPerPage = 10`, L192, L208-L224) is
-  deliberately NOT reproduced: the paired class exposes no page window to iterate, and the
-  public input surface is closed by the design system at four members - three numbers and
-  one in-flight flag, the last added only because a live region cannot tell the truth
-  without it - so there is nothing to enumerate. Stepping to any page therefore takes the first or last control
-  rather than a direct jump - a reduction in reach, recorded here rather than absorbed.
-
-  MIGRATION: the wording diverges from the legacy pager, and the legacy wording does
-  exist. `Website/App_GlobalResources/SharedResources.resx` L462-L464 defines
-  `Pages.Text` as `Page {0} of {1}`, formatted at `PagingControl.vb` L161 with the
-  one-based `CurrentPage` and the total, so the legacy status cell read "Page 3 of 10".
-  None of the 37 in-scope `App_LocalResources` files names a pager string, which is why
-  the wording is easy to miss; it lives in the shared global file instead. This template
-  renders an ITEM RANGE in that status slot - which the legacy pager never showed at all -
-  and a terse page-of-pages readout beside the steps. Both are authored inline in English
-  because localisation is not ported: the Web Forms resource mechanism is out of scope and
-  no translation runtime is introduced, so no localisation call and no localisation
-  attribute appears anywhere here.
-
-  MIGRATION: every accessibility affordance below is NET-NEW, and none of it has a visual
-  cost. Measured across both legacy trees, an `aria-` attribute of any kind appears in ZERO
-  files, and a `:focus` rule appears in ZERO of the 34 legacy stylesheets. The legacy
-  marked its current page by rendering inert bracketed text, `<span>[3]</span>` at
-  `PagingControl.vb` L273-L274, and marked an unavailable step by swapping the anchor for a
-  bare `<span>` (L294, L312, L330 and L348) - both appearance-only, with nothing in the
-  accessibility tree. Here the current page carries `aria-current="page"` and an
-  unavailable step is a genuinely `disabled` button that stays in the document.
-
-  MIGRATION: no legacy class name is carried across. The legacy grid pager style class, the
-  admin command-link class and the disabled-text class are all replaced by this component's
-  own vocabulary, and the file-manager pager rule
-  (`Website/Portals/_default/default.css` L263-L271) is
-  deliberately NOT borrowed even though it is the closest thing the legacy stylesheet has
-  to a pager: that family styles file management, which the migration places out of scope,
-  so neither its values nor its name may leak in. No styling value of any kind appears in
-  this file - no inline style, no dimension, no colour - because every value belongs to the
-  paired stylesheet as a design token.
--->
+<!-- PAGE NAVIGATION FOR A LIST SCREEN. -->
 
 <!--
-  RENDER NOTHING WHILE THERE IS NOTHING TO COUNT, and render the COUNT ALONE when everything
-  already fits on one page. Two guards on two of the class's own named predicates, so in the
-  zero-result state no button, no readout and no summary reaches the document - not an emptied
-  container, and not a hidden one - while in the single-page state the range summary reaches it
-  and the steps do not.
-
-  MIGRATION: splitting the two states apart is a documented divergence from the legacy PORTALS
-  screen and a return to the legacy USERS screen; the reasoning, with both authorities, is on
-  `isRendered` in the paired class. Runtime testing measured what the single guard cost: a
-  filter narrowing 250 portals to seven removed the group entirely, so nothing on screen stated
-  that seven was the whole match set. The steps stay behind the navigability predicate because
-  four permanently disabled buttons would assert the opposite of the truth.
-
-  MIGRATION: this is BYTE-EQUIVALENT to the legacy portals screen and a documented
-  divergence only from the legacy users screen, which behaved differently despite running
-  a character-for-character identical guard. Both ran `If SuppressPager And
-  ctlPagingControl.Visible Then ctlPagingControl.Visible = (PageSize < TotalRecords)` -
-  `Portals.ascx.vb` L155-L157 and `Users.ascx.vb` L278-L280. What differed was
-  `SuppressPager`: portals declared it at `Portals.ascx.vb` L108-L114 with the real setting
-  read COMMENTED OUT at L110-L111 and a hard-coded `Return True` at L112, so its guard ran
-  and its pager vanished for a single page; users read the genuine `Display_SuppressPager`
-  setting at `Users.ascx.vb` L129-L134, whose default is `False`
-  (`Library/Components/Users/UserModuleBase.vb` L131-L133), so its guard never ran and its
-  pager stayed visible even for one page. "Show when `PageSize < TotalRecords`" is exactly
-  "hide when the total is no greater than the page size", which is the rule the class's
-  predicate states. A total of zero renders nothing and raises nothing.
+  MIGRATION: splitting the two states apart is a documented divergence from the legacy PORTALS screen
+  and a return to the legacy USERS screen; the reasoning, with both authorities, is on `isRendered` in
+  the paired class.
 -->
 @if (isRendered) {
   <!--
-    A NAMED GROUP, NOT A LANDMARK. The controls carry a discernible accessible name, so a
-    person using assistive technology knows what the cluster is, but the element is
-    deliberately not a landmark and no `nav` is emitted anywhere in this file: landmarks
-    belong to the application shell in `layout/**`, which already renders the site's single
-    navigation landmark. A second one would announce a duplicate and add a spurious entry
-    to the landmark list on every list screen. `role="group"` with an accessible name is
-    the correct pattern for a labelled cluster of related controls, and the name comes from
-    an `aria-label` rather than a visible heading because no "Pagination" heading is part of
-    the migrated design.
+    A NAMED GROUP, NOT A LANDMARK. The controls carry a discernible accessible name, so a person using
+    assistive technology knows what the cluster is, but the element is deliberately not a landmark and
+    no `nav` is emitted anywhere in this file: landmarks belong to the application shell in `layout/**`,
+    which already renders the site's single navigation landmark.
   -->
   <div class="pagination" role="group" [attr.aria-label]="labels.region">
     <!--
-      THE RANGE SUMMARY, and a live region. A page change replaces the list contents
-      without moving focus, so without an announcement a screen-reader user has no signal
-      that anything happened. `polite` rather than `assertive` because this is a status
-      update and must not interrupt; atomic because the whole sentence has to be re-read -
-      announcing only the digits that changed would say "31" and "34" with nothing to
-      attach them to.
-
-      MIGRATION: the vertical separation from the table above is carried by a spacing token
-      in the paired stylesheet, replacing the two literal line-break elements the legacy
-      markup used - `portals.ascx` L57 and `users.ascx` L82, each a doubled line break
-      sitting between the closing grid tag and the paging control. None is emitted here,
-      so nothing decorative can appear in the accessibility tree, and the gap scales with
-      the reader's type size. That placement is also why this component is a SIBLING of the
-      table rather than a row inside it: no table, no foot, no row and no cell is emitted
-      by this file at all.
+      THE RANGE SUMMARY, and a live region. A page change replaces the list contents without moving
+      focus, so without an announcement a screen-reader user has no signal that anything happened.
     -->
     <!--
       ⚠ `aria-busy` HOLDS THE ANNOUNCEMENT UNTIL THE NUMBERS ARE THE PAGE'S OWN. The wording above is
       composed from the page that was ASKED for, so it updates the instant a step is pressed - which is
-      right for the eye and wrong for the ear. Runtime measurement under deliberate throttling caught this
-      region reading "21-30 of 145" while the grid beside it still held rows eleven to twenty. While
-      `loading` is true the region's changes are held; when it clears, the region is processed once in its
-      settled state. `null` rather than `"false"` when settled, so the attribute is absent at rest exactly
-      as it is on the shared grid, and the two report progress the same way.
+      right for the eye and wrong for the ear.
     -->
     <p
       class="pagination__status"
@@ -162,41 +31,18 @@
       {{ firstItemNumber }}&ndash;{{ lastItemNumber }} of {{ totalCount }}
     </p>
 
-    <!--
-      THE STEPS, only when there is somewhere to step to. A named group of its own, so the
-      count above stays inside the "Pagination" region in both shapes while the cluster of
-      controls carries its own shorter name - the legacy status cell and its link cell were
-      likewise two halves of one row (`Library/Controls/PagingControl.vb` L153-L156).
-    -->
+    <!-- THE STEPS, only when there is somewhere to step to. -->
     @if (isNavigable) {
       <div class="pagination__controls" role="group" [attr.aria-label]="labels.steps">
         <!--
-          THE FOUR STEPS, in the legacy control's own order: first, previous, then the
-          readout in the slot the page links occupied, then next and last.
-
-          Native `button` elements, each with an EXPLICIT `type="button"`. Without it a
-          button inside a form defaults to submit, so a person changing page would post the
-          surrounding form. Anchors are deliberately not used even though the legacy
-          affordances were text links: these actions have no URL of their own, and a `button`
-          is what a keyboard and a screen reader expect for an action.
-
-          Unavailability is stated PROGRAMMATICALLY through the native `disabled` property,
-          never by styling alone, and the buttons stay in the document so the control cannot
-          reflow under the pointer. The paired stylesheet deliberately declares no disabled
-          appearance of its own, letting the application-wide `button:disabled` rule apply, so
-          the disabled state here can never drift from the rest of the application.
-
-          The glyph is hidden from assistive technology and the accessible name comes from the
-          label, so each step is announced as "First page" rather than as a punctuation
-          character.
+          THE FOUR STEPS, in the legacy control's own order: first, previous, then the readout in the
+          slot the page links occupied, then next and last.
         -->
         <!--
-          ⚠ THE `#firstStep` AND `#lastStep` REFERENCES ARE LOAD-BEARING, NOT DIAGNOSTIC. Both
-          controls disable themselves by succeeding, and a browser discards focus on an element
-          that becomes disabled - measured at runtime as focus landing on `body` after First and
-          after Last, while Next and Previous retained it. The paired class reads these four
-          references to hand focus to the step that is still available. Removing a reference
-          silently reintroduces the focus loss, because nothing here fails without it.
+          ⚠ THE `#firstStep` AND `#lastStep` REFERENCES ARE LOAD-BEARING, NOT DIAGNOSTIC. Both controls
+          disable themselves by succeeding, and a browser discards focus on an element that becomes
+          disabled - measured at runtime as focus landing on `body` after First and after Last, while
+          Next and Previous retained it.
         -->
         <button
           #firstStep
@@ -221,17 +67,8 @@
         </button>
 
         <!--
-          THE POSITION READOUT. Text rather than a control: there is nothing to activate, and
-          a disabled button here would put an unusable stop in the tab order. `displayPage`
-          is the one-based number a person expects and `totalPages` the count it sits within,
-          both already resolved by the class.
-
-          `aria-current="page"` marks the page on show. With no page-link window to mark - the
-          class exposes none, so there is no list to iterate - this readout IS the element that
-          identifies the current page, and it is the direct successor to the legacy inert
-          bracketed marker at `PagingControl.vb` L273-L274. `aria-current` is a global ARIA
-          state and is permitted here, unlike `aria-label`, which ARIA prohibits on a plain
-          span and which is therefore not used to dress the readout up as a sentence.
+          THE POSITION READOUT. Text rather than a control: there is nothing to activate, and a disabled
+          button here would put an unusable stop in the tab order.
         -->
         <span class="pagination__position" aria-current="page">{{ displayPage }} / {{ totalPages }}</span>
 

@@ -29,39 +29,13 @@ namespace DnnMigration.IntegrationTests;
 /// <para>
 /// <strong>Why configuration is supplied as environment variables.</strong> <c>Program.cs</c> reads
 /// configuration <em>while composing services</em> - <c>AddInfrastructure(configuration)</c> resolves the
-/// connection string and <c>AddJwtBearerAuthentication(configuration)</c> resolves the signing secret,
-/// both before the host is built. Anything contributed through
-/// <c>IWebHostBuilder.ConfigureAppConfiguration</c>
-/// is applied at build time and therefore arrives after those reads, which is exactly how the first attempt
-/// at this fixture failed: the host reported no connection string even though one had been supplied.
-/// <see cref="IWebHostBuilder.UseSetting"/> is no better placed, because host configuration is chained
-/// <em>underneath</em> <c>appsettings.json</c> and the shipped file declares both keys as empty strings so
-/// that a deployment is forced to supply them.
-/// </para>
-/// <para>
-/// Environment variables are added after the JSON files by the default builder, so they win, and they are
-/// also precisely how the deployed topology supplies these values -
-/// <c>docker/docker-compose.yml</c> sets <c>ConnectionStrings__Default</c> and <c>Jwt__Secret</c> on the API
-/// service. Configuring the test host the same way keeps the suite faithful to the deployment rather than
-/// exercising a path only tests use.
-/// </para>
-/// <para>
-/// <strong>Environment.</strong> The host runs as <c>Testing</c>, not <c>Development</c>. There is no
-/// <c>appsettings.Testing.json</c>, so nothing but <c>appsettings.json</c> and the overrides below applies -
-/// in particular the development-only signing key in <c>appsettings.Development.json</c> is never loaded,
-/// and the test host's key is stated here where a reader can see it.
-/// </para>
-/// <para>
-/// <strong>The tenant seed is not optional.</strong> <c>PortalAliasResolutionMiddleware</c> resolves the
-/// tenant from the request host on every <c>/api</c> request, so the seed registers the in-memory client's
-/// host as a portal alias. Without it every request would run with an unresolved tenant.
+/// connection string and <c>AddJwtBearerAuthentication(configuration)</c> resolves the signing secret, both
+/// before the host is built.
 /// </para>
 /// </remarks>
 public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifetime
 {
-    /// <summary>
-    /// Host name the in-memory client sends, and therefore the alias the seed has to register.
-    /// </summary>
+    /// <summary>Host name the in-memory client sends, and therefore the alias the seed has to register.</summary>
     public const string TestHost = "localhost";
 
     /// <summary>
@@ -74,10 +48,6 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// <summary>
     /// Synthetic Triple-DES key used only to generate and verify integration-test legacy ciphertext.
     /// </summary>
-    /// <remarks>
-    /// This value is unrelated to every legacy deployment key. It is deliberately obvious test
-    /// material and exists only inside the in-process host and throwaway database.
-    /// </remarks>
     public const string LegacyCredentialDecryptionKey =
         "00112233445566778899AABBCCDDEEFF1021324354657687";
 
@@ -90,21 +60,15 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// <summary>Origin permitted by the cross-origin policy under test.</summary>
     public const string AllowedOrigin = "http://localhost:4200";
 
-    /// <summary>
-    /// Header carrying the correlation identifier, on the way in and on the way back out.
-    /// </summary>
+    /// <summary>Header carrying the correlation identifier, on the way in and on the way back out.</summary>
     /// <remarks>
-    /// One spelling, declared once. The correlation middleware accepts a caller-supplied value and echoes
-    /// whatever it settled on, so the same header name is both the request and the response half of the
-    /// round trip, and a suite that misspelled either half would assert nothing while appearing to pass -
-    /// a request header nothing reads is simply ignored, and <c>TryGetValues</c> on a misspelled response
-    /// header just answers false.
+    /// One spelling, declared once.
     /// </remarks>
     public const string CorrelationIdHeader = "X-Correlation-Id";
 
     /// <summary>
-    /// Password of every seeded account. It satisfies the legacy policy carried forward verbatim -
-    /// minimum length seven, no non-alphanumeric requirement - with room to spare.
+    /// Password of every seeded account. It satisfies the legacy policy carried forward verbatim - minimum
+    /// length seven, no non-alphanumeric requirement - with room to spare.
     /// </summary>
     public const string KnownPassword = "Integr8tion!Pass";
 
@@ -124,22 +88,14 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// Sign-in attempts the shared host permits before throttling. Deliberately far above anything the
     /// suite needs, because the limiter partitions by caller address and the in-memory transport gives
     /// every test the same address: a production-sized limit here would make an unrelated test fail with
-    /// 429 depending on execution order. The throttle itself is asserted by <c>AuthApiTests</c> against a
-    /// dedicated host configured with a small limit.
+    /// 429 depending on execution order.
     /// </summary>
     private const string PermissiveAuthenticationRateLimit = "10000";
 
     private TestDatabaseFactory? _database;
     private IntegrationSeed? _seed;
 
-    /// <summary>
-    /// Holds the process environment values this run overwrote, so disposal can put them back.
-    /// </summary>
-    /// <remarks>
-    /// The same type the ad-hoc-host helper hands out, used here for the run-wide overrides so that both the
-    /// scoped and the run-wide case restore identically. Cleared on disposal so a second disposal cannot try to
-    /// restore values it has already restored.
-    /// </remarks>
+    /// <summary>Holds the process environment values this run overwrote, so disposal can put them back.</summary>
     private EnvironmentScope? _environment;
 
     /// <summary>
@@ -147,23 +103,10 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// every suite depends on.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <strong>Redirects are never followed.</strong> The default client follows up to seven of them, which
-    /// would make a suite assert against the response at the END of a redirect chain while believing it was
-    /// asserting against the response the endpoint returned. That is not hypothetical here: an unguarded
-    /// <c>UseHttpsRedirection</c> answers 307 to every plain-HTTP request, the test server listens on no
-    /// socket and so cannot serve the https authority it points at, and the failure would name the wrong
-    /// cause. Following is therefore disabled so that a 3xx is reported as a 3xx - and it costs nothing,
-    /// because the redirect-free contract is what the suite is asserting and the <c>Location</c> header is
-    /// only ever read off a 201, which no client auto-follows.
-    /// </para>
-    /// <para>
-    /// <strong>The base address is bound to the seeded alias.</strong> The alias-resolution middleware reads
-    /// the tenant from the request's host name, and the test server takes that host name from the client's
-    /// base address rather than from a socket. Deriving it from <see cref="TestHost"/> - the same constant the
-    /// seed registers as a portal alias - makes the two impossible to drift apart. It happens to equal the
-    /// framework default, which is exactly why stating it matters: a silent default is not a guarantee.
-    /// </para>
+    /// <strong>The base address is bound to the seeded alias.</strong> The alias-resolution middleware
+    /// reads the tenant from the request's host name, and the test server takes that host name from the
+    /// client's base address rather than from a socket. Deriving it from <see cref="TestHost"/> - the same
+    /// constant the seed registers as a portal alias - makes the two impossible to drift apart.
     /// </remarks>
     public ApiTestFixture()
     {
@@ -176,37 +119,18 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// </summary>
     public static JsonSerializerOptions Json { get; } = BuildJsonOptions();
 
-    /// <summary>
-    /// Builds the serialiser options the test clients speak the API with.
-    /// </summary>
+    /// <summary>Builds the serialiser options the test clients speak the API with.</summary>
     /// <returns>The options.</returns>
     /// <remarks>
-    /// <para>
-    /// This deliberately mirrors the policy the host registers, converter for converter, because a
-    /// test client is a CONSUMER of the wire contract and a consumer that serialises by its own
-    /// private rules proves nothing about the contract. Like the host, it registers the
-    /// application's explicit per-type converters and NO blanket enumeration converter.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the specific converters exist because BillingFrequency carries the legacy char(1)
-    /// codes that dbo.Roles.BillingFrequency and dbo.Roles.TrialFrequency store, so "M" and not
-    /// "Month" is what travels. The enumerations without a legacy spelling - the portal
-    /// registration and banner advertising modes and the module visibility - travel as the integer
-    /// discriminators their columns store and their Angular models consume, so no converter claims
-    /// them and none should.
-    /// </para>
-    /// <para>
     /// <strong>Nothing is ever omitted from a payload, and that is a rule rather than a default.</strong>
     /// The ignore condition is stated explicitly even though <see cref="JsonSerializerDefaults.Web"/>
     /// already leaves it at <see cref="JsonIgnoreCondition.Never"/>, because the two alternatives - the
     /// conditions that drop a null on write and that drop a default on write - are precisely the ones this
-    /// suite exists to keep out. MIGRATION: the legacy sentinel table represents "absent" as the empty string for
-    /// text and as -1 for integers, and both are real values here: <c>Portals.PortalID</c> is
-    /// <c>IDENTITY(-1, 1)</c> so -1 identifies the first portal, <c>Roles.RoleID</c> and <c>Tabs.TabID</c>
-    /// are <c>IDENTITY(0, 1)</c> so zero identifies the first row, and <c>Portals.HostFee</c> holds a fee as
-    /// text whose seeded value is the empty string. Omitting defaults would erase all four from the wire and
-    /// a test client that did so would silently stop asserting on them.
-    /// </para>
+    /// suite exists to keep out. the legacy sentinel table represents "absent" as the empty string for text
+    /// and as -1 for integers, and both are real values here: <c>Portals.PortalID</c> is <c>IDENTITY(-1,
+    /// 1)</c> so -1 identifies the first portal, <c>Roles.RoleID</c> and <c>Tabs.TabID</c> are
+    /// <c>IDENTITY(0, 1)</c> so zero identifies the first row, and <c>Portals.HostFee</c> holds a fee as
+    /// text whose seeded value is the empty string.
     /// </remarks>
     private static JsonSerializerOptions BuildJsonOptions()
     {
@@ -233,34 +157,21 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     public HttpClient CreateAnonymousClient() => CreateClient();
 
     /// <summary>
-    /// Signs in as the seeded host account and returns a client presenting the token the API issued: a super
-    /// user, and therefore a caller the permission evaluator short-circuits to "holds everything".
+    /// Signs in as the seeded host account and returns a client presenting the token the API issued: a
+    /// super user, and therefore a caller the permission evaluator short-circuits to "holds everything".
     /// </summary>
     /// <param name="alias">
     /// The host name the returned client ADDRESSES, or <see langword="null"/> to address the seeded alias.
-    /// Supplying one that is NOT configured is the point of the parameter: it reproduces the state an operator
-    /// provisioning the first portal of an installation is in, where no tenant resolves at all, and no other
-    /// member can put a host caller in that state.
     /// </param>
     /// <param name="cancellationToken">Abandons the sign-in when the test is cancelled.</param>
-    /// <returns>An authenticated client. The caller owns it and must dispose it.</returns>
+    /// <returns>An authenticated client.</returns>
     /// <exception cref="ArgumentException"><paramref name="alias"/> is supplied and blank.</exception>
     /// <exception cref="InvalidOperationException">The endpoint refused the seeded credential.</exception>
     /// <remarks>
-    /// <para>
-    /// The credential is presented to <c>POST /api/v1/auth/login</c>, so the token this client carries is the
-    /// one production issued for it: the sign-in controller ran, the credential was verified against the
-    /// external membership store, and the claim set was composed by the production token service from the
-    /// account's STORED superuser flag, role assignments and permission grants. A token minted by the test
-    /// would assert none of those four stages and would keep passing after any of them broke.
-    /// </para>
-    /// <para>
-    /// The credential is always presented AT THE SEEDED ALIAS, even when <paramref name="alias"/> names
-    /// somewhere else. The parameter chooses the host a test's own requests address; it does not choose where
-    /// the credential is presented, and keeping the two apart is what makes the token identical across every
-    /// host the suite addresses - so a test measuring host resolution measures only that, rather than a token
-    /// that also changed underneath it. Sign-ins are cached per persona, so the whole assembly pays for one.
-    /// </para>
+    /// The credential is presented to <c>POST /api/v1/auth/login</c>, so the token this client carries is
+    /// the one production issued for it: the sign-in controller ran, the credential was verified against
+    /// the external membership store, and the claim set was composed by the production token service from
+    /// the account's STORED superuser flag, role assignments and permission grants.
     /// </remarks>
     public async Task<HttpClient> CreateHostClientAsync(
         string? alias = null,
@@ -276,23 +187,21 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     }
 
     /// <summary>
-    /// Signs in as the seeded portal administrator and returns a client presenting the token the API issued:
-    /// not a super user, but the account the portal-administrator policy admits.
+    /// Signs in as the seeded portal administrator and returns a client presenting the token the API
+    /// issued: not a super user, but the account the portal-administrator policy admits.
     /// </summary>
     /// <param name="alias">
     /// The host name the returned client ADDRESSES, or <see langword="null"/> to address the seeded alias.
-    /// Supplying one that differs from the seeded alias only in case, or that merely sits inside it, is how
-    /// the tenant-resolution rules are measured without changing who the caller is.
     /// </param>
     /// <param name="cancellationToken">Abandons the sign-in when the test is cancelled.</param>
-    /// <returns>An authenticated client. The caller owns it and must dispose it.</returns>
+    /// <returns>An authenticated client.</returns>
     /// <exception cref="ArgumentException"><paramref name="alias"/> is supplied and blank.</exception>
     /// <exception cref="InvalidOperationException">The endpoint refused the seeded credential.</exception>
     /// <remarks>
-    /// The policy resolves role membership from the database on every request rather than from the token, so
-    /// the distinction between this persona and the host account is a property of the STORE and not of the
-    /// claims presented - which is precisely why the token has to come from the sign-in endpoint for the
-    /// distinction to be worth asserting.
+    /// The policy resolves role membership from the database on every request rather than from the token,
+    /// so the distinction between this persona and the host account is a property of the STORE and not of
+    /// the claims presented - which is precisely why the token has to come from the sign-in endpoint for
+    /// the distinction to be worth asserting.
     /// </remarks>
     public async Task<HttpClient> CreateAdministratorClientAsync(
         string? alias = null,
@@ -312,66 +221,36 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// authenticated caller holding no administrative entitlement.
     /// </summary>
     /// <param name="cancellationToken">Abandons the sign-in when the test is cancelled.</param>
-    /// <returns>An authenticated but unprivileged client. The caller owns it and must dispose it.</returns>
+    /// <returns>An authenticated but unprivileged client.</returns>
     /// <exception cref="InvalidOperationException">The endpoint refused the seeded credential.</exception>
     /// <remarks>
-    /// The refusal such a caller receives is 403 and never 401: it is authenticated, so a 401 would report a
-    /// broken token rather than an enforced policy, and a test that accepted either would pass for the wrong
-    /// reason. The account holds the auto-assigned registered-users role and nothing else, which is what an
-    /// ordinary signed-in visitor holds, so the same client also serves the handful of self-service routes a
-    /// member may legitimately reach.
+    /// The refusal such a caller receives is 403 and never 401: it is authenticated, so a 401 would report
+    /// a broken token rather than an enforced policy, and a test that accepted either would pass for the
+    /// wrong reason.
     /// </remarks>
     public Task<HttpClient> CreateUnprivilegedClientAsync(CancellationToken cancellationToken = default) =>
         AuthenticatedClientFactory.CreateUnprivilegedClientAsync(this, cancellationToken);
 
     /// <summary>
-    /// Signs in as a named tenant's OWN administrator, addressing that tenant, and returns a client presenting
-    /// the token the API issued.
+    /// Signs in as a named tenant's OWN administrator, addressing that tenant, and returns a client
+    /// presenting the token the API issued.
     /// </summary>
-    /// <param name="alias">
-    /// The host name bound to the tenant, which is what resolves it. A child portal's alias carries a path
-    /// segment after the authority, and the sign-in is composed beneath that segment so that the credential is
-    /// presented to the tenant the segment names.
-    /// </param>
-    /// <param name="portalId">
-    /// The tenant identifier, named in the sign-in query string. Read by the endpoint ONLY when the addressed
-    /// host resolves no tenant - a resolved tenant always wins - so it makes a deliberately unresolvable host
-    /// usable for sign-in without ever letting a credential be presented to a tenant the request is not
-    /// addressing.
-    /// </param>
+    /// <param name="alias">The host name bound to the tenant, which is what resolves it.</param>
+    /// <param name="portalId">The tenant identifier, named in the sign-in query string.</param>
     /// <param name="administratorUserName">That administrator's account name.</param>
     /// <param name="addressedAt">
-    /// The host the returned client addresses, or <see langword="null"/> to keep addressing
-    /// <paramref name="alias"/>. Supplied only where the two must genuinely differ: a route that names its own
-    /// tenant is decided against the route and the token rather than against the addressed host, so a test
-    /// measuring that binding needs a real foreign-tenant token presented at a DIFFERENT host - which is
-    /// exactly the arrangement a cross-tenant escalation attempt has.
+    /// The host the returned client addresses, or <see langword="null"/> to keep addressing <paramref
+    /// name="alias"/>.
     /// </param>
     /// <param name="cancellationToken">Abandons the sign-in when the test is cancelled.</param>
-    /// <returns>An authenticated client addressed at the named tenant. The caller owns it.</returns>
+    /// <returns>An authenticated client addressed at the named tenant.</returns>
     /// <exception cref="ArgumentException"><paramref name="alias"/> or the account name is blank.</exception>
     /// <exception cref="InvalidOperationException">The endpoint refused the credential.</exception>
     /// <remarks>
-    /// <para>
     /// Necessary because the portal-administrator policy binds a route's tenant to the tenant the REQUEST
-    /// RESOLVED TO, and resolution is by host name. A client created by
-    /// <see cref="CreateAdministratorClientAsync"/> addresses the seeded host, so it resolves to the seeded
-    /// tenant and can only act on the seeded tenant's routes - which is the whole point of the binding. A
-    /// test that needs to act on a tenant it has just created must therefore address that tenant, exactly as
-    /// a real operator would.
-    /// </para>
-    /// <para>
-    /// Unlike the seeded personas, the credential is presented AT THE TENANT'S OWN ALIAS rather than at the
-    /// seeded one, because it has to be: the account belongs to that tenant, and the seeded alias resolves the
-    /// seeded tenant, which the account is not a member of. Every tenant created by these suites is
-    /// provisioned with <see cref="KnownPassword"/> as its administrator's credential, which is what makes a
-    /// real sign-in possible here at all.
-    /// </para>
-    /// <para>
-    /// The caller's account identifier and superuser flag are deliberately NOT parameters any more. Both are
-    /// now facts the sign-in endpoint reads from the store while composing the token, so accepting them here
-    /// would let a test state something the store contradicts.
-    /// </para>
+    /// RESOLVED TO, and resolution is by host name. A client created by <see
+    /// cref="CreateAdministratorClientAsync"/> addresses the seeded host, so it resolves to the seeded
+    /// tenant and can only act on the seeded tenant's routes - which is the whole point of the binding.
     /// </remarks>
     public async Task<HttpClient> CreateTenantClientAsync(
         string alias,
@@ -396,20 +275,18 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         return AddressedAt(client, addressedAt);
     }
 
-    /// <summary>
-    /// Signs in as an arbitrary account and returns a client presenting the token the API issued.
-    /// </summary>
+    /// <summary>Signs in as an arbitrary account and returns a client presenting the token the API issued.</summary>
     /// <param name="userName">The account name to present.</param>
     /// <param name="password">The credential to present.</param>
     /// <param name="cancellationToken">Abandons the sign-in when the test is cancelled.</param>
-    /// <returns>An authenticated client. The caller owns it and must dispose it.</returns>
+    /// <returns>An authenticated client.</returns>
     /// <exception cref="ArgumentException">Either argument is blank.</exception>
     /// <exception cref="InvalidOperationException">The endpoint refused the credential.</exception>
     /// <remarks>
-    /// For an account a test created for itself, which is the only way to obtain a caller whose entitlements
-    /// are neither the seed's nor a tenant administrator's. The credential is the one the test supplied when
-    /// it created the account, so a sign-in here also proves the create path stored a verifiable credential -
-    /// something no minted token could establish.
+    /// For an account a test created for itself, which is the only way to obtain a caller whose
+    /// entitlements are neither the seed's nor a tenant administrator's. The credential is the one the test
+    /// supplied when it created the account, so a sign-in here also proves the create path stored a
+    /// verifiable credential - something no minted token could establish.
     /// </remarks>
     public Task<HttpClient> CreateClientForAsync(
         string userName,
@@ -426,43 +303,23 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
             cancellationToken);
     }
 
-    /// <summary>
-    /// Mints a bearer token in the test and attaches it, WITHOUT signing in.
-    /// </summary>
+    /// <summary>Mints a bearer token in the test and attaches it, WITHOUT signing in.</summary>
     /// <param name="userId">The account identifier.</param>
     /// <param name="userName">The account name.</param>
     /// <param name="portalId">The tenant claim.</param>
     /// <param name="isSuperUser">Whether the caller claims to be a host account.</param>
     /// <param name="roles">Role names to carry.</param>
     /// <param name="permissions">Permission keys to carry.</param>
-    /// <param name="signingSecret">
-    /// The key to sign with; defaults to the host's own. A different value produces a token the host cannot
-    /// validate, which is the point of the parameter.
-    /// </param>
+    /// <param name="signingSecret">The key to sign with; defaults to the host's own.</param>
     /// <param name="issuer">The issuer to state; defaults to the host's own.</param>
     /// <param name="audience">The audience to state; defaults to the host's own.</param>
-    /// <param name="lifetime">
-    /// How long the token is valid for; defaults to thirty minutes. A negative value, combined with a
-    /// <paramref name="notBefore"/> in the past, produces an already-expired token.
-    /// </param>
+    /// <param name="lifetime">How long the token is valid for; defaults to thirty minutes.</param>
     /// <param name="notBefore">When the token becomes valid; defaults to one minute ago.</param>
-    /// <returns>A client presenting the minted token. The caller owns it and must dispose it.</returns>
+    /// <returns>A client presenting the minted token.</returns>
     /// <remarks>
-    /// <para>
     /// <strong>Negative material only.</strong> This bypasses the sign-in controller, credential
     /// verification, production token issuance and production claim construction, so a test that uses it to
     /// obtain an ORDINARY caller asserts nothing about any of them and keeps passing after all four break.
-    /// Every ordinary persona comes from <see cref="CreateHostClientAsync"/>,
-    /// <see cref="CreateAdministratorClientAsync"/>, <see cref="CreateUnprivilegedClientAsync"/>,
-    /// <see cref="CreateTenantClientAsync"/> or <see cref="CreateClientForAsync"/>, all of which present a
-    /// credential to the real endpoint.
-    /// </para>
-    /// <para>
-    /// What remains legitimate here is material the endpoint would never issue and whose REFUSAL is the
-    /// behaviour under test: a token that has expired, one whose validity has not begun, one signed with a
-    /// foreign key, one naming another issuer or audience, and one whose claim set is incomplete or
-    /// malformed. Those cases live in <c>Api/BearerTokenValidationTests</c>, and this member exists for them.
-    /// </para>
     /// </remarks>
     public HttpClient CreateClientWithMintedBearer(
         int userId,
@@ -514,9 +371,9 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// <returns>The same client, so a call can be written inline.</returns>
     /// <remarks>
     /// The test server binds no socket, so the host name in the request line is whatever the base address
-    /// says and the alias-resolution middleware reads it from there. Only the authority is significant: every
-    /// request these suites send names an absolute path, so a path segment carried by a child portal's alias
-    /// is stated by the request rather than inherited from here.
+    /// says and the alias-resolution middleware reads it from there. Only the authority is significant:
+    /// every request these suites send names an absolute path, so a path segment carried by a child
+    /// portal's alias is stated by the request rather than inherited from here.
     /// </remarks>
     private static HttpClient AddressedAt(HttpClient client, string? alias)
     {
@@ -551,20 +408,10 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// <param name="isSuperUser">Whether the caller additionally carries installation-wide authority.</param>
     /// <returns>An authenticated client addressed at the named tenant.</returns>
     /// <remarks>
-    /// <para>
     /// Necessary because the portal-administrator policy binds a route's tenant to the tenant the REQUEST
-    /// RESOLVED TO, and resolution is by host name. A client created by
-    /// <see cref="CreateAdministratorClient"/> addresses the seeded host, so it resolves to the seeded
-    /// tenant and can only act on the seeded tenant's routes - which is the whole point of the binding. A
-    /// test that needs to act on a tenant it has just created must therefore address that tenant, exactly
-    /// as a real operator would.
-    /// </para>
-    /// <para>
-    /// The base address is the only thing that changes: the test server binds no socket, so the host name in
-    /// the request line is whatever the client's base address says, and the alias-resolution middleware reads
-    /// it from there. The account identifier must be the created tenant's own administrator, because the
-    /// policy handler reads role ASSIGNMENTS from the database rather than role names from the token.
-    /// </para>
+    /// RESOLVED TO, and resolution is by host name. A client created by <see
+    /// cref="CreateAdministratorClient"/> addresses the seeded host, so it resolves to the seeded tenant
+    /// and can only act on the seeded tenant's routes - which is the whole point of the binding.
     /// </remarks>
     public HttpClient CreateTenantClient(
         string alias,
@@ -617,43 +464,23 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         return AuthenticatedClientFactory.Authenticate(CreateClient(), token);
     }
 
-    /// <summary>
-    /// Produces a correlation identifier in the CANONICAL shape the pipeline keeps.
-    /// </summary>
+    /// <summary>Produces a correlation identifier in the CANONICAL shape the pipeline keeps.</summary>
     /// <returns>Thirty-two hexadecimal characters, unique per call.</returns>
     /// <remarks>
-    /// <para>
     /// Every suite that asserts an identifier is echoed BACK has to send one the pipeline will keep, and
     /// the accepted shape is narrow by design: <c>Api/Middleware/CorrelationIdMiddleware.cs</c> accepts
-    /// only 32 hexadecimal characters or the hyphenated 36-character UUID rendering, and replaces
-    /// anything else with a generated value. That narrowness is a security control - it is what stops a
-    /// caller from putting a password, a token or an e-mail address into this application's logs, headers
-    /// and problem documents by way of a diagnostic header - so a suite must not widen it.
-    /// </para>
-    /// <para>
-    /// Reaching for this helper rather than writing a readable label such as <c>"portal-suite-7"</c> is
-    /// therefore not a style choice. A label of that shape is replaced by the pipeline, so a test sending
-    /// one would assert the REPLACEMENT path while appearing to assert the echo path - passing for the
-    /// wrong reason today and failing for an unrelated reason tomorrow.
-    /// </para>
+    /// only 32 hexadecimal characters or the hyphenated 36-character UUID rendering, and replaces anything
+    /// else with a generated value.
     /// </remarks>
     public static string NewCorrelationId() =>
         Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
 
-    /// <summary>
-    /// Attaches a caller-supplied correlation identifier to a request and hands the request back.
-    /// </summary>
+    /// <summary>Attaches a caller-supplied correlation identifier to a request and hands the request back.</summary>
     /// <param name="request">The request to stamp.</param>
     /// <param name="correlationId">The identifier to send.</param>
     /// <returns>The same request, so a call can be written inline at the send site.</returns>
     /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
     /// <exception cref="ArgumentException"><paramref name="correlationId"/> is blank.</exception>
-    /// <remarks>
-    /// The header is added rather than set through the default headers of a client, because the round trip
-    /// is a property of one request: a client-wide default would send the same identifier on every request a
-    /// suite makes and an assertion that the response echoed it could then be satisfied by a value the test
-    /// under examination never sent.
-    /// </remarks>
     public static HttpRequestMessage WithCorrelationId(HttpRequestMessage request, string correlationId)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -665,20 +492,13 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         return request;
     }
 
-    /// <summary>
-    /// Reads the correlation identifier a response carries.
-    /// </summary>
+    /// <summary>Reads the correlation identifier a response carries.</summary>
     /// <param name="response">The response to read.</param>
     /// <returns>
     /// The identifier, or <see langword="null"/> when the response carried none - which is itself a
     /// contract failure, because every response is required to carry one.
     /// </returns>
     /// <exception cref="ArgumentNullException"><paramref name="response"/> is <see langword="null"/>.</exception>
-    /// <remarks>
-    /// Absence is returned rather than thrown so that a suite can assert on it directly and report "no
-    /// correlation identifier" instead of failing with an exception from the helper, which would name the
-    /// helper rather than the contract.
-    /// </remarks>
     public static string? ReadCorrelationId(HttpResponseMessage response)
     {
         ArgumentNullException.ThrowIfNull(response);
@@ -688,16 +508,13 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
             : null;
     }
 
-    /// <summary>
-    /// Opens a dependency-injection scope on the host's container.
-    /// </summary>
+    /// <summary>Opens a dependency-injection scope on the host's container.</summary>
     /// <returns>A scope the caller owns and must dispose.</returns>
     /// <remarks>
     /// Every repository, the unit of work and the tenant context are registered SCOPED, mirroring their
-    /// per-request lifetime, so a test that reaches for one has to establish a scope first. This is the same
-    /// container the request pipeline resolves from - nothing is substituted - which is what makes a
-    /// resolution here evidence about production composition. Prefer
-    /// <see cref="CreateScopedServices"/> when the contracts wanted are the common four.
+    /// per-request lifetime, so a test that reaches for one has to establish a scope first. This is the
+    /// same container the request pipeline resolves from - nothing is substituted - which is what makes a
+    /// resolution here evidence about production composition.
     /// </remarks>
     public IServiceScope CreateScope() => Services.CreateScope();
 
@@ -706,31 +523,16 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// </summary>
     /// <returns>A scope handle the caller owns and must dispose.</returns>
     /// <remarks>
-    /// A convenience over <see cref="CreateScope"/> that removes the resolve-by-hand step, and a guard
-    /// rail with it: the accessors are typed, so a contract that was renamed or unregistered fails to
-    /// compile or fails loudly on first touch rather than being resolved under a string.
+    /// A convenience over <see cref="CreateScope"/> that removes the resolve-by-hand step, and a guard rail
+    /// with it: the accessors are typed, so a contract that was renamed or unregistered fails to compile or
+    /// fails loudly on first touch rather than being resolved under a string.
     /// </remarks>
     public ScopedServices CreateScopedServices() => new(CreateScope());
 
-    /// <summary>
-    /// Configuration the test host runs with, keyed by environment-variable name.
-    /// </summary>
+    /// <summary>Configuration the test host runs with, keyed by environment-variable name.</summary>
     /// <returns>The environment overrides the host reads.</returns>
-    /// <remarks>
-    /// The double underscore is the section separator the configuration provider understands, and the
-    /// numeric tail on the origins entry is how an array element is addressed. Both spellings match
-    /// <c>docker/docker-compose.yml</c>.
-    /// </remarks>
     public IReadOnlyDictionary<string, string?> HostConfiguration() => new Dictionary<string, string?>
     {
-        // MIGRATION: the legacy application read its connection string from the named entry
-        // <add name="SiteSqlServer" connectionString="Data Source=.\SQLExpress;Integrated Security=True;
-        // User Instance=True;AttachDBFilename=|DataDirectory|Database.mdf;" /> in Website/release.config
-        // L21-L26 - a file-attached SQL Server Express user instance, resolved through
-        // ConfigurationManager. That name is superseded by ConnectionStrings:Default, spelled
-        // ConnectionStrings__Default as an environment variable, which is the form docker-compose supplies
-        // and therefore the form the suite supplies too. The value here is the throwaway database this run
-        // provisioned, so the production registration binds to a real server without being altered.
         ["ConnectionStrings__Default"] = Database.ConnectionString,
         ["Jwt__Secret"] = SigningSecret,
         ["Jwt__Issuer"] = Issuer,
@@ -738,31 +540,15 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         ["Jwt__ExpirationMinutes"] = "30",
         ["Jwt__RefreshTokenExpirationDays"] = "7",
 
-        // SEC-06: THE SINGLE-INSTANCE ACKNOWLEDGEMENT, AND IT IS TRUE OF THIS HOST. In Production the API
-        // refuses to start on a refresh-token store that is neither shared between replicas nor carried across
-        // a restart unless the deployment states that it runs one instance - because scaling out on the
-        // process-local store needed no code change, no configuration change and produced no warning, while a
-        // sign-out against one replica left the session exchangeable on every other.
-        //
-        // Every host this suite builds IS a single instance, so the claim is honest here rather than a
-        // convenience. It is stated in the shared configuration rather than per suite because three separate
-        // suites build PRODUCTION hosts - the forwarded-header perimeter facts, the HTTPS-redirection facts and
-        // the documentation-publication facts - and each one restating it is how three suites come to disagree.
-        // Non-production hosts are exempt by the invariant itself, so this entry changes nothing for the rest of
-        // the suite; it is set unconditionally because a value present only under one environment is a value
-        // that stops being set when a fact moves.
+        // THE SINGLE-INSTANCE ACKNOWLEDGEMENT, AND IT IS TRUE OF THIS HOST. In Production the API refuses
+        // to start on a refresh-token store that is neither shared between replicas nor carried across a
+        // restart unless the deployment states that it runs one instance - because scaling out on the
+        // process-local store needed no code change, no configuration change and produced no warning, while
+        // a sign-out against one replica left the session exchangeable on every other.
         ["RefreshTokenStore__AcknowledgeSingleInstance"] = "true",
         ["LegacyCredentials__Enabled"] = "true",
 
-        // The window's absolute deadline, which the enabled switch now requires. It is computed from the
-        // run's own clock rather than written as a literal instant, because a literal would silently expire
-        // and turn every legacy-credential fact into a refusal months after it was written - a failure whose
-        // cause is invisible in the assertion that reports it. The value is round-trip formatted with a zero
-        // offset, which is the only form the options validator accepts.
-        //
-        // MIGRATION: a second, parallel section named LegacyCredentialMigration was configured here by one
-        // revision and is withdrawn. One window cannot have two switches, two keys and two deadlines; the
-        // section that survives is the one the verifier and its start-up validation actually read.
+        // The window's absolute deadline, which the enabled switch now requires.
         ["LegacyCredentials__EnabledUntilUtc"] =
             DateTimeOffset.UtcNow.AddDays(1).ToString("O", CultureInfo.InvariantCulture),
         ["LegacyCredentials__DecryptionKey"] = LegacyCredentialDecryptionKey,
@@ -770,73 +556,30 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         ["LegacyCredentials__ValidationAlgorithm"] = "SHA1",
         ["Cors__AllowedOrigins__0"] = AllowedOrigin,
 
-        // SEC-006: STATED EXPLICITLY RATHER THAN INHERITED, THOUGH IT NOW MATCHES THE SHIPPED VALUE.
-        // appsettings.json ships AllowedHosts as "*" because exact PortalAlias resolution is the authority
-        // for which hosts identify a tenant - see the host-filtering entry in MIGRATION_NOTES.md for why two
-        // independent allow-lists for one question is the defect and not the control. This suite needs that
-        // value regardless of what the shipped file says, because it invents alias host names at run time -
-        // "alias-<suffix>.local", a deliberately unconfigured "no-such-tenant.example", and a one-character
-        // truncation of the seeded alias used to prove that a substring reaches no tenant - none of which can
-        // be enumerated in a file written before the run.
-        //
-        // It is written out here rather than left to inheritance so the value the suite runs under is visible
-        // in the suite. The MECHANISM is still proved to work: the host-filtering facts in
-        // TenantResolutionTests build their own host carrying an explicit restricted list, which is how a
-        // deployment-scoped boundary is configured (docker/docker-compose.tls.yml does exactly that), and
-        // assert that an unconfigured name is refused under it.
         ["AllowedHosts"] = "*",
         ["RateLimiting__Authentication__PermitLimit"] = PermissiveAuthenticationRateLimit,
         ["RateLimiting__Authentication__WindowSeconds"] = "60",
 
-        // MIGRATION: the credential policy is carried forward from the legacy membership provider
-        // VERBATIM - Website/release.config L237-L247 registers AspNetSqlMembershipProvider with
+        // The credential policy is carried forward from the legacy membership provider VERBATIM -
+        // Website/release.config L237-L247 registers AspNetSqlMembershipProvider with
         // minRequiredPasswordLength="7", minRequiredNonalphanumericCharacters="0",
-        // requiresQuestionAndAnswer="false" and requiresUniqueEmail="false". It is pinned here rather than
-        // inherited from appsettings.json so that the policy the suite proves is the legacy one whatever a
-        // deployment overlay later says, and so that a reader can see the four values being asserted
-        // against. Tightening any of them would be a migration that locked existing accounts out of an
-        // installation, which is a decision for an operator and not a side effect of a port.
-        // The names are the option PROPERTY names - MinRequiredPasswordLength, not MinimumLength - because
-        // binding matches property names and a plausible-looking alternative spelling binds to nothing at
-        // all, leaving the shipped default in force and the override silently inert.
+        // requiresQuestionAndAnswer="false" and requiresUniqueEmail="false".
         ["PasswordPolicy__MinRequiredPasswordLength"] = "7",
         ["PasswordPolicy__MinRequiredNonAlphanumericCharacters"] = "0",
         ["PasswordPolicy__RequiresQuestionAndAnswer"] = "false",
         ["PasswordPolicy__RequiresUniqueEmail"] = "false",
-        // The key is Https:RedirectEnabled, read by ApplicationBuilderExtensions through the constant
-        // HttpsRedirectionSectionName. Setting Security__EnableHttpsRedirection instead would be inert,
-        // because nothing reads that key, and the suite would silently fall back to the shipped default.
-        // It is stated explicitly because a 307 to an https authority the test server does not
-        // listen on would fail every request for a reason unrelated to what is being tested.
         ["Https__RedirectEnabled"] = "false",
         ["Serilog__MinimumLevel__Default"] = "Warning",
 
-        // The suite is quiet by default, above, and this is the one category it must not lose. The business
-        // audit trail records an ACCEPTED sign-in and a completed tenant installation at the informational
-        // level - correctly, because neither is a problem - so the default would discard exactly the two
-        // events whose emission is under test, and the assertion would fail for a reason that has nothing to
-        // do with the code it is asserting on. The override is scoped to that one source context rather than
-        // raised globally, so nothing else becomes noisier.
-        // The source context is the SURVIVING sink's own type. Naming a type that no longer exists would
-        // leave the override silently inert, and the assertion would fail for the reason the override was
-        // added to prevent.
+        // The suite is quiet by default, above, and this is the one category it must not lose.
         ["Serilog__MinimumLevel__Override__DnnMigration.Infrastructure.Services.LoggingAuditSink"] = "Information",
 
-        // The second category the suite must not lose, and for the same reason. The request envelope -
-        // one entry per request carrying the route template, the status the caller was answered with and
-        // a message-redacted description of any failure - is written at the informational level for an
-        // ordinary request, so the default above would discard the very entries
-        // RequestLoggingContractTests asserts on. Scoped to that one source context, which is the
-        // middleware's own type, so nothing else becomes noisier.
+        // The second category the suite must not lose, and for the same reason.
         ["Serilog__MinimumLevel__Override__DnnMigration.Api.Middleware.RequestLoggingMiddleware"] = "Information",
 
         // The third category, and the reason it is here is a contract that MOVED. The health endpoints
         // publish four members and deliberately name no probe, because both views are anonymous and an
-        // enumeration of this application's dependencies is reconnaissance rather than diagnostics. The
-        // per-probe detail an operator needs did not disappear with it - it moved to this category, written
-        // at debug for a healthy report because a passing probe is not news. The default above would discard
-        // it, so the fact asserting that every registered probe is still reported SOMEWHERE would have
-        // nothing to read and would pass vacuously.
+        // enumeration of this application's dependencies is reconnaissance rather than diagnostics.
         ["Serilog__MinimumLevel__Override__DnnMigration.Api.HealthChecks"] = "Debug",
     };
 
@@ -845,11 +588,6 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// </summary>
     /// <param name="overrides">The variables to set, or to clear when the value is <see langword="null"/>.</param>
     /// <returns>A scope that restores the previous values.</returns>
-    /// <remarks>
-    /// A host reads configuration as it is composed, so an override only takes effect on a host built while
-    /// the scope is open. A caller that wants a differently configured host must therefore force that host
-    /// to build inside the scope, which touching its service provider does.
-    /// </remarks>
     public static IDisposable OverrideEnvironment(IReadOnlyDictionary<string, string?> overrides)
     {
         ArgumentNullException.ThrowIfNull(overrides);
@@ -858,41 +596,12 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// <para>
-    /// The recording sink is added so that the suite can assert what the application EMITS and not merely
-    /// that it does not throw while emitting. The business audit events are why it exists: their whole value
-    /// is in the properties they carry, and a message template whose placeholders had drifted apart from its
-    /// arguments would render nonsense while still failing nothing. The sink is inert for every other suite -
-    /// it records and does nothing else.
-    /// </para>
-    /// <para>
-    /// It is registered as a SERILOG sink rather than as a framework logging provider, and that is forced
-    /// rather than preferred: the host installs Serilog as its logger, which replaces the framework's
-    /// provider list outright, so a registered provider would receive nothing at all. The composition root
-    /// reads its logger configuration from the container as well as from configuration - explicitly, so that
-    /// a sink can resolve a registered service - and this uses that same extensibility point. Nothing about
-    /// production logging is altered to make the assertion possible.
-    /// </para>
-    /// </remarks>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
 
         builder.UseEnvironment("Testing");
 
-        // The container is validated rather than merely built, and this is the only place in the delivery
-        // where that happens: the Development environment turns scope validation on by default, but this host
-        // runs as Testing and production runs as Production, so neither would.
-        //
-        // ValidateOnBuild constructs a call site for every registration at build time, so a service whose
-        // dependency was never registered - or a SINGLETON that captures a SCOPED one, which is a captive
-        // dependency and outlives the scope it came from - fails here, naming the pair, instead of surfacing
-        // later as a repository quietly shared between requests. ValidateScopes then forbids resolving a
-        // scoped service straight from the root provider, which is the same fault committed by hand.
-        //
-        // Both are deliberately enabled on the shared host rather than on a dedicated one, so that every
-        // suite in the run pays for the guarantee once and no composition change can slip past it.
         builder.UseDefaultServiceProvider((_, options) =>
         {
             options.ValidateScopes = true;
@@ -913,15 +622,6 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         _database = await TestDatabaseFactory.CreateAsync().ConfigureAwait(false);
         _seed = await SeedAsync(_database).ConfigureAwait(false);
 
-        // Applied for the remainder of the run rather than per host, because every host this suite builds -
-        // the shared one and any ad-hoc one - needs the same database and the same signing key.
-        //
-        // CAPTURED AND RESTORED rather than simply assigned. These are PROCESS-wide variables, and the test
-        // host is not the only thing in the process that reads them: the connection string names a database
-        // this fixture drops on the way out, so leaving it set would point anything that read it afterwards at
-        // a database that no longer exists, and leaving the signing key set would leak a key into whatever ran
-        // next. An earlier revision assigned them and never put anything back, which also meant a developer's
-        // own exported value was silently destroyed for the remainder of the process.
         _environment = new EnvironmentScope(HostConfiguration());
 
         // Touching Services builds the host, which runs the options validation registered with
@@ -929,12 +629,6 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         // configuration message rather than failing every test with a connection error.
         _ = Services;
 
-        // And then the composition itself is exercised once, inside a scope, because building the host
-        // proves only that the registrations are well formed. Constructing the four contracts every suite
-        // depends on proves they can actually be built - a repository whose constructor argument is
-        // unregistered, or which cannot obtain the context, fails here with the container's own message
-        // instead of failing an unrelated assertion halfway through the run. It is one scope and four
-        // resolutions, so the cost is negligible against the diagnosis it buys.
         using (ScopedServices probe = CreateScopedServices())
         {
             _ = probe.Portals;
@@ -947,24 +641,9 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     /// <summary>Shuts the host down, removes the database, and puts the process environment back.</summary>
     /// <returns>A task that completes when all three are released.</returns>
     /// <remarks>
-    /// <para>
-    /// EVERY STEP RUNS WHATEVER THE PREVIOUS ONE DID. An earlier revision awaited the host's disposal and then
-    /// released the database, so a host that threw on the way down took the database release with it - and the
-    /// database was created on a server that outlives the run, so the leak was permanent and silent. Each step
-    /// is now independent, and the environment restoration in particular must happen even when both of the
-    /// others fail, because it is the only one whose omission escapes this process.
-    /// </para>
-    /// <para>
-    /// The ORDER is fixed and matters: the host is disposed first because it holds connections to the database,
-    /// the database is released second, and the environment is restored last so that anything either disposal
-    /// touches still reads the run's own configuration while it is shutting down.
-    /// </para>
-    /// <para>
-    /// NO FAILURE IS DISCARDED. One failure is rethrown with its original type and stack, because a single
-    /// fault deserves to be reported as itself rather than wrapped; several are reported together, because
-    /// choosing one of them would hide the others and the second failure is frequently the consequence of the
-    /// first.
-    /// </para>
+    /// The ORDER is fixed and matters: the host is disposed first because it holds connections to the
+    /// database, the database is released second, and the environment is restored last so that anything
+    /// either disposal touches still reads the run's own configuration while it is shutting down.
     /// </remarks>
     async Task IAsyncLifetime.DisposeAsync()
     {
@@ -1020,8 +699,8 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
     }
 
     /// <summary>
-    /// Inserts the reference data the suites build on: one portal with an alias matching the test host,
-    /// the three stock roles, a host account and a portal administrator with working credentials, a module
+    /// Inserts the reference data the suites build on: one portal with an alias matching the test host, the
+    /// three stock roles, a host account and a portal administrator with working credentials, a module
     /// definition to place instances of, two pages, and the permission catalogue rows the authorisation
     /// policies resolve against.
     /// </summary>
@@ -1087,7 +766,7 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         await AssignRoleAsync(database, memberUserId, registeredRoleId).ConfigureAwait(false);
 
         // The tenant snapshot the alias middleware publishes requires all three of these to be present and
-        // the two role names to resolve, so they are stamped once the roles and the administrator exist -
+        // the two role names to resolve, so they are stamped once the roles and the administrator exist
         // exactly the insert-then-update sequence the legacy portal creation performed.
         await database.ExecuteAsync(
             """
@@ -1105,12 +784,9 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
                 ["@portalId"] = portalId,
             }).ConfigureAwait(false);
 
-        // ENHANCED, not the plain form. The production hasher pre-hashes the credential
-        // with SHA-384 before BCrypt so that a password longer than BCrypt's own 72-byte
-        // input window cannot be silently truncated into an alias of a shorter one. A
-        // plain hash seeded here would therefore never verify, and every login in this
-        // suite would return 401 for a reason that has nothing to do with the code under
-        // test. The pre-hash algorithm must stay in step with the hasher's.
+        // ENHANCED, not the plain form. The production hasher pre-hashes the credential with SHA-384 before
+        // BCrypt so that a password longer than BCrypt's own 72-byte input window cannot be silently
+        // truncated into an alias of a shorter one.
         string passwordHash = BCrypt.Net.BCrypt.EnhancedHashPassword(
             KnownPassword,
             PasswordWorkFactor,
@@ -1399,28 +1075,6 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
 /// A dependency-injection scope on the host's container, with the persistence contracts a suite reaches for
 /// exposed as typed members.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The contracts below are registered SCOPED, because each of them ultimately reaches the same per-request
-/// data context. A test therefore cannot resolve one from the root provider, and the handle exists so that
-/// the scope it does need is opened, named and disposed in one place instead of being reconstructed at every
-/// site.
-/// </para>
-/// <para>
-/// Each accessor resolves on read rather than eagerly at construction, so opening a handle costs nothing for
-/// the contracts a test does not touch. Because the registrations are scoped, two reads of the same accessor
-/// inside one handle return the SAME instance - which is the behaviour a test wants when it writes through
-/// the unit of work and then reads back through a repository, since both are working over one context.
-/// Crossing that boundary requires a second handle, exactly as crossing a request boundary would.
-/// </para>
-/// <para>
-/// <strong>The data context itself is deliberately not reachable from here.</strong> It is declared
-/// <c>internal</c> to the Infrastructure assembly so that no layer above it can see a <c>DbContext</c> at
-/// all, and this type names none of the members that would work around that. What a test gets is the same
-/// abstraction the application gets, which is what makes an assertion made through it evidence about
-/// production behaviour.
-/// </para>
-/// </remarks>
 public sealed class ScopedServices : IDisposable
 {
     private readonly IServiceScope _scope;
@@ -1454,15 +1108,13 @@ public sealed class ScopedServices : IDisposable
     public void Dispose() => _scope.Dispose();
 }
 
-/// <summary>
-/// Identifiers and names of the rows <see cref="ApiTestFixture"/> seeds.
-/// </summary>
+/// <summary>Identifiers and names of the rows <see cref="ApiTestFixture"/> seeds.</summary>
 /// <remarks>
 /// Identity values are read back from the database rather than assumed, because two of the seeded tables
 /// have unusual identity seeds that make guessing wrong in opposite directions: <c>Portals.PortalID</c> is
 /// <c>IDENTITY(-1, 1)</c>, so the first portal is -1 - the very value the legacy sentinel table used for
 /// "absent" - and <c>Roles.RoleID</c> and <c>Tabs.TabID</c> are <c>IDENTITY(0, 1)</c>, so zero is a real
-/// identifier. Nothing here may treat -1 or 0 as missing.
+/// identifier.
 /// </remarks>
 public sealed record IntegrationSeed
 {
@@ -1560,9 +1212,7 @@ public sealed record IntegrationSeed
     public required int TabEditPermissionId { get; init; }
 }
 
-/// <summary>
-/// Binds every integration suite to one shared <see cref="ApiTestFixture"/>.
-/// </summary>
+/// <summary>Binds every integration suite to one shared <see cref="ApiTestFixture"/>.</summary>
 /// <remarks>
 /// <para>
 /// Membership of a single collection is what makes the suites run one after another instead of side by
@@ -1570,26 +1220,8 @@ public sealed record IntegrationSeed
 /// partitions by caller address, which the in-memory transport makes identical for all of them.
 /// </para>
 /// <para>
-/// <b>SERIALISATION IS NOT ISOLATION, AND EVERY MUTATION OF SHARED STATE MUST BE FAILURE-SAFE.</b> Running one
-/// fact at a time removes races; it does nothing whatever about state a fact leaves behind. Any fact that
-/// mutates something the SEEDED reference data owns - the seeded tenant's pages, roles, accounts or
-/// permission grants, or the installation's portal list - therefore has to restore it from a
-/// <c>finally</c> block, so that the restoration happens on the failing path as well as the passing one.
-/// </para>
-/// <para>
-/// The reason is that the alternative is not "one failure" but "one failure and then several misleading
-/// ones". A fact that fails after marking a seeded page deleted, or after adding a role it meant to remove,
-/// leaves every later fact in the run reading contaminated data - and those later failures point at code that
-/// is working correctly, while the fact that actually broke is buried among them. Worse, the contamination
-/// can make a later fact PASS: a listing assertion satisfied by a leftover row proves nothing.
-/// </para>
-/// <para>
-/// Two rules follow, and both are applied throughout this assembly. Prefer creating your own row over mutating
-/// a seeded one, because a row a fact created is a row no other fact reads by name. Where a seeded row must be
-/// mutated, put the restoration in a <c>finally</c> block and keep the ASSERTIONS in the try body, so a
-/// cleanup failure can never replace the failure that made cleanup necessary. Where the cleanup itself must be
-/// dependable on a path where the component under test may be the broken thing, restore with a direct
-/// statement rather than through that component.
+/// <b>SERIALISATION IS NOT ISOLATION, AND EVERY MUTATION OF SHARED STATE MUST BE FAILURE-SAFE.</b> Running
+/// one fact at a time removes races; it does nothing whatever about state a fact leaves behind.
 /// </para>
 /// </remarks>
 [CollectionDefinition(Name)]
@@ -1605,25 +1237,9 @@ public sealed class IntegrationTestCollection : ICollectionFixture<ApiTestFixtur
 /// </summary>
 /// <remarks>
 /// <para>
-/// The API returns <c>DnnMigration.Application.Dtos.Common.PagedResponse&lt;T&gt;</c>, whose members are
-/// initialise-only, so a response cannot be bound straight back onto the producing type. Declaring the
-/// envelope here is also the more honest assertion: an integration suite is testing the contract that
-/// leaves the process, so reading the payload into a type owned by the tests proves the documented members
-/// really are on the wire under the expected names. Binding back onto the producing type would let a
-/// renamed or dropped member pass unnoticed, because both sides would move together.
-/// </para>
-/// <para>
 /// <b>The paging facts live one level down, under <c>meta</c>.</b> Before the success envelope was adopted
 /// this type mirrored the domain page directly, with the total and the coordinates as siblings of the
-/// records. The API now returns the Application-layer projection, which pairs the records with an
-/// <c>ApiMeta</c> companion, so the shape asserted here has changed with it - and it had to, because
-/// serialising the domain page was the layering breach that made the change necessary.
-/// </para>
-/// <para>
-/// The three flat members are retained as read-only pass-throughs to that companion. They are not a second
-/// source of truth: each simply forwards, so a suite reads <c>page.TotalCount</c> exactly as before while
-/// the wire shape underneath it is the new one. Keeping them is what confined a wire-contract change to one
-/// type instead of to every paging assertion in the suite.
+/// records.
 /// </para>
 /// <para>
 /// The derived members of the producing type - the unpaged flag, the page count and the two navigation
@@ -1655,14 +1271,7 @@ public sealed class PagedEnvelope<T>
     public int PageSize => Meta.PageSize;
 }
 
-/// <summary>
-/// The wire shape of the metadata companion that accompanies a paged response.
-/// </summary>
-/// <remarks>
-/// Declared separately rather than inlined, because it is a distinct member of the published contract and a
-/// suite that wants to assert on the companion itself - that it is present at all, for instance - needs a
-/// type to read it into.
-/// </remarks>
+/// <summary>The wire shape of the metadata companion that accompanies a paged response.</summary>
 public sealed class ApiMetaEnvelope
 {
     /// <summary>The total number of matching elements across every page.</summary>
@@ -1674,26 +1283,13 @@ public sealed class ApiMetaEnvelope
     /// <summary>The size of the page that was returned.</summary>
     public int PageSize { get; set; }
 
-    /// <summary>The number of pages the total divides into at this page size, or zero when there is nothing
-    /// to page.</summary>
+    /// <summary>
+    /// The number of pages the total divides into at this page size, or zero when there is nothing to page.
+    /// </summary>
     public int TotalPages { get; set; }
 }
 
-/// <summary>
-/// The wire shape of a single-payload success response, as the suites read it back.
-/// </summary>
-/// <remarks>
-/// <para>
-/// Every action that answers with a payload now wraps it in one envelope, so a suite reads two member names
-/// rather than one shape per resource. Reading through this type is what proves the wrapping actually
-/// happens: a payload published bare would fail to bind here, whereas asserting on the payload type alone
-/// would pass either way.
-/// </para>
-/// <para>
-/// The metadata companion is nullable because it describes a page. A single-payload response leaves it
-/// absent, and a suite asserting that it is absent is asserting a real property of the contract.
-/// </para>
-/// </remarks>
+/// <summary>The wire shape of a single-payload success response, as the suites read it back.</summary>
 /// <typeparam name="T">The payload type.</typeparam>
 public sealed class ApiEnvelope<T>
 {
@@ -1704,15 +1300,7 @@ public sealed class ApiEnvelope<T>
     public ApiMetaEnvelope? Meta { get; set; }
 }
 
-/// <summary>
-/// Reads a payload out of the shared success envelope.
-/// </summary>
-/// <remarks>
-/// Exists so that a suite states its intent - "read the payload" - in one call rather than deserialising an
-/// envelope and reaching into it at every site. The failure mode it removes is the quiet one: a suite that
-/// forgot to unwrap would bind an all-default payload and then assert against it, and several assertions
-/// would pass by coincidence.
-/// </remarks>
+/// <summary>Reads a payload out of the shared success envelope.</summary>
 public static class ApiEnvelopeReader
 {
     /// <summary>Reads and unwraps the payload of a success response.</summary>
@@ -1732,9 +1320,7 @@ public static class ApiEnvelopeReader
     }
 }
 
-/// <summary>
-/// One log event, reduced to the facts a contract assertion can be written against.
-/// </summary>
+/// <summary>One log event, reduced to the facts a contract assertion can be written against.</summary>
 /// <param name="Level">The severity the event was written at.</param>
 /// <param name="EventId">The identifier the event was written under, or zero when it carried none.</param>
 /// <param name="EventName">The name the identifier carried, or an empty string when it carried none.</param>
@@ -1754,18 +1340,10 @@ public sealed record LogRecord(
 /// emitting did not fail.
 /// </summary>
 /// <remarks>
-/// <para>
 /// Static because the logger is built once for the host and the host is a collection fixture shared by the
 /// whole assembly - there is one logging pipeline, so one sink is the honest shape. Events accumulate for
 /// the life of the run, which is why a suite asserting on them locates its own event rather than assuming
 /// it is the only one present.
-/// </para>
-/// <para>
-/// The rendered message is kept alongside the properties deliberately. The properties prove the values were
-/// attached; the rendered message proves the template's placeholders and its arguments still agree, which is
-/// the failure the property bag alone would hide - a drifted template still carries every property and
-/// simply renders them in the wrong places, or not at all.
-/// </para>
 /// </remarks>
 public static class RecordedLogs
 {
@@ -1806,10 +1384,6 @@ public static class RecordedLogs
 
             foreach (KeyValuePair<string, LogEventPropertyValue> property in logEvent.Properties)
             {
-                // The framework's event identifier arrives as a structure holding an identifier and a name,
-                // because the logging adapter projects it that way rather than as two scalars. It is lifted
-                // out here so an assertion can address the identifier directly, which is the value an
-                // operator's alert rule is written against.
                 if (property.Key == "EventId" && property.Value is StructureValue structure)
                 {
                     foreach (LogEventProperty member in structure.Properties)
@@ -1843,15 +1417,7 @@ public static class RecordedLogs
     }
 }
 
-/// <summary>
-/// The standard success envelope for a collection response, as the tests read it off the wire.
-/// </summary>
-/// <remarks>
-/// The unpaged counterpart of <see cref="PagedEnvelope{T}"/>. The reads that apply no window - bounded
-/// reference catalogues and the per-parent collections - publish the Application layer's
-/// <c>ApiResponse&lt;IReadOnlyList&lt;T&gt;&gt;</c>, which carries the records under <c>data</c> and no
-/// metadata, because a response that was never paged has no page to describe.
-/// </remarks>
+/// <summary>The standard success envelope for a collection response, as the tests read it off the wire.</summary>
 /// <typeparam name="T">The element type of the collection.</typeparam>
 public sealed class CollectionEnvelope<T>
 {

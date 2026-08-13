@@ -1,78 +1,13 @@
 <!--
-  THE RFC 7807 ERROR SURFACE.
-
-  Renders one problem document as a single banner: the severity as a word, the problem
-  type, the sentence describing this occurrence, the per-field messages, and the
-  server's support reference. Emits nothing at all when there is no problem, so a screen
-  can bind it unconditionally and let it disappear rather than guarding it with a block
-  of its own.
-
-  Every value arrives ALREADY RESOLVED by the paired component class, which resolves it
-  once through `core/utils/form-errors.util.ts`. Nothing is computed here - no severity
-  rule, no string work, and no truthiness test. Absence is decided by the explicit
-  `!== null` predicates the class exposes (`hasProblem`, `hasSupportReference`), never by
-  truthiness and never by `> 0`, because in this data `-1` and `0` are legitimate
-  identifiers and the empty string is a legitimate value rather than a synonym for
-  absent. This template's whole job is to place already-plain text into already-styled
-  boxes.
-
-  MIGRATION: every string is rendered through ESCAPING INTERPOLATION, and that closes a
-  measured vulnerability rather than expressing a preference. The legacy renderer
-  `Library/Components/Skins/ModuleMessage.vb` ended its render path at L150 with
-  `lblMessage.Text = strMessage` - assigned raw to an `asp:Label`, which Web Forms
-  renders UNENCODED - and that file contains no encoding call of any kind (measured
-  HtmlEncode occurrences: 0). Against it sits the real payload surface, measured across
-  the 37 in-scope resource files: 76 of 1182 values carry an HTML tag, and
-  `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` holds an
-  `Advertising.Text` value that is a LIVE advertising block - two `<script>` tags, the
-  second loading from the remote host `pagead2.googlesyndication.com`, stored
-  HTML-escaped so a naive search misses it. Some legacy call sites encoded defensively
-  (`Website/admin/Security/AccessDenied.ascx.vb` L43 wraps its message in
-  `HttpUtility.HtmlEncode`) while the renderer never did, which is precisely the shape of
-  a defence-in-depth failure. Here the encoding is STRUCTURAL: no member of the paired
-  class is markup, and this template uses no raw-HTML property binding, no sanitiser, and
-  no trust-this-markup wrapper of any kind. A value still carrying a script tag renders as
-  visible, inert text and creates no element.
-
-  MIGRATION: the accessibility contract below is 100% NET-NEW, with no legacy precedent
-  to carry across. Measured over BOTH legacy trees, `aria-live` appears in 0 files,
-  `role="alert"` in 0 files, and ANY `aria-` attribute in 0 files. The legacy conveyed
-  severity by colour plus an icon alone, which is exactly the bar this replaces.
-
-  MIGRATION: localisation is NOT ported. The legacy screens resolved every label through
-  `App_LocalResources` files keyed `<ControlID>.<Property>`; that mechanism is Web Forms
-  specific and out of scope, and no translation runtime is introduced. The few static
-  words here - the field-list name and the reference caption - are authored inline in
-  English, with the legacy resource wording used only as the authority for phrasing.
+  MIGRATION: the accessibility contract below is 100% NET-NEW, with no legacy precedent to carry across.
+  Measured over BOTH legacy trees, `aria-live` appears in 0 files, `role="alert"` in 0 files, and ANY
+  `aria-` attribute in 0 files.
 -->
 
 <!--
-  A PERSISTENT live region. The wrapper is always in the document and only its contents
-  change, because a region inserted at the same moment as its first message is announced
-  inconsistently across screen readers - and the first message is the one that matters.
-  The `@if` is therefore INSIDE the region, never wrapped around it, so the region
-  element survives every failure rather than being re-created with each one.
-
-  `role="alert"` carries the announcement semantics. `aria-live` and `aria-atomic` state
-  the SAME values that role already implies, so the behaviour is legible to a reader of
-  this template and cannot shift with a browser's role mapping; because the stated values
-  match the implied ones this is ONE coherent announcement mechanism, not two competing
-  ones. `aria-atomic` makes the whole banner a single announcement rather than a stream of
-  fragments as the message and each field group appear.
-
-  The wrapper carries no padding, border or background of its own, so while it is empty it
-  paints nothing and resolves to zero height.
-
-  ⚠ IT IS ALSO PROGRAMMATICALLY FOCUSABLE, AND `-1` IS THE WHOLE POINT OF THE VALUE. A negative
-  index keeps the region OUT of the tab order - a reader tabbing through a form never lands on it, so
-  nothing is added to the sequence they already know - while allowing a screen that has just submitted
-  to move focus here deliberately. That is what makes an outcome reachable when the form is longer than
-  the viewport: the announcement alone reaches a screen-reader user, but a sighted operator who pressed
-  a control at the foot of a long form and whose outcome rendered at the top of it saw NOTHING happen,
-  measured from a scroll offset of 712px. Focus is moved by the SCREEN rather than by this component,
-  because only the screen knows whether the banner appeared in answer to something a person just did
-  or was already there when they arrived - moving focus in the second case would displace a reader who
-  had not asked for anything. This attribute is the affordance; the decision stays with the caller.
+  A PERSISTENT live region. The wrapper is always in the document and only its contents change, because
+  a region inserted at the same moment as its first message is announced inconsistently across screen
+  readers - and the first message is the one that matters.
 -->
 <div
   class="error-banner-live"
@@ -83,123 +18,41 @@
 >
   @if (hasProblem()) {
     <!--
-      The severity is carried as a data attribute on THIS element rather than on the
-      host, so the live region stays free of it and keeps painting nothing while empty.
-      An attribute rather than a class list because the band is a three-way state, not
-      three independent booleans, and one binding cannot leave two bands applied at
-      once; it also states the state in the same form as the sibling primitives'
-      `data-size` and `data-align`.
-
-      MIGRATION: a permission refusal (403) is presented as a WARNING rather than as an
-      error, and the legacy application is the authority for that twice over. First,
-      `Website/admin/Security/AccessDenied.ascx.vb` performs no permission check at all -
-      it only presents a denial - and BOTH branches of its `Page_Load` render at
-      `ModuleMessage.ModuleMessageType.YellowWarning`: the message passed through the
-      query string, and the localised default. Second, the legacy renderer itself styled
-      the two bands differently at `ModuleMessage.vb` L138-L146 - `YellowWarning` set its
-      heading to the ordinary `Normal` class while `RedError` set `NormalRed`, whose sole
-      declaration in `Website/Portals/_default/default.css` L113-L119 sits under the
-      comment "text style used for error messages" and carries the pure red that became
-      the danger token. The legacy withheld the red for a refusal, and so does this.
-
-      MIGRATION: the calm band (429) has NO legacy counterpart and is provably new - the
-      legacy `ModuleMessageType` enum declares exactly three members at
-      `ModuleMessage.vb` L36-L40, `GreenSuccess`, `YellowWarning` and `RedError`, with no
-      informational or calm member, so nothing was carried across and nothing could be. It
-      exists because the credential rate limiter is the COMPENSATING CONTROL for the
-      legacy CAPTCHA this migration deliberately removed: a refusal that means "you are
-      early" must not be dressed as a failure, or it reports a fault where the system is
-      working exactly as configured. Success is the fourth band that is absent by design -
-      `GreenSuccess` has no counterpart here, because a success is not a problem document
-      and belongs to the notification service.
+      The severity is carried as a data attribute on THIS element rather than on the host, so the live
+      region stays free of it and keeps painting nothing while empty.
     -->
     <div class="error-banner" [attr.data-severity]="severity()">
       <!--
-        The severity as a WORD, and it is not decoration: it is the cue that makes the
-        band perceivable without perceiving the colour, and it is announced along with
-        the message.
-
-        MIGRATION: this replaces the legacy per-severity ICON, which is a documented
-        non-port. The legacy renderer paired each message type with a raster asset -
-        `~/images/green-ok.gif`, `~/images/yellow-warning.gif` and `~/images/red-error.gif`
-        at `ModuleMessage.vb` L134, L140 and L146 - and all three still exist under
-        `Website/images/`. None is carried across: the design system permits no CSS asset
-        reference and ships `favicon.ico` as its only static asset, so the cue is text
-        here. Text carries it further than an image did in any case - it cannot fail to
-        load, and it is read out.
+        The severity as a WORD, and it is not decoration: it is the cue that makes the band perceivable
+        without perceiving the colour, and it is announced along with the message.
       -->
       <p class="error-banner__severity">{{ severityLabel() }}</p>
 
       @if (hasTitle()) {
         <!--
-          The problem TYPE, shown only when it says something the sentence below does
-          not. This is the legacy Heading-and-Message pairing that the excluded
-          renderer's three-argument `AddModuleMessage` overload took, with the heading
-          here and the message below.
-
-          A paragraph rather than a heading, deliberately. The banner is transient page
-          state that can appear on any screen, so no heading level is knowable in
-          advance, and adding one to the document outline on every failure - then
-          removing it - would churn the outline rather than describe it. Inside an
-          atomic alert the whole banner is announced as one unit, so heading navigation
-          would buy nothing here.
+          The problem TYPE, shown only when it says something the sentence below does not. This is the
+          legacy Heading-and-Message pairing that the excluded renderer's three-argument
+          `AddModuleMessage` overload took, with the heading here and the message below.
         -->
         <p class="error-banner__title">{{ title() }}</p>
       }
 
       <!--
-        The sentence describing this occurrence, and never blank: the class resolves it as
-        the document's detail, then its title, then wording chosen from the status itself.
-
-        MIGRATION: legacy line-break markup is normalised to text before it reaches here,
-        and it has to be, in BOTH spellings. `<br/>` was appended to the heading by the
-        legacy renderer itself at `ModuleMessage.vb` L153 (`lblHeading.Text = Heading +
-        "<br/>"`), while `<br>` was appended by `Website/admin/Portal/Signup.ascx.vb` at
-        L193 - and that append sits INSIDE A PER-CHARACTER VALIDATION LOOP
-        (`For intCounter = 1 To txtPortalName.Text.Length`), so one submission accumulated
-        one break per invalid character. Measured across the in-scope resource files, 29 of
-        1182 values open with a break tag. The resolution belongs to
-        `core/utils/form-errors.util.ts` and is applied in the class, so this template
-        receives plain text; a break that somehow survived would render as visible text
-        rather than as a line break, which is the safe failure.
+        The sentence describing this occurrence, and never blank: the class resolves it as the
+        document's detail, then its title, then wording chosen from the status itself.
       -->
       <p class="error-banner__message">{{ message() }}</p>
 
       @if (hasFieldErrors()) {
         <!--
-          A description list pairs each label with its messages, which is exactly the
-          name-to-values relationship the data has. A flat list would lose which message
-          belongs to which field as soon as a field has more than one. The list is given
-          an accessible name so it is announced as something rather than as an unlabelled
-          run of text; the name is an attribute, so it adds no visible content.
-
-          MIGRATION: break markup arrives in the PER-FIELD values too, not only in the
-          summary above - nine validator `ErrorMessage` attributes in
-          `Website/admin/Security/editroles.ascx` open with one, at L31, L92, L95, L110 and
-          five more. Those attributes become the problem document's per-field dictionary
-          values, so the same normalisation covers this list as covers the sentence.
-
-          The field label is used WHOLE and is never split. That matters: the failure codes
-          this API reports include `Portal.LastPortal`, which genuinely contains a dot -
-          its wording is stored under the bare key `LastPortal` and read as
-          `Localization.GetString("LastPortal")` - so any general "split on the dot" rule
-          would corrupt it. The label is also not re-cased here; the class supplies it as
-          it intends it to read.
+          A description list pairs each label with its messages, which is exactly the name-to-values
+          relationship the data has. A flat list would lose which message belongs to which field as soon
+          as a field has more than one.
         -->
         <dl class="error-banner__fields" aria-label="Problem details">
           @for (group of fieldErrors(); track trackByField($index, group)) {
             <dt class="error-banner__field">{{ labelFor(group.field) }}</dt>
-            <!--
-              Tracked by POSITION, not by message text. Duplicate messages against one
-              field are deliberately preserved rather than de-duplicated, and tracking by
-              the text itself makes the second occurrence collide with the first: the
-              framework treats them as one item and renders a single line, silently
-              dropping a message the server sent. The legacy produces exactly this input -
-              the per-character loop cited above yields the identical sentence once per
-              invalid character - so the collapse would be real data loss rather than a
-              theoretical one. The sibling form-field component tracks by position for the
-              same reason.
-            -->
+            <!-- Tracked by POSITION, not by message text. -->
             @for (fieldMessage of group.messages; track $index) {
               <dd class="error-banner__detail">{{ fieldMessage }}</dd>
             }
@@ -209,26 +62,9 @@
 
       @if (hasSupportReference()) {
         <!--
-          The server's own identifier for this request, and the ONLY diagnostic shown. It
-          is quotable in a support report and means nothing to anyone without the server's
-          logs, which is exactly why it is safe to show where a stack trace was not. It
-          stays inside the atomic region so a person using a screen reader can report it
-          too.
-
-          MIGRATION: this is a net-new diagnostic with no legacy counterpart, and it
-          REVERSES a legacy disclosure rather than reproducing it.
-          `Library/Components/Exceptions/ErrorContainer.vb` branched on
-          `If objUserInfo.IsSuperUser` and, for those who were, passed `exc.ToString` - the
-          exception's full string form, the ENTIRE STACK TRACE - through as the displayed
-          message. The problem-document contract carries no stack trace, no exception, no
-          inner exception and no developer message, and its shape does not vary by
-          environment, so that exposure is now closed for EVERY caller including
-          super-users. What remains is an opaque identifier that joins a person's report to
-          the server's record of the request and reveals nothing about the server's
-          internals. The class prefers the server's correlation identifier - the value that
-          also travels on the response header and appears in the server's own logs - and
-          falls back to the trace identifier only when no correlation identifier was
-          published.
+          The server's own identifier for this request, and the ONLY diagnostic shown. It is quotable in
+          a support report and means nothing to anyone without the server's logs, which is exactly why
+          it is safe to show where a stack trace was not.
         -->
         <p class="error-banner__trace">Reference: {{ supportReference() }}</p>
       }

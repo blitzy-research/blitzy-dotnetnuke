@@ -7,18 +7,10 @@ import type { DeferredOutcome } from './deferred-outcome.service';
 import { NotificationService } from './notification.service';
 
 /**
- * THE SUBJECT: reporting the outcome of a write whose screen has already gone.
- *
- * ⚠ WHAT THIS SERVICE EXISTS FOR IS A LIFETIME, WHICH IS WHY THE CASES BELOW LEAN ON WHERE THE WATCH IS
- * CREATED RATHER THAN ON WHAT IT SAYS. Every editing screen composes and announces its own outcome from an
- * `effect` in its own injection context, so the announcement dies with the component. A browser audit
- * measured the consequence on the role creation form: submit, immediately click elsewhere, and the request
- * answers `201`, the record is genuinely created, the destination screen is healthy - and the operator is
- * never told the write committed, because the only party that was going to tell them no longer exists.
- *
- * This service is provided at the application root, so what it injects as an `Injector` IS the root
- * environment injector and an effect created with it outlives every screen. The first case pins exactly
- * that property, by registering from OUTSIDE any injection context at all.
+ * THE SUBJECT: reporting the outcome of a write whose screen has already gone. ⚠ WHAT THIS SERVICE EXISTS
+ * FOR IS A LIFETIME, WHICH IS WHY THE CASES BELOW LEAN ON WHERE THE WATCH IS CREATED RATHER THAN ON WHAT
+ * IT SAYS. Every editing screen composes and announces its own outcome from an `effect` in its own
+ * injection context, so the announcement dies with the component.
  */
 describe('DeferredOutcomeService', () => {
   let service: DeferredOutcomeService;
@@ -35,26 +27,11 @@ describe('DeferredOutcomeService', () => {
     return notifications.notifications().map((entry) => entry.message);
   }
 
-  /**
-   * Declines to word a refusal.
-   *
-   * Used by every case that is about the SUCCESS path, so those cases assert one thing each: a caller
-   * returning `null` for a failure states it silently, exactly as a caller returning `null` for a success
-   * does. The refusal-relay cases below supply a real notice instead.
-   */
+  /** Declines to word a refusal. */
   function declineFailure(): null {
     return null;
   }
 
-  /**
-   * Drains the root effect queue.
-   *
-   * The watch is a ROOT effect - created with the root environment injector, which is the entire point of
-   * this service - so nothing drains it on a component's behalf. `flushEffects()` is the API this version
-   * of the framework publishes and it was verified against the installed `@angular/core` rather than
-   * assumed: `flushEffects(): void` is declared on the testing surface, while the `tick()` that supersedes
-   * it in a later major version is not. Everything here is synchronous, so no timer is involved.
-   */
   function flush(): void {
     TestBed.flushEffects();
   }
@@ -129,17 +106,6 @@ describe('DeferredOutcomeService', () => {
   });
 
   it('relays a refusal as one bounded sentence and its support reference', () => {
-    // ⚠ THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required silence. The old reasoning was
-    // that a failure in this application is a DOCUMENT - a title, a detail, per-field messages, a support
-    // reference - whose home is the banner ON the screen that attempted the write; that screen is gone, so
-    // there is no field for a field message to sit beside, and the store still holds the failure for anyone
-    // who returns.
-    //
-    // All of that is true about the document and none of it justifies silence about the FACT. An operator
-    // who submitted a write and moved on believes it committed; nothing tells them otherwise, and an absent
-    // confirmation is indistinguishable from one they clicked away from. They find out when something
-    // downstream needs a record that is not there. "Returning to the screen presents it in full" presumes
-    // they know they have a reason to return, which is exactly what they do not know.
     service.announceWhenSettled(verdict, () => 'The role was created.', () => ({
       message: 'The role could not be created',
       reference: '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
@@ -149,10 +115,6 @@ describe('DeferredOutcomeService', () => {
     verdict.set('failed');
     flush();
 
-    // The queue composes the stored `message` from the sentence and the reference it was handed
-    // separately, so the rendered form carries both - which is the point of passing the reference as its
-    // own argument rather than concatenating it here: the two are bounded independently, so a long
-    // sentence cannot truncate the identifier off the end.
     expect(queuedMessages()).toEqual([
       'The role could not be created Reference: 4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
     ]);
@@ -243,8 +205,8 @@ describe('DeferredOutcomeService', () => {
     verdict.set('succeeded');
     flush();
 
-    // A further settle - another write publishing to the same slot the caller derived its verdict from -
-    // must not be reported as this one. The watch released itself, and the one-shot flag holds even if the
+    // A further settle - another write publishing to the same slot the caller derived its verdict from must
+    // not be reported as this one. The watch released itself, and the one-shot flag holds even if the
     // release has not taken effect yet.
     verdict.set('pending');
     flush();

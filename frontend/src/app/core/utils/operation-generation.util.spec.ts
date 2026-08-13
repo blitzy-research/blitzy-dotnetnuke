@@ -1,18 +1,7 @@
 /**
- * Specification for `core/utils/operation-generation.util.ts`.
- *
- * The class is three short members, so what is proven here is not its arithmetic but the four
- * properties every call site depends on and no compiler can check:
- *
- * 1. A ticket is current only until the NEXT operation starts. This is the property that stops a
- *    slower earlier response from overwriting a newer one.
- * 2. Zero is never issued, so an accidentally zero-initialised ticket is REFUSED rather than being
- *    mistaken for the first operation.
- * 3. Invalidation abandons what is outstanding without a replacement being started, which is what a
- *    slice being cleared and a session being purged both need.
- * 4. Instances are independent, so one slice's activity never invalidates another's.
- *
- * A pure module with no injector, no transport and no DOM, so there is no test bed here at all.
+ * Specification for `core/utils/operation-generation.util.ts`. The class is three short members, so what
+ * is proven here is not its arithmetic but the four properties every call site depends on and no compiler
+ * can check: 1.
  */
 import { OperationGeneration } from './operation-generation.util';
 
@@ -31,9 +20,9 @@ describe('OperationGeneration', () => {
     });
 
     it('never issues zero, so a zero-initialised ticket is refused', () => {
-      // ⚠ THE LOAD-BEARING CASE FOR THE PRE-INCREMENT. A field declared `private ticket = 0` that
-      // was never assigned must not be accepted as the first operation, because that would make a
-      // forgotten `begin()` invisible: the commit would happen and look correct.
+      // ⚠ THE LOAD-BEARING CASE FOR THE PRE-INCREMENT. A field declared `private ticket = 0` that was never
+      // assigned must not be accepted as the first operation, because that would make a forgotten `begin()`
+      // invisible: the commit would happen and look correct.
       expect(generation.isCurrent(0))
         .withContext('nothing holds ticket zero before any operation starts')
         .toBeFalse();
@@ -86,9 +75,6 @@ describe('OperationGeneration', () => {
     });
 
     it('refuses a ticket from a re-read of the SAME record', () => {
-      // ⚠ WHY AN IDENTIFIER COMPARISON CANNOT REPLACE THIS. Both reads name the same record, so both
-      // responses carry the same identifier and an identifier check accepts either. Only the ticket
-      // distinguishes the newer from the older.
       const firstRead = generation.begin();
       const secondRead = generation.begin();
 
@@ -99,8 +85,6 @@ describe('OperationGeneration', () => {
 
   describe('invalidating without a replacement', () => {
     it('refuses an outstanding ticket after invalidation', () => {
-      // The clear-a-slice and purge-at-sign-out case: the operation stops being wanted although no
-      // newer one was started, so there is no dispatch to supersede it.
       const outstanding = generation.begin();
 
       generation.invalidate();

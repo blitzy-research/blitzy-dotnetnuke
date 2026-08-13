@@ -12,32 +12,10 @@ namespace DnnMigration.UnitTests.Serialization;
 /// bound from BOTH a query string and a request body has one vocabulary rather than two.
 /// </summary>
 /// <remarks>
-/// <para>
 /// <strong>The defect these assertions pin.</strong> <c>PagedRequest.SortDir</c> is bound from the query
 /// string on every collection endpoint and from a JSON body on <c>POST /api/v1/users/search</c> — the
 /// compensating address an identifying account search uses so that personal data does not travel in a
-/// request target. The query binder resolves an enumeration through its type converter and accepts the
-/// member NAME; <c>System.Text.Json</c>, with no converter registered, accepted only the numeric
-/// discriminator. Measured against the running API before the converter existed, a body carrying
-/// <c>"sortDir":"Ascending"</c> was answered <c>400</c> with
-/// <c>"$.sortDir": ["The JSON value could not be converted to …SortDirection."]</c> while the same search
-/// carrying <c>"sortDir":0</c> was answered <c>200</c>. Both sides compiled and no test sent the member in
-/// a body, so nothing detected it.
-/// </para>
-/// <para>
-/// <strong>The accepted set is the query binder's set, deliberately.</strong> Measured on the same API,
-/// <c>?sortDir=</c> accepts <c>Ascending</c>, <c>ascending</c> and <c>1</c>, and refuses <c>asc</c>. The
-/// cases below assert exactly that surface plus a JSON number, so a body can express what a query string
-/// could and nothing more. The number is admitted so the change stays purely additive for a caller written
-/// against the previous behaviour.
-/// </para>
-/// <para>
-/// <strong>An undeclared integer is carried, not refused, and that is asserted rather than assumed.</strong>
-/// <c>?sortDir=5</c> binds and is then reported by <c>PagedRequestValidator</c>'s <c>IsInEnum</c> rule as a
-/// field-level RFC 7807 failure. Refusing 5 in the converter would answer the same status with a
-/// serialiser's wording, so the two transports would explain one mistake in two ways. Membership is checked
-/// in exactly one place and this suite proves the converter does not check it a second time.
-/// </para>
+/// request target.
 /// </remarks>
 public sealed class SortDirectionJsonConverterTests
 {
@@ -124,10 +102,6 @@ public sealed class SortDirectionJsonConverterTests
 
     /// <summary>An undeclared integer is carried through for the request validator to report.</summary>
     /// <param name="json">The JSON value to read.</param>
-    /// <remarks>
-    /// Both spellings are asserted because both transports can produce one: a query string sends the digit
-    /// as text and a body can send it as a number.
-    /// </remarks>
     [Theory]
     [InlineData("5")]
     [InlineData("\"5\"")]
@@ -170,9 +144,9 @@ public sealed class SortDirectionJsonConverterTests
     /// policy rather than through the converter directly.
     /// </summary>
     /// <remarks>
-    /// This is the assertion closest to the reproduced defect: the failure was not in the enumeration but in
-    /// binding a BODY that declares it, so the contract is deserialised whole here with the same policy the
-    /// Api applies.
+    /// This is the assertion closest to the reproduced defect: the failure was not in the enumeration but
+    /// in binding a BODY that declares it, so the contract is deserialised whole here with the same policy
+    /// the Api applies.
     /// </remarks>
     [Fact]
     public void ThePagedContract_BindsTheMemberNameFromABody()

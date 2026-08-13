@@ -18,80 +18,10 @@ import type {
 } from '../../../core/models/problem-details.model';
 import type { NotificationSeverity } from '../../../core/services/notification.service';
 
-// =======================================================================================================
-// WHAT THIS FILE PROVES, AND WHY EACH CASE IS HERE
-// =======================================================================================================
-//
-// The screen under test replaces the legacy administration page `Website/admin/Modules/Export.ascx.vb`
-// (227 lines) and its markup `export.ascx` (17 lines). The legacy tree contains NO automated tests of any
-// kind, so nothing below is a ported assertion: every case is derived from the MEASURED behaviour of that
-// legacy pair, from the resource file that supplied its wording, and from the component's own recorded
-// migration decisions.
-//
-// The cases are chosen around the failure modes this screen actually has rather than around its members.
-// Six are worth naming, because getting any of them wrong produces a screen that looks correct and is not:
-//
-//   * ZERO IS A REAL MODULE. `Modules.ModuleID` is `IDENTITY(0,1)`, so the first module ever created has
-//     the identifier 0; and minus one is the legacy integer absence marker, which this API's contracts
-//     transmit as an ordinary value. A guard written as `if (id)` or `id > 0` compiles, raises nothing, and
-//     silently refuses two legitimate identifiers.
-//   * THE SUGGESTED NAME AND THE PRODUCED NAME COME FROM DIFFERENT FIELDS. The field is seeded from the
-//     module's TITLE (`Export.ascx.vb:L86`) while the document name is built from its programmatic NAME
-//     (`:L124`). A fixture whose two values were equal would pass with either field wired in, so the
-//     fixture below deliberately keeps `moduleName`, `moduleTitle` and `friendlyName` all distinct.
-//   * A MISSING MODULE WAS REPORTED AS A SUCCESS. `Export.ascx.vb:L149` opens `If Not objModule Is Nothing`
-//     and never writes an `Else`, so an unreadable module left the status string empty - and `:L126` read an
-//     empty status string as success and navigated away. The corrected behaviour is asserted here.
-//   * THE EXPORT RESPONSE IS `200` WITH THE DOCUMENT IN THE BODY, AND NOT THE CREATED STATUS. It is the one
-//     exception to the status map every other write on this API follows, so a specification that let the
-//     status default, or flushed the created status, would encode the wrong contract while still passing.
-//   * THE OBJECT URL MUST ALWAYS BE RELEASED. The component defers the release on the success path on
-//     purpose - revoking in the same task as the activation can withdraw the URL before the browser has
-//     resolved it - so every path that ends in a release is asserted separately: teardown, the next export,
-//     and a failed activation.
-//   * THE EXPORTED DOCUMENT IS OPAQUE. It is module-authored markup, which makes it the least trustworthy
-//     string this screen handles. It travels from the store into a binary container without being read, and
-//     the assertions below compare it byte for byte to prove that.
-//
-// EVERY ASSERTED URL IS RELATIVE. The test target declares no file replacements, so these specifications
-// compile against the production configuration, whose API base is the relative path `/api/v1`. That is not
-// an accident of configuration: the served application reaches the API through a reverse proxy on its own
-// origin, and an absolute host would resolve only inside the container network. Nothing below names a host,
-// and nothing below reads the configuration module - the expected paths are written out in full instead, so
-// a change to that module cannot make these expectations agree with it and disagree with the proxy.
-//
-// THE HARNESS IS KARMA WITH JASMINE. The real HTTP client is provided FIRST and the testing backend second,
-// which is the order that leaves the backend in place; reversing it leaves the live backend and every
-// expectation times out against a request nothing intercepted. No interceptor is registered: the
-// correlation identifier, the bearer token and the problem-document translation are separately specified
-// units, and running them here would assert several things at once. `provideRouter([])` satisfies the
-// dismissing action's navigation without declaring routes this screen does not own.
-
-/**
- * The identifier used by every case that does not care which module is addressed.
- *
- * Deliberately NOT zero, so that the cases which do care about zero are visibly distinct from the ordinary
- * ones and cannot pass by sharing a fixture value with them.
- */
+/** The identifier used by every case that does not care which module is addressed. */
 const MODULE_ID = 7;
 
-/**
- * The characters the legacy name sanitiser removed, in the order it removed them.
- *
- * Thirty-three characters, transcribed independently from `Website/admin/Modules/Export.ascx.vb:L212`,
- * where the set is a thirty-one character literal followed by two characters supplied by code point:
- *
- * ```vb
- * Dim strBadChars As String = ". ~`!@#$%^&*()-_+={[}]|\:;<,>?/" & Chr(34) & Chr(39)
- * ```
- *
- * Transcribed HERE rather than imported, and that is the point of the list: the component holds its own
- * copy, so importing the component's copy would compare it against itself and prove nothing. Two
- * independent transcriptions of the same legacy line are what make a drift in either one a failure.
- *
- * THE SET INCLUDES THE SPACE, THE FULL STOP, THE HYPHEN AND THE UNDERSCORE. Those four are the ones a
- * reader is most likely to assume are safe, and preserving any of them changes every produced filename.
- */
+/** The characters the legacy name sanitiser removed, in the order it removed them. */
 const SANITISED_CHARACTERS: readonly string[] = [
   '.',
   ' ',
@@ -1489,7 +1419,7 @@ describe('ModuleExportComponent', () => {
       expect(bannerMessage()).toBe('No such module.');
       expect(notice()).toBeNull();
 
-      // THE ORDER IS PART OF THE CORRECTION. A condition the operator cannot repair outranks one they can, so
+      // THE ORDER IS DELIBERATE. A condition the operator cannot repair outranks one they can, so
       // the missing module is reported instead of the field rule - which would otherwise tell them to supply
       // a filename for a module that does not exist.
       submitForm();
@@ -1723,9 +1653,9 @@ describe('ModuleExportComponent', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 0));
 
-      // ⚠ RELEASED WHILE THE SCREEN IS STILL OPEN, which is the whole correction. The entry used to be held
-      // until the next export or until the screen went away, so an administration screen left open after one
-      // export kept the whole exported document pinned in memory for as long as the operator stayed there.
+      // ⚠ RELEASED WHILE THE SCREEN IS STILL OPEN, which is the whole point of this case. Holding the entry
+      // until the next export or until the screen goes away keeps the whole exported document pinned in memory
+      // for as long as an operator stays on an administration screen left open after one export.
       expect(revokedObjectUrls).toEqual([objectUrl]);
     });
 
@@ -2023,16 +1953,15 @@ describe('ModuleExportComponent', () => {
     });
 
     /**
-     * A REFUSED READ LEAVES NOTHING TO EXPORT, AND THE CONFIRMING ACTION USED TO SAY OTHERWISE.
+     * A REFUSED READ LEAVES NOTHING TO EXPORT, AND THE CONFIRMING ACTION MUST NOT SAY OTHERWISE.
      *
-     * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module. The
-     * gate on this button tested the ADDRESS - `Number.isInteger(moduleId)` - which is satisfied by a
-     * refusal, so the button stayed enabled over a screen that held no module. Pressing it could never
-     * succeed, and it actively made the screen lie: `submit` clears the store failure as it begins, so the
-     * press erased the banner that was accurately reporting the refusal and replaced it with a sentence
-     * about the address.
+     * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module. A gate
+     * that tested the ADDRESS - `Number.isInteger(moduleId)` - is satisfied by a refusal, so the button
+     * would stay enabled over a screen that holds no module. Pressing it could never succeed, and it would
+     * actively make the screen lie: `submit` clears the store failure as it begins, so the press would
+     * erase the banner accurately reporting the refusal and replace it with a sentence about the address.
      *
-     * The presentation of a refusal is now the banner and nothing else - the same presentation the sibling
+     * The presentation of a refusal is the banner and nothing else - the same presentation the sibling
      * module form and settings screens give the same status, and the same severity the legacy
      * access-denied page used (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`).
      *

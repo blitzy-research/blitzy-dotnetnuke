@@ -970,20 +970,12 @@ predicting it:
   **`wget`-based** container probe, and the **relative** production `apiBaseUrl`. All three
   are pinned in [§6](#6-containers).
 
-**Authoring history, kept separate from the result above.** Gates 6 and 7 were *not*
-executable in the environment in which the container artefacts were first written: it had no
-container runtime at all. The four Docker artefacts were therefore authored
-correct-by-construction from their verbatim specifications, with both name placeholders proven
-indirectly — a solution that emitted `DnnMigration.Api.dll`, the exact filename the image's
-`ENTRYPOINT` names, and a workspace that emitted `dist/dnn-migration/browser/`, the exact path
-the frontend image copies. That constraint no longer applies and is recorded only so the dated
-`PASS` rows above are not mistaken for a re-statement of it. The same is true of one further
-limitation, which **does** still apply: **the legacy VB.NET solution was never compiled**,
-because `msbuild`, `mono` and `vbnc` are unavailable, so every claim about *legacy* behaviour
-in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) rests on reading the source and the DDL chain
-and carries a file-and-line citation. Claims about the *target* in that document are a
-different matter: many are runtime observations, and its register records the measurements
-they came from.
+**One limitation bounds what the matrix above can claim.** **The legacy VB.NET solution is
+never compiled**, because `msbuild`, `mono` and `vbnc` are unavailable, so every claim about
+*legacy* behaviour in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) rests on reading the source
+and the DDL chain and carries a file-and-line citation. Claims about the *target* in that
+document are a different matter: many are runtime observations, and its register records the
+measurements they came from.
 
 ### `npm audit` is deliberately not a build gate
 
@@ -1010,7 +1002,7 @@ declares **8 `dependencies`** and 13 `devDependencies`, and the ninth production
 transitive one. Quote 9 when discussing what `npm audit` scanned, and 8 when discussing what the
 manifest asks for:
 
-| Severity | Count | Was, before remediation |
+| Severity | Count | Before the overrides |
 | --- | --- | --- |
 | Critical | 0 | 0 |
 | High | 13 | 19 |
@@ -1265,10 +1257,9 @@ Three consequences follow, and all three are deliberate:
   `Secrets__Directory` if a projected volume is mounted elsewhere. A mounted file **outranks**
   an environment variable of the same name, because mounting is how a value is kept out of the
   environment block `docker inspect` can read. Each file must be readable by the image's
-  unprivileged uid 1000 account — mode `0444`, which is the orchestrator default. This closes a
-  gap rather than adding a feature: the deployment template previously said file delivery
-  needed no code change while no such source was registered, so a `/run/secrets` mount was not
-  read at all.
+  unprivileged uid 1000 account — mode `0444`, which is the orchestrator default. Without a
+  registered key-per-file source a `/run/secrets` mount is not read at all, so the registration
+  is what makes the file route real rather than documented.
 - **Package restore is repository-controlled, in the container as well as on a workstation.**
   [`backend/NuGet.Config`](./backend/NuGet.Config) clears every inherited source, declares the single public
   source the dependency inventory was pinned against, and maps each package identity to it

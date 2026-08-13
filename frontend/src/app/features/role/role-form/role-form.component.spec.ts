@@ -1,90 +1,3 @@
-/**
- * Specification for {@link RoleFormComponent} — creating a security role, and editing one.
- *
- * ## WHY THIS SCREEN CARRIES THE HEAVIEST SPECIFICATION IN THE FEATURE SET
- *
- * `Website/admin/Security/editroles.ascx` declares NINE validators — one
- * `asp:RequiredFieldValidator` and EIGHT `asp:CompareValidator`s, two on each of the four money
- * and period fields. That is the densest validation surface of any in-scope admin screen, so this
- * screen is where UI FUNCTIONAL PARITY is either proved or lost: the Minimal Change Clause
- * requires that validation rules MATCH and that error messages be EQUIVALENT, and every case
- * below is a parity proof rather than a smoke test.
- *
- * A role is also an authorisation primitive and a BILLING object at once. Its paid-membership
- * terms — service fee, billing period and frequency, and the trial equivalents — were carried
- * forward from the legacy schema verbatim, and the API refuses a period that is not strictly
- * positive. So the screen's hardest obligation is not validation at all: it is what it SUBMITS
- * when a group of terms is left blank. The legacy default is a period of ONE and a frequency of
- * `'N'`, never zeros, and losing that turns every unpriced role into a rejected request.
- *
- * ## NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT
- *
- * The project's rules document holds exactly one line stating that no user rules were provided,
- * so ZERO obligations here originate from a rule and NO coverage threshold is imposed by one.
- * Their absence is not licence to lower the bar: the standard applied instead is the plan's own
- * normative body — functional parity, data-model fidelity, behavioural equivalence, strict
- * TypeScript — and no rule, convention document or coverage floor is invented to fill the gap.
- *
- * ## HOW IT IS DRIVEN
- *
- *   - Mounted as the standalone unit it is, with the REAL `RoleService` and the REAL
- *     {@link RoleStore} resolved from the injector, and every request answered through
- *     `HttpTestingController`. The component injects the store and never the transport, so the
- *     store is the only thing between a command here and a request on the wire.
- *   - The role identifier arrives through `componentRef.setInput('roleId', …)` as the STRING a
- *     route parameter is, so the component's own parsing runs. Creation mode is the input never
- *     being set at all.
- *   - `Router.navigate` is spied because the screen navigates with an ARRAY of commands;
- *     `NotificationService.notify` is spied and called through, so severities are observable.
- *   - Every assertion is made through the rendered document or the outgoing request. Nothing
- *     reaches into the component's protected form group, so these cases prove the TEMPLATE and
- *     the wire contract, not merely the class.
- *   - `TestBed.flushEffects()` and `TestBed.tick()` are BOTH avoided deliberately. Checked against
- *     the installed `@angular/core@19.2.25`: `flushEffects` exists but is annotated developer
- *     preview, and `TestBed.tick()` does not exist at all in this version. The harness is
- *     zone-based, so `fixture.detectChanges()` settles the effects and no preview API is taken.
- *
- * ## THE FACTS THAT SHAPE EVERY CASE
- *
- * ⚠ THE ROLE GROUP LIST IS READ FROM THE CONSTRUCTOR, before any mode is known, so
- * `GET /api/v1/role-groups` is outstanding in EVERY case and must be answered.
- *
- * ⚠ A SUCCESSFUL WRITE RE-READS THE ROLE LISTING AND THEN NAVIGATES AWAY, so `GET /api/v1/roles`
- * follows every create, update and delete. A FAILED write issues no such read.
- *
- * ⚠ `dbo.Roles.RoleID` IS `IDENTITY (0, 1)`. Role zero is a real role, so the mode is derived from
- * whether the address carries a role AT ALL and never from the value. Forbidden here and in the
- * component alike: `if (id)`, `!id`, `id > 0`, `id ?? -1`, `?? 0`, `|| 0`, `|| ''`, `Math.abs(`.
- *
- * ⚠ EVERY ADDRESS ASSERTED BELOW IS ROOT-RELATIVE. The test target declares no build-time file
- * replacement, so these cases compile against the production configuration whose API base is the
- * relative `/api/v1` — which is what lets the proxy in front of the container serve the API from
- * the same origin that served the application. No absolute origin appears anywhere in this file.
- *
- * ## THE THIRTEEN AREAS THIS FILE PROVES
- *
- *  1. Every numeric field refuses a value of the wrong data type.
- *  2. Every numeric comparison is NUMERIC, correcting a lexical comparison defect.
- *  3. Every numeric field is VALID WHEN EMPTY, and only the role name is ever demanded.
- *  4. The role name's rules, the description's single rule, and name immutability once created.
- *  5. The two corrected messages, and dynamic display.
- *  6. The server's refusals: a duplicate name, a refusal of authority, and the support reference.
- *  7. All six billing-frequency codes round-trip VERBATIM on both frequency fields.
- *  8. The three-part billing gate and the cross-field trial gate.
- *  9. Mode by PRESENCE, the ungrouped role group, and sentinel rendering.
- * 10. The portal-protected roles.
- * 11. The commands each mode offers, and their wording.
- * 12. The three commands that do not validate.
- * 13. The rendered document: disclosure state, grouping, landmarks and markup hygiene.
- *
- * ## LEGACY SOURCES (read-only references; not one is modified by this work)
- *
- * `Website/admin/Security/editroles.ascx` · `EditRoles.ascx.vb` ·
- * `App_LocalResources/EditRoles.ascx.resx` · `App_LocalResources/Roles.ascx.resx` ·
- * `Website/App_GlobalResources/SharedResources.resx` ·
- * `Library/Components/Security/Roles/RoleController.vb` · `RoleInfo.vb` ·
- * `Website/admin/Security/Roles.ascx.vb` · `Website/release.config`.
- */
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -99,11 +12,8 @@ import { RoleStore } from '../../../core/state/role.store';
 import { RoleFormComponent } from './role-form.component';
 
 /**
- * The tenant the doubled identity reports.
- *
- * `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a schema creates carries -1 — which is
- * also the legacy absent-integer marker. Using it here proves the tenant request is issued for a real
- * key rather than skipped by a truthiness test.
+ * The tenant the doubled identity reports. `Portals.PortalID` is `IDENTITY(-1, 1)`, so the first tenant a
+ * schema creates carries -1 — which is also the legacy absent-integer marker.
  */
 const TENANT_ID = -1;
 
@@ -136,33 +46,17 @@ function roleUrl(roleId: number): string {
   return `${ROLES_URL}/${roleId}`;
 }
 
-/** The destination of every `Response.Redirect(NavigateURL())` on the legacy screen. */
 const ROLE_LIST_ROUTE = '/roles';
 
-// =====================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
-//
 // Every validation sentence below is the `.Text` VALUE from
-// `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx`, with its leading break markup
-// stripped — never the inline `ErrorMessage` attribute from `editroles.ascx`.
-//
-// MIGRATION: the resource file is the authority and the proof is mechanical rather than a matter of
-// taste. A validator's `Text` rendered INLINE beside its field, while its `ErrorMessage` rendered
-// ONLY inside an `<asp:ValidationSummary>` — and there is not ONE `<asp:ValidationSummary>` in any of
-// the thirty-nine in-scope admin controls. The inline `ErrorMessage` values were therefore NEVER SHOWN
-// TO A USER AT ALL, and two of them had rotted into each other; see AREA 5.
-// =====================================================================================================
+// `Website/admin/Security/App_LocalResources/EditRoles.ascx.resx`, with its leading break markup stripped —
+// never the inline `ErrorMessage` attribute from `editroles.ascx`.
 
 const ADD_TITLE = 'Add New Role';
 const EDIT_TITLE = 'Edit Security Roles';
 
-/**
- * The sentence shown when the address names no readable role.
- *
- * Restated here rather than imported, matching how every other expected string in this file is
- * declared. Importing the component's own constant would compare it against itself and pass for any
- * wording at all, including an empty one.
- */
+/** The sentence shown when the address names no readable role. */
 const UNREADABLE_ADDRESS_MESSAGE =
   'This address does not name a role that can be read. Return to the role list and try again.';
 
@@ -171,7 +65,6 @@ const CANCEL_LABEL = 'Cancel';
 const DELETE_LABEL = 'Delete';
 const MANAGE_USERS_LABEL = 'Manage Users in this Role';
 
-/** The stale inline caption the local resource entry supersedes. It must never be rendered. */
 const STALE_MANAGE_LABEL = 'Manage Users';
 
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
@@ -224,21 +117,12 @@ const ROLE_NOT_FOUND_MESSAGE = 'That role could not be found.';
 const SAVE_FAILED_MESSAGE = 'The role could not be saved.';
 const DELETE_FAILED_MESSAGE = 'The role could not be deleted.';
 
-/**
- * The caption of the ungrouped choice, MEASURED rather than paraphrased.
- *
- * `EditRoles.ascx.vb:L75` calls the one-argument `Localization.GetString("GlobalRoles")`, which
- * resolves from global resources, and `Website/App_GlobalResources/SharedResources.resx` holds
- * `GlobalRoles.Text` as `< Global Roles >` — the angle brackets AND the spaces inside them
- * included. The caption is never written without them.
- */
 const GLOBAL_ROLES_LABEL = '< Global Roles >';
 
 /**
- * The opening words of `ModuleHelp.Text`, asserted ABSENT.
- *
- * MIGRATION: module help has no home in the closed shared component inventory, so the entry is
- * read for the record and never rendered. Its first heading is the handle used to prove that.
+ * The opening words of `ModuleHelp.Text`, asserted ABSENT. No shared component renders module help, so
+ * the entry is read for the record and never rendered. Its first heading is the handle used to prove
+ * that.
  */
 const MODULE_HELP_OPENING = 'About Edit Security Roles';
 
@@ -252,21 +136,7 @@ interface FrequencyChoice {
   readonly label: string;
 }
 
-/**
- * The six codes, in the order the legacy `CodeFrequency` lookup seeded them.
- *
- * These are LOAD-BEARING PERSISTED DATA. `dbo.Roles.BillingFrequency` and
- * `dbo.Roles.TrialFrequency` are `char(1)` columns constrained by `FK_Roles_CodeFrequency`, and
- * `Library/Components/Security/Roles/RoleController.vb:L540-L546` switches on the raw characters:
- * `'N'` leaves the expiry unbounded, `'O'` sets 9999-12-31, and `'D'`, `'W'`, `'M'`, `'Y'` add
- * days, weeks, months and years.
- *
- * MIGRATION: the options are declared LOCALLY rather than fetched. The legacy bound both selects
- * from `ListController.GetListEntryInfoCollection("Frequency", "")`
- * (`EditRoles.ascx.vb:L116-L125`), but `Library/Components/Lists` is out of scope, so no frequency
- * lookup endpoint exists and none is invented. The vocabulary is closed by a foreign key, so
- * declaring it locally loses nothing.
- */
+/** The six codes, in the order the legacy `CodeFrequency` lookup seeded them. */
 const FREQUENCIES: readonly FrequencyChoice[] = Object.freeze<readonly FrequencyChoice[]>([
   { code: 'N', label: 'None' },
   { code: 'O', label: 'One Time' },
@@ -287,46 +157,22 @@ const NO_FREQUENCY: BillingFrequency = 'N';
 // =====================================================================================================
 
 /**
- * ⚠ THE PERIOD IS ONE, NOT ZERO. This is the single easiest fact on this screen to lose.
- *
- * Measured at `EditRoles.ascx.vb:L212-L214` and `:L222-L224`, which initialise
- * `sglServiceFee = 0`, `intBillingPeriod = 1` and `strBillingFrequency = "N"` before either gate
- * is tested. The API's own rule refuses a period that is not strictly positive, so a zero here
- * would make every unpriced role a rejected request.
+ * ⚠ THE PERIOD IS ONE, NOT ZERO. This is the single easiest fact on this screen to lose. Measured at
+ * `EditRoles.ascx.vb:L212-L214` and `:L222-L224`, which initialise `sglServiceFee = 0`, `intBillingPeriod
+ * = 1` and `strBillingFrequency = "N"` before either gate is tested.
  */
 const SUPPRESSED_FEE = 0;
 const SUPPRESSED_PERIOD = 1;
 const SUPPRESSED_FREQUENCY: BillingFrequency = NO_FREQUENCY;
 
-/**
- * The value that means "not in a group" ON THE WAY OUT.
- *
- * MIGRATION: `null`, NOT `-1`, and this is a deliberate divergence from the legacy wire value
- * rather than an oversight. The legacy select carried the string `"-1"`
- * (`EditRoles.ascx.vb:L75`) and the membership provider then wrapped the argument in
- * `GetNull(RoleGroupId)` (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb`
- * L235 and L243) so that `-1` reached SQL Server as `NULL`. The target performs that collapse ONCE,
- * at the contract boundary: `roleGroupId` is a nullable integer on both request contracts, and
- * `-1`, `< Global Roles >` and SQL `NULL` are one state of which `null` is the honest
- * representation. Sending `-1` would bypass a translation the target does not reproduce and reach
- * the foreign key as a literal `-1`.
- *
- * The legacy value is still recognised on the way IN, which AREA 9 proves. Nothing writes it out.
- *
- * ⚠ THE ABSENCE CANNOT BE SPELT `0`: `dbo.RoleGroups.RoleGroupID` is `IDENTITY (0, 1)`, so group
- * zero is a real group.
- */
 const UNGROUPED: number | null = null;
 
 /** The legacy ungrouped marker, which a producer that has not collapsed it may still send. */
 const LEGACY_UNGROUPED = -1;
 
 /**
- * The list screen's own filter sentinel, asserted NEVER to appear on this form.
- *
- * `Roles.ascx.vb:L112` adds an `< All Roles >` entry with the value `-2` to the LIST screen's
- * narrowing picker. It is a filter sentinel and has no meaning as a stored value, so a form that
- * offered it could persist it.
+ * The list screen's own filter sentinel, asserted NEVER to appear on this form. `Roles.ascx.vb:L112` adds
+ * an `< All Roles >` entry with the value `-2` to the LIST screen's narrowing picker.
  */
 const LIST_FILTER_SENTINEL = -2;
 
@@ -407,10 +253,8 @@ const NUMERIC_FIELDS: readonly NumericField[] = Object.freeze<readonly NumericFi
 ]);
 
 /**
- * The data-type sentence declared for a control, looked up from the table above.
- *
- * A lookup rather than a second literal, so a message can never be asserted against a string this
- * file alone believes in.
+ * The data-type sentence declared for a control, looked up from the table above. A lookup rather than a
+ * second literal, so a message can never be asserted against a string this file alone believes in.
  *
  * @param controlId The rendered control's id.
  * @returns The control's own data-type wording.
@@ -454,12 +298,7 @@ const STATUS_TITLE: Readonly<Record<number, string>> = Object.freeze({
   500: 'Internal Server Error',
 });
 
-/**
- * A W3C trace-context value, FIXED so that no case depends on a clock.
- *
- * The workspace's own reader prefers the correlation identifier and falls back to this one, so a
- * document carrying only this member is what proves the trace identifier survives into the surface.
- */
+/** A W3C trace-context value, FIXED so that no case depends on a clock. */
 const TRACE_ID = '00-3e7a4f2b9c934dd6bb18eb211c80319c-44bd6b7169203331-01';
 
 /** The support reference the server echoes, FIXED for the same reason. */
@@ -478,11 +317,9 @@ interface ProblemOptions {
 }
 
 /**
- * Builds an RFC 7807 refusal document.
- *
- * Members are omitted rather than nulled when a case withholds them, which is what the framework's
- * own problem-details type does: each of its five standard members carries a per-member
- * null-omission condition that overrides the collection-wide policy.
+ * Builds an RFC 7807 refusal document. Members are omitted rather than nulled when a case withholds them,
+ * which is what the framework's own problem-details type does: each of its five standard members carries
+ * a per-member null-omission condition that overrides the collection-wide policy.
  *
  * @param status The HTTP status the server answered with.
  * @param code The application failure code, which forms the problem type.
@@ -509,25 +346,12 @@ function problem(status: number, code: string, options: ProblemOptions = {}): Pr
     : { ...withTrace, correlationId: options.correlationId };
 }
 
-/**
- * A refusal that says NOTHING a person can use, so the client's own fallback governs.
- *
- * Withholding `title` as well as `detail` is deliberate: the workspace's reader prefers `detail`,
- * then `title`, then the fallback, so both must be absent for a fallback assertion to mean
- * anything.
- */
+/** A refusal that says NOTHING a person can use, so the client's own fallback governs. */
 function silentProblem(status: number, code: string): ProblemDetails {
   return { type: `${FAILURE_TYPE_PREFIX}${code}`, status };
 }
 
-
-// =====================================================================================================
 // FIXTURES — BUILT FROM THE IMPORTED CONTRACTS, NEVER FROM A LOCAL RE-DECLARATION
-//
-// The shapes come from `core/models/role.model.ts`, so a member renamed there breaks this file
-// loudly rather than letting a stale fixture pass. No date member exists on the role contract, so no
-// case here constructs a date and none needs a clock.
-// =====================================================================================================
 
 /**
  * An unpriced, ungrouped role — the shape the overwhelming majority of roles have.
@@ -552,22 +376,15 @@ function role(roleId = 7, overrides: Partial<Role> = {}): Role {
     autoAssignment: false,
     rsvpCode: null,
     iconFile: null,
-    // The revision marker the API serves with every role detail. Declared BEFORE the spread so a case
-    // may replace it or set it to null - the form is required to carry whatever it read into the
-    // update it composes, and both of those are cases worth asserting.
+    // The revision marker the API serves with every role detail. Declared BEFORE the spread so a case may
+    // replace it or set it to null - the form is required to carry whatever it read into the update it
+    // composes, and both of those are cases worth asserting.
     concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
 
 /**
- * A PRICED role, whose billing group survives the load gate.
- *
- * The load gate is `serviceFee !== 0` on the NUMBER. MIGRATION: `EditRoles.ascx.vb:L146` decided
- * this by FORMATTING the fee and comparing the resulting TEXT against `"0.00"`, which is fragile in
- * a way the culture makes obvious — under a culture whose decimal separator is a comma the
- * formatted zero is `"0,00"`, so every free role would have been treated as priced.
- *
  * @param roleId The identifier.
  * @param overrides The members this case cares about.
  * @returns A role with real billing terms.
@@ -591,15 +408,7 @@ function roleGroup(roleGroupId = 4, overrides: Partial<RoleGroup> = {}): RoleGro
   };
 }
 
-/**
- * The single-payload wire envelope, DECLARED LOCALLY rather than imported.
- *
- * The workspace's envelope types live in a paging module that is not among this file's declared
- * dependencies, so the two response shapes it needs are declared here instead of reaching outside
- * that set. They are structural mirrors of the wire contract and nothing more: the real shape is
- * enforced on the other side of every flush by the decoders the transport applies, so a local shape
- * that drifted from the contract would fail these cases loudly rather than quietly.
- */
+/** The single-payload wire envelope, DECLARED LOCALLY rather than imported. */
 interface WireEnvelope<T> {
   readonly data: T;
   readonly meta: null;
@@ -610,10 +419,9 @@ function envelope<T>(data: T): WireEnvelope<T> {
   return { data, meta: null };
 }
 
-// ⚠ THERE IS DELIBERATELY NO PAGE FIXTURE HERE ANY MORE. This screen dispatches three writes and not one
-// of them reads a collection: the listing owns listing reads, because its page, narrowing and ordering
-// live in its address. A page fixture would only exist to answer a read that must never be issued, and
-// having one available invites answering it instead of asserting its absence.
+// ⚠ THERE IS DELIBERATELY NO PAGE FIXTURE HERE ANY MORE. This screen dispatches three writes and not one of
+// them reads a collection: the listing owns listing reads, because its page, narrowing and ordering live in
+// its address.
 
 describe('RoleFormComponent', () => {
   let fixture: ComponentFixture<RoleFormComponent>;
@@ -628,37 +436,17 @@ describe('RoleFormComponent', () => {
 
   beforeEach(async () => {
     // ⚠ THE PROVIDER ORDER IS LOAD-BEARING AND IS VERIFIED BY LINE NUMBER IN THE COMPLETION REPORT.
-    // `provideHttpClient()` MUST come first because `provideHttpClientTesting()` OVERRIDES the real
-    // backend — with nothing registered first there is nothing to override, and requests would reach
-    // a real transport. `RoleStore` is pinned so each case owns a fresh instance of the shared state
-    // rather than inheriting whatever a previous case left in it.
-    //
-    // The component is STANDALONE, so it goes in `imports`. No testing module wrapper is used: the
-    // provider functions are the whole of the wiring.
-    /*
-     * THE TENANT'S PROTECTED ROLE KEYS AND ITS PROCESSOR STATE, HELD IN SIGNALS THE CASES CAN MOVE.
-     *
-     * ⚠ THESE USED TO BE THREE COMPONENT INPUTS, AND THE CHANGE IS THE POINT. They were declared as
-     * optional inputs on the reasoning that "a portal-settings call is outside this screen's endpoint
-     * boundary", and NOTHING in the application ever supplied one — so the three guards
-     * `EditRoles.ascx.vb:L174-L182` declared shipped permanently disarmed, and the form offered
-     * Update and Delete on the two roles that hold a tenant together. The facts are now read from the
-     * portal store, which is CORE state every feature may inject.
-     *
-     * Each key opens ABSENT and the tenant opens UNRESOLVED, so the ordinary cases below describe a
-     * screen whose tenant record has not arrived — which is the fail-safe direction: the form stays
-     * editable and the API's refusal governs, exactly the behaviour that shipped.
-     */
+    // `provideHttpClient()` MUST come first because `provideHttpClientTesting()` OVERRIDES the real backend
+    // — with nothing registered first there is nothing to override, and requests would reach a real
+    // transport.
     administratorRole = signal<number | null>(null);
     registeredRole = signal<number | null>(null);
     processorConfigured = signal<boolean>(false);
     tenantResolved = signal<boolean>(false);
 
-    /*
-     * The request for those facts, spied rather than served: the real portal store would add a tenant
-     * read to every case in this file, and the spy records which tenant was asked for and whether it
-     * was asked at all.
-     */
+    // The request for those facts, spied rather than served: the real portal store would add a tenant read
+    // to every case in this file, and the spy records which tenant was asked for and whether it was asked
+    // at all.
     loadCurrentPortalContext = jasmine.createSpy('loadCurrentPortalContext');
 
     await TestBed.configureTestingModule({
@@ -695,12 +483,7 @@ describe('RoleFormComponent', () => {
     httpMock.verify();
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // HARNESS
-  //
-  // Every helper is cast-free. Where a node must exist for a case to mean anything the helper THROWS,
-  // which both narrows the type and produces a better failure than a null dereference would.
-  // ---------------------------------------------------------------------------------------------------
 
   /** The component's host element, typed by assignment rather than by an assertion. */
   function host(): HTMLElement {
@@ -785,16 +568,8 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * Chooses an option of a select BY ITS RENDERED CAPTION.
-   *
-   * ⚠ THE DOM OPTION VALUES ARE NOT THE PERSISTED CODES, and that is a framework fact rather than a
-   * contract defect. Both frequency pickers and the grouping picker bind through `ngValue`, which is
-   * load-bearing — the grouping control holds a number OR NOTHING, and a plain value binding would
-   * coerce every option to a string — so Angular writes its own encoded key into each option's DOM
-   * `value` attribute. Assigning a raw code would therefore select NOTHING and silently leave the
-   * control on its default, which is exactly the kind of no-op that makes a case pass while proving
-   * nothing. The caption is the only stable handle, and it is the handle a person uses too. The
-   * PERSISTED CODE is proved where it is authoritative: on the wire, in AREA 7.
+   * Chooses an option of a select BY ITS RENDERED CAPTION. ⚠ THE DOM OPTION VALUES ARE NOT THE PERSISTED
+   * CODES, and that is a framework fact rather than a contract defect.
    *
    * @param controlId The select to operate.
    * @param label The caption to choose.
@@ -855,10 +630,9 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * Presses a button of the OPEN CONFIRMATION.
-   *
-   * ⚠ SCOPED TO THE DIALOGUE, because the command bar's own delete control and the dialogue's
-   * confirming button share the caption `Delete`, and the abandon command shares `Cancel`.
+   * Presses a button of the OPEN CONFIRMATION. ⚠ SCOPED TO THE DIALOGUE, because the command bar's own
+   * delete control and the dialogue's confirming button share the caption `Delete`, and the abandon
+   * command shares `Cancel`.
    *
    * @param label The caption, matched as a substring because the dangerous button carries a cue.
    */
@@ -875,7 +649,6 @@ describe('RoleFormComponent', () => {
     fixture.detectChanges();
   }
 
-
   /** Consumes exactly one pending request, asserted by verb AND address. */
   function expectRequest(method: string, url: string, description?: string): TestRequest {
     return httpMock.expectOne(
@@ -885,10 +658,8 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * Answers the role group read the constructor issues.
-   *
-   * ⚠ OUTSTANDING IN EVERY CASE. The groups populate the grouping picker, so the screen asks for
-   * them before it knows which mode it is in.
+   * Answers the role group read the constructor issues. ⚠ OUTSTANDING IN EVERY CASE. The groups populate
+   * the grouping picker, so the screen asks for them before it knows which mode it is in.
    *
    * @param groups The groups the server reports.
    * @returns The request, so a case can inspect its parameters.
@@ -920,22 +691,12 @@ describe('RoleFormComponent', () => {
   /**
    * Mounts the screen in EDIT mode and settles both opening reads.
    *
-   * The identifier is supplied as the STRING a route parameter is, under the exact input name
-   * `roleId` — a single lower-case `d`. Route parameters are bound onto a component input OF THE SAME
-   * NAME, so any other spelling would bind nothing, yield nothing, compile without complaint and
-   * fail only at run time.
-   *
    * @param subject The role the server will report.
    * @param context The portal-scoped facts to supply, and the groups to answer with.
    */
   function editMode(subject: Role, context: EditContext = {}): void {
-    // ⚠ THE TENANT CONTEXT IS PUT IN THE STORE, NOT PASSED IN. It used to arrive as three optional
-    // inputs that nothing in the application supplied; it is now read from the portal store, so a
-    // case that wants a guard armed writes the fact into the doubled signal BEFORE the component
-    // reads it — which is before the first change detection, since every consumer is a `computed`.
-    //
-    // Supplying ANY of the three marks the tenant RESOLVED, because in production the three arrive
-    // together on one record and the processor warning is withheld until that record lands.
+    // Supplying ANY of the three marks the tenant RESOLVED, because in production the three arrive together
+    // on one record and the processor warning is withheld until that record lands.
     if (
       context.administratorRoleId !== undefined ||
       context.registeredRoleId !== undefined ||
@@ -969,31 +730,10 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * Asserts that a successful write does NOT re-read the listing.
-   *
-   * ⚠ THIS HELPER USED TO ANSWER SUCH A READ, AND ITS INVERSION IS THE FIX FOR A MEASURED DEFECT. Runtime
-   * testing quantified the duplicate the old behaviour produced: 2,466 B sent and 25,283 B decoded per save,
-   * in two shapes depending on timing - a complete-and-discard and a network abort - with 36 aborted listing
-   * refetches in a single session. The store re-read the listing at the same moment this screen navigated TO
-   * the listing, which reads itself from its own address on entry, so the two raced and one was cancelled
-   * mid-flight.
-   *
-   * MIGRATION: `DataCache.RemoveCache("GetRoles")` (`EditRoles.ascx.vb:L264` and `:L296`) has NO client
-   * equivalent — it evicted a server-side cache entry and no endpoint exposes that. What replaces it is that
-   * the LISTING owns listing reads: its page, narrowing and ordering live in its address, so it reads on entry
-   * and on every address change, and a caller arriving there always sees authoritative rows and totals. No
-   * cache-invalidation endpoint is invented and no read is duplicated.
-   *
-   * ⚠ THE RULE COVERS DELETION TOO, AND IT DID NOT ALWAYS. The delete command still re-reads the listing
-   * when it is asked to, because deletion is ALSO reachable from the listing itself, where no navigation
-   * follows and no address changes, so a removed row would otherwise stay on screen. But this screen is not
-   * that caller: it departs for the listing, so it asks for no read, and runtime measurement of the old
-   * behaviour on this exact path recorded the abort shape directly — two listing reads with different
-   * correlation ids, the first `net::ERR_ABORTED` after some seven milliseconds and the second returning the
-   * rows actually shown. Which caller wants the read is now stated at each call site rather than decided for
-   * both, so this screen and the listing can differ without either inheriting the other's answer.
-   *
-   * Named as an assertion rather than an answer because that is now what it is.
+   * Asserts that a successful write does NOT re-read the listing. ⚠ THIS HELPER REFUSES SUCH A READ
+   * RATHER THAN ANSWERING IT, BECAUSE THE DUPLICATE IS MEASURED. Runtime testing quantified it: 2,466 B
+   * sent and 25,283 B decoded per save, in two shapes depending on timing - a complete-and-discard and a
+   * network abort - with 36 aborted listing refetches in a single session.
    */
   function expectNoListingReread(): void {
     expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
@@ -1049,12 +789,8 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * The support reference each announcement quoted, oldest first, `null` where none was quoted.
-   *
-   * ⚠ DELIBERATELY A SEPARATE PROJECTION FROM {@link Announcement}. The eighteen cases that
-   * deep-compare an announcement are about its WORDING, and widening the shape they compare would have
-   * made every one of them restate a reference it does not care about - which is how an assertion stops
-   * describing its own subject. The reference has its own rule and its own cases below.
+   * The support reference each announcement quoted, oldest first, `null` where none was quoted. ⚠
+   * DELIBERATELY A SEPARATE PROJECTION FROM {@link Announcement}.
    *
    * @returns The third argument of every `notify` call, oldest first.
    */
@@ -1080,13 +816,6 @@ describe('RoleFormComponent', () => {
     return queue.length === 0 ? undefined : queue[queue.length - 1];
   }
 
-  /**
-   * The sentence the failure banner is rendering, or `null` when the banner is empty.
-   *
-   * The counterpart of {@link lastAnnouncement}, and it exists because the two surfaces now carry
-   * DIFFERENT text by design: the notification says what did not happen, the banner says why. A case
-   * that asserts only one of them cannot see the duplication that used to exist between them.
-   */
   function bannerMessage(): string | null {
     const node: Element | null = host().querySelector('.error-banner__message');
 
@@ -1094,12 +823,9 @@ describe('RoleFormComponent', () => {
   }
 
   /**
-   * The messages that would still be on screen after the shell's navigation sweep.
-   *
-   * The queue is REAL in this suite - `notify` is spied and called through - so this exercises the
-   * actual retention rule rather than asserting that a method was called. That distinction is the
-   * whole point here: a screen that announces an outcome and then leaves must have its message
-   * survive exactly one navigation, and the only way to prove it is to run the sweep.
+   * The messages that would still be on screen after the shell's navigation sweep. The queue is REAL in
+   * this suite - `notify` is spied and called through - so this exercises the actual retention rule
+   * rather than asserting that a method was called.
    *
    * @returns The surviving messages, in queue order.
    */
@@ -1115,15 +841,10 @@ describe('RoleFormComponent', () => {
     return host().textContent ?? '';
   }
 
-  // ===================================================================================================
   // AREA 1 — EVERY NUMERIC FIELD REFUSES A VALUE OF THE WRONG DATA TYPE
-  //
-  // The FIRST validator of each pair. `valServiceFee1` and `valTrialFee1` declare
-  // `Type="Currency" Operator="DataTypeCheck"`; `valBillingPeriod1` and `valTrialPeriod1` declare
-  // `Type="Integer" Operator="DataTypeCheck"`. The integer form is the stricter of the two, and the
-  // difference is observable rather than academic: an integer field refuses a decimal that a currency
-  // field must accept.
-  // ===================================================================================================
+  // The FIRST validator of each pair. `valServiceFee1` and `valTrialFee1` declare `Type="Currency"
+  // Operator="DataTypeCheck"`; `valBillingPeriod1` and `valTrialPeriod1` declare `Type="Integer"
+  // Operator="DataTypeCheck"`.
 
   describe('AREA 1 — the data-type refusals', () => {
     NUMERIC_FIELDS.forEach((field: NumericField) => {
@@ -1166,9 +887,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('accepts the grouped money form a loaded paid role puts in the box', () => {
-      // The legacy populated the fee with `Format(fee, "#,##0.00")` (`EditRoles.ascx.vb:L147,L155`),
-      // which emits a thousands separator, so a validator that refused the separator would mark a
-      // freshly loaded and untouched form invalid.
       createMode();
       fillRoleName();
 
@@ -1181,11 +899,10 @@ describe('RoleFormComponent', () => {
 
     CURRENCY_CONTROLS.forEach((controlId: string) => {
       it(`refuses more than two decimal places in #${controlId}, which Type="Currency" never admitted`, () => {
-        // ⚠ THE SENTENCE IS THE DATA-TYPE ONE, AND THAT IS CORRECT RATHER THAN A CONFUSION OF
-        // TWO RULES. The framework's currency conversion measures the digits after the decimal
-        // separator against the culture's `CurrencyDecimalDigits` — two — and refuses a longer
-        // value BEFORE parsing it, so `-0.001` never reaches a comparison at all. It is not a
-        // negative amount; it is not an amount.
+        // ⚠ THE SENTENCE IS THE DATA-TYPE ONE, AND THAT IS CORRECT RATHER THAN A CONFUSION OF TWO RULES.
+        // The framework's currency conversion measures the digits after the decimal separator against the
+        // culture's `CurrencyDecimalDigits` — two — and refuses a longer value BEFORE parsing it, so
+        // `-0.001` never reaches a comparison at all.
         createMode();
         fillRoleName();
 
@@ -1208,9 +925,9 @@ describe('RoleFormComponent', () => {
       });
 
       it(`answers a WELL-FORMED negative amount in #${controlId} with the sign sentence, not the data-type one`, () => {
-        // The pair is distinguishable in both directions, which is the whole claim: a value that
-        // is a real money amount and merely negative gets the comparison sentence, and the two
-        // sentences are different strings.
+        // The pair is distinguishable in both directions, which is the whole claim: a value that is a real
+        // money amount and merely negative gets the comparison sentence, and the two sentences are
+        // different strings.
         createMode();
         fillRoleName();
 
@@ -1222,10 +939,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('shows exactly ONE sentence for a value that breaks both rules on the same control', () => {
-      // MIGRATION: the two rules are mutually exclusive by construction. A value that will not parse
-      // yields nothing from the comparison rule and defers to the data-type rule, so one sentence is
-      // shown rather than two contradictory ones. The legacy reached the same single-sentence outcome
-      // by accident, because its lexical comparison happened to pass for most non-numeric text.
       createMode();
       fillRoleName();
 
@@ -1236,35 +949,8 @@ describe('RoleFormComponent', () => {
     });
   });
 
-
-  // ===================================================================================================
   // AREA 2 — EVERY COMPARISON IS NUMERIC, CORRECTING A LEXICAL COMPARISON DEFECT
-  //
   // MIGRATION — THE HIGHEST-VALUE PARITY DECISION ON THIS SCREEN, AND A DELIBERATE DIVERGENCE.
-  //
-  // `editroles.ascx` places TWO comparison validators on each of the four money and period fields.
-  // The FIRST of each pair declares its type. The SECOND of each pair — `valServiceFee2` (L93-L96),
-  // `valBillingPeriod2` (L111-L114), `valTrialFee2` (L125-L128) and `valTrialPeriod2` (L143-L146) —
-  // OMITS `Type=` entirely, and the ASP.NET default is `Type="String"`.
-  //
-  // The comparison was therefore a culture-sensitive STRING comparison, and it gave wrong answers in
-  // BOTH directions:
-  //
-  //   • `"-5" > "0"` is TRUE under culture-sensitive collation, which treats the hyphen as ignorable
-  //     punctuation. THE LEGACY WRONGLY ACCEPTED A NEGATIVE FEE AND A NEGATIVE PERIOD.
-  //   • `"9" > "10"` is TRUE under ordinary lexical ordering, because `'9'` sorts after `'1'`. So a
-  //     smaller period passed a "greater than zero" test FOR ENTIRELY THE WRONG REASON, and `"10"`
-  //     was judged against `"0"` one character at a time.
-  //
-  // ROOT CAUSE — THE OPTION STRICT ASYMMETRY. The class library compiled with Option Strict ON, but
-  // `Website/release.config:L125` declares `<compilation debug="false" strict="false">`, so the admin
-  // pages compiled with Option Strict OFF. Comparing a numeric-looking string against the literal
-  // `"0"` raised nothing at compile time.
-  //
-  // THE TARGET COMPARES NUMBERS. That REJECTS input the legacy accepted, which is a documented
-  // divergence rather than a silent one, and it is made because carrying a collation accident into new
-  // code would corrupt persisted money. The API compares numerically too, so the two now agree.
-  // ===================================================================================================
 
   describe('AREA 2 — numeric comparison, not lexical', () => {
     NUMERIC_FIELDS.forEach((field: NumericField) => {
@@ -1302,9 +988,6 @@ describe('RoleFormComponent', () => {
 
     CURRENCY_CONTROLS.forEach((controlId: string) => {
       it(`accepts zero in #${controlId}, because GreaterThanEqual admits it`, () => {
-        // A zero service fee is a real, FREE role.
-        // `Library/Components/Security/Roles/RoleController.vb:L494` uses `ServiceFee > 0.0` as the
-        // paid discriminator, so zero must survive as itself.
         createMode();
         fillRoleName();
 
@@ -1352,21 +1035,8 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 3 — EVERY NUMERIC FIELD IS VALID WHEN EMPTY
-  //
-  // MIGRATION — LOAD-BEARING, AND THE REASON THIS AREA EXISTS AT ALL.
-  //
-  // An ASP.NET comparison validator SUCCEEDS ON AN EMPTY INPUT. That is precisely why every field
-  // that was genuinely demanded ALSO carried a required-field validator, and `txtRoleName` is the ONLY
-  // control on this screen that has one (`editroles.ascx:L29-L31`). ALL FOUR MONEY AND PERIOD FIELDS
-  // ARE THEREFORE OPTIONAL.
-  //
-  // Adding a required rule to any of them would REJECT INPUT THE LEGACY ACCEPTED and break functional
-  // parity outright; adding a built-in minimum rule instead of the hand-written comparisons would
-  // report a different error key and a different sentence. The API agrees independently: each of its
-  // four numeric rules is guarded so that it applies only when the member carries a value.
-  // ===================================================================================================
+  // LOAD-BEARING, AND THE REASON THIS AREA EXISTS AT ALL.
 
   describe('AREA 3 — the four numeric fields are optional', () => {
     NUMERIC_CONTROLS.forEach((controlId: string) => {
@@ -1446,7 +1116,6 @@ describe('RoleFormComponent', () => {
       httpMock.expectNone(ROLES_URL, 'an invalid form sends nothing');
     });
   });
-
 
   // ===================================================================================================
   // AREA 4 — THE ROLE NAME'S RULES, THE DESCRIPTION'S ONE RULE, AND NAME IMMUTABILITY
@@ -1531,16 +1200,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('shows the name as read-only text when editing, never as an editable control', () => {
-      // MIGRATION: A ROLE NAME IS IMMUTABLE ONCE CREATED, by design rather than by oversight, and the
-      // proof is an ASYMMETRY IN THE PROVIDER SIGNATURES:
-      //   `AddRole(…)`    takes FOURTEEN parameters and INCLUDES `RoleName`
-      //   `UpdateRole(…)` takes THIRTEEN  and has NO `RoleName` parameter at all
-      //   (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb` L234-L235 vs
-      //    L242-L243).
-      // The stored procedure simply COULD NOT change a name, which is why `EditRoles.ascx.vb:L131-L134`
-      // reveals the read-only twin, hides the text box and sets `valRoleName.Enabled = False` for any
-      // role that has an id. A DISABLED INPUT WOULD BE WORSE THAN READ-ONLY TEXT, because it invites an
-      // edit the procedure could never have performed.
       editMode(role(7, { roleName: 'Subscribers' }));
 
       const readOnlyName: HTMLElement = queryOrFail<HTMLElement>(
@@ -1556,14 +1215,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('submits an update with no editable name, and sends the loaded name unchanged', () => {
-      // The required rule MUST be lifted in edit mode. Leaving it on a control the user cannot reach
-      // would leave the edit form permanently invalid and its update command permanently inert, which
-      // is a parity break rather than a safety measure.
-      //
-      // MIGRATION: `UpdateRoleRequest` DOES carry `roleName`, because the contract replaces the whole
-      // role rather than patching it. The LOADED name is sent, so immutability is preserved in
-      // substance. This also avoids reproducing `:L237`, which assigned the hidden text box's EMPTY
-      // STRING — harmless only because the procedure discarded it, and destructive now.
       editMode(role(7, { roleName: 'Subscribers' }));
 
       press(SUBMIT_LABEL);
@@ -1579,26 +1230,7 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 5 — THE TWO CORRECTED SENTENCES, AND DYNAMIC DISPLAY
-  //
-  // MIGRATION — TWO STALE INLINE SENTENCES, MUTUALLY TRANSPOSED BY A SINGLE COPY-PASTE.
-  //
-  //   valBillingPeriod2  resource `.Text` "…Must Be Greater Than Zero"             Operator GreaterThan
-  //                      inline `ErrorMessage` "…Must Be Greater Than or Equal to Zero"      ← STALE
-  //   valTrialFee2       resource `.Text` "…Must Be Greater Than or Equal to Zero" Operator GreaterThanEqual
-  //                      inline `ErrorMessage` "…Must Be Greater Than Zero"                  ← STALE
-  //
-  // The two stale strings are EXACTLY EACH OTHER — one transposition, not two independent mistakes.
-  // The `Operator` arbitrates, and in both cases it vindicates the resource file.
-  //
-  // The mechanism that settles it: a validator's `Text` rendered inline while its `ErrorMessage`
-  // rendered ONLY inside an `<asp:ValidationSummary>`, and there is not ONE of those in any in-scope
-  // admin control — so the inline values were never shown to a user at all. The refined standing rule
-  // is narrower and more useful than "never trust inline text": NEVER TRUST AN INLINE VALUE WHERE A
-  // LOCAL RESOURCE KEY EXISTS. The three command captions have no local key, fall back to global
-  // resources, and match their inline text, so those are used as they stand.
-  // ===================================================================================================
 
   describe('AREA 5 — the corrected sentences and dynamic display', () => {
     it('shows the billing period the RESOURCE sentence, never its stale inline twin', () => {
@@ -1626,9 +1258,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('strips the leading break markup every one of the nine resource values carries', () => {
-      // All nine `val*.Text` entries open with break markup, stored XML-escaped so a naive search
-      // returns nothing. It is stripped rather than rendered, and resource text is never treated as
-      // markup: the same admin tree holds a resource value carrying a LIVE remote script block.
       createMode();
       fillRoleName();
 
@@ -1646,9 +1275,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('renders NOTHING on first view, although the creation form is already invalid', () => {
-      // `Display="Dynamic"` on all nine validators: a message appeared only once a submission had
-      // exercised it. The creation form opens invalid — the role name is empty and demanded — so a
-      // template that rendered messages unconditionally would greet every operator with an error.
       createMode();
 
       expect(allMessages()).withContext('nothing is announced before anything is done').toEqual([]);
@@ -1667,10 +1293,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('reports one sentence per control even where two rules govern it', () => {
-      // The shared field wrapper accepts one sentence or a sequence of them. This screen supplies at
-      // most ONE per control by construction, because the data-type rule and the comparison rule on a
-      // single control are mutually exclusive — which is the behaviour AREA 1 proves and the reason a
-      // person never sees two sentences contradicting each other.
       createMode();
       fillRoleName();
 
@@ -1682,21 +1304,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-
-  // ===================================================================================================
   // AREA 6 — THE SERVER'S REFUSALS
-  //
-  // MIGRATION: the legacy guarded its insert with its OWN lookup —
-  // `If objRoleController.GetRoleByName(PortalId, objRoleInfo.RoleName) Is Nothing Then`
-  // (`EditRoles.ascx.vb:L252`) — and showed `DuplicateRole` at `RedError` when it found a match
-  // (`:L256`). That is a read-then-write race, and the target replaces it with the API's own refusal, a
-  // `409`, which the database's unique index makes authoritative. THE WORDING A USER SEES IS UNCHANGED.
-  //
-  // MIGRATION: `objEventLog.AddLog(…, EventLogType.ROLE_CREATED)` at `:L254`, its update twin and its
-  // delete twin at `:L293` are NOT reproduced on the client. The audit trail is written by the API, on
-  // the server side of the call, which is the only place that can record it truthfully — so no case
-  // here expects the client to emit an audit event, and none does.
-  // ===================================================================================================
+  // The legacy guarded its insert with its OWN lookup — `If objRoleController.GetRoleByName(PortalId,
+  // objRoleInfo.RoleName) Is Nothing Then` — and showed `DuplicateRole` at `RedError` when it found a match
+  // (`:L256`).
 
   describe('AREA 6 — what the server refuses, and how it is surfaced', () => {
     it('reports a duplicate name at 409 in the legacy wording, at error severity', () => {
@@ -1707,9 +1318,6 @@ describe('RoleFormComponent', () => {
 
       const call: TestRequest = expectRequest('POST', ROLES_URL, 'the creation');
 
-      // The document says nothing a person can use, so the client's own fallback governs — and the
-      // fallback IS the legacy sentence. It is rendered by the BANNER: the notification carries the
-      // outcome, so one refusal is never spelled out twice on one screen.
       call.flush(silentProblem(409, 'duplicate-role'), { status: 409, statusText: 'Conflict' });
       fixture.detectChanges();
 
@@ -1724,9 +1332,6 @@ describe('RoleFormComponent', () => {
     });
 
     it("surfaces the server's own sentence verbatim when it sends one", () => {
-      // A server message is applied VERBATIM and never rewritten to match the client's own wording,
-      // even where the two differ. Reporting what the server actually said is more useful than
-      // harmonising it.
       createMode();
       fillRoleName('Administrators');
 
@@ -1739,8 +1344,8 @@ describe('RoleFormComponent', () => {
       fixture.detectChanges();
 
       // VERBATIM ON THE BANNER, which is the surface that resolves document-before-fallback. The
-      // notification states the outcome in this screen's own words, so the two surfaces complement
-      // each other instead of repeating one sentence twice.
+      // notification states the outcome in this screen's own words, so the two surfaces complement each
+      // other instead of repeating one sentence twice.
       expect(bannerMessage()).toBe('Role name Administrators is already in use.');
       expect(lastAnnouncement()).toEqual({
         severity: 'error',
@@ -1752,11 +1357,8 @@ describe('RoleFormComponent', () => {
     });
 
     it('handles a 409 on the UPDATE path too, which the legacy never checked for', () => {
-      // MIGRATION: the legacy ran NO duplicate check when updating — `:L259-L262` updates
-      // unconditionally — which it could afford because `UpdateRole` has no `RoleName` parameter and so
-      // could not create a collision. The target's update contract DOES carry the name, so a collision
-      // is possible in principle and the API refuses it. That refusal is handled like any other rather
-      // than assumed unreachable.
+      // The legacy ran NO duplicate check when updating — `:L259-L262` updates unconditionally — which it
+      // could afford because `UpdateRole` has no `RoleName` parameter and so could not create a collision.
       editMode(role(7));
 
       press(SUBMIT_LABEL);
@@ -1776,10 +1378,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('reports a refusal of authority as a WARNING, never as an error', () => {
-      // MEASURED, and it settles a decision that would otherwise be taken by intuition:
-      // `Website/admin/Security/AccessDenied.ascx.vb` raises `ModuleMessageType.YellowWarning` in BOTH
-      // of its branches, at `:L43` and at `:L45`, and never `RedError`. Being told one lacks permission
-      // is not a failure of the request, it is the answer to it.
       createMode();
       fillRoleName();
 
@@ -1816,12 +1414,10 @@ describe('RoleFormComponent', () => {
     });
 
     it('RETIRES the refusal when the next press is blocked by a rule of its own', () => {
-      // ⚠ A BANNER THAT OUTLIVED THE SNAPSHOT IT DESCRIBED. Runtime testing refused a duplicate name
-      // with a `409`, cleared the name, and pressed Update: the press was blocked by the presence rule,
-      // and the page went on saying that a role with the same name already exists - about a name that
-      // was no longer in the box, beside a field message saying the name was missing. The document
-      // described the request that WAS sent; once a further attempt is made it describes nothing on
-      // screen, whether that attempt reaches the server or not.
+      // ⚠ A BANNER THAT OUTLIVED THE SNAPSHOT IT DESCRIBED. Runtime testing refused a duplicate name with a
+      // `409`, cleared the name, and pressed Update: the press was blocked by the presence rule, and the
+      // page went on saying that a role with the same name already exists - about a name that was no longer
+      // in the box, beside a field message saying the name was missing.
       createMode();
       fillRoleName('Administrators');
       press(SUBMIT_LABEL);
@@ -1846,9 +1442,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('preserves the trace identifier from the refusal document as the support reference', () => {
-      // The document is stored WHOLE, so its diagnostic identifiers survive into the banner for
-      // support to quote. This document carries only the trace identifier, so that is the one the
-      // banner must fall back to.
       createMode();
       fillRoleName();
 
@@ -1888,16 +1481,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('QUOTES the support reference when a refusal is announced', () => {
-      // ⚠ THE MEASURED DEFECT. A browser audit submitted a duplicate role name and captured `409`
-      // carrying `correlationId` in both the response header and the problem body. The banner rendered
-      // `Reference: <id>`. This announcement rendered `The role could not be saved.` and had THREE child
-      // nodes - severity, message, dismiss - with no reference node at all: the identifier was in hand and
-      // was discarded.
-      //
-      // It matters because the two surfaces do not cover for one another. The banner sits at the top of a
-      // form long enough to scroll, so an operator who submits from the bottom sees this announcement and
-      // nothing else - and the same audit found the sibling screen's `403` and `404` produced no console
-      // entry either. Without the identifier a refused save cannot be escalated at all.
       createMode();
       fillRoleName('Administrators');
 
@@ -1921,10 +1504,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('quotes the SAME reference the banner beside it quotes', () => {
-      // Stated separately from the case above because a reference that is merely present is not enough:
-      // two surfaces describing one refusal must name one identifier. Reading them from the shared summary
-      // rather than re-deriving each is what makes that true, and this is the case that would fail if a
-      // later edit re-read the document in one of the two places.
       createMode();
       fillRoleName('Administrators');
 
@@ -1951,11 +1530,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('quotes NO reference when the refusal carried none to quote', () => {
-      // ⚠ THE OTHER HALF OF THE RULE, AND IT IS WHY THE RULE IS A RULE. A reference is quoted because
-      // the answer HAD one, never as decoration - so a transport failure, which arrives with no document
-      // and therefore no identifier, must announce its outcome and quote nothing. Without this case the
-      // one above could be satisfied by inventing an identifier, and an operator would be handed a
-      // reference support cannot find.
       createMode();
       fillRoleName();
 
@@ -2006,13 +1580,7 @@ describe('RoleFormComponent', () => {
       // ⚠ THE MEASURED DEFECT, AND ITS CAUSE IS A LIFETIME RATHER THAN A MESSAGE. The write bridge is an
       // effect in this component's injection context, so it dies WITH the component - and an operator who
       // submits and then immediately clicks somewhere else destroys the only party that was going to tell
-      // them what happened. A browser audit measured it on this screen: the request answered `201`, was
-      // never aborted, the role was genuinely created, the destination screen was healthy - and no
-      // confirmation was raised anywhere. The outcome was published to a signal slot nobody was left
-      // watching.
-      //
-      // The screen now hands the last step over as it goes, to a root-provided watcher that outlives every
-      // screen. It announces and deliberately does NOT navigate: the operator chose to be somewhere else.
+      // them what happened.
       createMode();
       fillRoleName();
 
@@ -2030,9 +1598,6 @@ describe('RoleFormComponent', () => {
 
       expect(notifySpy)
         .withContext('the operator is told the write committed, by the party that outlived the screen')
-        // Four arguments, not five: the relay goes through the queue's `success` convenience, which states
-        // the reference and the navigation exemption and leaves the lifetime opinion to its default - so a
-        // confirmation keeps the severity-derived lifetime every other confirmation has.
         .toHaveBeenCalledWith('success', ROLE_CREATED_MESSAGE, null, false);
       expect(navigateSpy)
         .withContext('and is NOT dragged back to the listing they deliberately left')
@@ -2040,21 +1605,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('states the refusal when a write that outlived the screen was refused', () => {
-      // ⚠ THIS ASSERTION IS INVERTED FROM THE ONE IT REPLACES, which required silence. The old reasoning
-      // was that a refusal in this application is a DOCUMENT - a title, a detail, per-field messages, a
-      // support reference - whose home is the banner ON this screen; this screen is gone, so there is no
-      // field for a field message to sit beside, and the store still holds the failure for anyone who
-      // returns.
-      //
-      // All of that is true about the document and none of it justifies silence about the FACT. The
-      // operator submitted a role and moved on: they believe it was created. Nothing tells them otherwise -
-      // an absent confirmation is indistinguishable from one they clicked away from - and they find out
-      // when something downstream needs a role that does not exist. "Returning here presents it in full"
-      // presumes they know they have a reason to return, which is exactly what they do not know.
-      //
-      // WHAT IS RELAYED IS STILL NOT THE DOCUMENT. This screen supplies the same sentence its own banner
-      // falls back to, plus the support reference, and nothing field-scoped travels; the document stays in
-      // the store and is still presented in full with its per-field messages on return.
       createMode();
       fillRoleName();
 
@@ -2079,10 +1629,6 @@ describe('RoleFormComponent', () => {
 
       expect(notifySpy)
         .withContext('the operator is told the write did NOT commit, by the party that outlived the screen')
-        // THREE arguments, not four: the relay goes through the queue's `error` convenience, which states
-        // the reference and leaves BOTH the navigation exemption and the lifetime opinion to their
-        // defaults - so a refusal keeps the severity-derived lifetime every other error has, and an error
-        // is never retired on a timer.
         .toHaveBeenCalledWith('error', SAVE_FAILED_MESSAGE, '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d');
       expect(notifySpy.calls.allArgs().map((args) => args[1]))
         .withContext('the server detail and any per-field message stay with the banner')
@@ -2104,26 +1650,15 @@ describe('RoleFormComponent', () => {
 
       editMode(role(7));
 
-      // ⚠ THE DESCRIPTION, NOT THE NAME. On the edit route the role name is not an editable control at all -
-      // it renders as an `<output>`, because `UpdateRole(...)` takes no name parameter - so typing into it
-      // would dirty nothing and the control assertion below would fail for the wrong reason. It did, on the
-      // first run of this case, which is precisely what that assertion is for.
       type(CONTROL_ID.description, 'Edited by the operator');
 
-      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
-      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
-      // this is asserted through the very call the guard makes.
       expect(tracker.isDirty())
         .withContext('a dirty form with no write in flight is what the guard exists to catch')
         .toBeTrue();
 
       // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS, because it is the navigation the save
       // itself triggers that the guard would have refused. Measured in a real browser before this was
-      // settled: every successful save raised "You have unsaved changes on this page. Leave without saving
-      // and discard them?" about the entry that had just been stored - and because `window.confirm` blocks
-      // the JavaScript thread, the confirmation's auto-dismiss timer became due while the dialog stood and
-      // fired the instant it was accepted, so the operator never saw the success notice at all. A
-      // MutationObserver caught it being emitted and then removed.
+      // settled: every successful save raised "You have unsaved changes on this page.
       let dirtyAtNavigation: boolean | null = null;
       navigateSpy.and.callFake(() => {
         dirtyAtNavigation = tracker.isDirty();
@@ -2141,11 +1676,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('leaves the confirmation readable at the listing it navigates to', () => {
-      // ⚠ THE CONFIRMATION USED TO BE SWEPT BY ITS OWN NAVIGATION, and the effect was total
-      // silence: a save that succeeded and a save that was never made looked identical, because the
-      // screen simply returned to the listing. Measured in a real browser after an untouched save -
-      // the destination's live region was the empty string and 44 extracted frames showed no toast
-      // appearing or dismissing. The message must survive exactly one navigation.
       editMode(role(7));
 
       press(SUBMIT_LABEL);
@@ -2157,9 +1687,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('does NOT leave an unrelated earlier message behind at the destination', () => {
-      // ⚠ THE BOUNDARY, and it is what stops the fix becoming the defect it replaced. Only the
-      // entry raised alongside the navigation is exempted; anything already on screen from an
-      // earlier action is still retired, which is the rule the sweep exists to enforce.
       editMode(role(7));
 
       TestBed.inject(NotificationService).notify('info', 'An earlier, unrelated message.');
@@ -2174,28 +1701,9 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 7 — ALL SIX BILLING-FREQUENCY CODES ROUND-TRIP VERBATIM
-  //
-  // The six codes are LOAD-BEARING PERSISTED DATA, not presentation, and three independent proofs
-  // establish them:
-  //
-  //   1. `RoleController.vb:L540-L546` switches on the RAW CHARACTERS — `'N'` leaves the expiry
-  //      unbounded, `'O'` sets 9999-12-31, and `'D'`, `'W'`, `'M'`, `'Y'` add days, weeks, months and
-  //      years. MIGRATION: the legacy did that arithmetic with `Microsoft.VisualBasic`'s
-  //      `DateAdd(DateInterval.Day | Month | Year, …)`, expressing WEEKS as `Day, Period * 7` because
-  //      there is no week interval. NO DATE ARITHMETIC HAPPENS ON THE CLIENT: the backend owns it, and
-  //      the client submits only the code — which is why the role contract carries no date member and
-  //      why not one case in this file constructs a date.
-  //   2. The no-trial guard tests `role.TrialFrequency.ToString <> "N"` — a raw character comparison.
-  //   3. `FK_Roles_CodeFrequency` constrains both columns to `CodeFrequency([Code])`.
-  //
-  // ⚠ THE SERIALISATION TRAP, CHECKED RATHER THAN ASSUMED. Had the server declared its frequency as a
-  // character-valued enumeration, it would have serialised as the NUMBER 78 without a string converter
-  // and as the NAME "None" with one — and NEITHER is the code `'N'`. `core/models/role.model.ts`
-  // declares `BillingFrequency` as the union of the six RAW `char(1)` CODES, so the wire contract is
-  // correct and every case below asserts the raw code on the wire.
-  // ===================================================================================================
+  // The six codes are LOAD-BEARING PERSISTED DATA, not presentation, and three independent proofs establish
+  // them:
 
   describe('AREA 7 — the six frequency codes', () => {
     it('offers exactly the six captions, in the order the lookup seeded them, on BOTH selects', () => {
@@ -2210,7 +1718,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('opens both selects on the no-term code, as the legacy did on first load', () => {
-      // `EditRoles.ascx.vb:L119` and `:L125` both call `Items.FindByValue("N").Selected = True`.
       createMode();
 
       expect(chosenLabel(CONTROL_ID.billingFrequency)).toBe(NO_FREQUENCY_LABEL);
@@ -2293,42 +1800,7 @@ describe('RoleFormComponent', () => {
     });
   });
 
-
-  // ===================================================================================================
   // AREA 8 — THE THREE-PART BILLING GATE AND THE CROSS-FIELD TRIAL GATE
-  //
-  // MEASURED AT `EditRoles.ascx.vb:L212-L229`, conjunct for conjunct.
-  //
-  //   L216  `If txtServiceFee.Text <> "" And txtBillingPeriod.Text <> ""`
-  //         `        And cboBillingFrequency.SelectedItem.Value <> "N" Then`
-  //
-  //   L226  `If sglServiceFee <> 0 And txtTrialFee.Text <> "" And txtTrialPeriod.Text <> ""`
-  //         `        And cboTrialFrequency.SelectedItem.Value <> "N" Then`
-  //
-  // Fail ANY ONE of the three parts and ALL THREE defaults are submitted instead — fee `0`, period `1`
-  // and frequency `'N'`. THE TRIAL GATE'S FIRST CONJUNCT IS THE ALREADY-RESOLVED SERVICE FEE, not a
-  // trial field at all, so it is a genuine cross-field rule with a transitive cascade: a role whose
-  // billing group was itself suppressed loses its trial too.
-  //
-  // MIGRATION: the resolution is SILENT and must stay silent. The legacy discarded the values without
-  // saying anything, so surfacing a validation error here would reject input the legacy accepted — the
-  // opposite of parity.
-  //
-  // MIGRATION: `Single.Parse` and `Integer.Parse` at `:L217-L218` and `:L227-L228` THREW on a value
-  // that slipped past the defective comparison validators, and the only thing between a user and an
-  // unhandled exception was a bare `Catch exc As Exception` at `:L271`. That path is eliminated: a
-  // value that will not parse is indistinguishable from an absent one and yields the defaults. Nothing
-  // is coerced through a zero.
-  //
-  // MIGRATION: `:L154` gates the TRIAL fields on `TrialFrequency <> "N"` when READING a role — on the
-  // FREQUENCY, not on the trial fee, and so asymmetrically with the billing gate one line group above.
-  // The asymmetry is reproduced as measured, because a trial with a zero fee and a real frequency is a
-  // legitimate FREE trial and testing the fee would hide it.
-  //
-  // MIGRATION: this screen formatted money with `"#,##0.00"` — WITH a thousands separator
-  // (`:L146,L147,L155`) — while the sibling list screen's `FormatPrice` used `"##0.00"` WITHOUT one
-  // (`Roles.ascx.vb:L182`). Each screen keeps its own format; neither is harmonised to the other.
-  // ===================================================================================================
 
   describe('AREA 8 — the billing gate and the trial gate', () => {
     it('carries a complete set of terms through as the numbers they are', () => {
@@ -2554,18 +2026,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 9 — MODE BY PRESENCE, THE UNGROUPED ROLE GROUP, AND SENTINEL RENDERING
-  //
   // ⚠ `dbo.Roles.RoleID` IS `IDENTITY (0, 1)`
   // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L115`), so ZERO IS A REAL
-  // ROLE ID and must open the EDIT form. The legacy could use `-1` as its "adding" marker because `-1`
-  // was simultaneously `Null.NullInteger` and outside the identity range; a route parameter is either
-  // supplied or it is not, which is a cleaner discriminator and is the one used here.
-  //
-  // Consequently the mode decision is taken on PRESENCE alone. Forbidden here and in the component
-  // alike: `if (id)`, `!id`, `id > 0`, `id ?? -1`, `?? 0`, `|| 0`, `|| ''` and `Math.abs(`.
-  // ===================================================================================================
+  // ROLE ID and must open the EDIT form.
 
   describe('AREA 9 — the mode, the grouping and the sentinels', () => {
     it('reads the role groups from the constructor, before either mode is known', () => {
@@ -2650,27 +2114,12 @@ describe('RoleFormComponent', () => {
     });
 
     it('offers no form at all for a route parameter that is not an integer', () => {
-      /*
-       * ⚠ THIS CASE USED TO ASSERT THE DEFECT, TITLE AND ALL. It was called "stays in creation mode
-       * for a route parameter that is not an integer" and required the heading to read
-       * `Add New Role` — which is precisely the fault: `/roles/abc` presented a complete, enabled
-       * creation form, and because the legacy submit is labelled `Update` in both modes, the address
-       * and the verb together read as "editing a role called abc" while pressing it would have
-       * CREATED one. Runtime testing called it the most deceptive of the four such screens.
-       *
-       * The case survived the fix only because it asserted the HEADING rather than the form, so it
-       * is rewritten to assert the contract that actually matters. The `expectNone` below is kept
-       * from the original, which had that half right.
-       */
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', 'not-a-role');
       fixture.detectChanges();
 
       answerGroups();
 
-      // The address NAMES a role and fails to resolve it, so the screen is the edit screen — which
-      // is also what the route's own document title declares. Reading `Add New Role` here is the
-      // three-labels-on-one-screen defect measured in a browser.
       expect(textOf(queryOrFail<Element>(host(), 'h1'))).toBe(EDIT_TITLE);
 
       // Nothing to fill in and nothing to submit: the surface is withdrawn rather than disabled, so
@@ -2697,10 +2146,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('reads role 1 for a route parameter written with leading zeros', () => {
-      // ⚠ A REAL ADDRESS, NOT A TYPO TO BE PUNISHED. `00001` is a well-formed decimal integer naming
-      // role 1, the API's own `int.TryParse` accepts it, and the portal and user screens normalise it.
-      // This screen used to refuse it through a text round-trip test — and the refusal was invisible,
-      // because a null key means "creation route", so the CREATE form rendered under an Edit heading.
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', '00001');
       fixture.detectChanges();
@@ -2720,10 +2165,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('transmits nothing for a route parameter beyond the signed 32-bit range', () => {
-      // ⚠ THE REQUEST IS THE DEFECT, NOT THE ID. Every identifier column in this schema is a SQL
-      // Server `int` and the API binds the segment with `int.TryParse`, so this value cannot name a
-      // record and the round trip was guaranteed to fail. The portal and user screens refused it
-      // without a request; this screen forwarded it.
+      // ⚠ THE REQUEST IS THE DEFECT, NOT THE ID. Every identifier column in this schema is a SQL Server
+      // `int` and the API binds the segment with `int.TryParse`, so this value cannot name a record and the
+      // round trip was guaranteed to fail.
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', '2147483648');
       fixture.detectChanges();
@@ -2748,9 +2192,6 @@ describe('RoleFormComponent', () => {
 
       const read: TestRequest = expectRequest('GET', roleUrl(2147483647), 'the role read');
 
-      // Counted, because consuming a request is not the same as asserting one: `expectRequest` raises
-      // when the read is missing but registers no expectation, so the case would pass vacuously if the
-      // bound ever started refusing this id.
       expect(read.request.url)
         .withContext('the largest addressable id is read, not refused')
         .toBe(roleUrl(2147483647));
@@ -2760,9 +2201,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('takes a person back to the listing when the role has gone', () => {
-      // `EditRoles.ascx.vb:L170-L172` treated an unreadable role as an attempt to reach an item outside
-      // the module and redirected without telling the operator anything. The redirect is preserved; a
-      // message is added because a silent bounce is indistinguishable from a broken link.
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', '404');
       fixture.detectChanges();
@@ -2778,12 +2216,10 @@ describe('RoleFormComponent', () => {
       expect(lastAnnouncement()).toEqual({ severity: 'warning', message: ROLE_NOT_FOUND_MESSAGE });
       expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
 
-      // ⚠ AND IT SURVIVES THE ARRIVAL IT CAUSED. The shell retires notifications on a completed
-      // navigation, so raising this one in the same task as the navigation was not enough: measured
-      // in a real browser, the destination's live region stayed empty and 226 consecutive frames
-      // after the listing painted were pixel-identical, so the operator was moved back to the list
-      // with no explanation at all. Asserting the survival rather than the call, because the call is
-      // not the behaviour the operator experiences.
+      // ⚠ AND IT SURVIVES THE ARRIVAL IT CAUSED. The shell retires notifications on a completed navigation,
+      // so raising this one in the same task as the navigation was not enough: measured in a real browser,
+      // the destination's live region stayed empty and 226 consecutive frames after the listing painted
+      // were pixel-identical, so the operator was moved back to the list with no explanation at all.
       expect(messagesSurvivingNavigation())
         .withContext('the explanation must be readable at the destination')
         .toContain(ROLE_NOT_FOUND_MESSAGE);
@@ -2814,9 +2250,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('sends the ungrouped state as nothing at all, never as the legacy marker', () => {
-      // MIGRATION: the legacy select carried `"-1"` and the provider then wrapped the argument in
-      // `GetNull(RoleGroupId)` so that it reached SQL Server as NULL. The collapse now happens ONCE, at
-      // the contract boundary, so the absence travels as an absence.
       createMode();
       fillRoleName();
 
@@ -2858,8 +2291,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('renders an absent fee as EMPTY, never as zero and never as the raw sentinel', () => {
-      // `Roles.ascx.vb:L175-L184` proves the display rule: `FormatPrice` starts at `Null.NullString`
-      // and returns it unchanged when the price equals `Null.NullSingle`.
       editMode(role(7, { serviceFee: ABSENT_MONEY }));
 
       expect(input(CONTROL_ID.serviceFee).value).toBe('');
@@ -2867,7 +2298,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('renders an absent period as EMPTY, never as minus one', () => {
-      // `Roles.ascx.vb:L152-L161` proves the display rule for `FormatPeriod` in the same way.
       editMode(pricedRole(7, { billingPeriod: ABSENT_PERIOD }));
 
       expect(input(CONTROL_ID.billingPeriod).value).toBe('');
@@ -2897,41 +2327,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-
-  // ===================================================================================================
   // AREA 10 — THE PORTAL-PROTECTED ROLES
-  //
-  // MEASURED AT `EditRoles.ascx.vb:L174-L182`, two guards with a deliberate asymmetry between them:
-  //
-  //   L174-L178  `If RoleID = PortalSettings.AdministratorRoleId Or RoleID = PortalSettings.RegisteredRoleId`
-  //              then hide Delete, hide Update, and `ActivateControls(False)`.
-  //   L180-L182  `If RoleID = PortalSettings.RegisteredRoleId` then ADDITIONALLY hide Manage.
-  //
-  // So the ADMINISTRATOR role keeps its membership command while the registered-users role does not,
-  // and that asymmetry is preserved rather than tidied: the administrator role's membership is genuinely
+  // So the ADMINISTRATOR role keeps its membership command while the registered-users role does not, and
+  // that asymmetry is preserved rather than tidied: the administrator role's membership is genuinely
   // manageable, whereas every authenticated user holds the other.
-  //
-  // MIGRATION — THE MEASURED GAP, STATED PLAINLY. NOTHING ON A ROLE DISCRIMINATES A PROTECTED ONE:
-  // `RoleInfo.vb` declares no system, administrator or built-in member of any kind, and the target's role
-  // contract carries none either. `AdministratorRoleId` and `RegisteredRoleId` are PORTAL-scoped
-  // properties that this screen may not read — a portal-settings call is outside its endpoint boundary.
-  // The component therefore exposes them as OPTIONAL INPUTS, and these cases drive them. Supplied, the
-  // measured behaviour is reproduced exactly; unsupplied, which is the case in the running application
-  // today, the form stays fully editable and the API's own refusal governs, arriving as a `403` that is
-  // surfaced as a warning. NO ROLE ID IS HARDCODED, no decision is taken on a role's NAME, and no
-  // endpoint is invented.
-  //
-  // MIGRATION — DEFECT 4: the legacy test is written with an unparenthesised `Or`, which in VB is
-  // NON-SHORT-CIRCUITING, so both comparisons were evaluated every time. The target's `||` DOES
-  // short-circuit. The two are semantically identical here because both operands are side-effect-free
-  // integer comparisons, and the change of operator class is recorded rather than made silently.
-  //
-  // MIGRATION: `ActivateControls(False)` disabled ELEVEN named controls and conspicuously did NOT
-  // disable the icon picker or the read-only RSVP link. That omission is a measured legacy
-  // inconsistency, not a rule — leaving a picker live on a form whose update command has been hidden
-  // serves no purpose — so the WHOLE form is disabled here, which additionally covers the icon path
-  // field that replaces the picker.
-  // ===================================================================================================
 
   describe('AREA 10 — the roles the portal protects', () => {
     it('locks the administrator role read-only and offers neither save nor delete', () => {
@@ -2991,11 +2390,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('ASKS FOR THE TENANT\u2019S OWN RECORD on arrival, for the caller\u2019s tenant', () => {
-      // ⚠ THE FACTS ARE READ, NOT AWAITED FROM A CALLER. They were three optional inputs that nothing
-      // in the application supplied — no route, no parent template — so the guards below shipped
-      // permanently disarmed. The tenant comes from the caller's identity because this screen names no
-      // portal, and the key is passed through untouched: `Portals.PortalID` is `IDENTITY(-1, 1)`, so
-      // -1 and 0 are both real tenants and a truthiness test would skip the request for either.
+      // ⚠ THE FACTS ARE READ, NOT AWAITED FROM A CALLER. They were three optional inputs that nothing in
+      // the application supplied — no route, no parent template — so the guards below shipped permanently
+      // disarmed.
       editMode(role(7));
 
       expect(loadCurrentPortalContext).toHaveBeenCalledWith(TENANT_ID);
@@ -3003,11 +2400,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('stays editable while the tenant record is still OUTSTANDING, and defers to the API', () => {
-      // ⚠ THE FAIL-SAFE DIRECTION, AND IT IS DELIBERATE. Until the record arrives each key is absent,
-      // every comparison is false and the form behaves exactly as it did before the guard existed:
-      // the command is offered and the server decides, its refusal surfacing as a warning. Locking the
-      // form until the read completed would instead take a capability away from EVERY role for the
-      // duration of a request.
+      // ⚠ THE FAIL-SAFE DIRECTION, AND IT IS DELIBERATE. Until the record arrives each key is absent, every
+      // comparison is false and the form behaves exactly as it did before the guard existed: the command is
+      // offered and the server decides, its refusal surfacing as a warning.
       editMode(role(0, { roleName: 'Administrators' }));
 
       expect(command(SUBMIT_LABEL))
@@ -3032,9 +2427,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('ARMS the guard as the tenant record arrives, without the screen being remounted', () => {
-      // The record arrives after the form is already on screen, which is the ordinary sequence: the
-      // request is issued on construction and answers a moment later. Every consumer is a `computed`
-      // over the store's signals, so the transition needs no reload and no second visit.
+      // The record arrives after the form is already on screen, which is the ordinary sequence: the request
+      // is issued on construction and answers a moment later. Every consumer is a `computed` over the
+      // store's signals, so the transition needs no reload and no second visit.
       editMode(role(0, { roleName: 'Administrators' }));
 
       expect(command(SUBMIT_LABEL))
@@ -3052,9 +2447,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('protects the role keyed NOUGHT, which the identity seed makes a real role', () => {
-      // ⚠ `Roles.RoleID` is `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L114`), so the administrator
-      // role of a freshly created tenant genuinely carries nought — and a guard that tested either
-      // side for truthiness would leave exactly that role unprotected.
+      // ⚠ `Roles.RoleID` is `IDENTITY(0, 1)` (`01.00.00.SqlDataProvider:L114`), so the administrator role
+      // of a freshly created tenant genuinely carries nought — and a guard that tested either side for
+      // truthiness would leave exactly that role unprotected.
       editMode(role(0, { roleName: 'Administrators' }), { administratorRoleId: 0 });
 
       expect(command(SUBMIT_LABEL)).toBeUndefined();
@@ -3074,28 +2469,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // THE NAME IS TIDIED, AND A BLANK ONE IS REFUSED BY THE RULE ITSELF
-  //
-  // Two separate obligations, settled in two places, and the split is the point.
-  //
-  // EMPTINESS is settled by the presence rule on the control, which is the shared TRIM-AWARE rule
-  // rather than `Validators.required`. `Validators.required` rejects only the empty string, so three
-  // spaces satisfy it — while an ASP.NET `RequiredFieldValidator` trimmed before comparing against its
-  // initial value and refused exactly that, and `CreateRoleRequestValidator` declares `NotEmpty`,
-  // which treats a whitespace-only string as empty. Under the framework rule alone this screen
-  // declared valid what both the legacy screen and this API refuse, and the operator was shown a
-  // server rejection for a field the form had raised no complaint about. The rule is the same one the
-  // sibling role-group form carries, so the two screens refuse a blank name at the same moment and in
-  // the same words.
-  //
-  // PADDING is settled on submit, by tidying the name INTO ITS OWN CONTROL rather than on the way
-  // into the request, so the value that was validated and the value that is sent are one string.
-  // MIGRATION: the legacy stored what was posted, padding and all. Trimming it is a deliberate
-  // divergence, made because `UpdateRole` has no `RoleName` parameter at all
-  // (`Library/Providers/MembershipProviders/DataProvider/SqlDataProvider.vb:L242-L243`) — a name
-  // stored with invisible padding at creation could never afterwards be corrected.
-  // ===================================================================================================
+  // PADDING is settled on submit, by tidying the name INTO ITS OWN CONTROL rather than on the way into the
+  // request, so the value that was validated and the value that is sent are one string. the legacy stored
+  // what was posted, padding and all.
 
   describe('tidying the role name before judging it', () => {
     it('REFUSES a whitespace-only name rather than posting an empty one', () => {
@@ -3104,9 +2481,6 @@ describe('RoleFormComponent', () => {
 
       press(SUBMIT_LABEL);
 
-      // ⚠ NOTHING IS SENT. This is the assertion the defect failed: a `POST` went out carrying
-      // `roleName: ""`. The backend verification in teardown fails on any unconsumed request, so a
-      // creation issued here would be caught twice over.
       httpMock.expectNone(() => true);
 
       // And the requirement is reported, beside a field the operator did fill in — they typed
@@ -3117,10 +2491,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('refuses a whitespace-only name AS SOON AS IT IS TYPED, without waiting for a submit', () => {
-      // The moment matters, and it is the moment the sibling form uses. An ASP.NET validator was
-      // wired to the control's own change event and updated its display there, so the legacy
-      // reported this before any postback; a rule that waited for the submit would report it later
-      // than the screen it replaces.
+      // The moment matters, and it is the moment the sibling form uses. An ASP.NET validator was wired to
+      // the control's own change event and updated its display there, so the legacy reported this before
+      // any postback; a rule that waited for the submit would report it later than the screen it replaces.
       createMode();
       fillRoleName('   ');
 
@@ -3130,9 +2503,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('leaves a refused whitespace-only entry exactly as typed, rather than blanking the box', () => {
-      // The box is NOT rewritten under the operator: the legacy validator refused the value and
-      // left it alone, and a field that empties itself as you are told it is required reads as the
-      // screen having eaten the entry.
       createMode();
       fillRoleName('   ');
 
@@ -3182,11 +2552,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('leaves the DESCRIPTION to its own rule, which collapses a blank one to nothing', () => {
-      // ⚠ ONLY THE NAME IS TIDIED INTO ITS CONTROL, and the description is why that distinction is
-      // worth stating rather than generalising. It reaches a NULLABLE member through `textOrNull`,
-      // whose rule is different in kind: a blank entry becomes `null` rather than being refused,
-      // because "no description" is a legitimate answer where "no name" is not. That rule stays where
-      // it is, on the way into the request, and nothing about it is re-judged.
       createMode();
       fillRoleName('Subscribers');
       type(CONTROL_ID.description, '  padded  ');
@@ -3308,19 +2673,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 12 — THE THREE COMMANDS THAT DO NOT VALIDATE
-  //
-  // MEASURED: `CausesValidation="False"` is declared on `cmdCancel` (`editroles.ascx:L183`), `cmdDelete`
-  // (`:L186`) and `cmdManage` (`:L189`). `cmdUpdate` (`:L179-L180`) OMITS the attribute, and the
-  // attribute defaults to TRUE — which is why the legacy update handler opens with `If Page.IsValid Then`
-  // at `:L210` while `cmdDelete_Click` at `:L287-L303` contains no such check anywhere.
-  //
-  // MIGRATION: the delete command's browser confirmation at `:L112` —
-  // `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))` — becomes the shared
-  // dialogue, which adds the focus trap and the escape key the browser confirmation never had. Its
-  // wording is the global resource value VERBATIM.
-  // ===================================================================================================
+  // The delete command's browser confirmation at `:L112` — `ClientAPI.AddButtonConfirm(cmdDelete,
+  // Localization.GetString("DeleteItem"))` — becomes the shared dialogue, which adds the focus trap and the
+  // escape key the browser confirmation never had. Its wording is the global resource value VERBATIM.
 
   describe('AREA 12 — the commands that do not validate', () => {
     it('abandons the form without validating, even when it is invalid', () => {
@@ -3443,35 +2799,9 @@ describe('RoleFormComponent', () => {
     });
   });
 
-
-  // ===================================================================================================
   // AREA 13 — THE RENDERED DOCUMENT
-  //
-  // MEASURED DISCLOSURE STATE. `dshBasic` (`editroles.ascx:L11-L12`) declares NO expanded state and the
-  // legacy default is EXPANDED. `dshAdvanced` (`:L68-L70`) declares `IsExpanded="False"` and is therefore
-  // COLLAPSED ON FIRST RENDER.
-  //
-  // MIGRATION — A DELIBERATE DEPARTURE ON THE BASIC SECTION, RECORDED RATHER THAN SMUGGLED. The basic
-  // section carries NO `aria-expanded`, and that is correct rather than an omission: the attribute is
-  // defined for elements that expose a disclosure state, the section has no collapse affordance at all,
-  // and adding a button purely to host the attribute would put a control on the page that cannot be
-  // operated. "Always expanded" is expressed by the content being unconditionally present, which is what
-  // these cases assert. The ADVANCED section does collapse, so it carries the attribute on a natively
-  // keyboard-reachable summary bound to the element's own open state.
-  //
-  // MIGRATION: the legacy section-head control withdrew its own toggle from the tab order with a
-  // negative tab index, so the legacy collapse was operable BY POINTER ONLY. A native disclosure summary
-  // is keyboard-reachable and operable by Enter and Space with no scripting, which is the faithful
-  // reversal of that defect. The legacy labelled-field control compounded it, putting both its help link
-  // and its image at a negative tab index with no alternative text INSIDE the label element.
-  //
-  // MIGRATION: all three legacy layout tables — the outer table at `:L6`, `tblBasic` at `:L13` and
-  // `tblAdvanced` at `:L71`, each declaring a "Design Table" summary — are LAYOUT tables and are replaced
-  // by grid and flexible-box styling. This screen has no data grid at all. The break element at `:L67`,
-  // the ten-pixel spacer rows at `:L20`, `:L78` and `:L82`, the paired non-breaking spaces at `:L105` and
-  // `:L137`, and the single ones between the four commands at `:L181`, `:L184` and `:L187` all become
-  // stylesheet concerns.
-  // ===================================================================================================
+  // MEASURED DISCLOSURE STATE. `dshBasic` declares NO expanded state and the legacy default is EXPANDED.
+  // `dshAdvanced` (`:L68-L70`) declares `IsExpanded="False"` and is therefore COLLAPSED ON FIRST RENDER.
 
   describe('AREA 13 — the rendered document', () => {
     /** The advanced disclosure, which is the only collapsible region on this screen. */
@@ -3522,16 +2852,6 @@ describe('RoleFormComponent', () => {
     it('withdraws NOTHING from the tab order', () => {
       createMode();
 
-      // ⚠ THE CLAIM IS ABOUT INTERACTIVE ELEMENTS, AND THIS USED TO BE ASSERTED ABOUT ALL OF THEM.
-      // The rule being protected is the legacy defect's inverse: the legacy help affordance and its
-      // image were both given a negative index, so the only control that could reveal a collapsed
-      // section was unreachable by keyboard. A negative index on a NON-interactive element is the
-      // opposite kind of thing - it withdraws nothing, because such an element was never in the tab
-      // order, and it grants only the ability to be focused deliberately by script. The shared outcome
-      // banner carries exactly that, so a screen can bring a server refusal to a reader who pressed a
-      // control at the foot of a form taller than the viewport. Asserting over every element made the
-      // suite reject that affordance while the rule it exists for was never in question, so the query
-      // now names the interactive vocabulary the rule is about.
       expect(queryAll('a[tabindex="-1"], button[tabindex="-1"], input[tabindex="-1"], select[tabindex="-1"], textarea[tabindex="-1"], summary[tabindex="-1"], [role="button"][tabindex="-1"]'))
         .withContext('the legacy help affordance and its image were both unreachable')
         .toHaveSize(0);
@@ -3585,10 +2905,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('places the billing period and its frequency inside ONE labelled field', () => {
-      // The legacy shared one label across the pair (`editroles.ascx:L100` naming `txtBillingPeriod`,
-      // with `cboBillingFrequency` at `:L106-L107` beside it and no label of its own), and
-      // `BillingPeriod.Help` says outright that the two fields are used in conjunction. Splitting them
-      // would leave the select unnamed.
       createMode();
 
       expect(fieldOf(CONTROL_ID.billingPeriod))
@@ -3639,21 +2955,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('renders the processor warning with real emphasis markup, not parsed resource text', () => {
-      // MIGRATION — DEFECT 5, reproduced rather than repaired. `EditRoles.ascx.vb:L104-L109` runs OUTSIDE
-      // the not-a-postback branch and shows the label whenever the portal record is absent OR its
-      // processor identifier is empty, while its own comment claims the opposite. THE CODE IS THE
-      // BEHAVIOUR and it is also the sensible reading, so the code is what is reproduced and the
-      // contradiction is recorded here.
-      //
-      // The resource value wraps one word in bold. That word is RE-AUTHORED as a real emphasis element
-      // rather than passed through any markup binding, because resource text is untrusted: this very
-      // admin tree holds an entry carrying a live remote script block. The source typo in "fee-base" is
-      // preserved, because the wording is the site's own.
-      //
-      // ⚠ THE TENANT RECORD IS RESOLVED HERE, WITH NO PROCESSOR, WHICH IS THE STATE THAT WARNS. The
-      // screen used to have no way of knowing either fact — the input nothing supplied defaulted to
-      // "unconfigured" — so the warning was permanently on screen. It is now read, and the one
-      // deliberate departure from the legacy expression is recorded in the case below.
       tenantResolved.set(true);
       processorConfigured.set(false);
       createMode();
@@ -3665,14 +2966,8 @@ describe('RoleFormComponent', () => {
     });
 
     it('WITHHOLDS the processor warning until the tenant record resolves', () => {
-      // ⚠ THE ONE DELIBERATE DEPARTURE FROM `EditRoles.ascx.vb:L104-L109`, and it is recorded rather
-      // than absorbed. The legacy's first clause, `objPortalInfo Is Nothing`, warned when the portal
-      // could not be read AT ALL — so an unread portal produced the same warning as a portal with no
-      // processor. Telling an administrator to configure a payment processor on the strength of a
-      // request that has not answered is an assertion rather than a default, so the warning waits.
-      //
-      // Nothing is supplied, so the tenant stays unresolved: the state every visit began in while the
-      // fact was an input nobody passed.
+      // Nothing is supplied, so the tenant stays unresolved: the state every visit began in while the fact
+      // was an input nobody passed.
       createMode();
 
       expect(host().querySelector('.role-form__warning'))
@@ -3718,24 +3013,8 @@ describe('RoleFormComponent', () => {
   // BEYOND THE THIRTEEN — THE REMAINING CONTRACT MEMBERS AND THE DROPPED AFFORDANCES
   // ===================================================================================================
 
-  // ---------------------------------------------------------------------------------------------------
   // AREA 14 — WHOSE WRITE SETTLED, AND WHO CLASSIFIES A REFUSAL
-  //
-  // Two corrections are pinned here, and each closed a defect that only appears when something else in
-  // the application is writing at the same time or when a status other than the common ones arrives.
-  //
-  // WRITE IDENTITY. The shared store published ONE boolean for "a write is in flight" and ONE failure
-  // slot. This screen watched the boolean fall and then read the slot, so an unrelated role write
-  // settling elsewhere released this screen's submit lock, drained its outstanding state and could hand
-  // it somebody else's refusal to report. The store now issues an identifier per write and publishes
-  // the settled outcome under it, and this screen acts only on the identifier it was given.
-  //
-  // SEVERITY OWNERSHIP. This screen carried its own status-to-severity table, which disagreed with the
-  // shared one at two statuses: 404 (this screen said warning, the shared table says warning — but the
-  // local table reached that answer for its own reasons) and 429, where the local table said error
-  // while the shared table deliberately says info, because nothing was rejected on its merits. The
-  // local table is gone; the shared classification is consumed and only the WORDING is overridden.
-  // ---------------------------------------------------------------------------------------------------
+  // WRITE IDENTITY. The shared store published ONE boolean for "a write is in flight" and ONE failure slot.
 
   describe('AREA 14 — write identity and severity ownership', () => {
     it('stays held when an unrelated role write settles first', () => {
@@ -3800,10 +3079,9 @@ describe('RoleFormComponent', () => {
     });
 
     it('presents a rate-limit refusal at the shared classification, not at its own', () => {
-      // ⚠ THE DISAGREEMENT THIS CLOSES. The local table resolved every status other than 404 to
-      // `error`, so a 429 was announced as a failure on this screen while the shared classifier calls
-      // it `info` — nothing was rejected on its merits, the caller is simply early. Two surfaces on one
-      // screen disagreed about the same response.
+      // ⚠ THE DISAGREEMENT THIS CLOSES. The local table resolved every status other than 404 to `error`, so
+      // a 429 was announced as a failure on this screen while the shared classifier calls it `info` —
+      // nothing was rejected on its merits, the caller is simply early.
       createMode();
       fillRoleName();
 
@@ -3845,11 +3123,6 @@ describe('RoleFormComponent', () => {
 
   describe('the remaining members and the dropped affordances', () => {
     it('round-trips the reservation code and the icon path, which both contracts declare', () => {
-      // MIGRATION: `ctlIcon` (`editroles.ascx:L169-L170`) was a picker over the portal's own files, with
-      // an image-type filter applied at `EditRoles.ascx.vb:L129`. It is reduced to a plain path field,
-      // because the target exposes NO filesystem, upload or file-listing endpoint. The path itself
-      // round-trips unchanged; only the means of choosing it is lost. No picker and no upload control is
-      // asserted for, because neither could exist.
       editMode(role(7, { rsvpCode: 'JOIN-2024', iconFile: 'images/role.gif' }));
 
       expect(input(CONTROL_ID.rsvpCode).value).toBe('JOIN-2024');
@@ -3874,9 +3147,6 @@ describe('RoleFormComponent', () => {
     });
 
     it('offers no reservation LINK at all, which was dropped unconditionally', () => {
-      // MIGRATION: `txtRSVPLink` (`editroles.ascx:L161`), populated at `EditRoles.ascx.vb:L165-L168`,
-      // addressed a self-service subscribe flow the target does not implement, so a link to it would be
-      // a link to nothing.
       editMode(role(7, { rsvpCode: 'JOIN-2024' }));
 
       expect(host().querySelector('#role-form-rsvp-link')).toBeNull();
@@ -3920,23 +3190,9 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 15 — NUMERIC INTEGRITY, THE REVISION MARKER, AND THE RECOVERY PATH
-  //
-  // Three defects found by runtime testing, none of which any earlier case in this file could have
-  // caught, because each of them produced a form that reported itself VALID.
-  //
-  //   1. `1,5` in a fee field was accepted, the separator was stripped, and `15` was persisted — a
-  //      TEN-FOLD monetary error, silent end to end. The pattern admitted a group of any length.
-  //   2. A period beyond `Int32` and a fee with more digits than a double carries were both accepted
-  //      here and rewritten or refused elsewhere: the first came back as a server refusal naming no
-  //      field, the second reached storage as a different number from the one typed.
-  //   3. Two people editing one role both saved their whole snapshot and the later save silently
-  //      discarded the earlier one, because no revision marker travelled with the update.
-  //
-  // Every case below asserts on what leaves the screen or what the person can see, never on a private
-  // member, so none of them can pass while the defect survives.
-  // ===================================================================================================
+  // 1. `1,5` in a fee field was accepted, the separator was stripped, and `15` was persisted — a TEN-FOLD
+  // monetary error, silent end to end.
 
   describe('AREA 15 — numeric integrity, the revision marker and the recovery path', () => {
     /** Puts a role in edit mode with its billing group loaded, then reveals the advanced section. */
@@ -3960,20 +3216,6 @@ describe('RoleFormComponent', () => {
         return notices.find((sentence) => sentence.startsWith('This role has no')) ?? '';
       }
 
-      // ⚠ THE INCONSISTENCY BETWEEN TWO SCREENS, AND WHY THE BOXES ARE NOT SIMPLY FILLED.
-      //
-      // `/roles/0` holds `serviceFee 0.0000`, `billingPeriod 0`, `trialFee 0.0000`, `trialPeriod 0`, and
-      // the role LISTING renders those zeros as "0.00" and "0" - `Roles.ascx.vb:L152-L185` prints every
-      // non-sentinel value verbatim. This form leaves the same four boxes EMPTY, because
-      // `EditRoles.ascx.vb:L146-L156` fills them only for a priced role. Both are faithful; together
-      // they showed one record two ways with nothing saying which reading was the record.
-      //
-      // Rendering the zeros into these boxes was the reported repair and is refused, because it breaks
-      // two rules this screen must match: `valBillingPeriod2` (`editroles.ascx:L111-L114`) is
-      // `GreaterThan 0`, so an untouched role would open ALREADY INVALID with its Update command blocked
-      // on a number the record actually holds; and the write gate at `:L216` is
-      // `txtBillingPeriod.Text <> ""`, so filling the box changes what an untouched save STORES. The
-      // values are therefore stated beside the boxes, in the listing's own formatting.
       it('states every withheld value, in the wording the role listing uses', () => {
         editMode(role(0));
         openAdvanced();
@@ -3988,9 +3230,6 @@ describe('RoleFormComponent', () => {
         expect(input(CONTROL_ID.billingPeriod).value).toBe('');
         expect(input(CONTROL_ID.trialFee).value).toBe('');
         expect(input(CONTROL_ID.trialPeriod).value).toBe('');
-        // ⚠ AND THE FORM IS STILL SAVABLE, which is exactly what filling the boxes would have cost: a
-        // rendered `0` in the period box fails the legacy's own `GreaterThan 0` rule, so the screen would
-        // open with a message about a number nobody typed and an Update command that refuses to run.
         expect(allMessages()).withContext('nothing opened invalid').toEqual([]);
         expect(command('Update')?.disabled).withContext('and the command is live').toBeFalse();
       });
@@ -4006,10 +3245,6 @@ describe('RoleFormComponent', () => {
       });
 
       it('names the RECURRENCE UNIT a zero fee hides, which nothing else on the screen shows', () => {
-        // The billing group is suppressed by its FEE, so a role with a zero fee beside a real
-        // recurrence unit hides that unit behind a select reading "None". The trial group is suppressed
-        // BY its frequency being None, so a suppressed trial select is already showing the stored value
-        // and is deliberately not listed.
         editMode(role(7, { serviceFee: 0, billingFrequency: 'M', billingPeriod: 3 }));
         openAdvanced();
 
@@ -4040,9 +3275,6 @@ describe('RoleFormComponent', () => {
       });
 
       it('describes only the TRIAL group when the billing group carries its own values', () => {
-        // The two groups are suppressed independently and by different tests - the billing group by its
-        // FEE (`EditRoles.ascx.vb:L146`) and the trial group by its FREQUENCY (`:L154`) - so a priced
-        // role with no trial hides two values and shows three, and the sentence must say which.
         editMode(role(7, { serviceFee: 25, billingPeriod: 1, billingFrequency: 'M' }));
         openAdvanced();
 
@@ -4073,9 +3305,6 @@ describe('RoleFormComponent', () => {
     });
 
     describe('a thousands separator must separate thousands', () => {
-      // ⚠ THE CASE THAT NAMES THE DEFECT. `1,5` is not a number in any locale this screen writes, and
-      // the screen's own formatter emits groups of three (`EditRoles.ascx.vb:L147,L155`). Accepting it
-      // and stripping the comma turned one and a half into fifteen.
       it('refuses "1,5" in a fee field with the legacy data-type wording, and sends nothing', () => {
         createMode();
         fillRoleName();
@@ -4128,8 +3357,6 @@ describe('RoleFormComponent', () => {
 
         type(CONTROL_ID.billingPeriod, '2147483648');
 
-        // Previously this reached the API, failed to BIND — before any validator ran — and came back
-        // as `"request": ["The request field is required."]`, which names no field at all.
         expect(messagesFor(CONTROL_ID.billingPeriod)).toContain(
           'That number is outside the range this site can store. Enter a whole number between ' +
             '-2,147,483,648 and 2,147,483,647.',
@@ -4203,9 +3430,6 @@ describe('RoleFormComponent', () => {
         box.dispatchEvent(new Event('blur'));
         fixture.detectChanges();
 
-        // `007` was already being sent as `7`; the substitution was correct and invisible, which is the
-        // defect. `EditRoles.ascx.vb:L147` re-rendered the box through `Format(fee, "#,##0.00")` on
-        // every postback, so this is the legacy's own display behaviour on a client-side event.
         expect(box.value).toBe('7.00');
       });
 
@@ -4248,12 +3472,7 @@ describe('RoleFormComponent', () => {
 
         // ⚠ THIS PINS AN INVARIANT RATHER THAN EXERCISING A BRANCH, and saying so is the honest
         // description. A loaded fee is written into the control BY `formatMoney` (`applyRole`), so it is
-        // already in canonical form and would survive a rewrite unchanged in any case. What the case
-        // guards is the pair of consequences that a rewrite here would have: the displayed value must
-        // not move under someone who only tabbed through the field, and the form must not become dirty
-        // without an edit — because an unsaved-changes guard would then challenge an exit nobody
-        // initiated. Pristine state is read from the class Angular renders onto the form element, which
-        // is a fact about the document rather than a private member.
+        // already in canonical form and would survive a rewrite unchanged in any case.
         expect(box.value).toBe(loaded);
         expect(queryOrFail<HTMLFormElement>(host(), 'form').classList).toContain('ng-pristine');
       });
@@ -4296,17 +3515,6 @@ describe('RoleFormComponent', () => {
         expect(submittedUpdate(7).concurrencyToken).toBe('revision-from-the-read');
       });
 
-      // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
-      //
-      // It asserted that a read serving NO token produced a token-less update, and called that a
-      // last-writer-wins update. The premise was false: `RoleDetailDto.ConcurrencyToken` is declared
-      // `public string ... = string.Empty` and is always populated by `RoleMappings.ConcurrencyTokenFor`,
-      // so a read serving no token is a MALFORMED response rather than a supported mode. Tolerating it was
-      // the defect — the null decoded, reached a write the server does treat as last-writer-wins, and the
-      // optimistic check was skipped with nothing reporting it, so a lost update presented as a success.
-      //
-      // What survives is the ONLY legitimate null: a creation, which has no prior revision. That case is
-      // asserted immediately below and is unchanged.
       it('always carries a token on an update, because a read serving none is refused', () => {
         editMode(role(7, { concurrencyToken: 'revision-2' }));
         type(CONTROL_ID.description, 'Edited');
@@ -4321,10 +3529,6 @@ describe('RoleFormComponent', () => {
       });
 
       it('carries the empty string through, because that is the server unset spelling', () => {
-        // The server's member is non-nullable and its declared default IS the empty string, so an
-        // installation that has never derived a marker serves one. It is carried as received rather than
-        // substituted or dropped: substituting would fabricate a marker, and dropping it would opt out of
-        // the very check the round trip exists to perform.
         editMode(role(7, { concurrencyToken: '' }));
         type(CONTROL_ID.description, 'Edited');
         press('Update');
@@ -4366,8 +3570,6 @@ describe('RoleFormComponent', () => {
         press('Update');
         refuseAsStale(7);
 
-        // The server's explanation is on the BANNER; the notification states the outcome. Asserted on
-        // both surfaces because the sentence used to be on both AT ONCE.
         expect(bannerMessage() ?? '').toContain('was changed by someone else');
         expect(lastAnnouncement()).toEqual({ severity: 'error', message: SAVE_FAILED_MESSAGE });
         expect(navigateSpy).not.toHaveBeenCalled();
@@ -4420,9 +3622,9 @@ describe('RoleFormComponent', () => {
         );
         fixture.detectChanges();
 
-        // The re-read must actually reach the form. `appliedRoleKey` exists to stop a second arrival of
-        // the same role overwriting typed values, which is right for the store's echo after a save and
-        // wrong here, where replacing them is the entire purpose of the command.
+        // The re-read must actually reach the form. `appliedRoleKey` exists to stop a second arrival of the
+        // same role overwriting typed values, which is right for the store's echo after a save and wrong
+        // here, where replacing them is the entire purpose of the command.
         expect(textArea().value).toBe('Theirs');
         expect(host().querySelector('button.role-form__conflict-reload')).toBeNull();
 
@@ -4435,22 +3637,10 @@ describe('RoleFormComponent', () => {
     });
   });
 
-  // ===================================================================================================
   // AREA 16 — NAMING A PAIR, DISCLOSING A TRUNCATION, AND STATING A BUSY FORM
-  //
-  // Three findings whose common shape is that the screen already behaved correctly and said nothing
-  // about it, so nothing an operator or a screen reader could perceive distinguished the right state
-  // from the wrong one.
-  //
-  //   R-M8   Eight controls resolved to SIX distinct accessible names, because both halves of each
-  //          period pair were named from the field's single visible label.
-  //   R-M18  `maxlength` discarded the surplus of a pasted name silently, and the shortened name then
-  //          collided with a stored one — producing a duplicate-name refusal naming a value the
-  //          operator had never typed.
-  //   R-M21  Five presses inside one task all found the submit button enabled, because no
-  //          change-detection pass had run between them; the busy state was conveyed by a spinner and
-  //          by nothing that is programmatically determinable.
-  // ===================================================================================================
+  // Three findings whose common shape is that the screen already behaved correctly and said nothing about
+  // it, so nothing an operator or a screen reader could perceive distinguished the right state from the
+  // wrong one.
 
   describe('AREA 16 — naming a pair, disclosing a truncation, and stating a busy form', () => {
     /** Reveals the advanced section, where both period pairs live. */
@@ -4474,13 +3664,6 @@ describe('RoleFormComponent', () => {
     }
 
     describe('R-M8 — each half of a period pair is named distinctly', () => {
-      /**
-       * ⚠ THE CASE THAT NAMES THE DEFECT. The legacy screen put `txtBillingPeriod` and
-       * `cboBillingFrequency` under the single label `plBillingPeriod` (`editroles.ascx` L98-L115),
-       * so the second control carried no name of its own; the shared field then named it from the
-       * field's visible label, which is correct for a lone control and leaves a PAIR announcing one
-       * identical string twice.
-       */
       it('gives the count and the unit different names on both pairs', () => {
         createMode();
         revealAdvanced();
@@ -4503,9 +3686,9 @@ describe('RoleFormComponent', () => {
       });
 
       /**
-       * ⚠ WCAG 2.5.3 LABEL IN NAME. The qualifier is APPENDED, so the text an operator can read
-       * remains a prefix of the name an assistive technology announces — which is what lets someone
-       * using voice control say the visible words and reach the control.
+       * ⚠ WCAG 2.5.3 LABEL IN NAME. The qualifier is APPENDED, so the text an operator can read remains a
+       * prefix of the name an assistive technology announces — which is what lets someone using voice
+       * control say the visible words and reach the control.
        */
       it('keeps the visible label as a prefix of each name', () => {
         createMode();
@@ -4526,10 +3709,10 @@ describe('RoleFormComponent', () => {
       });
 
       /**
-       * ⚠ THE QUALIFIERS MUST NOT BE DRAWN. They exist to be announced; painting them would put two
-       * stray words into a field whose visible wording is a resource value this migration preserves.
-       * The clipping helper is asserted through the rendered class, because the rule that hides it
-       * lives in a stylesheet the test bed does not apply.
+       * ⚠ THE QUALIFIERS MUST NOT BE DRAWN. They exist to be announced; painting them would put two stray
+       * words into a field whose visible wording is a resource value this migration preserves. The
+       * clipping helper is asserted through the rendered class, because the rule that hides it lives in a
+       * stylesheet the test bed does not apply.
        */
       it('never paints the qualifiers into the field', () => {
         createMode();
@@ -4563,8 +3746,6 @@ describe('RoleFormComponent', () => {
       /**
        * ⚠ THE CASE THAT NAMES THE DEFECT. `maxlength` is faithful — `editroles.ascx:L31` declares
        * `MaxLength="50"` — and a browser enforcing it discards the surplus with no indication at all.
-       * Runtime testing pasted fifty-one characters, watched fifty arrive, and then received a
-       * duplicate-name refusal naming a role the operator had never typed.
        */
       it('discloses the limit once the name reaches it', () => {
         createMode();
@@ -4580,9 +3761,9 @@ describe('RoleFormComponent', () => {
       });
 
       /**
-       * ⚠ AND IT MUST BE SILENT BELOW THE LIMIT. A notice standing permanently beside a field is a
-       * notice nobody reads, and this one earns its place only by appearing at the moment the field
-       * stops accepting input.
+       * ⚠ AND IT MUST BE SILENT BELOW THE LIMIT. A notice standing permanently beside a field is a notice
+       * nobody reads, and this one earns its place only by appearing at the moment the field stops
+       * accepting input.
        */
       it('says nothing while the name is shorter than the limit', () => {
         createMode();
@@ -4592,10 +3773,10 @@ describe('RoleFormComponent', () => {
       });
 
       /**
-       * ⚠ IT IS A NOTICE AND NOT AN ERROR. The value at the limit is VALID — `maxLength(50)` is
-       * satisfied by exactly fifty — so it must not appear in the field's error region, must not be
-       * announced assertively, and must not mark the control invalid. Conflating the two would train
-       * an operator to treat a real refusal as noise.
+       * ⚠ IT IS A NOTICE AND NOT AN ERROR. The value at the limit is VALID — `maxLength(50)` is satisfied
+       * by exactly fifty — so it must not appear in the field's error region, must not be announced
+       * assertively, and must not mark the control invalid. Conflating the two would train an operator to
+       * treat a real refusal as noise.
        */
       it('does not report the limit as a validation failure', () => {
         createMode();
@@ -4627,15 +3808,9 @@ describe('RoleFormComponent', () => {
 
       /**
        * ⚠ THE CASE THAT NAMES THE DEFECT, AND ITS SUBJECT IS `aria-busy` ALONE. Every one of those
-       * presses found the button enabled, because no change-detection pass had run between them, and
-       * the only signal of the in-flight write was a spinner — nothing about the state was
-       * programmatically determinable. That is what this case fixes and asserts.
-       *
-       * ⚠ IT IS NOT COVERAGE OF `SubmitGuardDirective`, and the earlier wording here implied otherwise
-       * by citing a manual five-press observation as though the guard were proven. A manual observation
-       * is not a test, and nothing below would fail if the directive were deleted. The directive is
-       * asserted against itself, on a host that carries no guard of its own, in
-       * `src/app/shared/directives/submit-guard.directive.spec.ts`.
+       * presses found the button enabled, because no change-detection pass had run between them, and the
+       * only signal of the in-flight write was a spinner — nothing about the state was programmatically
+       * determinable.
        */
       it('carries aria-busy from the press until the write settles', () => {
         createMode();
@@ -4661,8 +3836,8 @@ describe('RoleFormComponent', () => {
 
       /**
        * ⚠ A REFUSED SUBMIT MUST NOT LEAVE THE FORM MARKED BUSY. `onSubmit` returns before issuing
-       * anything when the form is invalid, so a busy state raised optimistically on the press would
-       * stick forever and tell every reader the screen was working when it was waiting for them.
+       * anything when the form is invalid, so a busy state raised optimistically on the press would stick
+       * forever and tell every reader the screen was working when it was waiting for them.
        */
       it('never marks a form busy when the submit was refused locally', () => {
         createMode();

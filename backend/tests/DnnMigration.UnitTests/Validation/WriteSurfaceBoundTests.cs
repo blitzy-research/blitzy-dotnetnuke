@@ -11,16 +11,14 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Pins the field rules on the four requests that carried no validator at all until a security review
-/// found them, other than the storage-range rules pinned beside this file.
+/// Pins the field rules on the four requests that carried no validator at all until a security review found
+/// them, other than the storage-range rules pinned beside this file.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Each of these requests is bound by an endpoint, so before the validators existed every field on them
-/// reached the service and then the provider unbounded: an over-long value was refused by the column
-/// rather than by a field-level answer, and a blank page name was accepted outright. The rules asserted
-/// here are the column widths, the shared icon containment rule, the supported-form and single-line rules
-/// on a link target, and the settings cardinality bounds.
+/// reached the service and then the provider unbounded: an over-long value was refused by the column rather
+/// than by a field-level answer, and a blank page name was accepted outright.
 /// </para>
 /// <para>
 /// The width assertions submit one character PAST each column, not some round larger number, so each test
@@ -29,16 +27,8 @@ namespace DnnMigration.UnitTests.Validation;
 /// </remarks>
 public class WriteSurfaceBoundTests
 {
-    /// <summary>
-    /// A blank page name is refused, which restores the legacy screen's own behaviour.
-    /// </summary>
+    /// <summary>A blank page name is refused, which restores the legacy screen's own behaviour.</summary>
     /// <param name="submittedName">The blank name under test.</param>
-    /// <remarks>
-    /// The legacy required-field validator declares no initial value, so its initial value is the empty
-    /// string and it failed precisely when the trimmed control value equalled that. The empty string was
-    /// the one value the screen refused, and because the comparison follows a trim, a name of spaces was
-    /// refused with it.
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
@@ -53,9 +43,7 @@ public class WriteSurfaceBoundTests
             failure => failure.PropertyName == nameof(UpdateTabRequest.TabName));
     }
 
-    /// <summary>
-    /// Every page text field is bounded by its own column width.
-    /// </summary>
+    /// <summary>Every page text field is bounded by its own column width.</summary>
     /// <param name="member">The member under test, named for the failure assertion.</param>
     /// <param name="width">The column width, one past which the value is refused.</param>
     [Theory]
@@ -113,9 +101,7 @@ public class WriteSurfaceBoundTests
             .Validate(new UpdateTabRequest { TabName = "Home", IconFile = iconFile })
             .IsValid.Should().Be(contained);
 
-    /// <summary>
-    /// The icon containment rule is the SAME rule on every path that accepts an icon.
-    /// </summary>
+    /// <summary>The icon containment rule is the SAME rule on every path that accepts an icon.</summary>
     /// <remarks>
     /// This is the property the shared rule exists to provide, and it is asserted because the three paths
     /// disagreed before it: the check was private to the role create validator, so the role update and the
@@ -167,26 +153,8 @@ public class WriteSurfaceBoundTests
             .Validate(new UpdateTabRequest { TabName = "Home", Url = url })
             .IsValid.Should().Be(acceptable);
 
-    /// <summary>
-    /// A page refresh interval is never refused by shape, whatever its magnitude or sign.
-    /// </summary>
+    /// <summary>A page refresh interval is never refused by shape, whatever its magnitude or sign.</summary>
     /// <param name="refreshInterval">The interval under test.</param>
-    /// <remarks>
-    /// <para>
-    /// AN EARLIER REVISION OF THIS FACT PINNED A CEILING OF ONE DAY AND REFUSED A NEGATIVE, and it has been
-    /// retargeted rather than deleted, because the rule it pinned was withdrawn on measurement rather than
-    /// on preference. The page-administration screen declares no validator over the refresh field and the
-    /// column is a plain integer, so no legacy submission was refused on this member; the ceiling was
-    /// self-described as net-new. The migration discipline requires validation rules to MATCH the original
-    /// rather than improve on it, and a bound nothing measured is exactly the improvement it forbids.
-    /// </para>
-    /// <para>
-    /// What survives from the finding is the part that was measured: the widths, the presence rule, the icon
-    /// containment rule, the single-line link rule and the date-representability bound, each asserted
-    /// elsewhere in this file and in the storage-range suite. The withdrawal is recorded in
-    /// MIGRATION_NOTES.md as legacy behaviour preserved.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(0)]
     [InlineData(30)]
@@ -199,9 +167,7 @@ public class WriteSurfaceBoundTests
             .Validate(new UpdateTabRequest { TabName = "Home", RefreshInterval = refreshInterval })
             .IsValid.Should().BeTrue();
 
-    /// <summary>
-    /// The role update path bounds every text field by its own column width.
-    /// </summary>
+    /// <summary>The role update path bounds every text field by its own column width.</summary>
     /// <param name="member">The member under test.</param>
     /// <param name="width">The column width, one past which the value is refused.</param>
     [Theory]
@@ -227,21 +193,12 @@ public class WriteSurfaceBoundTests
     /// <param name="member">The member the value is for.</param>
     /// <param name="length">The length the value must have.</param>
     /// <returns>A value of exactly that length.</returns>
-    /// <remarks>
-    /// A width fact has to vary the width and nothing else, so the filler has to be chosen per member rather
-    /// than shared. The invitation code carries an authoring-strength rule requiring two character classes, so
-    /// a value made of one repeated character would be refused for a strength reason at the width the fact
-    /// expects to be accepted - failing for the wrong rule and reporting the wrong message. Every other member
-    /// here has no such rule, so a repeated character remains the clearest filler for them.
-    /// </remarks>
     private static string FillerFor(string member, int length)
         => member == nameof(UpdateRoleRequest.RsvpCode)
             ? string.Concat(Enumerable.Range(0, length).Select(index => index % 2 == 0 ? 'a' : '1'))
             : new string('a', length);
 
-    /// <summary>
-    /// A frequency outside the domain enumeration is refused on the role update path.
-    /// </summary>
+    /// <summary>A frequency outside the domain enumeration is refused on the role update path.</summary>
     [Fact]
     public void RoleUpdateFrequencies_OutsideTheEnumeration_AreRefused()
     {
@@ -261,10 +218,7 @@ public class WriteSurfaceBoundTests
     /// </summary>
     /// <remarks>
     /// Asserted as one fact from both sides so that the width and range rules cannot drift into presence
-    /// rules, and so the single presence rule cannot quietly disappear. The name is required because
-    /// <c>Roles.RoleName</c> is <c>NOT NULL</c> and the contract is a replacement; every remaining member
-    /// has a stored default or is nullable, so a submission that changes nothing else is a legitimate
-    /// no-op rather than a malformed request.
+    /// rules, and so the single presence rule cannot quietly disappear.
     /// </remarks>
     [Fact]
     public void RoleUpdate_CarryingNothingButItsName_IsValid()
@@ -280,14 +234,7 @@ public class WriteSurfaceBoundTests
                 "the one presence rule the legacy screen declared applies to both write verbs");
     }
 
-    /// <summary>
-    /// An explicitly absent settings map is refused rather than faulting, on both scopes.
-    /// </summary>
-    /// <remarks>
-    /// Both members are non-nullable reference types carrying an initialiser, which makes null look
-    /// unreachable - but an initialiser only runs when the deserialiser does not assign, and a body carrying
-    /// an explicit null assigns over it.
-    /// </remarks>
+    /// <summary>An explicitly absent settings map is refused rather than faulting, on both scopes.</summary>
     [Fact]
     public void ModuleSettings_WhenAMapIsAbsent_AreRefused()
     {
@@ -301,18 +248,14 @@ public class WriteSurfaceBoundTests
             failure => failure.PropertyName == nameof(ModuleSettingsDto.TabModuleSettings));
     }
 
-    /// <summary>
-    /// Two empty settings maps are valid, because that is how every setting is cleared.
-    /// </summary>
+    /// <summary>Two empty settings maps are valid, because that is how every setting is cleared.</summary>
     [Fact]
     public void ModuleSettings_WhenBothMapsAreEmpty_AreValid()
         => new ModuleSettingsDtoValidator()
             .Validate(new ModuleSettingsDto())
             .IsValid.Should().BeTrue("replacing the settings with none is how they are cleared");
 
-    /// <summary>
-    /// A settings map carrying more entries than a scope permits is refused, at the boundary.
-    /// </summary>
+    /// <summary>A settings map carrying more entries than a scope permits is refused, at the boundary.</summary>
     [Fact]
     public void ModuleSettings_PastThePerScopeBound_AreRefused()
     {
@@ -328,9 +271,7 @@ public class WriteSurfaceBoundTests
                 failure => failure.PropertyName == nameof(ModuleSettingsDto.ModuleSettings));
     }
 
-    /// <summary>
-    /// Two maps that are individually permissible but jointly excessive are refused.
-    /// </summary>
+    /// <summary>Two maps that are individually permissible but jointly excessive are refused.</summary>
     /// <remarks>
     /// This is the case the per-scope bound alone does not catch, and the one that bounds the size of the
     /// single transaction the service opens. Both maps below sit inside the per-scope bound of 250 and
@@ -344,9 +285,7 @@ public class WriteSurfaceBoundTests
             TabModuleSettings = Settings("placement", 220),
         }).IsValid.Should().BeFalse("the two scopes together exceed the aggregate bound");
 
-    /// <summary>
-    /// A blank setting name and an over-long name or value are each refused.
-    /// </summary>
+    /// <summary>A blank setting name and an over-long name or value are each refused.</summary>
     [Fact]
     public void ModuleSettings_WithAMalformedEntry_AreRefused()
     {
@@ -370,9 +309,7 @@ public class WriteSurfaceBoundTests
         new ModuleSettingsDtoValidator().Validate(longValue).IsValid.Should().BeFalse();
     }
 
-    /// <summary>
-    /// A setting whose name and value exactly fill their columns is accepted.
-    /// </summary>
+    /// <summary>A setting whose name and value exactly fill their columns is accepted.</summary>
     [Fact]
     public void ModuleSettings_FillingTheirColumnsExactly_AreAccepted()
         => new ModuleSettingsDtoValidator().Validate(new ModuleSettingsDto
@@ -456,9 +393,7 @@ public class WriteSurfaceBoundTests
         new UserProfileDtoValidator().Validate(profile).IsValid.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Builds a settings map of the requested size.
-    /// </summary>
+    /// <summary>Builds a settings map of the requested size.</summary>
     /// <param name="prefix">Prefix for each generated name.</param>
     /// <param name="count">Number of entries to generate.</param>
     /// <returns>The map.</returns>
@@ -503,12 +438,6 @@ public class WriteSurfaceBoundTests
             case nameof(UpdateTabRequest.Url):
                 request.Url = value;
                 break;
-            // MIGRATION: NO SKIN OR CONTAINER CASE. A revision added one for each, mirroring the legacy
-            // page's two appearance pickers, but the page-update contract carries neither member: DotNetNuke
-            // skinning is out of scope for this migration (AAP 0.2.2.4), so the columns are never written
-            // from this surface and there is nothing here to bound. The cases are withdrawn rather than
-            // satisfied by adding the members, because adding them would advertise a wire contract the
-            // service does not honour.
             case nameof(UpdateTabRequest.IconFile):
                 request.IconFile = value;
                 break;
@@ -519,9 +448,7 @@ public class WriteSurfaceBoundTests
         return request;
     }
 
-    /// <summary>
-    /// Builds a role update carrying the given value on the named member.
-    /// </summary>
+    /// <summary>Builds a role update carrying the given value on the named member.</summary>
     /// <param name="member">The member to populate.</param>
     /// <param name="value">The value to place on it.</param>
     /// <returns>The request.</returns>

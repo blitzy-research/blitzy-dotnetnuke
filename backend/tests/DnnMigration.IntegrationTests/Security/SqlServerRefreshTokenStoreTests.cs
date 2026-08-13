@@ -16,26 +16,13 @@ namespace DnnMigration.IntegrationTests.Security;
 
 /// <summary>
 /// Verifies the shared, durable refresh-token store against a real SQL Server: that it provisions nothing,
-/// that it honours the settings a deployment configures, that its capacity ceiling bounds rotation as well as
-/// issuance, and that its health probe reports what is actually true of the catalogue.
+/// that it honours the settings a deployment configures, that its capacity ceiling bounds rotation as well
+/// as issuance, and that its health probe reports what is actually true of the catalogue.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>THIS STORE HAD NO BEHAVIOURAL COVERAGE AT ALL.</strong> It was reachable only through configuration,
-/// so every fact about it rested on reading it. That is how four separate defects survived in one file: a
-/// capacity ceiling and a concurrent-use grace compiled in as constants while the configured settings were
-/// ignored, a rotation path that inserted successors without ever reclaiming anything, a table created at
-/// runtime under the API's own identity, and a health probe that reported the store as somebody else's and
-/// healthy without asking it anything. Each of those is asserted here.
-/// </para>
-/// <para>
-/// <strong>The session catalogue is a SEPARATE catalogue, and that is not a test convenience.</strong> The
-/// options validator refuses a session connection string whose catalogue name matches the application's, so a
-/// test that reused the DotNetNuke test database could not construct the store at all. It is also the reason
-/// the suite's own <c>TestDatabaseFactory</c> records "THREE SCRIPTS, AND NO FOURTH": an earlier revision
-/// provisioned a token table inside the application database, which made refresh facts pass while the
-/// production application - running against an unaltered DotNetNuke schema - was broken. This class creates
-/// its own catalogue, provisions it with the operator's own script, and drops it again.
+/// <strong>THIS STORE HAD NO BEHAVIOURAL COVERAGE AT ALL.</strong> It was reachable only through
+/// configuration, so every fact about it rested on reading it.
 /// </para>
 /// <para>
 /// <strong>The script is the deployment's script.</strong> It is embedded from
@@ -76,9 +63,9 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
 
     /// <inheritdoc />
     /// <remarks>
-    /// Two catalogues are created: one provisioned with the deployment script, and one deliberately left EMPTY
-    /// so the refusal to provision at runtime can be observed rather than argued about. Both names carry a
-    /// fresh identifier, so parallel clones sharing one server cannot collide.
+    /// Two catalogues are created: one provisioned with the deployment script, and one deliberately left
+    /// EMPTY so the refusal to provision at runtime can be observed rather than argued about. Both names
+    /// carry a fresh identifier, so parallel clones sharing one server cannot collide.
     /// </remarks>
     public async Task InitializeAsync()
     {
@@ -118,21 +105,6 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// creates nothing to fix it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// ⚠ THE ASSERTION THAT MATTERS IS THE SECOND ONE: the table is still absent afterwards. MIGRATION: SEC-05.
-    /// Until this revision the store issued <c>CREATE TABLE</c> and three <c>CREATE INDEX</c> statements here,
-    /// on first use, under whatever identity the API runs as - schema authorship at runtime by the process that
-    /// serves requests, which AAP rule T4 makes a deployment step, and which forced the API's principal to hold
-    /// DDL rights it needs for nothing else.
-    /// </para>
-    /// <para>
-    /// Refusing is the correct alternative to creating, and it is refused as an OUTAGE rather than as a
-    /// successful no-op: a store that answered "no such family" against a catalogue it cannot use would let a
-    /// revocation report success while nothing was revoked, which is precisely the falsehood every caller of
-    /// this contract is written to avoid.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task AnUnprovisionedCatalogue_IsReportedUnavailableAndIsNotProvisioned()
     {
@@ -154,14 +126,14 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The table the deployment script creates supports the whole session lifecycle, and only digests reach it.
+    /// The table the deployment script creates supports the whole session lifecycle, and only digests reach
+    /// it.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The shape and the code are asserted together on purpose. A script kept separately from the store would
-    /// drift from it silently - a missing column or a differently named index is a runtime failure at the first
-    /// sign-in, and nothing in a build would catch it. Running the operator's own script and then exercising
-    /// every statement the store issues is what makes the two provably compatible.
+    /// The shape and the code are asserted together on purpose. A script kept separately from the store
+    /// would drift from it silently - a missing column or a differently named index is a runtime failure at
+    /// the first sign-in, and nothing in a build would catch it.
     /// </remarks>
     [Fact]
     public async Task TheProvisionedTableSupportsTheWholeLifecycleAndHoldsOnlyDigests()
@@ -201,23 +173,8 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THE SEC-04 REGRESSION TEST. Rotation retains the spent generation - its digest is what makes a replay
-    /// recognisable - and until this revision it reclaimed nothing at all: capacity was enforced on the ISSUE
-    /// path only, so one family refreshing on a timer added a row per refresh for ever, past whatever ceiling
-    /// the deployment believed it had. The ceiling was also a compiled constant, so the configured value could
-    /// not have bounded it even if the path had checked.
-    /// </para>
-    /// <para>
-    /// The ceiling here is deliberately tiny, which is the only way a capacity fact is reachable in a test at
-    /// all: the shipped default is a hundred thousand generations. It bypasses the API layer's operational
-    /// floor of a thousand, exactly as the process-local store's own capacity tests do and for the same
-    /// reason - the floor is HOST policy, while the store's contract is that the ceiling is at least one.
-    /// </para>
-    /// <para>
-    /// The successor stays usable throughout, which is the other half of the guarantee: bounding the table must
-    /// not sign out the caller doing the rotating.
-    /// </para>
+    /// The ceiling here is deliberately tiny, which is the only way a capacity fact is reachable in a test
+    /// at all: the shipped default is a hundred thousand generations.
     /// </remarks>
     [Fact]
     public async Task RotatingRepeatedly_StaysWithinTheConfiguredCeiling()
@@ -261,18 +218,10 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-04. The store used to answer <c>CapacityExhausted</c> on reaching its ceiling, which the
-    /// token service reports as a store outage - so a table filled by ordinary use locked the entire deployment
-    /// out of signing in, rather than retiring its oldest sessions. The process-local store evicts, and this
-    /// store's own summary promises the same semantics.
-    /// </para>
-    /// <para>
     /// EVICTED WHOLE, which is a security property rather than a tidiness one: a half-tracked family cannot
-    /// detect a replay, because the evicted generations read as unknown tokens - refused, but revoking nothing -
-    /// so a thief's live generation would survive the presentation that should have killed it. Asserted by
-    /// checking that BOTH generations of the evicted family are gone.
-    /// </para>
+    /// detect a replay, because the evicted generations read as unknown tokens - refused, but revoking
+    /// nothing - so a thief's live generation would survive the presentation that should have killed it.
+    /// Asserted by checking that BOTH generations of the evicted family are gone.
     /// </remarks>
     [Fact]
     public async Task ReachingTheCeiling_RetiresTheOldestFamilyWholeRatherThanRefusingToIssue()
@@ -306,7 +255,6 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
 
         clock.Advance(TimeSpan.FromMinutes(1));
 
-        // The table is now AT the ceiling, so this is the issue that previously answered CapacityExhausted.
         RefreshTokenIssueResult atCapacity = await store.IssueAsync(new RefreshTokenSubject(34, -1));
 
         atCapacity.Outcome.Should().Be(
@@ -337,14 +285,6 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// <param name="graceSeconds">The grace to configure.</param>
     /// <param name="expected">The outcome an immediate same-client re-presentation must earn.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-04. The grace was a <c>const</c> of five seconds here, so
-    /// <c>RefreshTokenStore:ConcurrentUseGraceSeconds</c> governed the process-local store and was silently
-    /// ignored by this one. A deployment that had deliberately disabled the grace - the setting exists so that
-    /// replay detection can be made strict - kept a five-second forgiveness window it could not see and had not
-    /// asked for. Both ends of the range are exercised, because a store that ignored the setting would pass a
-    /// test of one of them.
-    /// </remarks>
     [Theory]
     [InlineData(0, RefreshTokenOutcome.AlreadyUsed)]
     [InlineData(30, RefreshTokenOutcome.ConcurrentUse)]
@@ -373,16 +313,10 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The health probe reports the shared store as this solution's, replica-safe and restart-surviving, and
-    /// reports its capacity from the catalogue.
+    /// The health probe reports the shared store as this solution's, replica-safe and restart-surviving,
+    /// and reports its capacity from the catalogue.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-09. The probe tested the active store against the process-local implementation and
-    /// reported anything else as "held by a deployment-supplied store", healthy, with nothing asked of it. For
-    /// the durable store this solution itself ships that published three false facts at once and could not tell
-    /// a working catalogue from an absent one.
-    /// </remarks>
     [Fact]
     public async Task TheHealthProbe_ReportsTheSharedStoreAccurately()
     {
@@ -415,8 +349,7 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// <remarks>
     /// This is the state a first deployment of the durable store now actually reaches, because the table is
     /// provisioned out of band rather than created by the running API - so a probe that could not report it
-    /// would leave an operator with a healthy instance and a sign-in that fails for no visible reason. Degraded
-    /// rather than unhealthy because the instance still serves every data endpoint; see the probe for why.
+    /// would leave an operator with a healthy instance and a sign-in that fails for no visible reason.
     /// </remarks>
     [Fact]
     public async Task TheHealthProbe_ReportsAnUnprovisionedCatalogueAndNamesTheRemedy()
@@ -434,22 +367,14 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
                 + "operator to guess");
     }
 
-    // ---------------------------------------------------------------------
     // PRIV-02 — ERASURE AND OPERATION-INDEPENDENT RECLAMATION IN THE DURABLE STORE
-    //
-    // ⚠ WHY THESE MATTER MORE HERE THAN IN THE PROCESS-LOCAL STORE. That store loses everything on a restart,
-    // so its worst retention failure is bounded by the process lifetime. This one does not: a revoked row
-    // naming an account, a tenant and a token digest survives every restart, and reclamation used to run only
-    // as a side effect of issuing or rotating a token - so a catalogue belonging to an installation nobody
-    // signs in to any more retains every row it ever wrote, permanently.
-    // ---------------------------------------------------------------------
 
     /// <summary>Erasing a subject deletes its rows, scoped exactly as it was asked.</summary>
     /// <remarks>
     /// The three scopes are asserted in one fact because what distinguishes them is which rows SURVIVE, and
     /// that can only be observed against a table holding rows for more than one subject at once. The tenant
-    /// half of the account scope is the load-bearing part: an account removed from one tenant may still be a
-    /// member of another, and erasing across every tenant would destroy sessions it legitimately holds.
+    /// half of the account scope is the load-bearing part: an account removed from one tenant may still be
+    /// a member of another, and erasing across every tenant would destroy sessions it legitimately holds.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -505,15 +430,9 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Reclamation removes a revoked row once its retention window elapses, leaves it inside the window, and
-    /// never touches a redeemable one.
+    /// Reclamation removes a revoked row once its retention window elapses, leaves it inside the window,
+    /// and never touches a redeemable one.
     /// </summary>
-    /// <remarks>
-    /// PRIV-02. THE THREE PROPERTIES ARE ASSERTED TOGETHER BECAUSE THEY ARE ONE RULE, and separating them
-    /// would let an implementation satisfy two while breaking the third - the most likely being a sweep that
-    /// deletes every revoked row immediately, discarding the replay signal, or one that deletes by age
-    /// regardless of revocation, signing live callers out.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task Reclamation_HonoursTheRetentionWindowAndSparesLiveSessions()
@@ -546,11 +465,6 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// <summary>
     /// Reclamation runs without any token being issued or rotated, which is the whole point of it existing.
     /// </summary>
-    /// <remarks>
-    /// PRIV-02. The regression this fact guards is the one the finding described: pruning was reachable ONLY
-    /// from the issue and rotate paths, so a catalogue belonging to a quiet installation retained expired rows
-    /// for good. Here the clock passes the family ceiling and nothing signs in - and the row goes anyway.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task Reclamation_NeedsNoSignInTrafficToRunAtAll()
@@ -573,9 +487,8 @@ public sealed class SqlServerRefreshTokenStoreTests : IAsyncLifetime
     /// <summary>An unprovisioned catalogue reports the store unavailable rather than raising.</summary>
     /// <remarks>
     /// PRIV-02. Both new members are reached from paths that must not raise: erasure from a deletion whose
-    /// database work is already committed, and reclamation from a background timer whose unhandled exception
-    /// would stop the host. Asserted for both, because either one throwing would be a defect the other's
-    /// correctness could hide.
+    /// database work is already committed, and reclamation from a background timer whose unhandled
+    /// exception would stop the host.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]

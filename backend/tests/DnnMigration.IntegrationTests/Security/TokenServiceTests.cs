@@ -17,33 +17,6 @@ namespace DnnMigration.IntegrationTests.Security;
 /// Exercises the REGISTERED token service: what it issues, what it rotates, what it revokes, and which
 /// failure it reports when an exchange cannot proceed.
 /// </summary>
-/// <remarks>
-/// <para>
-/// <strong>Why this suite exists at all.</strong> These semantics used to be asserted in
-/// backend/tests/DnnMigration.UnitTests/Security/JwtTokenServiceTests.cs against a token service that file
-/// declared for itself. Thirty-odd tests specified a double and then asserted the double met the
-/// specification, which is a tautology: every one of them would have stayed green through any regression in
-/// the shipped implementation. They were deleted and re-expressed here, against the instance the container
-/// resolves, over a real signature and the real refresh store. What remains in the unit project is the
-/// contract's declared SHAPE, which is public application surface and genuinely belongs there.
-/// </para>
-/// <para>
-/// <strong>How the implementation is reached.</strong> It is internal sealed to the infrastructure assembly
-/// and no project is granted visibility into it. <see cref="ITokenService"/> is public application surface
-/// and <c>AddInfrastructure</c> registers the implementation behind it, so the service is resolved exactly
-/// as the sign-in endpoint resolves it. Nothing is substituted, so an assertion here is evidence about the
-/// composed application rather than about a stand-in.
-/// </para>
-/// <para>
-/// <strong>What is deliberately elsewhere.</strong> The endpoint behaviour of sign-in, rotation and sign-out
-/// - status codes, problem documents, cookie-free transport, rate limiting - belongs to Api/AuthApiTests.cs.
-/// The store's own retention and trimming bookkeeping belongs to RefreshTokenStoreTests.cs. The lapse of a
-/// refresh chain past its absolute deadline is not asserted here because it needs the clock moved, which the
-/// contract deliberately offers no way to do; the store's bound is asserted directly in its own suite. Every
-/// test below uses account identifiers of its own, because the refresh store is a singleton shared with the
-/// rest of the collection.
-/// </para>
-/// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class TokenServiceTests : IDisposable
@@ -59,37 +32,16 @@ public sealed class TokenServiceTests : IDisposable
 
     /// <summary>The client fingerprint the legitimate holder presents on every exchange below.</summary>
     /// <remarks>
-    /// <para>
-    /// <strong>MIGRATION:</strong> rotation takes a bounded server-observed client fingerprint alongside the
-    /// presented value. It exists to separate two things that look identical in the store - a client that
-    /// retried a request whose response it never saw, and a second party spending a value it should not hold
-    /// - so every exchange here states which of the two it is rather than leaving it to chance.
-    /// </para>
-    /// <para>
     /// The value is opaque to the contract: it is hashed before it is stored and only ever compared for
-    /// equality, so a readable literal is safe and makes the intent of each exchange legible at the call site.
-    /// </para>
+    /// equality, so a readable literal is safe and makes the intent of each exchange legible at the call
+    /// site.
     /// </remarks>
     private const string HolderBinding = "holder-fingerprint-a";
 
     /// <summary>A fingerprint belonging to somebody other than the holder of the presented value.</summary>
-    /// <remarks>
-    /// Used only where a REPLAY is the behaviour under test. Presenting a spent value from a different
-    /// fingerprint is unambiguously the theft signal, whereas presenting it from the holder's own fingerprint
-    /// within the near-simultaneous window is a retry and is answered without ending the session - a
-    /// distinction asserted directly in
-    /// <see cref="RefreshAsync_WhenTheHolderRetriesImmediately_RefusesWithoutEndingTheSession"/>. A replay
-    /// test that reused <see cref="HolderBinding"/> could be satisfied by the retry path and would stop being
-    /// evidence about theft detection.
-    /// </remarks>
     private const string OtherHolderBinding = "holder-fingerprint-b";
 
     /// <summary>The role claim type a writer might reach for instead of the fully qualified name.</summary>
-    /// <remarks>
-    /// Named here so the absence assertion below reads as a deliberate check of both spellings rather than
-    /// as a stray literal. Neither is written; see
-    /// <see cref="IssueTokensAsync_WritesNoRoleOrPermissionClaim"/>.
-    /// </remarks>
     private const string ShortRoleClaimType = "role";
 
     /// <summary>A permission claim type the reconciled contract deliberately does not write.</summary>
@@ -125,18 +77,10 @@ public sealed class TokenServiceTests : IDisposable
 
     /// <summary>The request scope every resolution below is performed in.</summary>
     /// <remarks>
-    /// <para>
-    /// <strong>MIGRATION:</strong> the registered token service is SCOPED, because the refresh store it
-    /// writes through is scoped to a request's own database connection. Resolving it from the root provider
-    /// is therefore not merely untidy - the container refuses it outright - and a suite that reached for the
+    /// <strong></strong> the registered token service is SCOPED, because the refresh store it writes
+    /// through is scoped to a request's own database connection. Resolving it from the root provider is
+    /// therefore not merely untidy - the container refuses it outright - and a suite that reached for the
     /// root would be reporting a composition error as a test failure on every single fact.
-    /// </para>
-    /// <para>
-    /// One scope per test instance rather than one per resolution, because xUnit constructs a fresh instance
-    /// for every fact: each fact gets its own scope, and every resolution inside a fact returns the same
-    /// instance the way a request would. The refresh store's own persistence outlives the scope, which is why
-    /// each fact below uses account identifiers of its own.
-    /// </para>
     /// </remarks>
     private readonly IServiceScope _scope;
 
@@ -151,15 +95,7 @@ public sealed class TokenServiceTests : IDisposable
     /// <summary>Closes the request scope the resolutions were performed in.</summary>
     public void Dispose() => _scope.Dispose();
 
-    /// <summary>
-    /// The service is registered, resolvable, and implemented inside the infrastructure layer.
-    /// </summary>
-    /// <remarks>
-    /// The assertion a direct construction cannot make, and the one that makes every other test in this
-    /// file evidence about production: a service dropped from <c>AddInfrastructure</c> or registered against
-    /// a different contract would leave a sign-in endpoint unable to mint anything, while a suite that
-    /// constructed its own implementation carried on passing.
-    /// </remarks>
+    /// <summary>The service is registered, resolvable, and implemented inside the infrastructure layer.</summary>
     [Fact]
     public void Contract_IsRegisteredAndImplementedByTheInfrastructureLayer()
     {
@@ -176,28 +112,11 @@ public sealed class TokenServiceTests : IDisposable
             "the implementation is internal so that the contract is the only way to mint a token");
     }
 
-    /// <summary>
-    /// Issuance writes the subject, the tenant and a token identifier - and nothing mutable.
-    /// </summary>
+    /// <summary>Issuance writes the subject, the tenant and a token identifier - and nothing mutable.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// Every fact the emitted token asserts arrives as an argument, which is what keeps issuance free of
-    /// repository access. Both arguments - the account the sign-in resolved and the tenant it was resolved
-    /// against - are written verbatim: trimming, casing and canonicalisation belong to the sign-in service
-    /// that read the row, and repeating them here would make the token disagree with the read that produced
-    /// it. The values are therefore compared for exact equality rather than case-insensitively.
-    /// </para>
-    /// <para>
-    /// <strong>MIGRATION:</strong> the reconciled contract mints a MINIMAL claim set - <c>sub</c>,
-    /// <c>portal_id</c> and <c>jti</c> over the registered <c>iss</c>/<c>aud</c>/<c>nbf</c>/<c>exp</c>/
-    /// <c>iat</c> envelope - and the absence of everything else is an assertion here rather than an omission
-    /// in the test. A sign-in name, a host flag, a role or a permission key would each be a snapshot of
-    /// mutable state that stayed authoritative for the whole token lifetime after the row behind it changed:
-    /// a demoted account would keep its authority and a renamed one would keep its old name in every audit
-    /// line. Every server-side guard re-reads those facts from authoritative storage per request, so the
-    /// minted set is pinned exactly and a well-meaning re-addition fails here first.
-    /// </para>
+    /// repository access.
     /// </remarks>
     [Fact]
     public async Task IssueTokensAsync_WritesTheSubjectAndTenantAndNothingMutable()
@@ -236,9 +155,9 @@ public sealed class TokenServiceTests : IDisposable
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so -1 is the first tenant and simultaneously the
-    /// legacy integer sentinel for "absent"; <c>Roles.RoleID</c> and <c>Tabs.TabID</c> are
-    /// <c>IDENTITY(0, 1)</c>, so zero is an ordinary key. A guard that treated either as missing would
-    /// refuse to issue a token for the first tenant of an installation.
+    /// legacy integer sentinel for "absent"; <c>Roles.RoleID</c> and <c>Tabs.TabID</c> are <c>IDENTITY(0,
+    /// 1)</c>, so zero is an ordinary key. A guard that treated either as missing would refuse to issue a
+    /// token for the first tenant of an installation.
     /// </remarks>
     [Theory]
     [InlineData(-1)]
@@ -261,24 +180,10 @@ public sealed class TokenServiceTests : IDisposable
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <strong>MIGRATION:</strong> the reconciled contract writes neither, and the absence is the assertion.
-    /// An entitlement claim is a snapshot: a role revoked, a permission withdrawn or an account locked out
-    /// one second after issuance would keep taking effect until the access token lapsed, and lengthening the
-    /// token lifetime would lengthen that window. Every policy therefore re-reads roles and permission
-    /// grants from authoritative storage on the request that needs them, so a claim-shaped shortcut could
-    /// only ever be a second, staler answer to a question already answered correctly.
-    /// </para>
-    /// <para>
-    /// The hazards the withdrawn shortcut had to navigate are recorded here because they are the reason the
-    /// absence is worth pinning rather than merely tolerating. Had entitlement travelled on the token, it
-    /// would have had to be one claim per entry rather than a delimited list: role-based authorisation
-    /// matches a single claim value, so a comma-joined list matches no role at all while looking populated
-    /// in a debugger, and a role name containing the separator silently becomes two entitlements. The claim
-    /// TYPE would have mattered equally, because the bearer handler runs with inbound claim mapping switched
-    /// off and a value written under any other type is invisible to every role policy. Carrying no
-    /// entitlement removes both hazards outright, which is why both spellings are checked below.
-    /// </para>
+    /// <strong>MIGRATION:</strong> the reconciled contract writes neither, and the absence is the
+    /// assertion. An entitlement claim is a snapshot: a role revoked, a permission withdrawn or an account
+    /// locked out one second after issuance would keep taking effect until the access token lapsed, and
+    /// lengthening the token lifetime would lengthen that window.
     /// </remarks>
     [Fact]
     public async Task IssueTokensAsync_WritesNoRoleOrPermissionClaim()
@@ -311,17 +216,9 @@ public sealed class TokenServiceTests : IDisposable
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the assertion no reimplementation could make, and the reason this suite exists: the token is
-    /// validated with the same handler the request pipeline uses, against the key, issuer and audience the
-    /// host is configured with. A token signed with the wrong key, or minted for an issuer the pipeline does
-    /// not accept, would be refused on every request while looking perfectly well formed.
-    /// </para>
-    /// <para>
     /// The algorithm is asserted explicitly. A token presented with <c>alg: none</c>, or signed with an
     /// algorithm the validator does not expect, is the classic bearer-token forgery, so the emitted header
     /// is pinned rather than trusted.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task IssueTokensAsync_SignsATokenTheConfiguredValidationAccepts()
@@ -361,9 +258,7 @@ public sealed class TokenServiceTests : IDisposable
             + "how a forged bearer token gets accepted");
     }
 
-    /// <summary>
-    /// The access token lapses exactly one configured lifetime after it was minted.
-    /// </summary>
+    /// <summary>The access token lapses exactly one configured lifetime after it was minted.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The relationship is asserted rather than the wall-clock instant: the difference between the token's
@@ -396,9 +291,7 @@ public sealed class TokenServiceTests : IDisposable
             "an instant a client compares against its own clock must state the zone it is in");
     }
 
-    /// <summary>
-    /// A freshly issued pair raises no advisory and carries no credential.
-    /// </summary>
+    /// <summary>A freshly issued pair raises no advisory and carries no credential.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The three advisories are decided by the sign-in service from account state, not by issuance, so the
@@ -429,18 +322,13 @@ public sealed class TokenServiceTests : IDisposable
                 + "reach the wire");
     }
 
-    /// <summary>
-    /// Refresh values are unguessable, distinct per issuance, and encode nothing about the caller.
-    /// </summary>
+    /// <summary>Refresh values are unguessable, distinct per issuance, and encode nothing about the caller.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// A refresh token is a bearer credential with a longer life than the access token it mints, so a value
     /// derived from the account, the tenant or a counter would be forgeable by anybody who could guess the
     /// inputs. Two proofs are taken, both cheap and both observable: the account identifier does not appear
-    /// in the value, and two issuances for the SAME account and tenant share no prefix. The second matters
-    /// because the reconciled contract hands issuance only those two identifiers - a value derived from them
-    /// would necessarily repeat structure, and a counter appended to a derived stem would repeat a prefix.
-    /// The sign-in name is no longer an input to issuance at all, so it can no longer be searched for.
+    /// in the value, and two issuances for the SAME account and tenant share no prefix.
     /// </remarks>
     [Fact]
     public async Task IssueTokensAsync_ProducesDistinctOpaqueRefreshValues()
@@ -469,17 +357,12 @@ public sealed class TokenServiceTests : IDisposable
             "two values derived from the same two identifiers would share structure; these share no prefix");
     }
 
-    /// <summary>
-    /// Rotation issues a new pair and the presented refresh token cannot be exchanged again.
-    /// </summary>
+    /// <summary>Rotation issues a new pair and the presented refresh token cannot be exchanged again.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// Single use is the property the whole design rests on: it is what makes a stolen refresh token
     /// detectable, because the legitimate holder and the thief cannot both spend the same generation. Both
     /// halves are asserted - that the replacement pair really is new, and that the spent value is refused.
-    /// The replay is presented from a DIFFERENT client fingerprint, because that is what makes the refusal
-    /// attributable to single use: the holder's own fingerprint inside the near-simultaneous window is read
-    /// as a retry, which is refused with the same code for a different reason.
     /// </remarks>
     [Fact]
     public async Task RefreshAsync_IssuesANewPairAndSpendsThePresentedToken()
@@ -516,17 +399,13 @@ public sealed class TokenServiceTests : IDisposable
             "the caller is told the value was already spent rather than merely that it failed");
     }
 
-    /// <summary>
-    /// A replay ends every session the account holds, not merely the generation presented.
-    /// </summary>
+    /// <summary>A replay ends every session the account holds, not merely the generation presented.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// A presented-and-already-spent value is evidence that two parties hold the same refresh token, which
     /// means one of them stole it. Because the store cannot tell which, the only safe response is to end
     /// every session the account holds and require a fresh sign-in - so a second, entirely separate session
     /// is opened here and asserted to be collateral damage, deliberately.
-    /// The replay arrives from a different client fingerprint, which is the signal the store reads as theft;
-    /// the holder retrying its own exchange is a separate case and does not end anything.
     /// </remarks>
     [Fact]
     public async Task RefreshAsync_OnReplay_EndsEverySessionTheAccountHolds()
@@ -563,21 +442,6 @@ public sealed class TokenServiceTests : IDisposable
     /// The holder retrying its own exchange is refused without ending the session it already established.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// <strong>MIGRATION:</strong> the counterpart to the replay case above, and the reason rotation is
-    /// handed a client fingerprint at all. A client whose response was lost - a dropped connection, a proxy
-    /// timeout, a page reloaded mid-exchange - retries with the value it still holds, which the store has
-    /// already consumed. Read purely as a spent value that would be theft, and the account would be signed
-    /// out of everything by an ordinary network fault.
-    /// </para>
-    /// <para>
-    /// Both halves matter and both are asserted. The retry is still REFUSED, because the presented generation
-    /// really has been spent and handing back a second replacement would make the generation multi-use; and
-    /// the session is left INTACT, which is what distinguishes the retry from the replay. The rotated pair the
-    /// first exchange produced is exchanged afterwards to prove the family survived.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task RefreshAsync_WhenTheHolderRetriesImmediately_RefusesWithoutEndingTheSession()
     {
@@ -605,15 +469,8 @@ public sealed class TokenServiceTests : IDisposable
             "a retry from the holder's own fingerprint is a network fault, not theft, so the family it "
             + "belongs to must survive it - otherwise a dropped response signs the account out of everything");
     }
-    /// <summary>
-    /// An unknown refresh value is refused as unknown, and the refusal names no token material.
-    /// </summary>
+    /// <summary>An unknown refresh value is refused as unknown, and the refusal names no token material.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The failure code has to distinguish an unknown value from a spent, revoked or lapsed one, because the
-    /// caller's remedy differs. The message is asserted to contain neither the presented value nor any part
-    /// of it, since a refusal is exactly what gets logged and quoted in a support ticket.
-    /// </remarks>
     [Fact]
     public async Task RefreshAsync_ForAnUnknownValue_ReportsNotFoundWithoutEchoingIt()
     {
@@ -666,15 +523,6 @@ public sealed class TokenServiceTests : IDisposable
     /// Revocation is idempotent for a family the store holds, and UNCONFIRMED for a value it does not.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// SEC-F2. The first two assertions are the idempotence sign-out depends on: repeating it asks for a
-    /// state that already holds, so it succeeds. The third one changed, and the change is the point. A value
-    /// this store never issued used to be reported as a completed sign-out on the reading that nothing was
-    /// left exchangeable - but a PROCESS-LOCAL store cannot know that. Presented with a session established
-    /// on another replica it answers exactly as it does here, and reporting success left that session live
-    /// while the client dropped the only credential that could have retried. The permissive reading is now
-    /// earned by a store that is authoritative across replicas, and withheld from one that is not.
-    /// </remarks>
     [Fact]
     public async Task RevokeRefreshTokenAsync_IsIdempotentForAHeldFamilyAndUnconfirmedOtherwise()
     {
@@ -700,8 +548,8 @@ public sealed class TokenServiceTests : IDisposable
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The reach is deliberately wider than sign-out: this is what an administrative lock-out and the
-    /// theft response both use, so it has to end sessions the caller never named. It is asserted across two
+    /// The reach is deliberately wider than sign-out: this is what an administrative lock-out and the theft
+    /// response both use, so it has to end sessions the caller never named. It is asserted across two
     /// independently issued families, because a single-family implementation would pass a one-session test.
     /// </remarks>
     [Fact]
@@ -734,24 +582,19 @@ public sealed class TokenServiceTests : IDisposable
         (await tokens.RefreshAsync(other.RefreshToken, HolderBinding)).IsSuccess.Should().BeTrue(
             "another account's session is not collateral damage");
 
-        // SEC-F2. An account this store holds nothing for is reported as UNCONFIRMED rather than as a
-        // completed retirement, because a process-local store has established only its own ignorance. The
-        // cascading callers - account deletion and tenant removal - tell that apart from an unanswerable
-        // store themselves and proceed, which is asserted by their own suites.
+        // An account this store holds nothing for is reported as UNCONFIRMED rather than as a completed
+        // retirement, because a process-local store has established only its own ignorance.
         (await tokens.RevokeAllRefreshTokensAsync(90_014)).IsFailure.Should().BeTrue(
             "a store that sees only its own process cannot prove an account holds no session elsewhere");
     }
 
-    /// <summary>
-    /// An access token already handed out keeps working after the session it came from is revoked.
-    /// </summary>
+    /// <summary>An access token already handed out keeps working after the session it came from is revoked.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// This is the documented reduction of a stateless bearer scheme, asserted so that nobody later reads
     /// sign-out as retraction. An access token is validated by its signature and its lifetime and is
     /// consulted against no store, so revocation stops the session CONTINUING - no further access token can
-    /// be minted - and cannot recall the one already issued. The mitigation is the short lifetime asserted
-    /// above, and the legacy cookie scheme it replaces had exactly the same property.
+    /// be minted - and cannot recall the one already issued.
     /// </remarks>
     [Fact]
     public async Task Revocation_LeavesAnAlreadyIssuedAccessTokenValid()
@@ -793,11 +636,6 @@ public sealed class TokenServiceTests : IDisposable
 
     /// <summary>The bound token options the host is running with.</summary>
     /// <returns>The options.</returns>
-    /// <remarks>
-    /// Read from the container rather than restated, so that an assertion about a lifetime, an issuer or an
-    /// audience is an assertion about what this host is configured with rather than about a literal that
-    /// happens to agree with it.
-    /// </remarks>
     private JwtOptions Options() =>
         _scope.ServiceProvider.GetRequiredService<IOptions<JwtOptions>>().Value;
 
@@ -825,11 +663,6 @@ public sealed class TokenServiceTests : IDisposable
     /// <typeparam name="TValue">The payload type.</typeparam>
     /// <param name="result">The outcome.</param>
     /// <returns>The payload.</returns>
-    /// <remarks>
-    /// The contract reports expected failures as outcomes rather than exceptions, so a test that read the
-    /// value without checking would assert against a default and report a misleading difference instead of
-    /// the failure the service actually returned.
-    /// </remarks>
     private static TValue Succeeded<TValue>(Result<TValue> result)
     {
         result.IsSuccess.Should().BeTrue(result.Error?.ToString());

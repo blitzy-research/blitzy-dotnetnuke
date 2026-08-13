@@ -18,26 +18,14 @@ namespace DnnMigration.UnitTests.Services;
 
 /// <summary>
 /// Covers the role and role-group workflow: tenant scoping, name uniqueness, automatic enrolment, the
-/// paid-membership term arithmetic that derives an assignment's dates, and the two assignments the
-/// service refuses to remove.
+/// paid-membership term arithmetic that derives an assignment's dates, and the two assignments the service
+/// refuses to remove.
 /// </summary>
 /// <remarks>
-/// <para>
 /// Two asymmetries in this service are deliberate and are pinned here because they look like oversights
 /// until the reason is stated. First, the creation member performs no shape checking of its own while the
 /// update member performs a full set: the creation route has a registered request validator and the update
-/// route has none, so the service compensates exactly where the pipeline does not. Second, the removal
-/// member reads the tenant row rather than merely probing for its existence, because it needs the
-/// administrator and registered-role identifiers to decide whether the assignment is one it is allowed to
-/// remove at all.
-/// </para>
-/// <para>
-/// The term arithmetic deserves the space it takes. An assignment's expiry is not the date that was
-/// submitted; it is derived from the role's billing or trial term, and which of the two governs depends on
-/// whether the member has already consumed a trial. A submitted date in the past is not stored as given,
-/// and a submitted date is discarded outright when the role declares no period. Each of those rules is
-/// asserted separately, because a single combined test would not say which rule had broken.
-/// </para>
+/// route has none, so the service compensates exactly where the pipeline does not.
 /// </remarks>
 public class RoleServiceTests
 {
@@ -103,13 +91,6 @@ public class RoleServiceTests
     /// The role contract exposes fifteen asynchronous operations and nothing else, each of which accepts a
     /// cancellation token as its final argument.
     /// </summary>
-    /// <remarks>
-    /// The fifteenth is <c>GetRoleMembershipAsync</c>, which answers one named pairing of a role and an
-    /// account. It reads deliberately alongside <c>ListRoleUsersAsync</c> rather than through it: asking
-    /// the listing whether one account holds a role obliges the caller to put that account's login name in
-    /// a request target, which is written to browser history and to every proxy log the request passes
-    /// through, while two numeric identifiers in a path disclose nothing about anybody (CWE-598).
-    /// </remarks>
     [Fact]
     public void RoleContract_OffersExactlyFifteenOperations()
     {
@@ -128,9 +109,7 @@ public class RoleServiceTests
         }
     }
 
-    /// <summary>
-    /// The service refuses to be constructed without every collaborator it depends on.
-    /// </summary>
+    /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -186,13 +165,6 @@ public class RoleServiceTests
     /// Every collaborator the constructor accepts is guarded, so the guard list cannot fall behind the
     /// parameter list.
     /// </summary>
-    /// <remarks>
-    /// The sibling above names each parameter individually, which proves the guards throw for the right
-    /// argument but cannot notice a NINTH parameter arriving without a guard - it would simply be passed a
-    /// live double in every case. This test closes that gap by counting: the constructor and the list above
-    /// must agree on how many collaborators exist. It failed when the permission contract was added, which
-    /// is why it is here rather than in a later revision.
-    /// </remarks>
     [Fact]
     public void Service_GuardsAsManyCollaboratorsAsItAccepts()
     {
@@ -216,9 +188,7 @@ public class RoleServiceTests
             "the null-argument cases above are written out one per collaborator, in this order");
     }
 
-    /// <summary>
-    /// Listing roles requires a paging request.
-    /// </summary>
+    /// <summary>Listing roles requires a paging request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_RequiresARequest()
@@ -229,9 +199,7 @@ public class RoleServiceTests
             () => harness.Service.ListRolesAsync(PortalId, null!, null, cancellationToken: CancellationToken.None));
     }
 
-    /// <summary>
-    /// Listing roles for a tenant that does not exist is refused before the role store is read.
-    /// </summary>
+    /// <summary>Listing roles for a tenant that does not exist is refused before the role store is read.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_RefusesAnUnknownTenant()
@@ -250,9 +218,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A group filter naming a group of another tenant is refused rather than silently ignored.
-    /// </summary>
+    /// <summary>A group filter naming a group of another tenant is refused rather than silently ignored.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_RefusesAGroupFromAnotherTenant()
@@ -274,9 +240,7 @@ public class RoleServiceTests
             .Be($"Portal {PortalId} has no role group bearing identifier {RoleGroupId}.");
     }
 
-    /// <summary>
-    /// A group filter naming no stored group at all is refused with the same reason.
-    /// </summary>
+    /// <summary>A group filter naming no stored group at all is refused with the same reason.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_RefusesAnUnknownGroup()
@@ -291,19 +255,8 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(RoleGroupNotFoundCode);
     }
 
-    /// <summary>
-    /// The ungrouped scope lists the roles that belong to no group, and nothing else.
-    /// </summary>
+    /// <summary>The ungrouped scope lists the roles that belong to no group, and nothing else.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: restores the legacy "&lt; Global Roles &gt;" selection, which had no expression on this
-    /// contract at all. The legacy screen sent -1 for it
-    /// (<c>Roles.ascx.vb:L114</c>, <c>EditRoles.ascx.vb:L75</c>); the provider converted that to SQL null
-    /// through <c>Null.GetNull</c>
-    /// (<c>MembershipProviders/DataProvider/SqlDataProvider.vb:L231</c>); and the terminal statement's
-    /// <c>RoleGroupId IS NULL AND @RoleGroupId IS NULL</c> arm then matched the ungrouped rows. So the test
-    /// asserts absence of a group, never equality with minus one.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_ForTheUngroupedScopeListsOnlyTheRolesWithNoGroup()
     {
@@ -333,12 +286,6 @@ public class RoleServiceTests
     /// The default scope lists every role whatever its grouping, which is what an omitted scope means.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy band for this was a group value of -2 or lower - <c>Roles.ascx.vb:L72-L76</c> branches on
-    /// <c>If RoleGroupId &lt; -1</c> and its drop-down entry at <c>:L112</c> carries "-2" - and the screen
-    /// forced it whenever the portal had no groups at all (<c>:L129</c>). Making it the default is what
-    /// keeps every caller written before the scope existed behaving exactly as it did.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_ForTheDefaultScopeListsEveryRoleWhateverItsGrouping()
     {
@@ -375,25 +322,7 @@ public class RoleServiceTests
     /// <param name="undefinedScope">A numeric value outside the two defined members.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the review that prompted this test described the gap as an HTTP-reachable input-validation
-    /// exposure. It is NOT, and that was established by measurement rather than by reading: against the
-    /// running API <c>?scope=999</c> is refused by MVC model binding with <c>400</c> and
-    /// <c>errors["scope"] = ["The value '999' is invalid."]</c> before the action body runs, because the
-    /// enumeration binder tests defined membership for a non-flags enumeration - while <c>?scope=0</c> and
-    /// <c>?scope=1</c> bind and answer <c>200</c>, proving numeric binding works and that the refusal is
-    /// specifically the membership check. No HTTP caller ever reached the fall-through.
-    /// </para>
-    /// <para>
-    /// The gap in THIS member was real all the same, which is why the test exists. A CLR enumeration is an
-    /// integer at run time, so <c>(RoleGroupScope)999</c> is constructible, and the Application layer is a
-    /// public API reachable by callers that never touch MVC. Without the guard the narrowing - which tests
-    /// only for equality with <c>Ungrouped</c> - matched no branch, and the member answered with EVERY role
-    /// in the portal reporting success. The two roles in the fixture are deliberately one grouped and one
-    /// ungrouped, so a regression returning both is visible as a SET rather than only as a status code,
-    /// which is the assertion that would catch a guard removed and replaced by a comment claiming the
-    /// boundary handles it.
-    /// </para>
+    /// The review that prompted this test described the gap as an HTTP-reachable input-validation exposure.
     /// </remarks>
     [Theory]
     [InlineData(2)]
@@ -437,12 +366,6 @@ public class RoleServiceTests
     /// contradiction between two meaningful arguments.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Both refusals carry the same code, so the code alone cannot distinguish them; the MESSAGE is what a
-    /// caller reads to learn which mistake it made. Ordering the membership test above the contradiction
-    /// test is what makes the message the accurate one, and this fact is what would fail if the two guards
-    /// were ever swapped.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_ReportsAnUndefinedScopeRatherThanAContradiction()
     {
@@ -469,11 +392,6 @@ public class RoleServiceTests
     /// </summary>
     /// <param name="definedScope">A defined member of the enumeration.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The counterweight to the refusals above. A guard that refused a legitimate member would break both
-    /// the default listing and the restored "global roles" selection, so the two members are asserted
-    /// explicitly rather than left to the surrounding tests.
-    /// </remarks>
     [Theory]
     [InlineData(RoleGroupScope.All)]
     [InlineData(RoleGroupScope.Ungrouped)]
@@ -495,11 +413,6 @@ public class RoleServiceTests
     /// A group identifier combined with the ungrouped scope is refused rather than resolved by precedence.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The caller has asked for one group and for the roles in no group in the same breath. Preferring one
-    /// argument would answer with a page the caller never asked for, and the caller could not tell which
-    /// argument had been honoured, so the contradiction is reported instead.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_RefusesAGroupIdentifierCombinedWithTheUngroupedScope()
     {
@@ -525,8 +438,8 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A group identifier combined with the DEFAULT scope is honoured, because that pairing is what a caller
-    /// unaware of the scope sends.
+    /// A group identifier combined with the DEFAULT scope is honoured, because that pairing is what a
+    /// caller unaware of the scope sends.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -552,9 +465,7 @@ public class RoleServiceTests
             "the identifier still selects its group; the default scope contradicts nothing");
     }
 
-    /// <summary>
-    /// No group is verified when the caller supplied no group filter.
-    /// </summary>
+    /// <summary>No group is verified when the caller supplied no group filter.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_DoesNotVerifyAGroupWhenNoneWasAsked()
@@ -571,15 +482,15 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// Every narrowing the request carried travels to the store in one read, and nothing tenant-wide is read
-    /// at all.
+    /// Every narrowing the request carried travels to the store in one read, and nothing tenant-wide is
+    /// read at all.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This is the fact that pins the fix for the role listing's cost. Each argument is checked because one
     /// that failed to travel would be applied by nobody: reading the tenant's whole role set and narrowing
     /// it here produced the same rows for a small tenant, which is exactly why the old shape survived
-    /// unnoticed. The negative assertion is the substance - the unpaged tenant read is not issued.
+    /// unnoticed.
     /// </remarks>
     [Fact]
     public async Task ListRoles_PassesEveryNarrowingToTheStoreAndReadsNothingTenantWide()
@@ -623,8 +534,8 @@ public class RoleServiceTests
     /// <remarks>
     /// Each name passes the shared request validator, which applies the union of every collection's
     /// sortable set because one validator serves the one shared request type. The per-collection set is
-    /// therefore what distinguishes a name that means something here from one that does not, and nothing
-    /// is read before that question is settled.
+    /// therefore what distinguishes a name that means something here from one that does not, and nothing is
+    /// read before that question is settled.
     /// </remarks>
     [Theory]
     [InlineData("PortalName")]
@@ -687,9 +598,9 @@ public class RoleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This is the half an allowlist cannot prove on its own. The three roles are given service fees
-    /// whose ascending order differs from their name order, so an implementation that accepted the field
-    /// and then applied its default order by name would produce the name sequence and fail here.
+    /// This is the half an allowlist cannot prove on its own. The three roles are given service fees whose
+    /// ascending order differs from their name order, so an implementation that accepted the field and then
+    /// applied its default order by name would produce the name sequence and fail here.
     /// </remarks>
     [Fact]
     public async Task ListRoles_OrdersByThePermittedFieldInBothDirections()
@@ -745,9 +656,7 @@ public class RoleServiceTests
         outcome.Value.Items.Select(row => row.RoleName).Should().Equal("Alpha", "Bravo", "Charlie");
     }
 
-    /// <summary>
-    /// A request that asks for no page size receives an unpaged answer.
-    /// </summary>
+    /// <summary>A request that asks for no page size receives an unpaged answer.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_ReportsAnUnpagedAnswerWhenNoPageSizeWasAsked()
@@ -765,17 +674,11 @@ public class RoleServiceTests
         outcome.Value.Items.Should().HaveCount(2);
     }
 
-    /// <summary>
-    /// A paged request keeps the store's total rather than the size of the returned page.
-    /// </summary>
+    /// <summary>A paged request keeps the store's total rather than the size of the returned page.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoles_PreservesTheStoresTotalWhenAPageWasAsked()
     {
-        // MIGRATION: the total is computed over the tenant's roles rather than reported by the store,
-        // because the legacy membership provider had no paged role read - GetPortalRoles(PortalId)
-        // returned every row and the admin screen paged it. Twenty-one roles across three pages of ten
-        // therefore reproduces the same arithmetic the legacy screen performed.
         Harness harness = Harness.Ready();
         harness.RolePage = PagedResult<Role>.Unpaged(
             Enumerable.Range(0, 21)
@@ -830,9 +733,7 @@ public class RoleServiceTests
         declared.Should().NotContain("UserCount");
     }
 
-    /// <summary>
-    /// Reading one role from a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Reading one role from a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRole_RefusesAnUnknownTenant()
@@ -866,9 +767,7 @@ public class RoleServiceTests
         outcome.Reason.Should().BeNull();
     }
 
-    /// <summary>
-    /// A role belonging to another tenant is indistinguishable from one that does not exist.
-    /// </summary>
+    /// <summary>A role belonging to another tenant is indistinguishable from one that does not exist.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRole_ReportsAbsenceForARoleOfAnotherTenant()
@@ -885,14 +784,9 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The detail projection carries the identifier of the group that classifies the role, and resolves
-    /// its name no further.
+    /// The detail projection carries the identifier of the group that classifies the role, and resolves its
+    /// name no further.
     /// </summary>
-    /// <remarks>
-    /// The group is identified, not named. A caller that needs the name reads it from the group
-    /// contract, exactly as the legacy editor did: it had already bound a drop-down of the portal's
-    /// groups, so it resolved the name locally rather than having the role row carry it.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRole_CarriesTheClassifyingGroupIdentifierWithoutResolvingItsName()
@@ -916,9 +810,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// An unclassified role carries a null group identifier and provokes no group lookup.
-    /// </summary>
+    /// <summary>An unclassified role carries a null group identifier and provokes no group lookup.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRole_LeavesTheGroupIdentifierAbsentWhenTheRoleIsUnclassified()
@@ -937,16 +829,9 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// Reading one role reads no page of assignments, because the detail contract carries no member
-    /// tally to populate.
+    /// Reading one role reads no page of assignments, because the detail contract carries no member tally
+    /// to populate.
     /// </summary>
-    /// <remarks>
-    /// This is a round-trip guard, not a projection assertion. Were the contract to carry a group name
-    /// and a member count, the service would have to read the total off a one-row page of
-    /// assignments, so a single-role request would cost two extra queries - one for the group, one for the
-    /// count - to populate two members no legacy role screen displayed. Neither is carried, and this test
-    /// fails if either read is introduced.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRole_ReadsNoAssignmentPageBecauseTheContractCarriesNoMemberTally()
@@ -968,9 +853,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Creating a role requires a request.
-    /// </summary>
+    /// <summary>Creating a role requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_RequiresARequest()
@@ -981,9 +864,7 @@ public class RoleServiceTests
             () => harness.Service.CreateRoleAsync(PortalId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// Creating a role in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Creating a role in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_RefusesAnUnknownTenant()
@@ -999,9 +880,7 @@ public class RoleServiceTests
         harness.AddedRoles.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A role may not be classified into a group belonging to another tenant.
-    /// </summary>
+    /// <summary>A role may not be classified into a group belonging to another tenant.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_RefusesAGroupFromAnotherTenant()
@@ -1025,9 +904,7 @@ public class RoleServiceTests
         harness.AddedRoles.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A name already held within the tenant is refused.
-    /// </summary>
+    /// <summary>A name already held within the tenant is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_RefusesADuplicateName()
@@ -1040,14 +917,6 @@ public class RoleServiceTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(RoleNameDuplicateCode);
-        // THE LEGACY WORDING, VERBATIM AND WITH NOTHING ADDED. DuplicateRole.Text in
-        // Website/admin/Security/App_LocalResources/EditRoles.ascx.resx is the sentence the legacy screen
-        // showed, and it names neither the tenant nor any row identifier. An earlier revision appended both -
-        // "Portal -1 already has a role named 'X' (identifier 35)." - which broke wording parity and
-        // published a primary-key value on the one response an unauthorised caller can provoke on demand.
-        // The collation-collision case still explains itself, and still names the STORED name so the operator
-        // can find the row in the listing; it is asserted by
-        // CreateRole_RefusesANameTheStoreTreatsAsEqualWithoutNamingItsIdentifier.
         outcome.Reason!.Message.Should().Be("A role with the same name already exists. The role was not added.");
         outcome.Reason!.Message.Should().NotContain(
             ClashingRoleId.ToString(CultureInfo.InvariantCulture),
@@ -1062,12 +931,9 @@ public class RoleServiceTests
     /// <remarks>
     /// BOTH HALVES MATTER AND THEY PULL AGAINST EACH OTHER, WHICH IS WHY THEY ARE ASSERTED TOGETHER. The
     /// uniqueness index is evaluated under the database's collation, which gives no sort weight to
-    /// supplementary-plane characters, zero-width characters or trailing whitespace - so a submitted name can
-    /// collide with a stored name that is visibly different from it, and runtime testing recorded an operator
-    /// being told a portal already had a role whose name appeared in none of its rows. The explanation is
-    /// therefore kept. What is withdrawn is the row identifier: the STORED NAME is not an internal detail at
-    /// all, because it is the text the roles listing already renders, whereas a primary-key value is one and
-    /// adds nothing to the remedy the sentence states.
+    /// supplementary-plane characters, zero-width characters or trailing whitespace - so a submitted name
+    /// can collide with a stored name that is visibly different from it, and runtime testing recorded an
+    /// operator being told a portal already had a role whose name appeared in none of its rows.
     /// </remarks>
     [Fact]
     public async Task CreateRole_RefusesANameTheStoreTreatsAsEqualWithoutNamingItsIdentifier()
@@ -1101,20 +967,9 @@ public class RoleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. The check above cannot close this window. <c>IX_RoleName</c> is unique over
-    /// <c>(PortalID, RoleName)</c>, so two requests carrying the same name arriving together BOTH read "not
-    /// taken" and the loser's insert is refused by the index rather than by the check. Measured on a live
-    /// installation before the fix: ten simultaneous identical creations produced one 201, seven 409 and two
-    /// 500s, with exactly one row stored. The two 500s were the racers - told the server had failed when it
-    /// had done precisely the right thing.
-    /// </para>
-    /// <para>
-    /// The code AND the wording are asserted to be identical to the sequential refusal, deliberately. A
-    /// caller cannot act differently on "you were second" than on "it was already there", so publishing a
-    /// second code for one outcome would only oblige it to handle both; asserting the wording as well is what
-    /// stops the two drifting apart later.
-    /// </para>
+    /// The check above cannot close this window. <c>IX_RoleName</c> is unique over <c>(PortalID,
+    /// RoleName)</c>, so two requests carrying the same name arriving together BOTH read "not taken" and
+    /// the loser's insert is refused by the index rather than by the check.
     /// </remarks>
     [Fact]
     public async Task CreateRole_RefusesANameTakenBetweenTheCheckAndTheCommit()
@@ -1143,9 +998,7 @@ public class RoleServiceTests
             "nothing was committed, so no cached state became stale");
     }
 
-    /// <summary>
-    /// The uniqueness check excludes nothing, because no row exists yet to exclude.
-    /// </summary>
+    /// <summary>The uniqueness check excludes nothing, because no row exists yet to exclude.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_ChecksTheNameAcrossTheWholeTenant()
@@ -1159,9 +1012,7 @@ public class RoleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// Nothing is written when the name is already taken.
-    /// </summary>
+    /// <summary>Nothing is written when the name is already taken.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRole_WritesNothingWhenTheNameIsTaken()
@@ -1362,12 +1213,6 @@ public class RoleServiceTests
     /// operator rather than to the role.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The event name is asserted as a LITERAL rather than through the published constant, deliberately.
-    /// The point of the constant is that the wording must not drift from the legacy event-log vocabulary
-    /// at <c>EventLogController.vb:L59</c>; comparing it against itself would let a rename pass unnoticed,
-    /// which is exactly the regression this test exists to catch.
-    /// </remarks>
     [Fact]
     public async Task CreateRole_RecordsTheLegacyRoleCreatedAuditEvent()
     {
@@ -1443,24 +1288,15 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A role that cannot be read back is still recorded as created, because the row exists whether or not the
-    /// response could be composed.
+    /// A role that cannot be read back is still recorded as created, because the row exists whether or not
+    /// the response could be composed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS IS AN ABSENCE, and the sibling assertion above is the arrangement that produced
-    /// it. The record used to sit behind the read-back, which returns early when it yields nothing - so a role
-    /// that had been inserted and committed, but that the read-back could not find, came into being with no
-    /// trace of its creation. A role is a permission grouping; an untraced one is exactly the grant a trail
-    /// exists to account for, and a read-back failing says nothing about whether the insert happened.
-    /// </para>
-    /// <para>
     /// WAITING FOR THE READ-BACK BOUGHT NOTHING. The stated reason was that its identifier is the one the
     /// database assigned - but the change tracker writes the store-generated identity back onto the tracked
     /// entity during the flush, so the identifier is already known. The previous code proved it by passing
     /// that same identifier as the read-back's own argument.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task CreateRole_RecordsTheCreationEvenWhenTheStoredRowCannotBeReadBack()
@@ -1480,9 +1316,7 @@ public class RoleServiceTests
         record.ResourceType.Should().Be("Role");
     }
 
-    /// <summary>
-    /// Updating a role requires a request.
-    /// </summary>
+    /// <summary>Updating a role requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRole_RequiresARequest()
@@ -1493,15 +1327,13 @@ public class RoleServiceTests
             () => harness.Service.UpdateRoleAsync(PortalId, RoleId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// Updating a role in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Updating a role in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F3. The absence is expressed as a MISSING ROW rather than as a false existence
-    /// probe, because this member now READS the tenant: it needs the two designations the protected-role
-    /// guard compares against, and one read answers both questions. The existence flag is cleared as well
-    /// so that the harness describes one world rather than two contradictory ones.
+    /// The absence is expressed as a MISSING ROW rather than as a false existence probe, because this
+    /// member now READS the tenant: it needs the two designations the protected-role guard compares
+    /// against, and one read answers both questions. The existence flag is cleared as well so that the
+    /// harness describes one world rather than two contradictory ones.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_RefusesAnUnknownTenant()
@@ -1518,21 +1350,14 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F3: neither of the two roles the tenant designates for a system purpose can be amended, and
-    /// nothing is staged or committed when one is named.
+    /// neither of the two roles the tenant designates for a system purpose can be amended, and nothing is
+    /// staged or committed when one is named.
     /// </summary>
     /// <param name="designateAdministrators">
     /// Whether the tenant designates the named role as its administrators role rather than as its
-    /// registered-members role. Both are asserted, because the legacy guard named both and a fix covering
-    /// one would leave the other open.
+    /// registered-members role.
     /// </param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy edit screen disabled <c>cmdUpdate</c> alongside <c>cmdDelete</c> for a designated role
-    /// (<c>EditRoles.ascx.vb</c> L174-L178), so the rule covers the amendment as well as the removal. The
-    /// commit is asserted absent because a refusal that had already staged a projection would leave the
-    /// tracked entity carrying the caller's values for whatever ran next in the same scope.
-    /// </remarks>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -1560,8 +1385,8 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F3: a role the tenant designates for nothing is amended normally, which is what proves the
-    /// guard is a comparison against the tenant's own columns rather than a blanket refusal.
+    /// a role the tenant designates for nothing is amended normally, which is what proves the guard is a
+    /// comparison against the tenant's own columns rather than a blanket refusal.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1600,9 +1425,7 @@ public class RoleServiceTests
             .Be($"Portal {PortalId} has no role bearing identifier {RoleId}.");
     }
 
-    /// <summary>
-    /// A role belonging to another tenant cannot be reached through this tenant's route.
-    /// </summary>
+    /// <summary>A role belonging to another tenant cannot be reached through this tenant's route.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRole_RefusesARoleFromAnotherTenant()
@@ -1619,18 +1442,14 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The update member carries the shape checks the update route's missing validator would otherwise
-    /// have performed, and reports each violation with its own measured wording.
+    /// The update member carries the shape checks the update route's missing validator would otherwise have
+    /// performed, and reports each violation with its own measured wording.
     /// </summary>
     /// <param name="violation">The single field to spoil.</param>
     /// <param name="expectedMessage">The message the service is measured to report.</param>
     /// <returns>A task representing the assertion.</returns>
-    // MIGRATION: the two name cases are present here as well as on the creation theory, because the
-    // update contract carries a writable name. The legacy edit screen disabled the name's
-    // required-field validator (Website/admin/Security/EditRoles.ascx.vb L134) because it displayed the
-    // name read-only; making the name writable - a documented behavioural difference - restores the rule
-    // on this path, and the service asserts it for callers that arrive without passing the boundary
-    // validator at all.
+    // MIGRATION: the two name cases are present here as well as on the creation theory, because the update
+    // contract carries a writable name.
     [Theory]
     [InlineData("absent-name", "Role Name Is Required.")]
     [InlineData("long-name", "A role name may not exceed 50 characters.")]
@@ -1675,9 +1494,6 @@ public class RoleServiceTests
                 request.TrialFee = -0.01m;
                 break;
             case "zero-billing-period":
-                // A CYCLE IS DECLARED BESIDE THE ZERO, which is the condition that makes zero refusable at
-                // all: zero beside no cycle is the value the portal template's own roles carry and is
-                // admitted, so submitting it with no frequency would assert the opposite of the rule.
                 request.BillingPeriod = 0;
                 request.BillingFrequency = Frequency.Month;
                 break;
@@ -1743,12 +1559,6 @@ public class RoleServiceTests
 
         await harness.Service.UpdateRoleAsync(PortalId, RoleId, ValidUpdateRequest(), CancellationToken.None);
 
-        // MIGRATION: the legacy screen applied its duplicate-name guard only when INSERTING - at
-        // Website/admin/Security/EditRoles.ascx.vb L251-L257 the add branch looks the name up and refuses
-        // on a hit, while the edit branch updated with no such check. That was coherent only because the
-        // name could not change on an edit. This contract can rename, so the guard covers both verbs;
-        // without it a rename would be the one way to violate IX_RoleName
-        // (03.00.09.SqlDataProvider L304) and the violation would surface as a server fault.
         harness.Roles.Verify(
             r => r.GetByNameAsync(
                 PortalId,
@@ -1758,8 +1568,8 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// An update that names a role ANOTHER role in the portal already holds is refused as a duplicate,
-    /// with the same code the creation route reports.
+    /// An update that names a role ANOTHER role in the portal already holds is refused as a duplicate, with
+    /// the same code the creation route reports.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1792,12 +1602,6 @@ public class RoleServiceTests
     /// the role being edited.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// This is the fact that makes the guard usable at all. The contract is a full replacement, so every
-    /// caller amending one field resubmits the name it read; comparing on text alone would refuse every
-    /// such request, and comparing on identifier is what distinguishes a rename onto someone else's name
-    /// from a request that changes no name at all.
-    /// </remarks>
     [Fact]
     public async Task UpdateRole_AcceptsTheRolesOwnNameResubmitted()
     {
@@ -1823,9 +1627,7 @@ public class RoleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
-    /// <summary>
-    /// The submitted shape is applied to the tracked row, and the tenant assignment is left alone.
-    /// </summary>
+    /// <summary>The submitted shape is applied to the tracked row, and the tenant assignment is left alone.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRole_AppliesTheSubmittedShape()
@@ -1851,8 +1653,8 @@ public class RoleServiceTests
         outcome.IsSuccess.Should().BeTrue();
 
         // MIGRATION: the name IS replaced, because the update contract carries one and the projection
-        // applies it - a documented behavioural difference from the legacy edit screen, which displayed
-        // the name read-only.
+        // applies it - a documented behavioural difference from the legacy edit screen, which displayed the
+        // name read-only.
         tracked.RoleName.Should().Be("Renamed subscribers");
         tracked.Description.Should().Be("Changed.");
         tracked.IsPublic.Should().BeFalse();
@@ -1866,9 +1668,7 @@ public class RoleServiceTests
         outcome.Value.RoleName.Should().Be("Renamed subscribers");
     }
 
-    /// <summary>
-    /// The change commits once and the tenant's cached state is discarded.
-    /// </summary>
+    /// <summary>The change commits once and the tenant's cached state is discarded.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRole_CommitsAndInvalidatesTheTenant()
@@ -1889,10 +1689,8 @@ public class RoleServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The isolation is asserted rather than merely the presence of a scope, because the level is the whole
-    /// point: this is a read-modify-write of the row it judged, and its rename guard asks a question about the
-    /// tenant's other roles whose answer must still hold when the write lands. The sibling removal path
-    /// deliberately asks for the default level and records why, so a test that accepted any level would let
-    /// the two paths drift into agreeing by accident.
+    /// point: this is a read-modify-write of the row it judged, and its rename guard asks a question about
+    /// the tenant's other roles whose answer must still hold when the write lands.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_JudgesAndWritesInOneSerialisableTransaction()
@@ -1954,8 +1752,8 @@ public class RoleServiceTests
     /// <remarks>
     /// The token comparison closes the window a caller can OBSERVE; it cannot close the window between that
     /// comparison and the write, and under serialisable isolation this participant can also be aborted as a
-    /// deadlock victim. Both are the same event from the caller's position - the record moved and nothing was
-    /// written - so both must produce the refusal the stale token produces rather than a server fault.
+    /// deadlock victim. Both are the same event from the caller's position - the record moved and nothing
+    /// was written - so both must produce the refusal the stale token produces rather than a server fault.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_ReportsAStoreRefusedLostUpdateAsAConcurrencyConflict()
@@ -1981,9 +1779,7 @@ public class RoleServiceTests
         harness.Cache.Verify(c => c.InvalidatePortal(It.IsAny<int>()), Times.Never);
     }
 
-    /// <summary>
-    /// The answer is projected from the tracked row rather than from a second read of the store.
-    /// </summary>
+    /// <summary>The answer is projected from the tracked row rather than from a second read of the store.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRole_DoesNotReReadTheRole()
@@ -1998,13 +1794,11 @@ public class RoleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// Deleting a role in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Deleting a role in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F3. Expressed as a missing ROW for the reason recorded on the update path - the
-    /// member reads the tenant now, because the protected-role designations live on it.
+    /// Expressed as a missing ROW for the reason recorded on the update path - the member reads the tenant
+    /// now, because the protected-role designations live on it.
     /// </remarks>
     [Fact]
     public async Task DeleteRole_RefusesAnUnknownTenant()
@@ -2020,8 +1814,8 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F3: neither of the two roles the tenant designates for a system purpose can be removed, the
-    /// store is left untouched, and the refusal names the purpose that protects the role.
+    /// neither of the two roles the tenant designates for a system purpose can be removed, the store is
+    /// left untouched, and the refusal names the purpose that protects the role.
     /// </summary>
     /// <param name="designateAdministrators">
     /// Whether the tenant designates the named role as its administrators role rather than as its
@@ -2064,9 +1858,7 @@ public class RoleServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// Deleting a role the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Deleting a role the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteRole_RefusesAnUnknownRole()
@@ -2080,9 +1872,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(RoleNotFoundCode);
     }
 
-    /// <summary>
-    /// Nothing is written when the role is unknown.
-    /// </summary>
+    /// <summary>Nothing is written when the role is unknown.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteRole_WritesNothingWhenTheRoleIsUnknown()
@@ -2117,9 +1907,9 @@ public class RoleServiceTests
         Result outcome = await harness.Service.DeleteRoleAsync(PortalId, RoleId, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        // MIGRATION: the assignments are no longer swept row by row. FK_UserRoles_Roles is declared
-        // ON DELETE CASCADE and UserRoleConfiguration declares the same behaviour, so the single keyed
-        // delete carries them - and issuing the deletes here as well would issue them twice.
+        // MIGRATION: the assignments are no longer swept row by row. FK_UserRoles_Roles is declared ON
+        // DELETE CASCADE and UserRoleConfiguration declares the same behaviour, so the single keyed delete
+        // carries them - and issuing the deletes here as well would issue them twice.
         harness.Roles.Verify(
             r => r.DeleteAsync(RoleId, It.IsAny<CancellationToken>()),
             Times.Once);
@@ -2135,16 +1925,6 @@ public class RoleServiceTests
     /// the contract that owns it rather than evicting one of the two affected entries itself.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-F8. This test previously asserted a direct
-    /// <c>ICacheService.InvalidateTabPermissions</c> call, and that assertion is now wrong rather than
-    /// merely narrower. Removing a role stales TWO cached entries - the tenant-keyed page-grant entry and
-    /// the PAGE-keyed module-grant entry - so evicting the first directly leaves the second answering with
-    /// module grants that no longer exist. The portal-wide module eviction requires the tenant's page list,
-    /// which the permission contract already reads, so the eviction is delegated whole. Asserting the
-    /// delegation rather than the two evictions is deliberate: duplicating the eviction set here would
-    /// create a second definition of it, which is exactly what the delegation exists to avoid.
-    /// </remarks>
     [Fact]
     public async Task DeleteRole_CommitsOnceAndDelegatesTheGrantCacheEviction()
     {
@@ -2165,24 +1945,14 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F8: every grant the role held is swept, and the sweep happens before the role row goes, inside
-    /// the same committed transaction.
+    /// every grant the role held is swept, and the sweep happens before the role row goes, inside the same
+    /// committed transaction.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The whole of the finding is here. The grant tables carry no cascading foreign key to the role table,
     /// so the rows survive their principal; <c>Roles.RoleID</c> is an identity column, so the vacated
-    /// identifier is reissued; and the next role to take it inherits authority nobody granted it. The
-    /// terminal legacy procedure swept all three families first - <c>03.00.10.SqlDataProvider</c> deletes
-    /// from the folder, module and page grant tables by role identifier before deleting the role - and this
-    /// asserts the target does the same.
-    /// </para>
-    /// <para>
-    /// The ORDER is asserted, not merely the membership of the call set. Verifying each call separately
-    /// would pass for a sweep issued after the role delete, or after the commit, either of which would
-    /// reintroduce the window the transaction exists to close.
-    /// </para>
+    /// identifier is reissued; and the next role to take it inherits authority nobody granted it.
     /// </remarks>
     [Fact]
     public async Task DeleteRole_SweepsTheRolesGrantsBeforeItsRowInsideOneCommittedTransaction()
@@ -2224,16 +1994,15 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F8: the sweep is the stage-only member, so a role removal that cannot be committed leaves the
-    /// grants in place.
+    /// the sweep is the stage-only member, so a role removal that cannot be committed leaves the grants in
+    /// place.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This is the reason the removal opens a transaction at all. The sweep reaches the store as set-based
     /// statements the moment it is issued, so without one it would be durable on its own, and a failing
     /// commit would leave the role present with every grant gone - strictly worse than the fault being
-    /// repaired, because grants cannot be reconstructed. The scope is asserted to have rolled back rather
-    /// than merely to have been disposed.
+    /// repaired, because grants cannot be reconstructed.
     /// </remarks>
     [Fact]
     public async Task DeleteRole_WhenTheCommitFails_AbandonsTheSweepWithTheRemoval()
@@ -2258,15 +2027,8 @@ public class RoleServiceTests
             "no record may describe a removal that was rolled back");
     }
 
-    /// <summary>
-    /// SEC-F8: a sweep that refuses is reported and the role survives.
-    /// </summary>
+    /// <summary>a sweep that refuses is reported and the role survives.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Propagating rather than discarding is what keeps the two halves honest. Swallowing the refusal would
-    /// commit a role removal whose grants were still recorded against the vacated identifier, and would
-    /// report success while doing it.
-    /// </remarks>
     [Fact]
     public async Task DeleteRole_WhenTheSweepRefuses_ReportsItAndRemovesNothing()
     {
@@ -2285,17 +2047,9 @@ public class RoleServiceTests
         harness.AuditRecords.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// SEC-F8: a refusal that precedes the sweep neither opens a transaction nor touches a grant.
-    /// </summary>
+    /// <summary>a refusal that precedes the sweep neither opens a transaction nor touches a grant.</summary>
     /// <param name="designatedRoleId">The identifier the tenant designates.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Both guards - the unknown role and the protected designation - are stated ahead of the sweep, so
-    /// asking about a role that must not be removed costs no scope and leaves the store untouched. The
-    /// registered-role identifier is deliberately included: it is <c>OtherRoleId + 1</c> in this harness,
-    /// and both designations are protected.
-    /// </remarks>
     [Theory]
     [InlineData(OtherRoleId)]
     [InlineData(OtherRoleId + 1)]
@@ -2341,23 +2095,13 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A committed removal is recorded even when the post-commit grant-cache eviction fails, because the role
-    /// and every assignment to it are gone either way.
+    /// A committed removal is recorded even when the post-commit grant-cache eviction fails, because the
+    /// role and every assignment to it are gone either way.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS IS AN ABSENCE. The record used to be the last statement in the member, behind the
-    /// grant-cache eviction, which at the time was an AWAITED call observing the cancellation token and is now
-    /// the delegated synchronous call the permission contract owns. A caller who disconnected
-    /// in the moment after the commit therefore had the role removed, along with the assignments that
-    /// cascaded with it, and nothing in the trail said so. Removing a role revokes whatever that role granted
-    /// to everyone who held it, so a silent removal is precisely the event a trail exists to account for.
-    /// </para>
-    /// <para>
     /// The exception still escapes: an eviction that did not happen means stale grants may be served from
     /// memory, which is a real condition and must not be swallowed. Only the ORDER changed.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task DeleteRole_RecordsTheRemovalEvenWhenThePostCommitEvictionFails()
@@ -2404,9 +2148,7 @@ public class RoleServiceTests
         record.Properties["Renewed"].Should().Be("False");
     }
 
-    /// <summary>
-    /// Listing a role's members requires a paging request.
-    /// </summary>
+    /// <summary>Listing a role's members requires a paging request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleUsers_RequiresARequest()
@@ -2417,9 +2159,7 @@ public class RoleServiceTests
             () => harness.Service.ListRoleUsersAsync(PortalId, RoleId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// Listing a role's members in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Listing a role's members in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleUsers_RefusesAnUnknownTenant()
@@ -2434,19 +2174,8 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// The exact-identifier membership read answers the pairing itself, with the terms it runs on.
-    /// </summary>
+    /// <summary>The exact-identifier membership read answers the pairing itself, with the terms it runs on.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// ⚠ THIS MEMBER EXISTS SO THAT A LOGIN NAME NEVER TRAVELS IN A REQUEST TARGET. The single-pairing
-    /// question was previously asked by narrowing the membership LISTING with the account's login name in
-    /// the paging contract's free-text filter, which the repository matches against the login name and the
-    /// display name - so the name had to be in the query string for the question to be answerable, and a
-    /// query string is written to browser history and to every proxy and server access log, none of which
-    /// is on the wire. That is CWE-598. The assertion below is that the answer is composed WITHOUT the
-    /// listing being read at all, which is what makes the narrower address the only one needed.
-    /// </remarks>
     [Fact]
     public async Task GetRoleMembership_AnswersThePairingWithoutReadingTheListing()
     {
@@ -2491,12 +2220,6 @@ public class RoleServiceTests
     /// failure.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// "Holds nothing" is an answer the caller renders - the legacy screen showed it by blanking its two
-    /// date fields (<c>SecurityRoles.ascx.vb:L484</c>) - whereas an unknown portal, role or account is a
-    /// broken request. Reporting the first as a failure would put an error banner on an ordinary outcome,
-    /// and reporting the second as an empty answer would hide a mistake.
-    /// </remarks>
     [Fact]
     public async Task GetRoleMembership_ReportsNoMembershipAsASuccessCarryingNothing()
     {
@@ -2570,17 +2293,14 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// An ordering outside this listing's own set is refused, including one the account listing would
-    /// have no arm for either.
+    /// An ordering outside this listing's own set is refused, including one the account listing would have
+    /// no arm for either.
     /// </summary>
     /// <param name="foreignField">A field name declared for a different collection, or for none.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The membership set is wider than the account listing's - which is empty - because this listing
-    /// materialises the role's members and pages them in memory, so it can order what it holds. It is
-    /// still narrower than the projection: the role identifier is fixed by the route, so ordering by it
-    /// could change no order, and the two assignment dates the projection DOES carry are not orderable
-    /// because the legacy grid offered no ordering by them.
+    /// materialises the role's members and pages them in memory, so it can order what it holds.
     /// </remarks>
     [Theory]
     [InlineData("RoleId")]
@@ -2677,9 +2397,7 @@ public class RoleServiceTests
         second.Value.Items.Select(row => row.UserId).Should().Equal(2);
     }
 
-    /// <summary>
-    /// Listing the members of a role the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Listing the members of a role the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleUsers_RefusesAnUnknownRole()
@@ -2694,9 +2412,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(RoleNotFoundCode);
     }
 
-    /// <summary>
-    /// The members are read within the tenant and by the role's own name, never installation-wide.
-    /// </summary>
+    /// <summary>The members are read within the tenant and by the role's own name, never installation-wide.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleUsers_ResolvesEachMemberWithinTheTenant()
@@ -2710,11 +2426,6 @@ public class RoleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
 
-        // The tenant and the role's own NAME are both passed, because a role name is unique only within a
-        // portal - which is the direction the legacy code reached this same relation from
-        // (DNNRoleProvider.vb:L520-L522 calls GetUserRoles(portalId, Nothing, roleName), and the terminal
-        // statement's IF @UserName Is Null branch answers it). The paged member is asked, and the unpaged
-        // one is not asked at all, so the read is bounded by the page rather than by the role's membership.
         harness.Roles.Verify(
             r => r.ListRoleMembershipsAsync(
                 PortalId,
@@ -2746,17 +2457,8 @@ public class RoleServiceTests
         row.RoleName.Should().Be(RoleName);
     }
 
-    /// <summary>
-    /// An account that is not a member of the tenant never reaches the projection at all.
-    /// </summary>
+    /// <summary>An account that is not a member of the tenant never reaches the projection at all.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this used to be a skip inside the projection, because the projection walked assignment
-    /// rows and resolved each account separately - so an account outside the tenant produced a row that
-    /// had to be discarded. The read now answers the tenant-scoped question directly, exactly as the
-    /// legacy GetUsersByRolename(PortalID, Rolename) did, so the hollow row cannot be produced in the
-    /// first place and there is nothing left to skip.
-    /// </remarks>
     [Fact]
     public async Task ListRoleUsers_ReportsOnlyTheAccountsTheTenantReadidReturns()
     {
@@ -2770,9 +2472,7 @@ public class RoleServiceTests
         outcome.Value.Items.Should().ContainSingle().Which.UserId.Should().Be(UserId);
     }
 
-    /// <summary>
-    /// The reported total counts every member of the role, not just the page that was returned.
-    /// </summary>
+    /// <summary>The reported total counts every member of the role, not just the page that was returned.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleUsers_ReportsTheTotalIndependentlyOfThePageSize()
@@ -2802,17 +2502,8 @@ public class RoleServiceTests
         second.Value.HasNextPage.Should().BeFalse();
     }
 
-    /// <summary>
-    /// The membership rows carry the effective and expiry dates the legacy grid rendered.
-    /// </summary>
+    /// <summary>The membership rows carry the effective and expiry dates the legacy grid rendered.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this test replaces one that asserted the postal address and telephone number were
-    /// absent. Those two members belonged to the ACCOUNT projection this listing used to return, and the
-    /// listing no longer returns an account, so that assertion had nothing left to describe. What it
-    /// should always have pinned is the pair of columns the legacy screen existed to show - the period a
-    /// membership runs for, measured at <c>securityroles.ascx:L77-L86</c> - so that is what it pins now.
-    /// </remarks>
     [Fact]
     public async Task ListRoleUsers_CarriesTheMembershipDates()
     {
@@ -2832,17 +2523,8 @@ public class RoleServiceTests
         row.DisplayName.Should().Be("Ada Lovelace", "the display name is the value the legacy grid showed");
     }
 
-    /// <summary>
-    /// An open-ended membership reports both dates as absent rather than as a sentinel date.
-    /// </summary>
+    /// <summary>An open-ended membership reports both dates as absent rather than as a sentinel date.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy absence marker for a date was <c>Date.MinValue</c>, and the legacy screen's own renderer
-    /// printed the empty string for it rather than the value
-    /// (<c>SecurityRoles.ascx.vb</c> <c>FormatDate</c>). A consumer of this API must never have to
-    /// recognise a magic date, which is the boundary half of AAP Rule T7, so this pins that neither date is
-    /// coerced on the way out.
-    /// </remarks>
     [Fact]
     public async Task ListRoleUsers_ReportsAnOpenEndedMembershipAsAbsentDates()
     {
@@ -2876,9 +2558,6 @@ public class RoleServiceTests
 
         outcome.Value.IsUnpaged.Should().BeTrue();
 
-        // A role's memberships are read as assignment rows, keyed by the role's name - the direction the
-        // legacy GetUserRolesByRoleName took through the very same procedure - and an unpaged request is
-        // passed through as a page size of zero rather than as a large page.
         harness.Roles.Verify(
             r => r.ListRoleMembershipsAsync(
                 PortalId,
@@ -2891,16 +2570,12 @@ public class RoleServiceTests
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
-        // The account-shaped read this listing used to perform is gone, because an account carries neither
-        // of the two dates the projection must publish.
         harness.Users.Verify(
             u => u.ListByRoleNameAsync(It.IsAny<int>(), It.IsAny<string>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
-    /// <summary>
-    /// Listing a member's roles in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Listing a member's roles in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListUserRoles_RefusesAnUnknownTenant()
@@ -2915,9 +2590,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// Listing the roles of an account that is not a member of the tenant is refused.
-    /// </summary>
+    /// <summary>Listing the roles of an account that is not a member of the tenant is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListUserRoles_RefusesAnAccountThatIsNotAMember()
@@ -2974,9 +2647,7 @@ public class RoleServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A member holding nothing receives an empty list rather than a failure.
-    /// </summary>
+    /// <summary>A member holding nothing receives an empty list rather than a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListUserRoles_ReportsAnEmptyAnswerForAMemberHoldingNothing()
@@ -2991,9 +2662,7 @@ public class RoleServiceTests
         outcome.Value.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Assigning a member to a role requires a request.
-    /// </summary>
+    /// <summary>Assigning a member to a role requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_RequiresARequest()
@@ -3004,9 +2673,7 @@ public class RoleServiceTests
             () => harness.Service.AssignUserToRoleAsync(PortalId, RoleId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// Assigning within a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Assigning within a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_RefusesAnUnknownTenant()
@@ -3021,9 +2688,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// Assigning to a role the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Assigning to a role the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_RefusesAnUnknownRole()
@@ -3038,9 +2703,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(RoleNotFoundCode);
     }
 
-    /// <summary>
-    /// Assigning an account that is not a member of the tenant is refused.
-    /// </summary>
+    /// <summary>Assigning an account that is not a member of the tenant is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_RefusesAnAccountThatIsNotAMember()
@@ -3057,9 +2720,7 @@ public class RoleServiceTests
         harness.AddedAssignments.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A member who holds nothing yet receives a new assignment naming the route's role.
-    /// </summary>
+    /// <summary>A member who holds nothing yet receives a new assignment naming the route's role.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_CreatesAnAssignmentWhenNoneExists()
@@ -3078,9 +2739,7 @@ public class RoleServiceTests
         created.IsTrialUsed.Should().BeFalse();
     }
 
-    /// <summary>
-    /// An existing assignment is amended in place rather than replaced by a second row.
-    /// </summary>
+    /// <summary>An existing assignment is amended in place rather than replaced by a second row.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_UpdatesTheDatesOfAnExistingAssignmentWithoutReplacingIt()
@@ -3105,9 +2764,7 @@ public class RoleServiceTests
         existing.ExpiryDate.Should().Be(Now.AddMonths(1));
     }
 
-    /// <summary>
-    /// Amending an assignment leaves the trial flag exactly as the store recorded it.
-    /// </summary>
+    /// <summary>Amending an assignment leaves the trial flag exactly as the store recorded it.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_LeavesTheTrialFlagAloneWhenUpdating()
@@ -3129,9 +2786,7 @@ public class RoleServiceTests
         existing.IsTrialUsed.Should().BeTrue();
     }
 
-    /// <summary>
-    /// The assignment commits once and the member's cached state is discarded by name.
-    /// </summary>
+    /// <summary>The assignment commits once and the member's cached state is discarded by name.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_CommitsAndInvalidatesTheMember()
@@ -3154,25 +2809,9 @@ public class RoleServiceTests
     /// <param name="period">The stored period, chosen to overrun the calendar at that frequency.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// Each row below reached the framework's date arithmetic directly before this work, and each failed
     /// there rather than here. The daily, monthly and yearly rows raised an out-of-range fault, which
-    /// surfaced as a server error naming no field. The WEEKLY row is the worst of the four and is the
-    /// reason this is a theory rather than a single case: the period was multiplied by seven in unchecked
-    /// 32-bit arithmetic, so a large period WRAPPED to a negative day count and moved the expiry silently
-    /// into the past - an assignment that lapses the instant it is granted, with no error anywhere.
-    /// </para>
-    /// <para>
-    /// Clamping upwards to the perpetual value rather than to the column's last instant is asserted because
-    /// that value is already this domain's encoding of "no expiry" and is what a one-off term stores, so a
-    /// membership whose term outruns the calendar is recorded as the perpetual term it effectively is, in
-    /// the form a legacy reader recognises.
-    /// </para>
-    /// <para>
-    /// The periods here exceed what a validated request may now submit, and that is deliberate: the
-    /// arithmetic reads the STORED role, and nothing bounded these columns before the write-side rule
-    /// existed, so a row carrying such a period can already be in a database.
-    /// </para>
+    /// surfaced as a server error naming no field.
     /// </remarks>
     [Theory]
     [InlineData(Frequency.Day, int.MaxValue)]
@@ -3216,11 +2855,6 @@ public class RoleServiceTests
     /// <param name="period">The stored period.</param>
     /// <param name="expectedDaysAhead">The offset the derived expiry must land at, in whole days.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The yearly row is the one that matters most here: the offset is applied as twelve months per year
-    /// rather than through the framework's year addition, so that both calendar frequencies share one range
-    /// check, and this row is what proves the two remain equivalent.
-    /// </remarks>
     [Theory]
     [InlineData(Frequency.Day, 30, 30)]
     [InlineData(Frequency.Week, 2, 14)]
@@ -3254,18 +2888,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F5: an effective date already in the past is STORED AS SUBMITTED, because a start date is a
-    /// caller's instruction and a backdated grant is a legitimate one.
+    /// an effective date already in the past is STORED AS SUBMITTED, because a start date is a caller's
+    /// instruction and a backdated grant is a legitimate one.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-F5 replaced a fact asserting the opposite. This member had discarded a past start
-    /// date to null, on the authority of <c>RoleController.vb</c> L530 - but that line belongs to
-    /// <c>UpdateUserRole</c>, whose inputs are the STORED assignment's bounds and which takes no date
-    /// arguments at all. The member the legacy screen called with a caller's dates is
-    /// <c>AddUserRole</c> at L295-L315, which stored both verbatim. Discarding the value silently
-    /// contradicted the 2xx the caller was given.
-    /// </remarks>
     [Fact]
     public async Task Assign_StoresAnEffectiveDateAlreadyInThePastAsSubmitted()
     {
@@ -3303,21 +2929,14 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// A submitted bound carrying the legacy absent-date marker is read as "no bound" rather than as a
-    /// real instant at the dawn of the calendar.
+    /// A submitted bound carrying the legacy absent-date marker is read as "no bound" rather than as a real
+    /// instant at the dawn of the calendar.
     /// </summary>
     /// <param name="hours">
     /// Hours to add to the marker, because the legacy emptiness test compared date parts only and a value
     /// copied out of a legacy object may carry a time component.
     /// </param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The marker is <c>Null.NullDate</c> - <c>Date.MinValue</c> (<c>Null.vb</c> L66-L70) - and a caller
-    /// built against the legacy contract had no other way to say "unbounded", because the legacy property
-    /// was a non-nullable VB <c>Date</c>. Reading it as absence is this layer's job under Rule T7, so that
-    /// the Domain classifier below it holds no sentinel knowledge at all. Both bounds are submitted
-    /// together, and the role declares no term, so neither can be reintroduced by the expiry arithmetic.
-    /// </remarks>
     [Theory]
     [InlineData(0)]
     [InlineData(5)]
@@ -3343,16 +2962,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The marker is read as absence on the paid path too, where the expiry is derived from the role's
-    /// term rather than taken from the caller.
+    /// The marker is read as absence on the paid path too, where the expiry is derived from the role's term
+    /// rather than taken from the caller.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Worth asserting separately because the two bounds take different routes here: the effective bound
-    /// is carried through, while the expiry bound only supplies the base the term is offset from. An
-    /// absent expiry and a marker expiry must therefore produce the SAME derived date - one month from
-    /// the current instant - and the point of the test is that the two agree.
-    /// </remarks>
     [Fact]
     public async Task Assign_DerivesTheSameExpiryFromTheMarkerAsFromAnAbsentBound()
     {
@@ -3391,17 +3004,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F5: a role that declares no period stores a SUBMITTED expiry verbatim, and stores none when the
-    /// caller submitted none.
+    /// a role that declares no period stores a SUBMITTED expiry verbatim, and stores none when the caller
+    /// submitted none.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-F5. The submitted half previously answered null - the request was accepted, the
-    /// caller was told so, and the bound it had named was dropped on the floor because the role had no
-    /// term to renew. A bound needs no term behind it to be meaningful: it is the date the membership
-    /// ends. The absent half is unchanged and is asserted alongside it, because it is what makes this a
-    /// test of the SUBMISSION rather than of the role.
-    /// </remarks>
     [Fact]
     public async Task Assign_ForARoleDeclaringNoPeriod_StoresASubmittedExpiryAndDerivesNothingWithout()
     {
@@ -3431,15 +3037,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F5: an expiry already in the past is stored as submitted rather than advanced to the present
-    /// and then extended by the role's term.
+    /// an expiry already in the past is stored as submitted rather than advanced to the present and then
+    /// extended by the role's term.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-F5. Recording an already-lapsed membership is a legitimate instruction - it is how a
-    /// subscription is closed off with the date it actually ended - and the previous behaviour turned it
-    /// into a membership valid for another month.
-    /// </remarks>
     [Fact]
     public async Task Assign_StoresAnExpiryAlreadyInThePastAsSubmitted()
     {
@@ -3457,17 +3058,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// SEC-F5: an expiry still in the future is stored as submitted rather than used as the base the
-    /// role's term is added to.
+    /// an expiry still in the future is stored as submitted rather than used as the base the role's term is
+    /// added to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: SEC-F5. This is the case in which the previous behaviour was hardest to notice and
-    /// costliest to have: the stored value was a plausible date, merely a period later than the one the
-    /// caller submitted, so an operator granting access until a stated day silently granted a month more.
-    /// The legacy carry-forward it was reproducing belongs to <c>UpdateUserRole</c>, which read the
-    /// STORED expiry and took no submitted one.
-    /// </remarks>
     [Fact]
     public async Task Assign_StoresASubmittedFutureExpiryWithoutAddingTheTerm()
     {
@@ -3547,9 +3141,7 @@ public class RoleServiceTests
         harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(PerpetualExpiry);
     }
 
-    /// <summary>
-    /// A term that charges nothing stores no expiry, even when a period is declared alongside it.
-    /// </summary>
+    /// <summary>A term that charges nothing stores no expiry, even when a period is declared alongside it.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_LeavesTheExpiryAbsentForAnUnchargedTerm()
@@ -3569,9 +3161,7 @@ public class RoleServiceTests
         harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().BeNull();
     }
 
-    /// <summary>
-    /// The trial term governs an assignment for a member who has not consumed a trial.
-    /// </summary>
+    /// <summary>The trial term governs an assignment for a member who has not consumed a trial.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Assign_PrefersTheTrialTermUntilItHasBeenUsed()
@@ -3640,9 +3230,7 @@ public class RoleServiceTests
         harness.AddedAssignments.Should().ContainSingle().Which.ExpiryDate.Should().Be(Now.AddMonths(1));
     }
 
-    /// <summary>
-    /// Removing a member from a role within a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Removing a member from a role within a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Remove_RefusesAnUnknownTenant()
@@ -3679,9 +3267,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Removing a member from a role the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Removing a member from a role the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Remove_RefusesAnUnknownRole()
@@ -3696,9 +3282,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(RoleNotFoundCode);
     }
 
-    /// <summary>
-    /// Removing an account that is not a member of the tenant is refused.
-    /// </summary>
+    /// <summary>Removing an account that is not a member of the tenant is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Remove_RefusesAnAccountThatIsNotAMember()
@@ -3736,8 +3320,8 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// The tenant's own administrator cannot be removed from the administrator role, because doing so
-    /// would leave the tenant with nobody able to administer it.
+    /// The tenant's own administrator cannot be removed from the administrator role, because doing so would
+    /// leave the tenant with nobody able to administer it.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3803,9 +3387,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(AssignmentProtectedCode);
     }
 
-    /// <summary>
-    /// An assignment to a role that charges nothing is deleted outright.
-    /// </summary>
+    /// <summary>An assignment to a role that charges nothing is deleted outright.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Remove_DeletesAnUnpaidAssignment()
@@ -3910,9 +3492,7 @@ public class RoleServiceTests
         harness.RemovedAssignments.Should().ContainSingle();
     }
 
-    /// <summary>
-    /// The removal commits once and the member's cached state is discarded by name.
-    /// </summary>
+    /// <summary>The removal commits once and the member's cached state is discarded by name.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Remove_CommitsAndInvalidatesTheMember()
@@ -3927,9 +3507,7 @@ public class RoleServiceTests
         harness.Cache.Verify(c => c.InvalidateUser(PortalId, MemberName), Times.Once);
     }
 
-    /// <summary>
-    /// Listing groups for a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Listing groups for a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleGroups_RefusesAnUnknownTenant()
@@ -3944,9 +3522,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// Every group the tenant owns is projected, carrying the tenant it belongs to.
-    /// </summary>
+    /// <summary>Every group the tenant owns is projected, carrying the tenant it belongs to.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListRoleGroups_ProjectsEveryGroup()
@@ -3976,9 +3552,7 @@ public class RoleServiceTests
         outcome.Value[1].RoleGroupName.Should().Be("Staff");
     }
 
-    /// <summary>
-    /// Reading one group from a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Reading one group from a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRoleGroup_RefusesAnUnknownTenant()
@@ -3993,9 +3567,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// A group the tenant does not have is reported as absent rather than as a failure.
-    /// </summary>
+    /// <summary>A group the tenant does not have is reported as absent rather than as a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRoleGroup_ReportsAbsenceRatherThanFailure()
@@ -4010,9 +3582,7 @@ public class RoleServiceTests
         outcome.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// A group belonging to another tenant is indistinguishable from one that does not exist.
-    /// </summary>
+    /// <summary>A group belonging to another tenant is indistinguishable from one that does not exist.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetRoleGroup_ReportsAbsenceForAGroupOfAnotherTenant()
@@ -4032,9 +3602,7 @@ public class RoleServiceTests
         outcome.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// Creating a group requires a request.
-    /// </summary>
+    /// <summary>Creating a group requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRoleGroup_RequiresARequest()
@@ -4067,9 +3635,7 @@ public class RoleServiceTests
         refusal.Message.Should().Be(expectedMessage);
     }
 
-    /// <summary>
-    /// A group name longer than the column permits is refused with the measured bound.
-    /// </summary>
+    /// <summary>A group name longer than the column permits is refused with the measured bound.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRoleGroup_RefusesAnOverlongName()
@@ -4106,9 +3672,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Creating a group in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Creating a group in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRoleGroup_RefusesAnUnknownTenant()
@@ -4124,9 +3688,7 @@ public class RoleServiceTests
         harness.AddedGroups.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A group name already held within the tenant is refused, and the check excludes nothing.
-    /// </summary>
+    /// <summary>A group name already held within the tenant is refused, and the check excludes nothing.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRoleGroup_RefusesADuplicateName()
@@ -4153,12 +3715,9 @@ public class RoleServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6, the concurrent counterpart of the check above. <c>IX_RoleGroupName</c> is unique
-    /// over <c>(PortalID, RoleGroupName)</c>, and the check reads the whole group collection and compares in
-    /// memory - which cannot see a group another request is inserting concurrently. The reasoning is recorded
-    /// in full on <see cref="CreateRole_RefusesANameTakenBetweenTheCheckAndTheCommit"/>; asserted separately
-    /// here because a translation added to one create path and forgotten on the next is exactly the failure
-    /// mode a shared explanation invites.
+    /// The concurrent counterpart of the check above. <c>IX_RoleGroupName</c> is unique over <c>(PortalID,
+    /// RoleGroupName)</c>, and the check reads the whole group collection and compares in memory - which
+    /// cannot see a group another request is inserting concurrently.
     /// </remarks>
     [Fact]
     public async Task CreateRoleGroup_RefusesANameTakenBetweenTheCheckAndTheCommit()
@@ -4181,18 +3740,8 @@ public class RoleServiceTests
         harness.Cache.Verify(cache => cache.InvalidatePortal(It.IsAny<int>()), Times.Never);
     }
 
-    /// <summary>
-    /// The stored group takes its tenant from the route, which the request body cannot contradict.
-    /// </summary>
+    /// <summary>The stored group takes its tenant from the route, which the request body cannot contradict.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this test previously set a CONFLICTING owning portal on the body and asserted that the route
-    /// won. The create contract carries no portal member, so the guarantee is now structural rather than
-    /// behavioural - there is nothing to contradict the route with. The assertion that the stored tenant is
-    /// the route's is retained, because it is what proves the parameter is the value written; its reason
-    /// string is left in place for the same purpose. Continued absence of the member is asserted by
-    /// <c>RoleWriteContractValidatorTests.RoleGroup_WriteContractsCarryNoIdentifierMemberAtAll</c>.
-    /// </remarks>
     [Fact]
     public async Task CreateRoleGroup_StoresTheSubmittedGroup()
     {
@@ -4211,9 +3760,7 @@ public class RoleServiceTests
         outcome.Value.PortalId.Should().Be(PortalId);
     }
 
-    /// <summary>
-    /// Creating a group commits once and discards the tenant's cached state.
-    /// </summary>
+    /// <summary>Creating a group commits once and discards the tenant's cached state.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreateRoleGroup_CommitsAndInvalidatesTheTenant()
@@ -4226,9 +3773,7 @@ public class RoleServiceTests
         harness.Cache.Verify(c => c.InvalidatePortal(PortalId), Times.Once);
     }
 
-    /// <summary>
-    /// Updating a group requires a request.
-    /// </summary>
+    /// <summary>Updating a group requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRoleGroup_RequiresARequest()
@@ -4239,9 +3784,7 @@ public class RoleServiceTests
             () => harness.Service.UpdateRoleGroupAsync(PortalId, RoleGroupId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// The group name is checked for shape on update as well, before the tenant is probed.
-    /// </summary>
+    /// <summary>The group name is checked for shape on update as well, before the tenant is probed.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRoleGroup_RefusesAMalformedName()
@@ -4261,9 +3804,7 @@ public class RoleServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// Updating a group in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Updating a group in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRoleGroup_RefusesAnUnknownTenant()
@@ -4278,9 +3819,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// A group belonging to another tenant cannot be edited through this tenant's route.
-    /// </summary>
+    /// <summary>A group belonging to another tenant cannot be edited through this tenant's route.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRoleGroup_RefusesAGroupFromAnotherTenant()
@@ -4345,9 +3884,7 @@ public class RoleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// The submitted name and description are applied to the tracked group, which commits once.
-    /// </summary>
+    /// <summary>The submitted name and description are applied to the tracked group, which commits once.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateRoleGroup_AppliesTheSubmittedNameAndDescription()
@@ -4372,17 +3909,10 @@ public class RoleServiceTests
     }
 
     /// <summary>
-    /// An update cannot move a group between tenants, because the write contract carries no tenant member and
-    /// the mapper writes none.
+    /// An update cannot move a group between tenants, because the write contract carries no tenant member
+    /// and the mapper writes none.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this test previously submitted a foreign tenant on the body and asserted that the stored
-    /// tenant was unchanged. The member no longer exists on the contract, so the assertion is now about the
-    /// MAPPER: a whole-representation update writes the name and the description and leaves the owning portal
-    /// exactly as it was read. That is the property worth guarding, and it would still be falsifiable if a
-    /// future edit to <c>RoleMappings.ApplyGroupUpdate</c> began assigning the tenant from anywhere.
-    /// </remarks>
     [Fact]
     public async Task UpdateRoleGroup_DoesNotMoveTheGroupBetweenTenants()
     {
@@ -4400,9 +3930,7 @@ public class RoleServiceTests
         tracked.RoleGroupName.Should().Be("Renamed Group", "the members the contract does carry are written");
     }
 
-    /// <summary>
-    /// Deleting a group in a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Deleting a group in a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteRoleGroup_RefusesAnUnknownTenant()
@@ -4417,9 +3945,7 @@ public class RoleServiceTests
         outcome.Reason!.Code.Should().Be(PortalNotFoundCode);
     }
 
-    /// <summary>
-    /// Deleting a group the tenant does not have is refused.
-    /// </summary>
+    /// <summary>Deleting a group the tenant does not have is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteRoleGroup_RefusesAnUnknownGroup()
@@ -4443,10 +3969,8 @@ public class RoleServiceTests
     [Fact]
     public async Task DeleteRoleGroup_RefusesAGroupThatStillClassifiesARole()
     {
-        // The occupancy question is asked through GetRolesByGroup (membership DataProvider.vb:L105),
-        // which is the legacy read for exactly it, so the roles the group classifies are what the world
-        // must contain. FK_Roles_RoleGroups carries no cascade, so the store would refuse this anyway -
-        // reporting it here turns a constraint violation into an intelligible failure.
+        // The occupancy question is asked through GetRolesByGroup, which is the legacy read for exactly it,
+        // so the roles the group classifies are what the world must contain.
         Harness harness = Harness.Ready();
         harness.LookupGroup = StoredGroup();
         harness.RolesInGroup = [StoredRole(), StoredRole(), StoredRole(), StoredRole()];
@@ -4462,9 +3986,7 @@ public class RoleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// The occupancy probe is the legacy group read, asked with both the group and its tenant.
-    /// </summary>
+    /// <summary>The occupancy probe is the legacy group read, asked with both the group and its tenant.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeleteRoleGroup_ProbesTheGroupsClassifiedRoles()
@@ -4519,8 +4041,8 @@ public class RoleServiceTests
     };
 
     /// <summary>
-    /// Builds a role whose name and service fee are both stated, so an ordering assertion can be made
-    /// over two fields whose sequences deliberately disagree.
+    /// Builds a role whose name and service fee are both stated, so an ordering assertion can be made over
+    /// two fields whose sequences deliberately disagree.
     /// </summary>
     /// <param name="roleId">The role identifier.</param>
     /// <param name="roleName">The role name.</param>
@@ -4536,9 +4058,7 @@ public class RoleServiceTests
         AutoAssignment = false,
     };
 
-    /// <summary>
-    /// Builds a second role fixture so a list projection has more than one row.
-    /// </summary>
+    /// <summary>Builds a second role fixture so a list projection has more than one row.</summary>
     /// <returns>A second role belonging to the tenant under test.</returns>
     private static Role SecondRole() => new()
     {
@@ -4564,9 +4084,7 @@ public class RoleServiceTests
         TrialFrequency = null,
     };
 
-    /// <summary>
-    /// Builds a role charging a monthly fee with a one-month term and no trial.
-    /// </summary>
+    /// <summary>Builds a role charging a monthly fee with a one-month term and no trial.</summary>
     /// <returns>A role with a monthly billing term.</returns>
     private static Role MonthlyRole() => new()
     {
@@ -4578,9 +4096,7 @@ public class RoleServiceTests
         BillingFrequency = Frequency.Month,
     };
 
-    /// <summary>
-    /// Builds a role offering a fourteen-day trial ahead of a monthly billing term.
-    /// </summary>
+    /// <summary>Builds a role offering a fourteen-day trial ahead of a monthly billing term.</summary>
     /// <returns>A role with both a trial term and a billing term.</returns>
     private static Role TrialThenMonthlyRole() => new()
     {
@@ -4595,9 +4111,7 @@ public class RoleServiceTests
         TrialFrequency = Frequency.Day,
     };
 
-    /// <summary>
-    /// Builds the group fixture the store returns.
-    /// </summary>
+    /// <summary>Builds the group fixture the store returns.</summary>
     /// <returns>A role group belonging to the tenant under test.</returns>
     private static RoleGroup StoredGroup() => new()
     {
@@ -4607,9 +4121,7 @@ public class RoleServiceTests
         Description = "Groups paid roles.",
     };
 
-    /// <summary>
-    /// Builds a member of the tenant under test.
-    /// </summary>
+    /// <summary>Builds a member of the tenant under test.</summary>
     /// <param name="userId">The account identifier to carry.</param>
     /// <returns>An account satisfying the columns the store declares as required.</returns>
     private static User Member(int userId) => new()
@@ -4661,9 +4173,7 @@ public class RoleServiceTests
             Role = StoredRole(),
         };
 
-    /// <summary>
-    /// Builds a creation request that passes every check the service performs.
-    /// </summary>
+    /// <summary>Builds a creation request that passes every check the service performs.</summary>
     /// <returns>A well-formed creation request.</returns>
     private static CreateRoleRequest ValidCreateRequest() => new()
     {
@@ -4671,39 +4181,33 @@ public class RoleServiceTests
         ServiceFee = 9.99m,
     };
 
-    /// <summary>
-    /// Builds an update request that passes every shape check the service performs.
-    /// </summary>
+    /// <summary>Builds an update request that passes every shape check the service performs.</summary>
     /// <returns>A well-formed update request.</returns>
     private static UpdateRoleRequest ValidUpdateRequest() => new()
     {
         // The name is required on the update contract as well as on the creation one, so this factory
-        // supplies the stored role's own name - which is what a caller amending one other field sends,
-        // and which the uniqueness guard must treat as a no-op rather than as a self-collision.
+        // supplies the stored role's own name - which is what a caller amending one other field sends, and
+        // which the uniqueness guard must treat as a no-op rather than as a self-collision.
         RoleName = RoleName,
         ServiceFee = 9.99m,
         BillingPeriod = 1,
         BillingFrequency = Frequency.Month,
     };
 
-    /// <summary>
-    /// Builds a group creation that passes every shape check the service performs.
-    /// </summary>
+    /// <summary>Builds a group creation that passes every shape check the service performs.</summary>
     /// <returns>A well-formed create request.</returns>
     /// <remarks>
-    /// MIGRATION: the two write verbs bind two request types rather than the <c>RoleGroupDto</c> response
-    /// projection they return. Both procedures write only the name and the description, so neither contract
-    /// carries a group identifier or an owning portal - the first is assigned by the store or taken from the
-    /// route, and the second is the resolved tenant.
+    /// The two write verbs bind two request types rather than the <c>RoleGroupDto</c> response projection
+    /// they return. Both procedures write only the name and the description, so neither contract carries a
+    /// group identifier or an owning portal - the first is assigned by the store or taken from the route,
+    /// and the second is the resolved tenant.
     /// </remarks>
     private static CreateRoleGroupRequest ValidGroupRequest() => new()
     {
         RoleGroupName = RoleGroupName,
     };
 
-    /// <summary>
-    /// Builds the update-verb counterpart of <see cref="ValidGroupRequest"/>, member for member.
-    /// </summary>
+    /// <summary>Builds the update-verb counterpart of <see cref="ValidGroupRequest"/>, member for member.</summary>
     /// <returns>A well-formed update request.</returns>
     private static UpdateRoleGroupRequest ValidGroupUpdate() => new()
     {
@@ -4761,10 +4265,7 @@ public class RoleServiceTests
             GrantSweep = Result.Success();
 
             // The removal now spans a set-based grant sweep and a staged role delete, so it opens a
-            // transaction. A loose mock would hand back a null task, so the scope is supplied - and it is
-            // supplied as a RECORDING scope, because "committed" and "finished" are different outcomes: the
-            // production scope rolls back on disposal without a commit, so a test asserting only that the
-            // method returned would pass for a removal that was abandoned.
+            // transaction.
             UnitOfWork
                 .Setup(unit => unit.BeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
@@ -4791,12 +4292,6 @@ public class RoleServiceTests
                     return Task.FromResult(GrantSweep);
                 });
 
-            // THE GRANT-CACHE EVICTION IS ALSO THE INJECTION POINT FOR A POST-COMMIT MAINTENANCE FAILURE, and
-            // it is this call rather than an earlier one because it is the LAST step after the commit: a fault
-            // raised here leaves the removal committed and the audit record already written, which is exactly
-            // the ordering the delete facts assert. The eviction is delegated and SYNCHRONOUS - the permission
-            // contract owns the key set - so the fault is thrown from the callback rather than returned on a
-            // faulted task; a member that takes no cancellation token cannot be made to observe one.
             Permissions
                 .Setup(permissions => permissions.InvalidateUserPermissionCaches())
                 .Callback(() =>
@@ -4819,10 +4314,6 @@ public class RoleServiceTests
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
                 .Callback<AuditEvent>(record =>
                 {
-                    // Logged as an ordered step as well as captured, so the sequence assertions can pin WHERE
-                    // in the sequence a record is emitted rather than only that it was. Where a record sits
-                    // relative to the commit and to the cancellable maintenance either side of it is the
-                    // whole of whether the trail can be trusted.
                     Steps.Add("audit." + record.EventName);
                     AuditRecords.Add(record);
                 });
@@ -4862,9 +4353,9 @@ public class RoleServiceTests
         /// A failure raised by the POST-COMMIT grant-cache eviction, or <see langword="null"/> for none.
         /// </summary>
         /// <remarks>
-        /// The eviction is the last step after the commit, so it is the one piece of
-        /// post-commit maintenance a disconnecting caller can make fail. This knob lets an assertion prove
-        /// that the record of a completed removal no longer depends on it.
+        /// The eviction is the last step after the commit, so it is the one piece of post-commit
+        /// maintenance a disconnecting caller can make fail. This knob lets an assertion prove that the
+        /// record of a completed removal no longer depends on it.
         /// </remarks>
         public Exception? GrantCacheEvictionFault { get; set; }
 
@@ -4904,9 +4395,9 @@ public class RoleServiceTests
         /// Gets or sets the name the CLASHING row is to carry, when it must differ from the submitted one.
         /// </summary>
         /// <remarks>
-        /// Null means "the same string the caller submitted", which is the ordinary duplicate. A value makes
-        /// the clash a COLLATION collision - the store treating two visibly different strings as one name -
-        /// which is the case the refusal has to explain rather than merely report.
+        /// Null means "the same string the caller submitted", which is the ordinary duplicate. A value
+        /// makes the clash a COLLATION collision - the store treating two visibly different strings as one
+        /// name - which is the case the refusal has to explain rather than merely report.
         /// </remarks>
         public string? ClashingStoredName { get; set; }
 
@@ -4950,19 +4441,12 @@ public class RoleServiceTests
 
         public IReadOnlyList<Role> RolesInGroup { get; set; } = [];
 
-        /// <summary>
-        /// Gets or sets the MEMBERSHIP rows the role-membership listing reads.
-        /// </summary>
-        /// <remarks>
-        /// Assignment rows rather than accounts, because the two dates the legacy grid rendered live on
-        /// the assignment. Each row must carry its account and role navigations, exactly as the read that
-        /// answers this question composes them.
-        /// </remarks>
+        /// <summary>Gets or sets the MEMBERSHIP rows the role-membership listing reads.</summary>
         public IReadOnlyList<UserRole> RoleMembers { get; set; } = [];
 
         /// <summary>
-        /// Composes one page of roles from the harness's role world, reproducing the semantics
-        /// <see cref="IRoleRepository.ListAsync"/> documents.
+        /// Composes one page of roles from the harness's role world, reproducing the semantics <see
+        /// cref="IRoleRepository.ListAsync"/> documents.
         /// </summary>
         /// <param name="portalId">The owning tenant, matched strictly.</param>
         /// <param name="roleGroupId">Restrict to one group, or <see langword="null"/> for none.</param>
@@ -5043,8 +4527,8 @@ public class RoleServiceTests
         /// <returns>The window and the total, exactly as the store would report them.</returns>
         /// <remarks>
         /// The three arms that name a value of the external membership store order by the tie-break alone,
-        /// which is what the store does and what the in-memory ordering they replace already produced, since
-        /// this read populates none of those three values.
+        /// which is what the store does and what the in-memory ordering they replace already produced,
+        /// since this read populates none of those three values.
         /// </remarks>
         public PagedResult<UserRole> ComposeMembershipPage(
             string? accountQuery,
@@ -5135,21 +4619,14 @@ public class RoleServiceTests
             harness.Portals
                 .Setup(p => p.ExistsAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists);
-            // MIGRATION: SEC-F3/SEC-F5. The read is gated by the same existence flag as the probe, so the
+            // MIGRATION: the read is gated by the same existence flag as the probe, so the
             // harness describes one world; see the fuller note on the sibling suite's harness.
             harness.Portals
                 .Setup(p => p.GetByIdAsync(It.IsAny<int>(), It.IsAny<bool>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PortalExists ? harness.PortalRow : null);
 
-            // Every stub below names a member of the role contract as it is actually declared: reads
-            // scoped by portal, writes staged asynchronously and never returning a generated key. The
-            // harness properties the tests set are unchanged, so a test still describes its world in
-            // the same terms.
-            // Both reads make the portal a CONDITION rather than a hint, exactly as the terminal
-            // procedures did - GetRole filters on "RoleId = @RoleId AND PortalId = @PortalId"
-            // (04.00.04.SqlDataProvider:L334-L335). The stub therefore withholds a row belonging to
-            // another tenant, so a test that plants a foreign row still exercises a genuine refusal
-            // instead of relying on a check the service no longer needs to perform.
+            // Every stub below names a member of the role contract as it is actually declared: reads scoped
+            // by portal, writes staged asynchronously and never returning a generated key.
             harness.Roles
                 .Setup(r => r.GetByIdAsync(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int roleId, int portalId, CancellationToken _) =>
@@ -5191,10 +4668,7 @@ public class RoleServiceTests
                 .ReturnsAsync(() => harness.RolePage.Items);
 
             // THE ROLE LISTING'S PAGE NOW COMES FROM THE STORE, filtered, ordered, counted and windowed
-            // there, so this is the seam the listing facts exercise. The fake reproduces the contract's
-            // documented semantics over the SAME role world the unpaged stub above serves, which is what
-            // keeps those facts describing the listing's observable behaviour rather than a canned answer:
-            // seed roles and the rows, the order, the total and the window all follow from them.
+            // there, so this is the seam the listing facts exercise.
             harness.Roles
                 .Setup(r => r.ListAsync(
                     It.IsAny<int>(),
@@ -5263,9 +4737,6 @@ public class RoleServiceTests
                 .Callback<Role, CancellationToken>((role, _) => harness.UpdatedRoles.Add(role))
                 .Returns(Task.CompletedTask);
 
-            // A delete now carries the key rather than the entity, so the harness resolves the entity it
-            // was given a key for. That keeps the existing assertions - which name the role object -
-            // meaningful while the contract stays key-based, as the legacy DeleteRole was.
             harness.Roles
                 .Setup(r => r.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Callback<int, CancellationToken>((roleId, _) =>
@@ -5323,12 +4794,6 @@ public class RoleServiceTests
                 })
                 .Returns(Task.CompletedTask);
 
-            // A role's memberships are read as ASSIGNMENT rows, through the role repository, because the
-            // effective and expiry dates the legacy grid rendered exist only on the assignment. The
-            // legacy screen took the same route: DNNRoleProvider.vb:L520-L522 defines
-            // GetUserRolesByRoleName as GetUserRoles(portalId, Nothing, roleName), and the terminal
-            // GetUserRolesByUsername statement answers a null login name with every assignment in the
-            // portal.
             harness.Roles
                 .Setup(r => r.GetUserRolesByUsernameAsync(
                     It.IsAny<int>(),
@@ -5409,11 +4874,6 @@ public class RoleServiceTests
     /// A transaction scope that records whether it was committed and whether it was disposed, and appends
     /// its commit to the harness's ordered step list.
     /// </summary>
-    /// <remarks>
-    /// Recording BOTH facts is what makes an abandoned removal distinguishable from a committed one: the
-    /// production scope rolls back when it is disposed without a commit, so a test asserting only that the
-    /// scope was disposed would pass for a removal that was rolled back.
-    /// </remarks>
     private sealed class RecordingTransactionScope : ITransactionScope
     {
         private readonly List<string> _steps;

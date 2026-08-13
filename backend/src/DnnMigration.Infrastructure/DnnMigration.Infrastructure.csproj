@@ -2,14 +2,14 @@
 
   <!--
     A class library, never the web SDK: this layer persists and secures, it does
-    not host HTTP. So no ASP.NET Core package and no framework reference to the
+    not host HTTP. No ASP.NET Core package and no framework reference to the
     ASP.NET Core shared framework may be added here.
 
-    The reference on Application is deliberate rather than incidental: some of
-    the abstractions this layer implements are declared there, and its options
-    classes are bound here through IOptions<T>. Never reference DnnMigration.Api,
-    which already references this project and would invert the graph, and never
-    reference a test project or a legacy project under Library/ or Website/.
+    The reference on Application is deliberate: some of the abstractions this
+    layer implements are declared there, and its options classes are bound here
+    through IOptions<T>. Never reference DnnMigration.Api, which already
+    references this project and would invert the graph, and never reference a test
+    project or a legacy project under Library/ or Website/.
 
     This project owns every Entity Framework Core, SQL client, password-hashing,
     health-check and token-signing reference in the solution, and nothing else.
@@ -17,13 +17,13 @@
     Application; the test database providers belong to the integration test
     project, because shipping one here would put a test provider into production.
 
-    JWT is deliberately split across two projects rather than owned by one,
-    because minting and validating a token are different jobs living in different
-    layers. This project mints — JwtTokenService signs the access token — so it
-    references the signing library. Api validates every inbound token on the
-    request path, which is middleware, so it references the ASP.NET Core bearer
-    authentication handler. Moving either reference to the other project would
-    force one of those two responsibilities into a layer that must not hold it.
+    JWT is split across two projects because minting and validating a token are
+    different jobs in different layers. This project mints — JwtTokenService signs
+    the access token — so it references the signing library. Api validates every
+    inbound token on the request path, which is middleware, so it references the
+    ASP.NET Core bearer authentication handler. Moving either reference to the
+    other project forces one of those responsibilities into a layer that must not
+    hold it.
 
     Build policy is inherited from backend/Directory.Build.props, which is why
     this file declares no PropertyGroup. Restating or overriding an inherited
@@ -47,52 +47,38 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.29" />
 
     <!--
-      Keep this reference PLAIN — adding PrivateAssets="all", the shape the stock
+      Keep this reference PLAIN. Adding PrivateAssets="all", the shape the stock
       template uses, stops the design-time library flowing to referencing
-      projects. The EF CLI resolves design-time services from the startup
-      project, and the API project receives this package only transitively from
-      here, so severing the flow breaks migration tooling with the familiar
-      "startup project does not reference Microsoft.EntityFrameworkCore.Design"
-      error. The separate command-line tooling package is not referenced;
-      dotnet-ef is installed as a global tool.
+      projects. The EF CLI resolves design-time services from the startup project,
+      and the API project receives this package only transitively from here, so
+      severing the flow breaks migration tooling with the familiar "startup
+      project does not reference Microsoft.EntityFrameworkCore.Design" error. The
+      separate command-line tooling package is not referenced; dotnet-ef is
+      installed as a global tool.
     -->
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
 
     <!--
-      EXPLICIT DIRECT PIN AT THE VERSION THE FROZEN DEPENDENCY INVENTORY NAMES.
-      AAP section 0.6.1 pins Microsoft.Data.SqlClient at 5.2.3 and says why the
-      pin is direct rather than transitive: without it the SQL Server provider
-      resolves 5.1.7 through EF Core, and the pin was verified to change the
-      resolved graph. Keeping the reference DIRECT is also what stops a future EF
-      Core patch moving the client underneath the solution - a direct
-      PackageReference wins resolution outright.
+      DIRECT PIN, AND IT MUST STAY DIRECT. Without it the SQL Server provider
+      resolves 5.1.7 transitively through EF Core. A direct PackageReference wins
+      resolution outright, so it is also what stops a future EF Core patch moving
+      the client underneath the solution.
 
-      A previous revision raised this to 6.1.6 on the argument that the 5.x
-      identity chain carries deprecated authentication and JSON packages. That
-      argument is not this project's to make. The inventory is FROZEN - it is the
-      agreed dependency graph, verified by a clean restore and a Release build
-      with warnings promoted to errors - and a project that raises a pinned major
-      version on its own is no longer building the graph that was reviewed.
-      Raising it is a two-step, review-visible operation: change the inventory,
-      then change this line. Restoring it here also restores the exact resolved
-      graph the lock files below assert, and the restore was re-verified to
-      produce zero warnings, so no advisory is promoted to an error by the
-      warnings-as-errors policy.
+      5.2.3 is the version the frozen dependency inventory names, and raising a
+      pinned major here alone would mean building a graph other than the one that
+      was reviewed and that the lock files assert. Change the inventory first,
+      then this line.
 
-      The trade-off behind the 6.1.6 attempt is recorded rather than absorbed. It
-      was made to shed identities NuGet's DEPRECATION listing reports inside
-      5.2.3's Entra ID chain (Azure.Identity 1.11.4 and the
-      Microsoft.IdentityModel 6.35.0 family). Deprecation carries no NU
-      diagnostic, so it never failed a build and never could, and the graph it
-      concerns is the interactive/Entra authentication path this solution does not
-      use - every connection string in the delivery authenticates with a SQL
-      login. The VULNERABILITY position is what the warnings-as-errors policy can
-      actually observe, and it is clean: restoring this project's graph with
-      NuGetAudit enabled at mode=all and level=low reports no advisory against
-      5.2.3 or anything it brings in, verified by execution rather than assumed.
-      Should a deployment ever need Entra ID authentication, raise the client
-      version in the inventory deliberately and re-verify this project's audit
-      position in the same change.
+      Known trade-off: NuGet's DEPRECATION listing flags identities inside 5.2.3's
+      Entra ID chain (Azure.Identity 1.11.4 and the Microsoft.IdentityModel 6.35.0
+      family). Deprecation carries no NU diagnostic, and that chain is the
+      interactive/Entra authentication path this solution does not use — every
+      connection string in the delivery authenticates with a SQL login. The
+      vulnerability position, which the warnings-as-errors policy can observe, is
+      clean: restoring with NuGetAudit at mode=all and level=low reports no
+      advisory against 5.2.3 or anything it brings in. A deployment that needs
+      Entra ID authentication raises the client version in the inventory and
+      re-verifies this project's audit position in the same change.
     -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
 
@@ -112,52 +98,37 @@
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
 
     <!--
-      The health-check ABSTRACTIONS, which is why this reference is load-bearing
-      even though its own SQL Server check is no longer registered. This project
-      is a plain class library rather than a web project, so it has no framework
-      reference to draw Microsoft.Extensions.Diagnostics.HealthChecks from, and
-      this package is the SOLE route by which IHealthCheck, HealthCheckResult,
-      HealthStatus, AddHealthChecks() and AddCheck<T>() reach
-      HealthChecks/DatabaseHealthCheck.cs and DependencyInjection.cs - verified
-      against the restored dependency graph, not assumed. Removing it does not
-      remove a dead dependency; it breaks the compile.
+      Referenced for the health-check ABSTRACTIONS, not for its own SQL Server
+      check. This project is a plain class library with no framework reference to
+      draw Microsoft.Extensions.Diagnostics.HealthChecks from, so this package is
+      the sole route by which IHealthCheck, HealthCheckResult, HealthStatus,
+      AddHealthChecks() and AddCheck<T>() reach HealthChecks/DatabaseHealthCheck.cs
+      and DependencyInjection.cs. Removing it breaks the compile.
 
-      AddSqlServer() is deliberately NOT called. It reads the same
+      AddSqlServer() is deliberately NOT called: it reads the same
       ConnectionStrings:Default value and opens a connection to the same instance
-      as this project's own probe, so registering both put two connections behind
-      every request to a path that docker-compose, the Alpine image's wget
-      HEALTHCHECK and any orchestrator poll continuously, while distinguishing
-      nothing. The package is retained for the abstractions and remains pinned per
-      AAP section 0.6.1; the endpoint it serves must stay anonymous and reachable,
-      because docker-compose gates the frontend service on the API becoming
-      healthy.
+      as this project's own probe, so registering both would put two connections
+      behind every poll of a continuously probed path while distinguishing
+      nothing. The endpoint it serves must stay anonymous and reachable, because
+      docker-compose gates the frontend service on the API becoming healthy.
     -->
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="8.0.2" />
 
     <!--
       ACCESS-TOKEN SIGNING FOR JwtTokenService, THROUGH THE ONE JWT IDENTITY THE
-      FROZEN INVENTORY NAMES. AAP section 0.4.1.1 assigns "EF Core, BCrypt, JWT
-      packages" to this project, and section 0.6.1 lists exactly one JWT package:
-      Microsoft.AspNetCore.Authentication.JwtBearer 8.0.29. This is that package.
-
-      A previous revision instead declared System.IdentityModel.Tokens.Jwt 7.7.3
-      directly - an identity the inventory does not contain - on the argument that
-      a class library should reference the token library alone. The version
-      reasoning in that argument was sound and is preserved here, because it is
-      exactly what this reference delivers: JwtBearer 8.0.29 resolves
+      DEPENDENCY INVENTORY NAMES. JwtBearer 8.0.29 resolves
       Microsoft.IdentityModel.Protocols.OpenIdConnect 7.7.3, which brings
       System.IdentityModel.Tokens.Jwt 7.7.3 and Microsoft.IdentityModel.Tokens
-      7.7.3 - the same band the Api project's own JwtBearer reference resolves. So
+      7.7.3 — the same band the Api project's own JwtBearer reference resolves. So
       the assembly that signs a token here and the assembly that validates it on
       the request path are one loaded version, and a signature that verifies in a
-      unit test verifies in production. The alternative - letting the token library
-      arrive as an untracked transitive of the data provider - would compile
-      against the 6.35.0 band while running against 7.7.3, which is precisely the
-      split the earlier note set out to prevent.
+      unit test verifies in production. Referencing the token library directly
+      instead would compile against the 6.35.0 band the data provider carries
+      while running against 7.7.3.
 
       The cost is stated rather than glossed: this reference brings a framework
       reference to Microsoft.AspNetCore.App with it. Nothing in this project
-      touches the request pipeline and nothing may start doing so - authentication
+      touches the request pipeline and nothing may start doing so — authentication
       handlers, middleware and endpoint plumbing belong to the Api layer, and the
       Domain project remains free of every package. Bump this and the Api's
       JwtBearer reference together or neither.
@@ -174,11 +145,11 @@
   <!--
     ONE FRIEND ASSEMBLY, NAMED EXPLICITLY, AND NOTHING WIDENED TO PUBLIC FOR A TEST.
 
-    Everything this layer implements is reachable through a PUBLIC contract - IPasswordHasher,
+    Everything this layer implements is reachable through a PUBLIC contract — IPasswordHasher,
     IClock, ICacheService, IHostSettingsService, IPortalContext and IRefreshTokenStore from
     Domain, ITokenService and IPermissionEvaluator from Application, the nine repository
-    interfaces and IUnitOfWork from Domain - and every one of them is registered by
-    AddInfrastructure. That is the PREFERRED route, and it is the one the integration suites take:
+    interfaces and IUnitOfWork from Domain — and every one of them is registered by
+    AddInfrastructure. That is the preferred route and the one the integration suites take:
     DnnMigration.IntegrationTests/Security/ resolves the real password hasher, token service,
     permission evaluator and refresh-token store from the composed container, which proves the
     registration as well as the behaviour. Nothing here should be reached by `new` when the
@@ -188,29 +159,21 @@
     COLLABORATORS rather than through the container: LoggingAuditSink, LegacyCredentialVerifier,
     JwtTokenService, DatabaseHealthCheck, RefreshTokenStore, ModuleBusinessControllerFactory and the
     persistence translators are each internal sealed, and each is covered by a suite that hands it a
-    recording logger, a mutable clock or a fabricated fault and asserts what it does with them - the
-    audit sink's structured-property discipline, the legacy verifier's format handling, the token
-    service's claim composition, the health check's non-disclosure of connection detail. Those facts
-    are not reachable from a resolved instance, because the substitution IS the fact; what they need
-    is the type.
+    recording logger, a mutable clock or a fabricated fault and asserts what it does with them. Those
+    facts are not reachable from a resolved instance, because the substitution IS the fact; what they
+    need is the type.
 
-    ⚠ THE GRANT NAMES DnnMigration.IntegrationTests, AND IT USED TO NAME DnnMigration.UnitTests.
-    That is not a widening - it is a correction. AAP 0.5.2.2 draws the unit project with a single
-    edge to Application, so a suite there cannot name an Infrastructure type at all; the thirteen
-    suites that did were relocated to the integration project, which reaches this assembly through
-    its own single edge to the API. The grant moved with them, and the old one is gone rather than
-    kept beside it, so the unit project is now structurally incapable of naming an internal type
-    here even by accident.
+    ⚠ THE GRANT NAMES DnnMigration.IntegrationTests, AND ONLY THAT ASSEMBLY. The unit project has a
+    single edge to Application, so a suite there cannot name an Infrastructure type at all; the
+    integration project reaches this assembly through its own single edge to the API. Do not add a
+    second name, in particular not DnnMigration.UnitTests, do not grant to a wildcard, and do not
+    widen a type from internal to public to make a test compile — including DnnDbContext, whose
+    internal declaration is what keeps Application away from the model.
 
-    The production layering guarantee is untouched and is a property of the four PRODUCTION
-    project files, not of this item: Domain declares zero project references, Application cannot
-    see Infrastructure, and either violation remains a compile error. A test project is the
-    outermost consumer of the graph rather than a layer within it.
-
-    The grant names ONE assembly. Do not add a second - in particular do not re-add
-    DnnMigration.UnitTests - do not grant it to a wildcard, and do not widen a type from internal to
-    public to make a test compile, including DnnDbContext, whose internal declaration is what keeps
-    Application away from the model.
+    The production layering guarantee is a property of the four PRODUCTION project files rather than
+    of this item: Domain declares zero project references, Application cannot see Infrastructure, and
+    either violation remains a compile error. A test project is the outermost consumer of the graph
+    rather than a layer within it.
   -->
   <ItemGroup>
     <InternalsVisibleTo Include="DnnMigration.IntegrationTests" />

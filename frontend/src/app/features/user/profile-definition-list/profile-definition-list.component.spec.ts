@@ -1,28 +1,8 @@
 /**
  * Specification for {@link ProfileDefinitionListComponent} — the profile-property catalogue at
- * `/settings/profile-definitions`.
- *
- * It is THREE things sharing one surface: an unpaged grid, a batch of staged edits that are only written
- * when the operator says so, and an inline editor that both creates and replaces. The risk lives in the
- * seams between them — an edit staged in the grid must survive until Apply, must be discarded by Refresh,
- * and must not be lost when a sibling write in the same batch is refused.
- *
- * - Mounted as the standalone unit it is, with the REAL {@link UserStore} pinned to each case's injector,
- *   and every request answered through `HttpTestingController`.
- * - `NotificationService.notify` is spied and called through. No router is spied: this screen navigates
- *   nowhere at all, which is itself asserted.
- *
- * The read is unpaged and takes no parameter. `GET /api/v1/profile-definitions` carries no page coordinate
- * and no tenant argument — the API resolves the tenant from the request — and the body is an envelope around
- * a PLAIN ARRAY. A fixture shaped as a paged listing flushes successfully and unwraps to no rows at all.
- *
- * There is no reorder endpoint and no bulk endpoint. Moving a row is a swap of two positions and therefore
- * TWO replaces; setting a flag across the catalogue is one replace per affected row. Every case that
- * exercises either asserts the request COUNT as well as the bodies.
- *
- * A staged edit is derived, not held as a flag. "Unapplied" means "differs from what the server last
- * reported", so a row stops being unapplied the moment the server agrees with it — which is what makes a
- * partially refused batch recoverable by pressing Apply again.
+ * `/settings/profile-definitions`. It is THREE things sharing one surface: an unpaged grid, a batch of
+ * staged edits that are only written when the operator says so, and an inline editor that both creates
+ * and replaces.
  */
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -64,36 +44,22 @@ const NAME_REQUIRED_MESSAGE = 'The Property Name is required';
 const NAME_PATTERN_MESSAGE = 'The property name cannot contain spaces';
 const DATA_TYPE_REQUIRED_MESSAGE = 'The Data Type is required';
 
-/**
- * Authored wording for the two numeric fields that had no absence rule at all.
- *
- * Restated here rather than imported, as every other sentence in this file is, so that a change to
- * either is detected HERE rather than silently agreed to.
- */
+/** Authored wording for the two numeric fields that had no absence rule at all. */
 const LENGTH_REQUIRED_MESSAGE = 'The Length is required';
 const VIEW_ORDER_REQUIRED_MESSAGE = 'The View Order is required';
 
 /** The whole-number sentence, restated so a case can prove it is NOT shown for an empty box. */
 const WHOLE_NUMBER_MESSAGE = 'Enter a whole number.';
 
-/**
- * The API's own sentence for an over-long expression, reproduced by the client.
- *
- * The one expression rule that lives on both sides: a character count is a fact no regular
- * expression engine disagrees about, and the API applies the identical 512-character limit,
- * so the client can refuse it without pre-empting the server. The expression's SYNTAX is
- * deliberately not judged here — see the cross-dialect cases below.
- */
+/** The API's own sentence for an over-long expression, reproduced by the client. */
 const EXPRESSION_TOO_LONG_MESSAGE = 'Validation Expression must be 512 characters or fewer';
 
-/** `DuplicateName.Text`, double spaces included. A single space here fails the case, correctly. */
+/** `DuplicateName.Text`, double spaces included. */
 const DUPLICATE_NAME_MESSAGE =
   'This Property already exists.  Property Names must be unique.  Please select a different ' +
   'name for this property.';
 
-/**
- * The eight headings the legacy published, plus the four it left empty.
- */
+/** The eight headings the legacy published, plus the four it left empty. */
 const DATA_HEADINGS = [
   'Name',
   'Category',
@@ -105,32 +71,14 @@ const DATA_HEADINGS = [
   'Visible',
 ];
 
-/**
- * The four command columns, whose headings the legacy resource file left as `<value />`.
- */
+/** The four command columns, whose headings the legacy resource file left as `<value />`. */
 const COMMAND_HEADINGS = ['Edit', 'Delete', 'Move Down', 'Move Up'];
 
-/**
- * The four names whose delete command the legacy hid.
- */
+/** The four names whose delete command the legacy hid. */
 const UNDELETABLE = ['LastName', 'FirstName', 'TimeZone', 'PreferredLocale'];
 
-/**
- * The string `app-data-table` projects into its own `<caption>`.
- *
- * NOT the page title, and the difference is deliberate rather than an oversight. The legacy grid had NO
- * caption at all, so the table reached a screen reader unnamed; the page heading is
- * `ControlTitle_manageprofile.Text` ("Manage Profile Properties") and is rendered by `app-page-header`.
- * Naming the table with the page's own heading would have announced the same words twice in the
- * accessibility tree while still not saying what the table contains, so the caption is its own sentence.
- * Both are asserted, each in its own place.
- */
 const GRID_CAPTION = 'Profile properties declared for this site';
 
-/**
- * The nine field labels, verbatim from the `ProfilePropertyDefinition_<member>.Text` values, in the
- * `SortOrder` order the form renders them.
- */
 const FIELD_LABELS = [
   'Property Name:',
   'Data Type:',
@@ -161,24 +109,16 @@ const FIELD_CONTROL_IDS = [
 ];
 
 /**
- * `ProfilePropertyDefinition_PropertyCategory.Help`, reproduced byte for byte.
- *
- * The misspelling is the product's and is preserved (mcc-1). "dislayed" is what the legacy resource value
- * reads; correcting it here would be an unrequested content change in a migration whose whole discipline is
- * behavioural equivalence. Both double spaces are load-bearing too.
+ * `ProfilePropertyDefinition_PropertyCategory.Help`, reproduced byte for byte. The misspelling is the
+ * product's and is preserved (mcc-1).
  */
 const CATEGORY_HELP_WITH_LEGACY_TYPO =
   'Enter the category for this property.  This will allow the related properties to be ' +
   'grouped when dislayed to the user.';
 
-/**
- * The sentence the component publishes for a declaration that has already been removed.
- */
+/** The sentence the component publishes for a declaration that has already been removed. */
 const DEFINITION_GONE_MESSAGE = 'That profile property no longer exists. The list has been refreshed.';
 
-/**
- * The four members `Browsable(False)` kept out of the legacy property editor.
- */
 const NON_BROWSABLE_LABELS = ['Is Dirty', 'Module Def', 'Portal', 'Visibility'];
 
 describe('ProfileDefinitionListComponent', () => {
@@ -209,9 +149,7 @@ describe('ProfileDefinitionListComponent', () => {
     };
   }
 
-  /**
-   * Three declarations in position order, none of them one of the four undeletable names.
-   */
+  /** Three declarations in position order, none of them one of the four undeletable names. */
   function catalogue(): readonly ProfilePropertyDefinition[] {
     return [
       definition({ propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0 }),
@@ -253,17 +191,13 @@ describe('ProfileDefinitionListComponent', () => {
     httpMock.verify();
   });
 
-  /**
-   * Creates the component and runs the first change detection.
-   */
+  /** Creates the component and runs the first change detection. */
   function create(): void {
     fixture = TestBed.createComponent(ProfileDefinitionListComponent);
     fixture.detectChanges();
   }
 
-  /**
-   * Consumes exactly one pending request, asserted by verb AND address.
-   */
+  /** Consumes exactly one pending request, asserted by verb AND address. */
   function expectRequest(method: string, url: string, label = 'a request'): TestRequest {
     const matches = httpMock.match((candidate) => candidate.url === url);
     const wanted = matches.filter((candidate) => candidate.request.method === method);
@@ -281,9 +215,7 @@ describe('ProfileDefinitionListComponent', () => {
     return found;
   }
 
-  /**
-   * Consumes every pending write against a definition, in the order they were issued.
-   */
+  /** Consumes every pending write against a definition, in the order they were issued. */
   function pendingWrites(method: string): readonly TestRequest[] {
     return httpMock.match(
       (candidate) =>
@@ -298,19 +230,13 @@ describe('ProfileDefinitionListComponent', () => {
   }
 
   /**
-   * Drives a whole Apply batch to completion, answering each row in turn.
+   * Drives a whole Apply batch to completion, answering each row in turn. ⚠ APPLY WRITES ONE ROW AT A
+   * TIME, SO A BATCH CANNOT BE MATCHED IN ONE CALL. The screen keeps exactly one replace outstanding and
+   * dispatches the next only once that one has settled, which is what makes every row's outcome
+   * observable: the store publishes ONE settled result at a time, so two answers landing in the same turn
+   * would coalesce and the earlier row's outcome would never reach the reporting effect.
    *
-   * ⚠ APPLY WRITES ONE ROW AT A TIME, SO A BATCH CANNOT BE MATCHED IN ONE CALL. The screen keeps
-   * exactly one replace outstanding and dispatches the next only once that one has settled, which is
-   * what makes every row's outcome observable: the store publishes ONE settled result at a time, so
-   * two answers landing in the same turn would coalesce and the earlier row's outcome would never
-   * reach the reporting effect. Serialising also stops n simultaneous writes renumbering the same
-   * display-position column against each other.
-   *
-   * Each row is recorded BEFORE it is answered, because answering it releases the request and the
-   * assertions in these cases are about what was asked for.
-   *
-   * @param answer Answers one row. Called once per row, in dispatch order.
+   * @param answer Answers one row.
    * @param rows The catalogue to answer the surviving re-read with, when the batch provoked one.
    * @returns What each row asked for, in dispatch order.
    */
@@ -344,11 +270,9 @@ describe('ProfileDefinitionListComponent', () => {
   }
 
   /**
-   * Drains every catalogue re-read outstanding, tolerating there being none.
-   *
-   * A batch whose every row was refused provokes no re-read at all, so unlike {@link settleReReads}
-   * this makes no claim that one was made. All but the last are cancelled — the store abandons an
-   * outstanding read before dispatching another — and a cancelled request cannot be flushed.
+   * Drains every catalogue re-read outstanding, tolerating there being none. A batch whose every row was
+   * refused provokes no re-read at all, so unlike {@link settleReReads} this makes no claim that one was
+   * made.
    *
    * @param rows The catalogue to answer the surviving read with.
    */
@@ -373,18 +297,7 @@ describe('ProfileDefinitionListComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Flushes the ONE catalogue re-read a settled batch provokes.
-   *
-   * ⚠ EXACTLY ONE, AND THE COUNT IS THE ASSERTION. The batch used to be n independent writes, each
-   * refreshing the whole catalogue when it landed, so n staged rows produced n reads of which n-1
-   * were cancelled by the next - a read/write storm to apply a handful of check-box edits. The store
-   * now reads the catalogue once, after the last row has settled, exactly as the legacy Apply
-   * handler rebound its grid once after its sequential loop (`ProfileDefinitions.ascx.vb`
-   * L446-L448). More than one read here is that defect returning.
-   *
-   * @param rows The catalogue to answer the read with.
-   */
+  /** @param rows The catalogue to answer the read with. */
   function settleReReads(rows: readonly ProfilePropertyDefinition[] = catalogue()): void {
     const reads = httpMock.match(
       (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
@@ -397,15 +310,13 @@ describe('ProfileDefinitionListComponent', () => {
   }
 
   /**
-   * Drives a staged batch to completion, one replace at a time.
-   *
-   * ⚠ THE BOUND IS WHAT THIS HELPER PROVES. A batch issues its next replace only once the previous
-   * one has settled, so at every step there is EXACTLY ONE write in flight however many rows were
-   * staged. It returns the addresses in the order they were written, so a case can assert the order
-   * as well as the count.
+   * Drives a staged batch to completion, one replace at a time. ⚠ THE BOUND IS WHAT THIS HELPER PROVES. A
+   * batch issues its next replace only once the previous one has settled, so at every step there is
+   * EXACTLY ONE write in flight however many rows were staged. It returns the addresses in the order they
+   * were written, so a case can assert the order as well as the count.
    *
    * @param expected How many replaces the batch should consist of.
-   * @param answer Answers one replace, defaulting to acceptance. Receives the zero-based step.
+   * @param answer Answers one replace, defaulting to acceptance.
    * @returns The addresses written, in order.
    */
   function settleBatch(
@@ -455,18 +366,14 @@ describe('ProfileDefinitionListComponent', () => {
     return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<T>(selector));
   }
 
-  /**
-   * Every button whose rendered text contains the wording, in document order.
-   */
+  /** Every button whose rendered text contains the wording, in document order. */
   function buttonsNamed(wording: string): readonly HTMLButtonElement[] {
     return query<HTMLButtonElement>('button').filter((button) =>
       (button.textContent ?? '').includes(wording),
     );
   }
 
-  /**
-   * Exactly one button by its rendered wording.
-   */
+  /** Exactly one button by its rendered wording. */
   function button(wording: string): HTMLButtonElement {
     const found = buttonsNamed(wording);
 
@@ -486,12 +393,7 @@ describe('ProfileDefinitionListComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * A button inside the removal dialog, by its rendered wording.
-   *
-   * Scoped to the dialog deliberately: the grid also renders one "Delete" command per removable row, so an
-   * unscoped search for that wording finds four buttons and cannot say which is the confirmation.
-   */
+  /** A button inside the removal dialog, by its rendered wording. */
   function dialogButton(wording: string): HTMLButtonElement {
     const found = query<HTMLButtonElement>('app-confirm-dialog button').filter((candidate) =>
       (candidate.textContent ?? '').includes(wording),
@@ -513,16 +415,13 @@ describe('ProfileDefinitionListComponent', () => {
     fixture.detectChanges();
   }
 
+  /** The property names in the order the grid renders them. */
   /**
-   * The property names in the order the grid renders them.
-   */
-  /**
-   * The catalogue as a server that ACCEPTED the given edits would report it back.
-   *
-   * ⚠ THIS MATTERS FOR ANY CASE THAT ASSERTS ON THE STAGED COUNT AFTER A BATCH. The count is derived
-   * from the DIFFERENCE between what is staged and what the server holds, so answering the re-read
-   * with the untouched catalogue leaves every applied row still counting as outstanding - the fake
-   * server has to have honoured the write for the screen to be able to tell that it landed.
+   * The catalogue as a server that ACCEPTED the given edits would report it back. ⚠ THIS MATTERS FOR ANY
+   * CASE THAT ASSERTS ON THE STAGED COUNT AFTER A BATCH. The count is derived from the DIFFERENCE between
+   * what is staged and what the server holds, so answering the re-read with the untouched catalogue
+   * leaves every applied row still counting as outstanding - the fake server has to have honoured the
+   * write for the screen to be able to tell that it landed.
    */
   function catalogueWith(
     applied: Readonly<Record<number, Partial<ProfilePropertyDefinition>>>,
@@ -533,19 +432,7 @@ describe('ProfileDefinitionListComponent', () => {
   /** Where the screen's own polite status region lives, beside the Apply command it reports on. */
   const STATUS_REGION = 'p.profile-definitions__grid-actions [role="status"][aria-live="polite"]';
 
-  /**
-   * The screen's permanently mounted polite status region.
-   *
-   * Resolved by its ROLE rather than by a class, because what matters about it is the contract it
-   * offers assistive technology; a class would let the element be renamed and keep the test passing
-   * while the announcement stopped working.
-   *
-   * ⚠ SCOPED TO THE ACTION ROW, AND THAT IS NOT TIDINESS. A document-wide role query is AMBIGUOUS on
-   * this screen: the shared `app-data-table` publishes its own visually-hidden polite status region
-   * for the row count, so an unscoped lookup finds two and silently reads "3 records." instead of
-   * anything this screen said. Measured - the unscoped selector matched 2 elements and returned the
-   * table's. The scope additionally asserts the region sits with the command whose outcome it states.
-   */
+  /** The screen's permanently mounted polite status region. */
   function statusRegion(): HTMLElement {
     const found = query<HTMLElement>(STATUS_REGION);
 
@@ -563,9 +450,7 @@ describe('ProfileDefinitionListComponent', () => {
     });
   }
 
-  /**
-   * The grid's own check box for a column, one per row, in rendered order.
-   */
+  /** The grid's own check box for a column, one per row, in rendered order. */
   function rowCheckboxes(column: 'required' | 'visible'): readonly HTMLInputElement[] {
     const offset = column === 'required' ? 10 : 11;
 
@@ -577,9 +462,7 @@ describe('ProfileDefinitionListComponent', () => {
     });
   }
 
-  /**
-   * The two bulk toggles, which sit outside the table.
-   */
+  /** The two bulk toggles, which sit outside the table. */
   function bulkToggles(): readonly HTMLInputElement[] {
     return query<HTMLInputElement>('.profile-definitions__bulk input[type="checkbox"]');
   }
@@ -625,9 +508,7 @@ describe('ProfileDefinitionListComponent', () => {
     }
   }
 
-  /**
-   * Fills the create form with a valid declaration.
-   */
+  /** Fills the create form with a valid declaration. */
   function fillValidForm(name = 'Twitter'): void {
     type('profile-definition-name', name);
     type('profile-definition-data-type', '349');
@@ -716,9 +597,6 @@ describe('ProfileDefinitionListComponent', () => {
     it('never paints the null-integer sentinel in the data-type cell, and says instead that no type was chosen', () => {
       arrive([definition({ propertyDefinitionId: 41, propertyName: 'Unknown', dataType: -1 })]);
 
-      // ⚠ THE COMBINED CELL SELECTOR, BECAUSE THE NAME COLUMN IS A ROW HEADER. That column renders
-      // `<th scope="row">`, so a `td`-only query would skip it and every index after it would name the
-      // wrong column. The data-type column is the seventh cell in document order.
       const cell = query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(6);
       const painted = cell?.querySelector('[aria-hidden="true"]');
       const announced = cell?.querySelector('[data-visually-hidden]');
@@ -732,24 +610,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('paints the stored data-type key as a REFERENCE, never bare and never withheld', () => {
-      // ⚠ THIS CASE RECONCILES TWO QA FINDINGS THAT PULL IN OPPOSITE DIRECTIONS, AND BOTH ARE CITED SO
-      // THAT NEITHER IS RE-OPENED BY UNDOING THE OTHER.
-      //
-      // The first finding was that a bare `349` reached the user in a column headed `DataType`, where a
-      // number reads as though it were the type's name. `DisplayDataType` never returned a number - it
-      // returned the resolved list-entry value or the empty string - and the `Lists` vocabulary that
-      // names 349 is excluded from the migration, absent from the API and absent from the schema, so no
-      // name can be produced. That finding was answered by painting the absent-value mark instead.
-      //
-      // The second finding was that the mark then reached the user on 100% of rows, so a sighted reader
-      // learned "this property has no data type" when every row stores one. The correcting wording
-      // existed only in a `title` and a screen-reader-only span, which a sighted reader had to hover to
-      // discover.
-      //
-      // A PREFIXED reference answers both at once: `#349` cannot be read as a type name, only as a
-      // reference to one, and it does not hide a value the row really holds. The three expectations
-      // below pin each half - the reference is painted, the bare number is not, and the mark is reserved
-      // for the sentinel row the preceding case covers.
       arrive([definition({ propertyDefinitionId: 42, propertyName: 'Typed', dataType: 349 })]);
 
       const cell = query<HTMLTableCellElement>('tbody tr td,tbody tr th').at(6);
@@ -870,9 +730,6 @@ describe('ProfileDefinitionListComponent', () => {
 
       const bodies = new Map<string, unknown>();
 
-      // ⚠ ONE AT A TIME, AND THE HELPER ASSERTS IT AT EVERY STEP. A move stages two rows because a
-      // position swap is two replaces, and the two used to be issued together; the batch now issues
-      // the second only once the first has settled.
       const written = settleBatch(2, (write) => {
         bodies.set(write.request.url, write.request.body);
         write.flush(envelope(definition()));
@@ -953,32 +810,7 @@ describe('ProfileDefinitionListComponent', () => {
 
   // THE STAGED BATCH
 
-  // =============================================================================================
   // ROW IDENTITY ACROSS A STAGED EDIT
-  // =============================================================================================
-  //
-  // ⚠⚠ THE DEFECT THESE CASES EXIST FOR WAS A LOST FOCUS ON EVERY SINGLE EDIT. The shared table
-  // tracks its rows by OBJECT REFERENCE — it reads no identifier member, its column descriptor
-  // names no key field, and adding one would widen a closed component surface — so a row handed
-  // over as a new object has its `<tr>` destroyed and rebuilt, taking every control inside it with
-  // it. This screen re-projected a row on every staged change, so:
-  //
-  //   * PRESSING A ROW CHECKBOX removed that very checkbox from the document. Focus fell back to
-  //     the document body, and an operator working down the grid by keyboard was returned to the
-  //     top of the page on every toggle.
-  //   * PRESSING MOVE UP OR MOVE DOWN was worse, because a move restages TWO rows and the button
-  //     pressed is on one of them. The reader lost their place at the exact moment they were
-  //     working through the order — and the two rows are adjacent, so the correct outcome is that
-  //     focus FOLLOWS the record to its new position.
-  //
-  // The screen now keeps one stable instance per `propertyDefinitionId` and refreshes its members
-  // in place, publishing a NEW ARRAY of those stable instances: the array identity is what makes
-  // the grid re-project the cells and show the staged value, and the instance identity is what
-  // makes the row element and the focused control survive that re-projection.
-  //
-  // ⚠ THESE CASES ASSERT ON THE LIVE ELEMENT AND ON `document.activeElement`, never on the
-  // component's internals. A cache asserted through its own field would pass for a cache that
-  // worked and for one whose stability never reached the DOM.
   describe('row identity across a staged edit', () => {
     it('keeps the same row element when a checkbox in it is staged', () => {
       arrive();
@@ -1011,9 +843,9 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('shows the staged value even though the row object was not replaced', () => {
-      // ⚠ THE OTHER HALF, AND THE ONE A NAIVE FIX BREAKS. Holding a row object stable is only
-      // correct if the grid still re-projects its cells; a fix that also returned the same ARRAY
-      // would keep focus and show stale values, which is a worse defect than the one it replaced.
+      // ⚠ THE OTHER HALF, AND THE ONE A NAIVE FIX BREAKS. Holding a row object stable is only correct if
+      // the grid still re-projects its cells; a fix that also returned the same ARRAY would keep focus and
+      // show stale values, which is a worse defect than the one it replaced.
       arrive();
 
       const before: boolean | undefined = rowCheckboxes('required').at(1)?.checked;
@@ -1028,11 +860,8 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('carries a row\u2019s identity WITH IT when a move changes its position', () => {
-      // ⚠ IDENTITY IS KEYED BY THE DECLARATION, NOT BY THE POSITION, and a move is what tells the
-      // two apart. Keying by position would hand each of the two exchanged rows the OTHER row's
-      // instance, so the row element would stay put while its contents swapped — and the reader's
-      // focus would follow the POSITION rather than the record they had just moved, which is the
-      // opposite of what pressing Move Down means.
+      // ⚠ IDENTITY IS KEYED BY THE DECLARATION, NOT BY THE POSITION, and a move is what tells the two
+      // apart.
       arrive();
 
       const rowsBefore: readonly HTMLTableRowElement[] = query<HTMLTableRowElement>('tbody tr');
@@ -1069,9 +898,9 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('replaces every row element when the catalogue itself is re-read', () => {
-      // ⚠ THE STABILITY IS PER DECLARATION AND NOT PER SCREEN, so a genuinely different catalogue
-      // must not be forced into the previous one's elements. A re-read reporting a DIFFERENT set
-      // of declarations is a new set of records, and each gets its own row.
+      // ⚠ THE STABILITY IS PER DECLARATION AND NOT PER SCREEN, so a genuinely different catalogue must not
+      // be forced into the previous one's elements. A re-read reporting a DIFFERENT set of declarations is
+      // a new set of records, and each gets its own row.
       arrive();
 
       const before: readonly HTMLTableRowElement[] = query<HTMLTableRowElement>('tbody tr');
@@ -1095,32 +924,7 @@ describe('ProfileDefinitionListComponent', () => {
     });
   });
 
-  // =============================================================================================
   // ROW IDENTITY ACROSS A STAGED EDIT
-  // =============================================================================================
-  //
-  // ⚠⚠ THE DEFECT THESE CASES EXIST FOR WAS A LOST FOCUS ON EVERY SINGLE EDIT. The shared table
-  // tracks its rows by OBJECT REFERENCE — it reads no identifier member, its column descriptor
-  // names no key field, and adding one would widen a closed component surface — so a row handed
-  // over as a new object has its `<tr>` destroyed and rebuilt, taking every control inside it with
-  // it. This screen re-projected a row on every staged change, so:
-  //
-  //   * PRESSING A ROW CHECKBOX removed that very checkbox from the document. Focus fell back to
-  //     the document body, and an operator working down the grid by keyboard was returned to the
-  //     top of the page on every toggle.
-  //   * PRESSING MOVE UP OR MOVE DOWN was worse, because a move restages TWO rows and the button
-  //     pressed is on one of them. The reader lost their place at the exact moment they were
-  //     working through the order — and the two rows are adjacent, so the correct outcome is that
-  //     focus FOLLOWS the record to its new position.
-  //
-  // The screen now keeps one stable instance per `propertyDefinitionId` and refreshes its members
-  // in place, publishing a NEW ARRAY of those stable instances: the array identity is what makes
-  // the grid re-project the cells and show the staged value, and the instance identity is what
-  // makes the row element and the focused control survive that re-projection.
-  //
-  // ⚠ THESE CASES ASSERT ON THE LIVE ELEMENT AND ON `document.activeElement`, never on the
-  // component's internals. A cache asserted through its own field would pass for a cache that
-  // worked and for one whose stability never reached the DOM.
 
   describe('the staged batch', () => {
     it('disables Apply until something is staged', () => {
@@ -1182,18 +986,11 @@ describe('ProfileDefinitionListComponent', () => {
       press(APPLY_LABEL);
 
       settleReplaces();
-      // The batch reads the catalogue once when its last row has settled, so that read has to be
-      // answered or verification fails on an outstanding request rather than on anything this case
-      // is about. It answers with the edit HONOURED, because a server that silently kept the old
-      // value would leave the row outstanding and this case would be asserting the wrong thing.
+      // The batch reads the catalogue once when its last row has settled, so that read has to be answered
+      // or verification fails on an outstanding request rather than on anything this case is about.
       settleReReads(catalogueWith({ 11: { required: true } }));
 
       expect(notify).not.toHaveBeenCalled();
-      // ⚠ AND YET IT IS NOT SILENT. This case used to be titled as though nothing were announced at
-      // all, which stopped being the whole truth once the polite status region was given the settled
-      // sentence. The two claims are separate: no TOAST is raised, because the legacy raised none,
-      // and the outcome is nevertheless stated where a non-visual reader will hear it. Asserting only
-      // the first would let the second be deleted without a failing test.
       expect(statusRegion().textContent?.trim()).toBe('1 change(s) applied.');
     });
 
@@ -1283,9 +1080,9 @@ describe('ProfileDefinitionListComponent', () => {
       press(APPLY_LABEL);
 
       // The first write is accepted and the second refused, which is exactly the partial outcome
-      // independent writes and no transaction make possible. ⚠ A REFUSAL DOES NOT ABANDON THE ROWS
-      // BEHIND IT - here it is the last row, and the companion case below proves the continuation -
-      // and the catalogue is still read once afterwards.
+      // independent writes and no transaction make possible. ⚠ A REFUSAL DOES NOT ABANDON THE ROWS BEHIND
+      // IT - here it is the last row, and the companion case below proves the continuation and the
+      // catalogue is still read once afterwards.
       const written = settleBatch(2, (write, step) => {
         if (step === 0) {
           write.flush(envelope(definition({ propertyDefinitionId: 11, required: true })));
@@ -1324,9 +1121,6 @@ describe('ProfileDefinitionListComponent', () => {
 
       press(APPLY_LABEL);
 
-      // ⚠ THE MIDDLE ROW IS REFUSED AND THE THIRD IS STILL WRITTEN. Abandoning the remainder would
-      // strand work the operator asked for; the rows are independent, so each is attempted on its own
-      // merits exactly as the server applies them.
       const written = settleBatch(3, (write, step) => {
         if (step === 1) {
           write.flush(problem(409), { status: 409, statusText: 'Conflict' });
@@ -1350,17 +1144,10 @@ describe('ProfileDefinitionListComponent', () => {
 
       press(APPLY_LABEL);
 
-      // Claimed rather than merely counted, because claiming a request is what takes it out of the
-      // backend's open set - which is exactly what makes the assertion below meaningful: anything
-      // still open afterwards was issued by the second press.
       const first = pendingWrites('PUT');
 
       expect(first.length).withContext('one replace in flight').toBe(1);
 
-      // ⚠ THE DEFECT THIS PINS DOWN. The shared saving flag used to fall on the FIRST write to land,
-      // so Apply became pressable again while the rest of the batch was still in flight and a second
-      // batch could be started on top of the first. The flag is now held for the whole batch, so the
-      // command is withheld and pressing it again adds NOTHING to the wire.
       press(APPLY_LABEL);
 
       expect(pendingWrites('PUT').length).withContext('the second press asked nothing').toBe(0);
@@ -1424,23 +1211,6 @@ describe('ProfileDefinitionListComponent', () => {
 
   describe('the inline create form', () => {
     it('registers an unsaved-entry probe that a closed editor leaves silent', () => {
-      /*
-       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
-       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
-       * `@angular/forms` reachable from the eager import graph of an application whose every form
-       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring the
-       * gate without one is not merely unprotected: it LOOKS protected in the route table, and the
-       * guard reads it as clean.
-       *
-       * ⚠ THE THREE STATES ARE ASSERTED IN SEQUENCE BECAUSE THE MIDDLE ONE IS THE WHOLE POINT ON A
-       * SCREEN LIKE THIS. One `FormGroup` serves creation and the editing of every row in turn, so a
-       * cancelled editor could plausibly leave the group dirty and warn about entry the operator had
-       * already abandoned - a false prompt on every subsequent exit. Closing resets the group, and
-       * this pins that: silent, then dirty, then silent again.
-       *
-       * `isDirty()` is the guard's own public surface, so this asserts through the very call the
-       * guard makes rather than through an internal.
-       */
       const tracker = TestBed.inject(UnsavedChangesTracker);
 
       arrive();
@@ -1507,15 +1277,9 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     /**
-     * ⚠ THE CASE THAT KEEPS THE MEMOISED MESSAGE MAP HONEST.
-     *
-     * Each field's messages are bound twice — to the shared field's `error` input and to the
-     * control's own `aria-invalid` — so they are derived ONCE per change into a map the template
-     * reads, rather than recomputed per binding. The risk that trade brings is staleness: a reactive
-     * form is not a signal, so without a bridge from the form's own events the map would keep
-     * reporting the complaint after the operator had corrected the field. This case corrects one
-     * field WITHOUT submitting again and requires the message to go, and requires the pair of
-     * bindings to agree at every step — which they can only do if both read the same value.
+     * ⚠ THE CASE THAT KEEPS THE MEMOISED MESSAGE MAP HONEST. Each field's messages are bound twice — to
+     * the shared field's `error` input and to the control's own `aria-invalid` — so they are derived ONCE
+     * per change into a map the template reads, rather than recomputed per binding.
      */
     it('drops a field\'s message as soon as it is corrected, and keeps aria-invalid in step', () => {
       arrive();
@@ -1563,19 +1327,6 @@ describe('ProfileDefinitionListComponent', () => {
       httpMock.expectNone(() => true);
     });
 
-    // ⚠ THE EXPRESSION'S SYNTAX IS THE SERVER'S TO JUDGE, AND THESE FOUR CASES ARE WHY.
-    //
-    // The stored pattern is compiled and run by .NET — `UserService` builds it with the
-    // linear-time engine, falls back to the backtracking one for the constructs that engine
-    // refuses, and bounds every evaluation with a short timeout — so the only opinion that
-    // decides whether a pattern is usable belongs to the server. A previous revision compiled
-    // the operator's text with the browser's `new RegExp` and refused the form when it threw,
-    // and the specification asserted that refusal, which locked in the wrong engine.
-    //
-    // The dialects are not the same language, and these cases pin both directions: a pattern
-    // the browser cannot parse must still reach the API, and a pattern the API refuses must be
-    // surfaced from the API's own answer rather than pre-empted.
-
     it('sends a .NET expression the browser itself cannot compile, rather than refusing it', () => {
       arrive();
       press(ADD_LABEL);
@@ -1599,9 +1350,6 @@ describe('ProfileDefinitionListComponent', () => {
       press(ADD_LABEL);
       fillValidForm();
 
-      // Typing it must still not throw — an uncaught SyntaxError inside change detection would
-      // take the screen down mid-keystroke, which is the one thing the removed validator did
-      // guard against. Nothing compiles the text at all now, so there is nothing to throw.
       expect(() => type('profile-definition-expression', '([')).not.toThrow();
 
       press(CREATE_SUBMIT_LABEL);
@@ -1619,9 +1367,6 @@ describe('ProfileDefinitionListComponent', () => {
       type('profile-definition-expression', '([');
       press(CREATE_SUBMIT_LABEL);
 
-      // The sentence and the failure code are the server's own, from
-      // `UserService.GetValidationExpression`. The client reproduces neither: it renders what
-      // arrived, beneath the control the server named and through the notification service.
       expectRequest('POST', DEFINITIONS_URL, 'the create').flush(
         {
           type: 'urn:dnnmigration:error:profile-definition.invalid-validation-expression',
@@ -1731,9 +1476,6 @@ describe('ProfileDefinitionListComponent', () => {
       type('profile-definition-category', 'Contact');
       press(CREATE_SUBMIT_LABEL);
 
-      // Faithful: the legacy pattern validator ran against the raw posted value too, so a padded name was
-      // refused rather than quietly accepted. The trim on submit is what makes the CATEGORY forgiving, and
-      // the category carries no pattern.
       expect(text()).toContain(NAME_PATTERN_MESSAGE);
       httpMock.expectNone(() => true);
     });
@@ -1781,8 +1523,8 @@ describe('ProfileDefinitionListComponent', () => {
     it('does NOT adopt an edit identifier, so a second attempt is still a create', () => {
       submitDuplicate();
 
-      // The legacy assigned the failed call's return value into its view-state identifier before testing it,
-      // so the next save took the update branch with a nonsense key. This asserts the defect is not
+      // The legacy assigned the failed call's return value into its view-state identifier before testing
+      // it, so the next save took the update branch with a nonsense key. This asserts the defect is not
       // reproduced.
       type('profile-definition-name', 'TwitterHandle');
       press(CREATE_SUBMIT_LABEL);
@@ -1988,11 +1730,7 @@ describe('ProfileDefinitionListComponent', () => {
       });
       settleReReads();
 
-      // Awaited, because the move is deferred to the next render on purpose. Every control is disabled while
-      // the write is in flight, and the reporting effect is flushed BEFORE the view that clears `disabled`
-      // is refreshed, so a focus call made inline would land on a still-disabled button and be ignored in
-      // silence. The component schedules the move with `afterNextRender`; settling the fixture is what lets
-      // that callback run here. This was measured, not assumed: the inline version left focus on the body.
+      // Awaited, because the move is deferred to the next render on purpose.
       await fixture.whenStable();
 
       const anchor: HTMLButtonElement | undefined = buttonsNamed(ADD_LABEL).at(0);
@@ -2041,10 +1779,9 @@ describe('ProfileDefinitionListComponent', () => {
   });
 
   // The waiting and empty states
-  //
-  //  Both belong to `app-data-table`, which is why neither the shared spinner nor the shared empty state is
-  //  declared in this screen's own template. Asserted here rather than assumed, because "the table owns it"
-  //  is only true while the table is actually given the `loading` input.
+  // Both belong to `app-data-table`, which is why neither the shared spinner nor the shared empty state is
+  // declared in this screen's own template. Asserted here rather than assumed, because "the table owns it"
+  // is only true while the table is actually given the `loading` input.
 
   describe('the grid before it has rows', () => {
     it('shows the shared spinner while the read is in flight and drops it once answered', () => {
@@ -2075,10 +1812,6 @@ describe('ProfileDefinitionListComponent', () => {
     it('refuses a paged body outright, because this read is not paged', () => {
       create();
 
-      // A `PagedResult` body is not merely unnecessary here — it is a CONTRACT VIOLATION. The response
-      // decoder demands an array and rejects the object a paged listing would send, so no
-      // `items`/`totalCount` unwrapping exists anywhere on this path and none can be added without this case
-      // failing.
       expectRequest('GET', DEFINITIONS_URL, 'the catalogue read').flush(
         envelope({ items: catalogue(), page: 1, pageSize: 10, totalCount: 3 }),
       );
@@ -2120,9 +1853,7 @@ describe('ProfileDefinitionListComponent', () => {
       arrive();
 
       // The shared table tracks its heading and cell loops by column KEY and validates that the keys are
-      // unique when the set is bound. Two columns sharing a key would make the framework reuse one column's
-      // DOM for the other with no error raised anywhere, so the observable proof of distinct keys is that
-      // twelve headings still yield twelve cells in every row.
+      // unique when the set is bound.
       for (const row of query<HTMLTableRowElement>('tbody tr')) {
         expect(row.querySelectorAll('td,th').length).withContext('cells in a row').toBe(12);
       }
@@ -2147,12 +1878,9 @@ describe('ProfileDefinitionListComponent', () => {
 
   describe('the row commands', () => {
     /**
-     * The commands of one row, in document order, as their ACCESSIBLE names.
-     *
-     * Read from the visually hidden span rather than from the button's whole text, because the button also
-     * carries a decorative glyph that is hidden from assistive technology. Reading the whole text would
-     * assert what a sighted reader sees and miss what a screen reader is actually told, which is the
-     * property this case is about.
+     * The commands of one row, in document order, as their ACCESSIBLE names. Read from the visually
+     * hidden span rather than from the button's whole text, because the button also carries a decorative
+     * glyph that is hidden from assistive technology.
      */
     function commandNames(rowIndex: number): readonly string[] {
       const row = query<HTMLTableRowElement>('tbody tr').at(rowIndex);
@@ -2211,8 +1939,7 @@ describe('ProfileDefinitionListComponent', () => {
 
       // TEN, not twelve, and the arithmetic is the point: three rows would carry twelve commands if every
       // command were offered on every row, but the first row has no Move Up and the last has no Move Down,
-      // because neither has a neighbour to exchange positions with. Withheld rather than disabled, matching
-      // the treatment of the delete command.
+      // because neither has a neighbour to exchange positions with.
       expect(commands.length).withContext('commands across three rows').toBe(10);
       expect(glyphs.length).withContext('one decorative glyph per command').toBe(commands.length);
     });
@@ -2220,9 +1947,9 @@ describe('ProfileDefinitionListComponent', () => {
     it('does not let a command double as selecting its row', () => {
       arrive();
 
-      // This screen binds no `rowSelect`, so the shared table offers no selection affordance on
-      // its rows at all — a command therefore cannot double as one. Selection would be observable
-      // through `aria-selected`, so its absence is too.
+      // This screen binds no `rowSelect`, so the shared table offers no selection affordance on its rows at
+      // all — a command therefore cannot double as one. Selection would be observable through
+      // `aria-selected`, so its absence is too.
       buttonsNamed('Move Down').at(0)?.click();
       fixture.detectChanges();
 
@@ -2235,16 +1962,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('offers NO row-selection affordance at all, this screen listening for none', () => {
-      // ⚠ THE CORRECTED BEHAVIOUR, AND THIS CASE USED TO ASSERT THE DEFECT. It previously pressed
-      // an ordinary cell and required a row to become selected — proving, as it thought, that the
-      // command suppression above was real rather than vacuous. But this screen binds no
-      // `rowSelect`, so that selection was reported to nobody and existed only as an announced
-      // state and a set of affordances with nothing behind them: every one of these rows was a tab
-      // stop that led nowhere and carried a pointer cursor promising an action that never happened.
-      //
-      // The shared table now derives the affordance from whether anything is listening, so the
-      // correct assertion is that the whole vocabulary is ABSENT here: no announced selection
-      // state, no tab stop, and a press on an ordinary cell changing nothing.
       arrive();
 
       const rows: readonly HTMLTableRowElement[] = query<HTMLTableRowElement>('tbody tr');
@@ -2270,9 +1987,9 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('keeps every row command reachable by keyboard, the rows themselves not being stops', () => {
-      // Withdrawing the row from the tab order must not withdraw anything INSIDE it: the commands
-      // are what this grid exists to offer, and they are native controls, so each is a stop in its
-      // own right. Before the correction a reader had to pass through every row to reach them.
+      // Withdrawing the row from the tab order must not withdraw anything INSIDE it: the commands are what
+      // this grid exists to offer, and they are native controls, so each is a stop in its own right. Were
+      // the row itself a stop, a reader would pass through every row to reach them.
       arrive();
 
       const commands: readonly HTMLButtonElement[] = query<HTMLButtonElement>('tbody button');
@@ -2301,11 +2018,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('name each box by its row as well as its column, so the two are never the same name', () => {
-      // ⚠ THIS CASE USED TO ASSERT THE ROW NAME ALONE, WHICH WAS THE DEFECT ITS OWN TITLE DESCRIBED.
-      // With only the property name, the two boxes in a row both announced "Nickname" and a reader
-      // using assistive technology could not tell which one made the property required and which made
-      // it visible - measured across two rows, four boxes reduced to two names. The decisive assertion
-      // is therefore not that either name is right in isolation but that they DIFFER.
       arrive();
 
       const cells = query<HTMLTableRowElement>('tbody tr').at(0)?.querySelectorAll('td,th');
@@ -2346,9 +2058,7 @@ describe('ProfileDefinitionListComponent', () => {
   // A REFUSED REPLACE — a conflict and a disappearance are DIFFERENT OUTCOMES
 
   describe('a refused replace', () => {
-    /**
-     * Opens the editor on one declaration and submits it, leaving the replace pending.
-     */
+    /** Opens the editor on one declaration and submits it, leaving the replace pending. */
     function submitReplace(): TestRequest {
       arrive([definition({ propertyDefinitionId: 141, propertyName: 'Nickname', viewOrder: 0 })]);
 
@@ -2381,10 +2091,9 @@ describe('ProfileDefinitionListComponent', () => {
       submitReplace().flush(problem(404), { status: 404, statusText: 'Not Found' });
       fixture.detectChanges();
 
-      // Distinct from the conflict on both axes. The component substitutes its own sentence for the server's
-      // generic one, because "no longer exists" is actionable where "not found" is not; and the severity is
-      // a WARNING, because nothing is broken — someone else got there first. Asserting only the message
-      // would let a regression collapse the two into one outcome while still passing.
+      // Distinct from the conflict on both axes. The component substitutes its own sentence for the
+      // server's generic one, because "no longer exists" is actionable where "not found" is not; and the
+      // severity is a WARNING, because nothing is broken — someone else got there first.
       expect(notify).toHaveBeenCalledWith('warning', DEFINITION_GONE_MESSAGE, null);
       expect(notify).not.toHaveBeenCalledWith('error', DEFINITION_GONE_MESSAGE, null);
     });
@@ -2393,9 +2102,7 @@ describe('ProfileDefinitionListComponent', () => {
   // Field-level refusals the server reports
 
   describe('a rejected create', () => {
-    /**
-     * Submits a valid-looking create and answers it with a per-field refusal.
-     */
+    /** Submits a valid-looking create and answers it with a per-field refusal. */
     function submitAndReject(messages: readonly string[]): void {
       arrive();
       press(ADD_LABEL);
@@ -2467,9 +2174,6 @@ describe('ProfileDefinitionListComponent', () => {
       });
       fixture.detectChanges();
 
-      // MIGRATION: the legacy access-denied screen used `ModuleMessageType.YellowWarning` in BOTH of its
-      // branches, never the red error. A refusal to act is the system working as configured, so it is
-      // reported at warning severity here too.
       const severities = notify.calls.allArgs().map((args) => args.at(0));
 
       expect(severities).toContain('warning');
@@ -2489,9 +2193,6 @@ describe('ProfileDefinitionListComponent', () => {
     it('is a modal alert dialog, which the legacy browser confirm never was', () => {
       openDialog();
 
-      // A NATIVE `<dialog>`, so the focus trap and the top layer are the platform's rather than hand-rolled.
-      // `alertdialog` rather than `dialog`: this interrupts to ask about a destructive act, which is exactly
-      // the distinction the role draws.
       const dialog = query<HTMLElement>('app-confirm-dialog dialog[role="alertdialog"]');
 
       expect(dialog.length).toBe(1);
@@ -2528,9 +2229,6 @@ describe('ProfileDefinitionListComponent', () => {
       // MCC-4: the order is the `SortOrder` attributes on the legacy definition class, which is what the
       // excluded property editor reflected over under `SortMode="SortOrderAttribute"`. It is deliberately
       // neither alphabetical nor the order the wire contract lists.
-      //
-      // The CONTROLS are enumerated rather than every element carrying the prefix, because the shared field
-      // also gives its label an identifier derived from the control's.
       const rendered = query<HTMLElement>('form input, form select, form textarea').map(
         (field) => field.id,
       );
@@ -2565,9 +2263,6 @@ describe('ProfileDefinitionListComponent', () => {
       arrive();
       press(ADD_LABEL);
 
-      // `IsDirty`, `ModuleDefId`, `PortalId`, `PropertyDefinitionId`, `PropertyValue` and `Visibility` all
-      // carry `Browsable(False)`, so the legacy editor never painted them. The identifier and the module
-      // association travel on the wire; neither is typed by an operator.
       for (const label of NON_BROWSABLE_LABELS) {
         expect(text()).withContext(`no field labelled "${label}"`).not.toContain(label);
       }
@@ -2592,13 +2287,7 @@ describe('ProfileDefinitionListComponent', () => {
   // WORDING PARITY — every string is a resource VALUE, never a markup attribute
 
   describe('the published wording', () => {
-    /**
-     * The wording of one label, without the required marker the shared field appends.
-     *
-     * Only the label's own TEXT NODES are read. The marker is an element child, so taking the whole
-     * subtree's text would assert the shared field's decoration as though it were part of the legacy
-     * wording.
-     */
+    /** The wording of one label, without the required marker the shared field appends. */
     function labelWording(label: HTMLLabelElement): string {
       return Array.from(label.childNodes)
         .filter((node) => node.nodeType === Node.TEXT_NODE)
@@ -2613,12 +2302,6 @@ describe('ProfileDefinitionListComponent', () => {
 
       const rendered = query<HTMLLabelElement>('form label.form-field__label').map(labelWording);
 
-      // The trailing colon is supplied and then normalised away, which is why this asserts the displayed
-      // form rather than the resource form. The screen passes the resource value verbatim —
-      // `ProfilePropertyDefinition_PropertyName.Text` really is "Property Name:" — and `app-form-field`
-      // strips ONE trailing colon for display, once, for all nine screens that use it. So the wording is the
-      // legacy's and the punctuation is the shared field's. Both halves are asserted: the words here, the
-      // absent colon in the next case.
       expect(rendered).toEqual(FIELD_LABELS.map((label) => label.replace(/:$/u, '')));
     });
 
@@ -2630,25 +2313,6 @@ describe('ProfileDefinitionListComponent', () => {
         .filter((label) => label.querySelector('.form-field__required-text') !== null)
         .map(labelWording);
 
-      // ⚠ DL-11 — FOUR FROM THE LEGACY, NOT TWO. `PropertyName` (L228), `DataType` (L88-L91),
-      // `PropertyCategory` (L193) and `ViewOrder` (L300) all carry `Required(True)`; only the first
-      // two have a resource sentence, which is why a census of the messages alone finds two and
-      // undercounts the rule.
-      //
-      // ⚠ FIVE MARKERS, NOT FOUR, AND THE FIFTH IS A CORRECTION RATHER THAN AN ADDITION. `Length`
-      // carries no legacy `Required` attribute, but the write contract declares it as a NON-NULLABLE
-      // integer — as it does the data type and the view order — and a `<input type="number">` writes
-      // `null` into its control whenever its box is cleared. The three numeric fields therefore all
-      // had the same defect: an emptied box produced a form the screen believed valid, `null` reached
-      // a non-nullable server integer, and the server answered a generic 400 that named no field, so
-      // the operator saw a refusal with nothing to correct. All three now refuse absence, and a field
-      // that refuses to be left empty must SAY so — to a sighted reader through the marker and to
-      // assistive technology through `aria-required`, or the rule is a trap.
-      //
-      // Note also that the view order's marker was previously the only evidence of its rule: the
-      // reasoning was that `nonNullable` made presence structural. It does not — that option governs
-      // what `reset()` returns a control to — so the field was announced as required and then accepted
-      // being left empty. It now carries a real rule, and the marker states something true.
       expect(marked).toEqual([
         'Property Name',
         'Data Type',
@@ -2660,17 +2324,10 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('refuses an emptied numeric field by name instead of sending an absence', () => {
-      // ⚠ THE DEFECT THIS PINS, END TO END. Clearing any of the three numeric boxes used to produce a
-      // form the screen believed valid, whose request carried `null` into a non-nullable server
-      // integer. Each is now refused HERE, with a sentence naming the field, and nothing is
-      // dispatched — which is what the request-count assertion at the end proves.
       arrive();
       press(ADD_LABEL);
       fillValidForm('Nickname');
 
-      // Each of the three numeric boxes is emptied, which is what a `<input type="number">` writes
-      // `null` for. The data type additionally starts at the legacy sentinel, so emptying it proves
-      // absence is refused on its own terms rather than by the sentinel rule that already covered it.
       for (const field of [
         'profile-definition-length',
         'profile-definition-view-order',
@@ -2687,9 +2344,6 @@ describe('ProfileDefinitionListComponent', () => {
       expect(rendered).toContain(VIEW_ORDER_REQUIRED_MESSAGE);
       expect(rendered).toContain(DATA_TYPE_REQUIRED_MESSAGE);
 
-      // ⚠ ONE SENTENCE PER EMPTY FIELD, NOT TWO. The whole-number rule passes an absent value on
-      // purpose, so an empty box reports "required" alone; reporting "must be a whole number"
-      // alongside it would bury the actionable half.
       expect(rendered)
         .withContext('an empty box is not also reported as a non-integer')
         .not.toContain(WHOLE_NUMBER_MESSAGE);
@@ -2712,9 +2366,6 @@ describe('ProfileDefinitionListComponent', () => {
       arrive();
       press(ADD_LABEL);
 
-      // MCC-1. "dislayed" is the resource value's own misspelling. Correcting it would reword the product
-      // during a migration whose discipline is behavioural equivalence, so it is reproduced and reported
-      // instead. Both double spaces are asserted with it.
       expect(text()).toContain(CATEGORY_HELP_WITH_LEGACY_TYPO);
       expect(text()).not.toContain('grouped when displayed to the user');
     });
@@ -2732,19 +2383,10 @@ describe('ProfileDefinitionListComponent', () => {
     it('uses Validation Expression as a column heading and never as an error message', () => {
       arrive();
       press(ADD_LABEL);
-      // Submit an expression the client itself refuses, so the expression field is reporting a
-      // fault while no request leaves — which is what keeps this case about WORDING.
-      //
-      // The rule used is the LENGTH one, deliberately. An unparseable pattern would no longer
-      // be refused here at all: expression syntax is judged by the .NET engine that runs it, so
-      // a malformed pattern is now sent and answered by the server, and this case would have
-      // been asserting about a screen with a write in flight.
+      // The rule used is the LENGTH one, deliberately.
       type('profile-definition-expression', 'a'.repeat(513));
       press(CREATE_SUBMIT_LABEL);
 
-      // The heading survives, and the LABEL is the field's name with its colon — but the heading text is not
-      // pressed into service as the failure sentence. It is the single documented exclusion from this
-      // folder's validator-message census.
       const headings = query<HTMLTableCellElement>('thead th').map((cell) =>
         (cell.textContent ?? '').trim(),
       );
@@ -2760,17 +2402,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
   });
 
-  // =============================================================================================
-  // THE KEYED STRINGS ARE JUDGED AFTER THEY ARE TIDIED
-  // =============================================================================================
-  //
-  // The two keyed strings used to be trimmed on their way INTO THE REQUEST, which meant the value that
-  // was validated and the value that was sent were different strings. `propertyCategory` is where that
-  // bites: its rules are `required` and `maxLength` alone, so a whitespace-only entry is a non-empty
-  // string that satisfies both — and was then trimmed to the empty string on its way out. The request
-  // went to an endpoint whose `NotEmpty` rule treats a whitespace-only string as empty, so the server
-  // refused what the screen had just declared valid and the operator was shown a server rejection for a
-  // field the form had raised no complaint about.
   describe('tidying the keyed strings before judging them', () => {
     /** The wording of every field message the form is currently showing. */
     function formMessages(): readonly string[] {
@@ -2877,9 +2508,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('leaves the two FREE-TEXT members untouched, spaces and all', () => {
-      // ⚠ ONLY THE KEYED STRINGS ARE TIDIED. A default value or a validation expression may
-      // legitimately begin or end with a space, so trimming either would silently change stored data
-      // for every property an operator merely re-saved.
       arrive();
       press(ADD_LABEL);
 
@@ -2908,9 +2536,7 @@ describe('ProfileDefinitionListComponent', () => {
   // =============================================================================================
 
   describe('the property-name rule', () => {
-    /**
-     * Attempts a create with one candidate name and reports whether the pattern refused it.
-     */
+    /** Attempts a create with one candidate name and reports whether the pattern refused it. */
     function refusedForPattern(candidate: string): boolean {
       arrive();
       press(ADD_LABEL);
@@ -2942,10 +2568,8 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('refuses every character outside that class, not merely a space', () => {
-      // The resource sentence says only "cannot contain spaces", which UNDERSTATES the rule it
-      // describes: a slash, a hash and a comma are refused too. The pattern is authoritative for the RULE
-      // and the resource value for the MESSAGE, and the divergence is reported rather than resolved by
-      // rewording the product.
+      // The resource sentence says only "cannot contain spaces", which UNDERSTATES the rule it describes: a
+      // slash, a hash and a comma are refused too.
       for (const candidate of ['a/b', 'a#b', 'a b', 'a,b', 'a:b', 'a(b']) {
         expect(refusedForPattern(candidate)).withContext(`"${candidate}" is invalid`).toBeTrue();
       }
@@ -3120,26 +2744,8 @@ describe('ProfileDefinitionListComponent', () => {
       expect(text()).toContain('1 unapplied change(s).');
     });
   });
-  // =============================================================================================
   // THE BATCH, THE BANNER AND WHO OWNS A WRITE REFUSAL
-  //
-  // Three corrections, and each one produced a screen that reported the wrong thing rather than
-  // nothing.
-  //
-  // WRITE IDENTITY IN A BATCH. Apply dispatches ONE WRITE PER EDITED ROW, in parallel. The store
-  // published one write flag and one failure slot, so on every multi-row apply: the flag fell when
-  // the first row landed and the screen concluded the whole batch was done; the slot held at most
-  // ONE refusal however many rows were refused; and that one refusal was cleared by whichever
-  // sibling write dispatched next. An operator applying five rows of which two were refused could
-  // legitimately be told nothing at all.
-  //
-  // BANNER SCOPE. The banner bound the store's failure slot verbatim, and the store is provided at
-  // the application root — so it reported failures of operations this screen does not perform and
-  // cannot explain.
-  //
-  // ONE SURFACE PER WRITE REFUSAL. A refusal appeared in the banner AND in a queued notification, so
-  // one refusal was reported twice, in two registers.
-  // =============================================================================================
+  // WRITE IDENTITY IN A BATCH. Apply dispatches ONE WRITE PER EDITED ROW, in parallel.
 
   describe('the batch, the banner and who owns a refusal', () => {
     it('reports every refused row, each naming its own property', () => {
@@ -3171,9 +2777,9 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('reports a refused row even when another row of the same batch succeeded first', () => {
-      // ⚠ THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. The successful row settles first; under the
-      // old mechanism that lowered the flag and the screen treated the batch as finished, so the
-      // refusal arriving afterwards had nothing left to attribute itself to.
+      // ⚠ THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. The successful row settles first; under the old
+      // mechanism that lowered the flag and the screen treated the batch as finished, so the refusal
+      // arriving afterwards had nothing left to attribute itself to.
       arrive([
         definition({ propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0 }),
         definition({ propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1 }),
@@ -3183,10 +2789,8 @@ describe('ProfileDefinitionListComponent', () => {
       fixture.detectChanges();
       press(APPLY_LABEL);
 
-      // The batch is written in the order the declarations were READ, which is the order the store
-      // holds them in — so the Nickname row is written first and the Website row second. Accepting
-      // the first and refusing the second is what puts the refusal AFTER a sibling row has already
-      // settled, which is the ordering the old aggregate flag could not survive.
+      // The batch is written in the order the declarations were READ, which is the order the store holds
+      // them in — so the Nickname row is written first and the Website row second.
       const writes = driveBatch((write) =>
         write.request.url === definitionUrl(11)
           ? write.flush(envelope(definition({ propertyDefinitionId: 11 })))
@@ -3225,9 +2829,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('keeps a batch refusal out of the banner, which is one surface too many', () => {
-      // ⚠ ONE REFUSAL, ONE SURFACE. The notification is the one that can name which property was
-      // refused; a shared banner cannot, so reporting in both said the same thing twice and the less
-      // useful of the two stayed on screen afterwards.
       arrive();
 
       buttonsNamed('Move Down').at(0)?.click();
@@ -3243,11 +2844,10 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('keeps exactly one row of the batch in flight at a time', () => {
-      // ⚠ THE PROPERTY THAT MAKES EVERY OUTCOME OBSERVABLE. The store publishes ONE settled result at
-      // a time, so two rows answered in the same turn would coalesce and the earlier one would never
-      // reach the reporting effect — the identifier would be right and the effect would simply never
-      // be handed it. Serialising removes the race rather than racing to observe it. It also stops
-      // three simultaneous writes renumbering the same display-position column against each other.
+      // ⚠ THE PROPERTY THAT MAKES EVERY OUTCOME OBSERVABLE. The store publishes ONE settled result at a
+      // time, so two rows answered in the same turn would coalesce and the earlier one would never reach
+      // the reporting effect — the identifier would be right and the effect would simply never be handed
+      // it.
       arrive([
         definition({ propertyDefinitionId: 21, propertyName: 'A', viewOrder: 0, required: false }),
         definition({ propertyDefinitionId: 22, propertyName: 'B', viewOrder: 1, required: false }),
@@ -3285,11 +2885,7 @@ describe('ProfileDefinitionListComponent', () => {
     it('offers no way to discard the staged edits while the batch is still writing them', () => {
       // ⚠ THIS IS WHAT MAKES THE SNAPSHOT SAFE. Refresh is this screen's REVERT affordance — it throws
       // every staged edit away — so a queue that outlived those edits would go on storing values the
-      // operator had just discarded and that are no longer anywhere on screen. Both commands are
-      // unavailable for as long as a write is outstanding, and the operator never gets a window
-      // between rows: the pending count falls in the settling write's teardown and the next row raises
-      // it again inside the SAME effect flush, before the view is refreshed. So the batch is
-      // uninterruptible from the screen by construction rather than by a guard.
+      // operator had just discarded and that are no longer anywhere on screen.
       arrive([
         definition({ propertyDefinitionId: 31, propertyName: 'A', viewOrder: 0, required: false }),
         definition({ propertyDefinitionId: 32, propertyName: 'B', viewOrder: 1, required: false }),
@@ -3325,9 +2921,6 @@ describe('ProfileDefinitionListComponent', () => {
     });
 
     it('keeps another screen\u2019s failure out of the banner entirely', () => {
-      // The store is application-scoped, so its failure slot carries whatever failed most recently
-      // anywhere. A credential change refused on a different screen is not something this screen can
-      // explain, and it used to appear here as though it were.
       arrive();
 
       const store = TestBed.inject(UserStore);
@@ -3353,11 +2946,9 @@ describe('ProfileDefinitionListComponent', () => {
 
     it('shows the store\u2019s authored summary when a catalogue read fails with no document', () => {
       // ⚠ THE FAILURE THIS MAKES VISIBLE WAS COMPLETELY SILENT. The runtime decoders that check each
-      // response against its published contract run inside the service's own mapping, DOWNSTREAM of
-      // the interceptor's error handling — so a `200` whose body does not match its contract throws a
-      // plain error with no document, no status and no support reference. The banner bound only a
-      // document, so it rendered nothing: the grid stayed empty, every command that needs a
-      // declaration stayed unusable, and no surface said why.
+      // response against its published contract run inside the service's own mapping, DOWNSTREAM of the
+      // interceptor's error handling — so a `200` whose body does not match its contract throws a plain
+      // error with no document, no status and no support reference.
       create();
       expectRequest('GET', DEFINITIONS_URL, 'the catalogue read').flush({ unexpected: true });
       fixture.detectChanges();
@@ -3370,6 +2961,4 @@ describe('ProfileDefinitionListComponent', () => {
         .toContain(REFRESH_LABEL);
     });
   });
-
-
 });

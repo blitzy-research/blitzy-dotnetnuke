@@ -4,40 +4,6 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace DnnMigration.Infrastructure.Persistence.Migrations;
 
-// MIGRATION: model record for the intentionally empty baseline migration - metadata only,
-// never schema.
-//
-// This is the second declaration of the partial class whose first half lives in
-// 20260730120000_InitialCreate.cs. It carries no data-definition language and no migration
-// operation of any kind - both the apply and revert methods belong to the sibling half. Its
-// single responsibility is to record the target model as it stands AFTER this migration, which
-// is what Entity Framework Core diffs a future migration against.
-//
-// The body of BuildTargetModel below is generated code and must stay that way. It must remain
-// semantically identical both to what the persistence context named in the attribute below
-// produces from the twenty-one IEntityTypeConfiguration classes under
-// Persistence/Configurations, and to the BuildModel body of the model snapshot beside it. If a
-// configuration changes, REGENERATE rather than edit: a target model hand-edited away from what
-// the context actually produces makes every later migration diff wrong.
-//
-// Three properties of the recorded model are called out because they look like mistakes and
-// are not. First, six legacy table names are singular while their siblings are plural, and the
-// entity mapping the singular profile-value table does not share that table's name, so entity
-// and table names deliberately disagree in one place. Second, every table is mapped plainly
-// under the dbo schema with no name prefix, because the legacy provider registration at
-// Website/release.config L354-L355 pins an empty object prefix and dbo as the owner. Third,
-// the value converters declared in the configurations do not appear below at all: Entity
-// Framework Core cannot serialise a converter into generated model code, so a converted
-// property is recorded in its STORE-facing form instead - the two role billing-cycle
-// properties as nullable one-character ANSI strings, and the permission key as a required
-// fifty-character ANSI string. That is the generator's behaviour rather than an omission, and
-// no conversion call belongs in a generated model file.
-//
-// Why the paired migration is empty at all is set out in full on the sibling class. The short
-// form is that the terminal DotNetNuke schema depends on the externally provisioned ASP.NET
-// application-services objects, which the eighty-eight upgrade scripts only ever amend and
-// never create, so a generated schema could not reproduce a valid database even in principle.
-// AAP Rule T4, "Schema is immutable".
 [DbContext(typeof(DnnDbContext))]
 [Migration("20260730120000_InitialCreate")]
 internal partial class InitialCreate

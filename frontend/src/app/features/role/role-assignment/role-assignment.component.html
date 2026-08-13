@@ -1,73 +1,11 @@
-<!--
-  Manage Users in Role — route `/roles/:roleId/users`.
-
-  The role-centric half of the legacy security-roles screen. Every binding below resolves to
-  a public member of `RoleAssignmentComponent`; every visible string resolves to
-  `ROLE_ASSIGNMENT_TEXT`, which the class publishes so this screen has exactly one source of
-  wording. Nothing here decides anything: the class owns the derived views, this file presents
-  them.
-
-  Legacy provenance, all read-only references and all unchanged by this work:
-  `Website/admin/Security/securityroles.ascx` (93 lines, authoritative for the fields, the
-  three validators and the grid), `Website/admin/Security/SecurityRoles.ascx.vb` (668 lines,
-  authoritative for the workflow), the paired local resource file (authoritative for every
-  visible string), `Website/App_GlobalResources/SharedResources.resx` (the confirmation and
-  Delete wording), `Website/controls/labelcontrol.ascx` (the shared field wrapper's
-  predecessor) and `Library/Components/Security/Roles/RoleController.vb` (the assignment
-  rules).
-
-  MIGRATION: the legacy control served TWO workflows from one file. `plUsers` and `plRoles`
-  shared one table cell (`securityroles.ascx:L14`) and `cboUsers` and `cboRoles` shared
-  another (`:L26` and `:L27`), and a mode discriminator chose the half to show. Only the
-  role-centric half is rendered here. The account-centric half — 'Manage Roles for User' —
-  belongs to the account feature and is out of scope, so `plRoles.Text`, `plRoles.Help`,
-  `AddRole.Text`, `UserTitle.Text` and the design-time `cmdAdd.Text` default of 'Add Role' are
-  deliberately unused. A documented reduction.
-
-  MIGRATION: the legacy screen laid itself out with THREE tables — `securityroles.ascx:L4`,
-  `:L8` and `:L56` — and all three carried the identical `summary="Security Roles Design
-  Table"`, with not one `caption` element between them. Two of those tables were pure layout
-  and are replaced by grid and flex layout declared in the paired stylesheet, so no table
-  element appears in this file at all. The third was a genuine data grid and is rendered by
-  the shared grid component, which emits a real `caption` (projected below) and a
-  `scope="col"` header cell per column. Three duplicate, meaningless table descriptions become
-  one accurate one.
-
-  MIGRATION: resource text is treated as UNTRUSTED HTML throughout. Across the in-scope
-  resource files 76 values carry an HTML tag — one of them a script element, stored escaped so
-  a naive search for it finds nothing — and 29 begin with a leading break tag. Every string
-  below is therefore rendered as PLAIN TEXT through interpolation or through a component input
-  that renders text. No markup-injecting binding, no sanitiser and no trust-bypass appears
-  anywhere in this file. This screen's own `ModuleHelp.Text` is a heading-and-paragraph HTML
-  fragment; module help has no home in the closed shared component set, so it was read for
-  context and is deliberately not rendered.
-
-  MIGRATION: localisation is not ported. The resource files were read for their wording only
-  and every string is authored into the class constant this file binds to; no translation
-  runtime is wired into this workspace.
-
-  MIGRATION: the legacy shared label control put a negative tab index on both its help link
-  and the image nested inside that link, and nested both inside the `label` element
-  (`labelcontrol.ascx:L3`, `:L4`), which withdrew the help affordance from the tab order
-  entirely and left it operable by pointer alone. That defect is not reproduced. The shared
-  field wrapper already replaces it with a keyboard-reachable button carrying the expanded
-  state, so this file inherits that and adds nothing of its own.
--->
 <app-page-header [title]="title()">
-  <!--
-    MIGRATION: the legacy screen exposed exactly ONE module action, `Cancel.Action`, pointing
-    at the return address (`SecurityRoles.ascx.vb:L634`). It is reproduced as a link rather
-    than as a button because it navigates; the action region is the shared header's own
-    projection slot, so no heading markup is duplicated here.
-  -->
   <a class="page-action role-assignment__module-action" [routerLink]="['/roles']">{{ text.cancel }}</a>
 </app-page-header>
 
 <!--
-  Bound unconditionally: the banner renders nothing while there is no problem, and it owns its
-  own assertive live region, so wrapping it in control flow would tear that region out of the
-  accessibility tree between failures and lose the announcement. Field-level messages are
-  resolved in the class, because the keys are server-side model-state keys read by index.
+  Bound unconditionally: the banner renders nothing while there is no problem, and it owns its own
+  assertive live region, so wrapping it in control flow would tear that region out of the accessibility
+  tree between failures and lose the announcement.
 -->
 <app-error-banner [problem]="problem()" />
 
@@ -75,47 +13,20 @@
   <p class="role-assignment__unresolved">{{ text.roleUnresolved }}</p>
 } @else {
   <!--
-    MIGRATION: there is NO role picker. `SecurityRoles.ascx.vb:L183-L198` is the proof of what
-    this mode rendered: it put the single role into the dropdown, set the title from
-    `RoleTitle.Text` at `:L193`, and then hid both the dropdown and its label at `:L195` and
-    `:L196`. The role is fixed by the route and named in the heading, so a picker for it would
-    be a control the legacy screen did not show.
-
-    MIGRATION: the submit action is the ONLY validating affordance on the screen, exactly as
-    `securityroles.ascx:L41` declared with `CausesValidation="true"`. The row command below
-    declared the opposite and is deliberately kept out of this form element.
+    There is NO role picker. `SecurityRoles.ascx.vb:L183-L198` is the proof of what this mode rendered:
+    it put the single role into the dropdown, set the title from `RoleTitle.Text` at `:L193`, and then
+    hid both the dropdown and its label at `:L195` and `:L196`.
   -->
   <form class="role-assignment__form" [formGroup]="form" (ngSubmit)="submit()">
     <div class="role-assignment__fields">
-      <!--
-        MIGRATION: WHICH CONTROL APPEARS HERE IS THE TENANT'S DECISION, not this screen's.
-        `SecurityRoles.ascx.vb:L133-L136` read `Security_UsersControl` and `:L202-L221` acted on
-        it, binding `cboUsers` to every account in the tenant and hiding the name box for one
-        value, and doing the reverse for the other; `:L106-L109` then read the chosen account
-        from whichever control was live. Both branches are reproduced, and the policy is resolved
-        before either is offered so a control is never swapped underneath the operator.
-
-        The two branches are separate elements rather than one field with a conditional control,
-        because the label and the help text differ: the legacy screen shared one label cell
-        between them (`securityroles.ascx:L14`) and so carried one help string, which describes
-        only the name box — 'Enter The User Name and click Validate to confirm' — and is untrue of
-        the dropdown.
-      -->
+      <!-- WHICH CONTROL APPEARS HERE IS THE TENANT'S DECISION, not this screen's. -->
       @if (accountPolicyPending()) {
         <app-loading-spinner [label]="text.accountPolicyLoading" />
       } @else if (usersControlMode() === 'combo') {
         <!--
-          MIGRATION: `cboUsers` from `securityroles.ascx:L26`, bound at
-          `SecurityRoles.ascx.vb:L204` to the tenant's whole account listing. The dropdown is
-          offered here only because the tenant asked for it; the legacy code itself stopped
-          choosing it above a thousand accounts (`UserModuleBase.vb:L178-L186`).
-
-          MIGRATION: the legacy control carried `autopostback="True"`, so choosing an entry
-          round-tripped the whole page to reach the prefill. The choice is handled without one.
-
-          A native select inside the shared wrapper, following the precedent the design decisions
-          set for controls the closed shared component set does not cover. The wrapper is what
-          carries the label association, the help disclosure and the message region.
+          A native select inside the shared wrapper, following the precedent the design decisions set
+          for controls no shared component covers. The wrapper is what carries the
+          label association, the help disclosure and the message region.
         -->
         <app-form-field
           [label]="text.userChoiceLabel"
@@ -133,10 +44,7 @@
             <option value="">{{ text.userChoicePrompt }}</option>
             <!--
               The label is COMPOSED IN THE COMPONENT, including the note an entry carries when this role
-              already holds the account. Every entry stays selectable - see
-              `accountAlreadyInRoleSuffix` for why removing them would delete the amend-a-membership
-              workflow the legacy screen offered - and the note is what moves "this account is already a
-              member" from after the choice to before it.
+              already holds the account.
             -->
             @for (choice of accountChoiceEntries(); track choice.userId) {
               <option
@@ -154,30 +62,8 @@
         </app-form-field>
       } @else {
         <!--
-          MIGRATION: `txtUsers` from `securityroles.ascx:L25` with its Validate command at
-          `:L28`, whose handler looked the account up by exact name
-          (`SecurityRoles.ascx.vb:L476-L488`). The shared lookup replaces the pair: it searches as
-          the operator types and offers what it found, which reaches the same account by the same
-          name and also names the near misses.
-
-          MIGRATION: the lookup no longer fails silently. On no match the legacy handler simply
-          blanked the box at `:L484` with no message at all. A visible no-matches state replaces
-          that; a documented improvement.
-
-          The `for` reference is taken from the shared lookup's own published field identifier
-          rather than from this screen's identifier constant, because the lookup owns the
-          identifier of the input it renders. Pointing the label at a name no element carries
-          would be a dangling association, which is worse than none.
-
-          The lookup is told to withhold its own caption, because this field already carries
-          one. Left on, the input was named by two labels at once: this field's `plUsers`
-          caption and the lookup's own generic "Search:", giving it two visible captions and a
-          composite accessible name in which the caption nearest the box was no longer the whole
-          name - a WCAG 2.1 SC 2.5.3 Label in Name mismatch, and a speech-input user asking for
-          the caption they can read would not reach the control. The legacy caption is the one
-          that stays, not the generic one: `plUsers.Text` is "User Name" and legacy captioned
-          this affordance with nothing else - `securityroles.ascx` declares no search label at
-          all, and "Search:" is our own wording, taken from a different screen.
+          MIGRATION: the lookup no longer fails silently. On no match the legacy handler simply blanked
+          the box at `:L484` with no message at all.
         -->
         <app-form-field
           [label]="text.userLabel"
@@ -194,20 +80,9 @@
           />
 
           <!--
-            Why the name box appears when the tenant asked for the dropdown. Stated rather than
-            silently substituted: without it the operator sees a control the site's own settings
-            say should not be there and has no way to know why.
-
-            THREE DIFFERENT REASONS, THREE DIFFERENT SENTENCES, and they are not interchangeable.
-            The site holds too many accounts to list, which is the legacy's own default for a site
-            that size and is not a degradation at all; or the decision could not be made because
-            neither the policy nor the count could be read; or the dropdown was asked for and the
-            complete list could not be assembled. Collapsing them into one sentence would tell an
-            operator on a large site that something was broken when nothing is.
-
             An unread policy ON ITS OWN says nothing here any more, and deliberately: it no longer
-            decides which control is offered - the legacy's account-count rule does - so it is no
-            longer something to report. See `usersControlMode`.
+            decides which control is offered - the legacy's account-count rule does - so it is no longer
+            something to report. See `usersControlMode`.
           -->
           @if (accountPolicyDefaultedBySize()) {
             <p class="role-assignment__lookup-note">{{ accountPolicyDefaultedBySizeMessage }}</p>
@@ -217,48 +92,14 @@
             <p class="role-assignment__lookup-note">{{ text.accountChoicesUnavailable }}</p>
           }
 
-          <!--
-            A lookup now walks pages rather than reading one, so it can take visibly longer than it
-            used to and an operator has to be able to tell "still searching" from "nothing matched".
-            Without this the two states render identically: an empty match list and no message.
-          -->
           @if (userLookupLoading()) {
             <app-loading-spinner size="small" [label]="text.lookupLoading" />
           }
 
           @if (userMatches().length > 0) {
             <!--
-              A single-select set of real toggle buttons. The pressed state is what conveys the
-              choice, so the state is carried by the control itself rather than by colour, and
-              activating the pressed entry releases it. Two variants rather than one with a
-              conditional handler, so the pressed state and the outcome can never disagree and
-              no decision is taken in this file.
-
-              THE LIST IS NAMED, AND IT IS DELIBERATELY NOT A LISTBOX OR A COMBOBOX POPUP.
-              Three reasons, and the first is decisive on its own:
-
-              * `role="option"` would REPLACE the button role on these controls, and `option`
-                does not support `aria-pressed` - it carries `aria-selected`. Declaring the role
-                over these controls therefore produces an option bearing a state its role does
-                not support, which is an invalid combination and a conformance regression rather
-                than a fix.
-              * A listbox is a COMPOSITE widget with a mandatory keyboard contract: one tab stop
-                for the whole set, arrow-key and Home/End traversal, and either
-                `aria-activedescendant` or a roving tab index. Declaring the roles without that
-                contract announces a widget that then does not behave like one, which is worse
-                for the reader who believes the announcement than a plain list of buttons, every
-                one of which is already named, focusable and operable by Enter and Space
-                natively.
-              * These matches are not a popup and the field is not a combobox. They are
-                persistent inline content, they do not dismiss on Escape, they do not collapse,
-                and choosing one does not fill the field: it sets the account this form will
-                submit while the search term stays exactly as typed. `role="combobox"` with
-                `aria-expanded` would describe an interaction this screen does not implement. A
-                `<datalist>` is the same mismatch - its options complete the text field, cannot
-                carry a selected state and cannot be released once chosen.
-
-              What was genuinely missing is the list's PURPOSE, so that is what is added: the
-              name. No visual change, no interaction contract, no widget promise.
+              THE LIST IS NAMED, AND IT IS DELIBERATELY NOT A LISTBOX OR A COMBOBOX POPUP. Three
+              reasons, and the first is decisive on its own:
             -->
             <ul class="role-assignment__matches" [attr.aria-label]="text.matchesLabel">
               @for (match of userMatches(); track match.userId) {
@@ -283,21 +124,7 @@
             </ul>
           }
 
-          <!--
-            Standing context, deliberately NOT a live region and NOT inside the field's message
-            slot. The lookup examines every page of the match set, so the number of accounts it
-            found and the number offered as buttons are now different numbers, and the shorter
-            list would otherwise read as the whole answer. It reports the server's own count and
-            is absent whenever the two figures agree, which is the ordinary case.
-
-            ⚠ AND THERE IS DELIBERATELY NO PAGER HERE. A pager would invite the operator to walk
-            the match set themselves to find a name — which is the interaction the walk exists to
-            remove, and which the legacy screen never offered either: `securityroles.ascx` declares
-            no pager on this control at all. What the operator needs instead is stated in words: the
-            exact name was found, or how many matched, or that the search was cut short. Offering
-            page controls would also reintroduce the ambiguity this note resolves, because a window
-            with a pager is precisely what a truncated answer looks like.
-          -->
+          <!-- Standing context, deliberately NOT a live region and NOT inside the field's message slot. -->
           @if (userLookupSummary() !== null) {
             <p class="role-assignment__lookup-note">{{ userLookupSummary() }}</p>
           }
@@ -309,34 +136,8 @@
       }
 
       <!--
-        MIGRATION: each bound was a text box paired with an image link that opened a scripted
-        calendar popup (`securityroles.ascx:L31` and `:L32`, wired at
-        `SecurityRoles.ascx.vb:L329` and `:L330`). Both popups are replaced by a native date
-        input inside the shared field wrapper. There is no shared date picker and the shared
-        component set is closed, so this follows the precedent the design decisions already set
-        for multi-line text: a plain native control inside the wrapper, recorded as a
-        deliberate functional reduction. The wrapper is what makes the native control
-        compliant — it carries the label association, the help disclosure and the message
-        region.
-
-        MIGRATION: NEITHER bound is required, and that is settled by the source rather than
-        chosen. An ASP.NET comparison validator passes on an empty field, and both help
-        strings say so in as many words — '( Optional ). Entering No Value Will Indicate…'. No
-        required flag is passed and no required marker is rendered on either field.
-
-        MIGRATION: the messages are passed through with their leading break tag intact,
-        exactly as the resource file holds them. THE SHARED SIDE STRIPS IT: the field
-        wrapper normalises every message through `stripLegacyBreakTags`, whose leading-break
-        pattern is case-insensitive and consumes the whitespace that follows the tag before
-        trimming. That distinction is load-bearing for this screen, because
-        `valEffectiveDate.Text` is a break followed by a SPACE while its sibling
-        `valExpiryDate.Text` has no such space; a stripper that removed only the tag would
-        indent one message and not the other. Either way the text is rendered as text.
-
-        The class gates each message the way `display="Dynamic"` gated it — nothing is said
-        until the field has been visited and is failing, and the ordering rule waits for both
-        bounds to have been visited. That gating lives in the class; this file renders whatever
-        it is handed.
+        Each bound was a text box paired with an image link that opened a scripted calendar popup. Both
+        popups are replaced by a native date input inside the shared field wrapper.
       -->
       <app-form-field
         [label]="text.effectiveDateLabel"
@@ -358,10 +159,7 @@
 
       <!--
         The ordering rule surfaces HERE rather than on the effective bound, because
-        `securityroles.ascx:L47` declared `controltovalidate="txtExpiryDate"`. Its operator is
-        `GreaterThan` and not `GreaterThanEqual`, so two equal dates are invalid; the class
-        reproduces that exactly. All three validators carried `type="Date"` on this screen, so
-        there is no validator defect here to annotate.
+        `securityroles.ascx:L47` declared `controltovalidate="txtExpiryDate"`.
       -->
       <app-form-field
         [label]="text.expiryDateLabel"
@@ -382,21 +180,7 @@
       </app-form-field>
     </div>
 
-    <!--
-      MIGRATION: the notification choice is RETAINED, because the assignment contract carries
-      a notify member. `securityroles.ascx:L49` declares it already checked and places it AFTER
-      the closing panel tag, outside the add form, because the legacy screen passed it to BOTH
-      operations — `SecurityRoles.ascx.vb:L542` for the add and `:L569` for the removal. The
-      removal address is a delete that carries no body and exposes no notification argument, so
-      the choice now reaches the ADD only. It therefore sits inside this form element, which is
-      what puts it in the form's control scope, but in its own block after the field rows so
-      the legacy reading order is preserved. The narrowing to one operation is the divergence,
-      and it is recorded here rather than absorbed.
-
-      A checkbox is a control, so it is wrapped like every other control on the screen. The
-      wrapper preserves the question mark in 'Send Notification?' and strips only a trailing
-      colon, so the label reads as the resource file holds it.
-    -->
+    <!-- The notification choice is RETAINED, because the assignment contract carries a notify member. -->
     <div class="role-assignment__notify">
       <app-form-field
         [label]="text.notifyLabel"
@@ -412,13 +196,7 @@
       </app-form-field>
     </div>
 
-    <!--
-      MIGRATION: the action RELABELS itself, and only one of the two legacy relabel branches is
-      live in this mode. `SecurityRoles.ascx.vb:L650` tested the role identifier against the
-      null sentinel, which is false here, so `:L651-L653` was dead code on this screen; `:L656`
-      tested the ACCOUNT identifier, which is true here, and `:L657-L658` is the branch that
-      ran. The label is bound to the class's derived view, never computed here.
-    -->
+    <!-- The action RELABELS itself, and only one of the two legacy relabel branches is live in this mode. -->
     <div class="role-assignment__commands">
       <button
         class="role-assignment__submit"
@@ -430,57 +208,17 @@
   </form>
 
   <!--
-    MIGRATION: FOUR visible columns, not five. `securityroles.ascx:L76` declares a security-role
-    column as the third one, but `SecurityRoles.ascx.vb:L245` hides it —
-    `Columns(2).Visible = False` — precisely in the role-centric mode this screen implements,
-    because every row here belongs to the one role already named in the heading. Emitting it
-    would be a column the legacy screen never showed, so `SecurityRole.Header` is deliberately
-    unused. The columns themselves are assembled in the class.
-
-    MIGRATION: the grid is UNSORTED by parity. `securityroles.ascx:L56` declares no
-    `AllowSorting`, so nothing here binds a sort field or a sort direction, nothing handles a
-    sort request and no column is marked sortable. There is no row striping to reproduce either,
-    since no alternating-item style was declared.
-
-    MIGRATION: the grid IS paged, and the legacy one was not. The same declaration carries no
-    `AllowPaging` and no pager style, and a first port reproduced that by reading every page the
-    server reported and rendering the union - an unbounded read of a listing that counts and
-    windows per request, followed by a DOM proportional to whatever came back. One page is
-    rendered instead and the shared pager reaches the rest, so every membership is still
-    addressable and no Delete command is out of reach. The pager is drawn on the same predicate
-    as every other listing here: only when more memberships exist than fit on one page, which
-    means a role small enough to have fitted in the legacy grid renders with no pager at all and
-    looks exactly as it did.
-
-    The loading and empty presentations belong to the shared grid, which renders both from the
-    inputs below. Neither is duplicated here, and the empty wording is not settable by a
-    consumer — a limitation of the shared contract, reported rather than worked around.
+    The grid is UNSORTED by parity. `securityroles.ascx:L56` declares no `AllowSorting`, so nothing here
+    binds a sort field or a sort direction, nothing handles a sort request and no column is marked
+    sortable.
   -->
   <section
     class="role-assignment__memberships"
     [attr.aria-busy]="assignmentsLoading() ? 'true' : null"
   >
     <!--
-      The ordering inputs are the SOLE source of truth for what the account heading announces and are read
-      from the store, so a heading can never claim an order whose request failed. `[sortBy]` is handed a
-      COLUMN KEY rather than the endpoint field the coordinate holds - the grid compares it against a column
-      key - and the component projects one to the other.
-    -->
-    <!--
-      ⚠ R-M24: THE REASON THE REMOVAL COMMAND IS ABSENT, stated rather than left to be inferred.
-      The command column is withheld entirely on the registered-users role, because
-      `RoleController.vb:L745` forbids removal from it for every account without exception - see
-      `removalAvailable`. An operator who has removed accounts from every other role would
-      otherwise find the affordance simply gone, with nothing saying whether that is a rule or a
-      fault. The sibling role editor already states the reason for its own protected-role state,
-      for the same reason and on the same authored footing.
-
-      ⚠ AND IT IS A COMMENT, WHICH IT WAS NOT. The block above previously sat OUTSIDE any comment -
-      the preceding note closed its delimiter before this paragraph began - so all seven lines of
-      authoring commentary, back-tick file citations and the ⚠ glyph rendered on the page as
-      end-user copy on every visit to this screen. It is enclosed in its own delimiter rather than
-      folded into the note above because the two describe different things: that one is about the
-      ordering inputs, this one about the removal command.
+      The ordering inputs are the SOLE source of truth for what the account heading announces and are
+      read from the store, so a heading can never claim an order whose request failed.
     -->
     @if (!removalAvailable()) {
       <p class="role-assignment__notice">{{ text.removalUnavailable }}</p>
@@ -495,28 +233,15 @@
       (sortChange)="onSortChange($event)"
     >
       <!--
-        The caption is a CONSUMER obligation: the shared grid projects it into a real caption
-        element that it carries out of the painted output while keeping it in the accessibility
-        tree. The wording is `ControlTitle_user roles.Text` — a legacy resource key that
-        genuinely contains a space.
+        The caption is a CONSUMER obligation: the shared grid projects it into a real caption element
+        that it carries out of the painted output while keeping it in the accessibility tree.
       -->
       <span dataTableCaption>{{ text.caption }}</span>
     </app-data-table>
 
     <!--
-      The pager, handed the three facts its contract declares - the page the server reported, the
-      size it applied and the total across every page - and reporting a zero-based index straight
-      back. No arithmetic appears on either binding: the control's input and its output are both
-      on the wire's base, and the one-based number an operator reads is derived inside the control
-      itself.
-
-      ⚠ MOUNTED UNCONDITIONALLY. The control decides its own shape - the membership count alone
-      when every member fits on one page, the count plus the steps when they do not - and a
-      wrapper condition here could only remove the count, which is the one place this screen
-      states how many accounts hold the role. `pagerRequired` is still published as the legacy
-      arithmetic and is no longer a gate on rendering. The one guard below is narrower: a role with
-      no members at all has no count to state, and leaving an empty custom element in the document
-      would be exactly the emptied container this control promises never to be.
+      The pager, handed the three facts its contract declares - the page the server reported, the size
+      it applied and the total across every page - and reporting a zero-based index straight back.
     -->
     @if (hasResults()) {
       <app-pagination
@@ -530,17 +255,8 @@
   </section>
 
   <!--
-    MIGRATION: the removal confirmation was a scripted browser prompt attached to the row
-    command, carrying the global `DeleteItem` wording (`SecurityRoles.ascx.vb:L608`). It is
-    replaced by the shared dialogue, which the FEATURE owns rather than the grid: presence in
-    the document is what makes it open, so it is mounted while a removal is pending and
-    unmounted by either outcome. The dialogue supplies the modal promotion, the focus trap,
-    Escape handling and focus restoration, and it focuses the cancelling affordance rather than
-    the destructive one.
-
-    No title is bound. A browser prompt has no title at all, so there is no legacy wording to
-    port and the shared default stands; the accessible name of the confirming affordance is the
-    global 'Delete'.
+    The removal confirmation was a scripted browser prompt attached to the row command, carrying the
+    global `DeleteItem` wording.
   -->
   @if (pendingRemoval() !== null) {
     <app-confirm-dialog
@@ -554,26 +270,8 @@
 }
 
 <!--
-  The four cell definitions, declared at the TOP LEVEL of this file and outside every
-  control-flow block. That placement is load-bearing rather than stylistic: the class queries
-  these references out of its own view, and such a query does not descend into an embedded
-  view, so a reference nested inside a conditional or a repeater would be invisible to it and
-  its column would silently fall back.
-
-  MIGRATION: the row command is a cell definition rather than a grid output, because the shared
-  grid publishes no row-command output at all. That is deliberate on the shared side and it is
-  what makes the per-row predicate below possible: `securityroles.ascx:L68` bound the legacy
-  button's visibility to a per-row check, carrying the source note at `:L62` that the button is
-  hidden when the account cannot be removed from the role. The predicate is evaluated in the
-  class, which reproduces the rule that the designated administrator cannot be removed from the
-  administrators role and that no account can be removed from the registered-users role.
-
-  MIGRATION: the command declared `causesvalidation="False"` (`securityroles.ascx:L65`), so a
-  removal had to work while the add form was invalid and had to leave the form untouched. It is
-  therefore declared OUTSIDE the form element and typed as a plain button, so it can never
-  submit, never validate and never mark a field visited. Its accessible name is the global
-  `cmdDelete.Text`, and the column it sits in carries that same name as a hidden heading, which
-  is why the legacy column's complete absence of heading text costs nothing here.
+  The four cell definitions, declared at the TOP LEVEL of this file and outside every control-flow
+  block.
 -->
 <ng-template #roleAssignmentCommandsCell let-row="row">
   @if (canRemove(row)) {
@@ -587,22 +285,9 @@
 </ng-template>
 
 <!--
-  MIGRATION: `FormatUser` at `SecurityRoles.ascx.vb:L394-L396` was a LIVE STORED-XSS SINK. It
-  built an anchor by string concatenation and dropped the account's display name into that
-  markup unencoded, so a display name containing markup executed in the administrator's own
-  browser. The replacement is an escaped interpolation inside a router link: the framework
-  escapes interpolated text by default, and no markup-injecting binding, no sanitiser and no
-  trust-bypass appears anywhere in this file. The legacy tree already knew better in the same
-  folder, where `AccessDenied.ascx.vb:L43` wraps an externally supplied message in an HTML
-  encoder before showing it.
-
-  The link's target belongs to the account feature. A router link is a URL and not an import, so
-  no feature reaches into another here.
-
-  MIGRATION: the legacy tree spelled one concept three ways — the helper's parameter was
-  `DisplayName`, the grid bound `FullName` and the dropdown bound `Displayname`. The membership
-  contract publishes exactly one field for it, and that single spelling is used here and
-  nowhere deviated from.
+  `FormatUser` at `SecurityRoles.ascx.vb:L394-L396` was a LIVE STORED-XSS SINK. It built an anchor by
+  string concatenation and dropped the account's display name into that markup unencoded, so a display
+  name containing markup executed in the administrator's own browser.
 -->
 <ng-template #roleAssignmentUserCell let-row="row">
   <a class="role-assignment__user-link" [routerLink]="['/users', row.userId]">{{
@@ -610,41 +295,13 @@
   }}</a>
 </ng-template>
 
+<!-- An unset bound renders EMPTY and never as a formatted minimum-value date. -->
 <!--
-  MIGRATION: an unset bound renders EMPTY and never as a formatted minimum-value date.
-  `SecurityRoles.ascx.vb:L377-L383` returned an empty string for the null-date sentinel and a
-  short date otherwise, and the sentinel survives on the wire because the API serialises it as a
-  real date string rather than omitting it. The shared date pipe reproduces that exactly: it
-  detects the sentinel on the date part alone, so a sentinel carrying a non-zero time is blanked
-  too, and it renders a short date otherwise. It is used with NO argument, because its default
-  shape is the one the legacy formatter emitted, and no sentinel handling is written here.
-
-  A far-future perpetual bound renders NORMALLY. It is a real stored value, written by
-  `RoleController.vb:L542` where an unlimited billing frequency maps to the last day of year
-  9999, as against `:L541` where a frequency of none maps to the sentinel.
--->
-<!--
-  MIGRATION — R-M24: THE LIFECYCLE IS QUALIFIED IN WORDS BESIDE THE DATE, WHICH IS A NET ADDITION
-  WITH A MEASURED LEGACY PRECEDENT ON A SIBLING SCREEN. Neither `securityroles.ascx` nor
-  `SecurityRoles.ascx.vb` compares either bound against the clock anywhere, so a membership that
-  lapsed years ago, one that begins years hence and one in force today were drawn identically -
-  same colour, same weight, no other mark - on the one screen whose purpose is administering who
-  holds a role. Runtime testing measured exactly that across a hundred and twenty rows.
-  `Website/admin/Users/MemberServices.ascx.vb:L172-L186` is the in-scope screen that DOES own a
-  clock, and it supplies both the test and the word.
-
-  THE DATE IS UNTOUCHED. The qualifier is added BESIDE it rather than replacing it - unlike the
-  legacy formatter, which replaced the date with the word - because an administrator needs to know
-  WHEN a membership lapsed as well as that it has.
-
-  NOT COLOUR ALONE: the state is carried by the WORD, which every reader receives, and the colour is
-  a second cue for those who can use it. An absent bound stays an entirely empty cell, exactly as the
-  legacy left it - no dash, no placeholder - so no state is asserted where the legacy asserted none.
-  The qualifier and the emptiness cannot disagree, because both are decided by the same parser: see
-  `boundInstant`.
-
-  Each qualifier sits on the column that OWNS the fact - `Pending` beside the effective bound,
-  `Expired` beside the expiry bound - so neither cell reports the other's business.
+  MIGRATION — R-M24: THE LIFECYCLE IS QUALIFIED IN WORDS BESIDE THE DATE, WHICH IS A NET ADDITION WITH A
+  MEASURED LEGACY PRECEDENT ON A SIBLING SCREEN. Neither `securityroles.ascx` nor
+  `SecurityRoles.ascx.vb` compares either bound against the clock anywhere, so a membership that lapsed
+  years ago, one that begins years hence and one in force today were drawn identically same colour, same
+  weight, no other mark - on the one screen whose purpose is administering who holds a role.
 -->
 <ng-template #roleAssignmentEffectiveDateCell let-row="row"
   >{{ row.effectiveDate | dateDisplay

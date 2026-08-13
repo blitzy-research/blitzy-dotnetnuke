@@ -29,22 +29,7 @@ namespace DnnMigration.UnitTests.Application;
 /// WHAT THIS SUITE IS FOR, AND WHAT IT DELIBERATELY LEAVES ALONE. A sibling suite already exercises the
 /// account WORKFLOW in full - the two-stage creation and its compensation, the credential-write
 /// authorisation ladder, session revocation, profile overflow columns and definition management. Repeating
-/// any of it here would buy nothing and would leave two suites free to disagree about one rule. This suite
-/// asserts what is invisible to a workflow test because it is a property of the TRANSLATION rather than of
-/// the behaviour: that a filter named for account names still reaches the parameter that matches account
-/// names and not its same-typed neighbour, that "return every row" still means every row rather than none,
-/// that one legacy boolean refusal now says which of three things went wrong, and that the number the
-/// legacy code wrote to mean "no date" has not become a date in the year one. A transposition between two
-/// adjacent same-typed arguments is the specific fault this file exists to catch, because neither the
-/// compiler nor a workflow test can see one.
-/// </para>
-/// <para>
-/// Mocked collaborators only, and only the domain and application abstractions the service declares.
-/// Nothing here reaches a persistence context, a query root or SQL text: the context is internal to the
-/// infrastructure project and the application layer cannot name it, so a test in this project could not
-/// construct one even deliberately. Hashing and token minting are substituted and only their ORCHESTRATION
-/// is observed, because the algorithms themselves are verified against their real implementations by the
-/// security suites. Nothing reads the ambient clock.
+/// any of it here would buy nothing and would leave two suites free to disagree about one rule.
 /// </para>
 /// <para>
 /// EXPLICITLY OWNED ELSEWHERE, AND NOT RESTATED HERE. The eighteen creation-outcome ordinals and the seven
@@ -52,28 +37,15 @@ namespace DnnMigration.UnitTests.Application;
 /// promotions that accompany an acceptance rather than refusing it, and the audit names that survive the
 /// PascalCase rename are pinned by the sign-in suite; the shipped credential policy and its rule-for-rule
 /// parity with the legacy configuration are pinned by the policy and validator suites; and every entity
-/// projection is pinned by the mapping suite. What this suite adds is the SERVICE-side half of those same
-/// translations, which none of them can see: that the account service's own refusal vocabulary is one code
-/// per legacy outcome, that it draws no outcome from a CLR default, and that its request contract offers no
-/// member the legacy surface had and the target deliberately dropped.
+/// projection is pinned by the mapping suite.
 /// </para>
 /// </remarks>
 public class UserServiceApplicationTests
 {
-    /// <summary>
-    /// The tenant these assertions address, chosen as the identity seed on purpose.
-    /// </summary>
-    /// <remarks>
-    /// <c>Portals.PortalID</c> is declared <c>IDENTITY (-1, 1)</c>, so -1 is simultaneously the first
-    /// identifier the column ever issues AND the value the legacy null contract used to mean "absent"
-    /// (<c>Library/Components/Shared/Null.vb</c>, <c>NullInteger</c>). Addressing it by default keeps that
-    /// collision under test on every path rather than only on the one test that names it.
-    /// </remarks>
+    /// <summary>The tenant these assertions address, chosen as the identity seed on purpose.</summary>
     private const int SeedPortalId = -1;
 
-    /// <summary>
-    /// The account these assertions address.
-    /// </summary>
+    /// <summary>The account these assertions address.</summary>
     private const int AccountId = 42;
 
     /// <summary>
@@ -83,20 +55,16 @@ public class UserServiceApplicationTests
     /// </summary>
     private const int ActingAccountId = 7;
 
-    /// <summary>
-    /// The sign-in name of the account under test.
-    /// </summary>
+    /// <summary>The sign-in name of the account under test.</summary>
     private const string AccountName = "member.one";
 
-    /// <summary>
-    /// The electronic-mail address of the account under test.
-    /// </summary>
+    /// <summary>The electronic-mail address of the account under test.</summary>
     private const string AccountEmail = "member.one@example.test";
 
     /// <summary>
     /// A deliberately fake stand-in for a submitted credential. Seven characters and purely alphanumeric,
     /// which is exactly what the preserved legacy policy admits, so it passes on the happy path without a
-    /// test having to relax the policy. It is not a real credential and matches no provider's format.
+    /// test having to relax the policy.
     /// </summary>
     private const string FakeSubmittedCredential = "notreal";
 
@@ -107,9 +75,8 @@ public class UserServiceApplicationTests
     private const string FakeStoredHash = "REDACTED_PASSWORD_HASH";
 
     /// <summary>
-    /// The definition name the legacy settings read located its module instance by
-    /// (<c>UserController.vb:L662</c>), restated here as a literal so a rename of the contract constant
-    /// cannot silently move the settings source.
+    /// The definition name the legacy settings read located its module instance by, restated here as a
+    /// literal so a rename of the contract constant cannot silently move the settings source.
     /// </summary>
     private const string AccountsModuleDefinitionName = "User Accounts";
 
@@ -121,46 +88,31 @@ public class UserServiceApplicationTests
     private const string LegacySettingsCacheKeyPrefix = "UserSettings|";
 
     /// <summary>
-    /// The value the legacy unpaged overloads passed for page index, page size and total alike
-    /// (<c>UserController.vb:L686</c>, <c>L705</c>), meaning "return every row, do not page".
+    /// The value the legacy unpaged overloads passed for page index, page size and total alike, meaning
+    /// "return every row, do not page".
     /// </summary>
     private const int LegacyUnpagedArgument = -1;
 
-    /// <summary>
-    /// The page size that carries the legacy unpaged request in the target contract.
-    /// </summary>
+    /// <summary>The page size that carries the legacy unpaged request in the target contract.</summary>
     /// <remarks>
-    /// MIGRATION: the legacy marker was -1 and the target marker is 0, because the request contract
-    /// declares a plain <see cref="int"/> whose absent value is zero and the paged envelope reports
-    /// <c>IsUnpaged</c> by testing the same. The translation therefore has to be asserted rather than
-    /// assumed: a mapping that carried -1 through unchanged would be refused by the negative-size guard,
-    /// and one that substituted the default page size would silently answer a first page where the caller
-    /// asked for the whole collection.
+    /// The legacy marker was -1 and the target marker is 0, because the request contract declares a plain
+    /// <see cref="int"/> whose absent value is zero and the paged envelope reports <c>IsUnpaged</c> by
+    /// testing the same.
     /// </remarks>
     private const int UnpagedPageSize = 0;
 
     /// <summary>
-    /// Each refusal the account-creation member can reach, paired with the legacy
-    /// <c>UserCreateStatus</c> member it stands for.
+    /// Each refusal the account-creation member can reach, paired with the legacy <c>UserCreateStatus</c>
+    /// member it stands for.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This table is the substance of the creation assertions. The legacy member returned one of eighteen
-    /// enumeration values and mutated its argument to carry the account
-    /// (<c>UserController.vb:L156</c>); the target returns a result whose reason carries a code. The
-    /// mapping between the two is what a reviewer needs in order to check a target refusal against the
-    /// legacy procedure without holding both in their head, so it is written down once here and asserted
-    /// from one place.
-    /// </para>
-    /// <para>
     /// The legacy statuses NOT present are absent for stated reasons rather than by omission.
     /// <c>AddUser</c> (0) is the not-yet-attempted seed and is never an outcome. <c>InvalidAnswer</c> (6)
     /// and <c>InvalidQuestion</c> (10) guarded the recovery question-and-answer pair, which the preserved
     /// policy does not require and the target does not store. <c>DuplicateProviderUserKey</c> (4) and
-    /// <c>InvalidProviderUserKey</c> (9) named a provider-assigned key that the target has no analogue
-    /// for. <c>UnexpectedError</c> (14) and <c>UserRejected</c> (15) were never returned by the ported
-    /// path. <c>Success</c> (13) is not a refusal.
-    /// </para>
+    /// <c>InvalidProviderUserKey</c> (9) named a provider-assigned key that the target has no analogue for.
+    /// <c>UnexpectedError</c> (14) and <c>UserRejected</c> (15) were never returned by the ported path.
+    /// <c>Success</c> (13) is not a refusal.
     /// </remarks>
     private static readonly (UserCreateStatus LegacyStatus, string ReasonCode)[] CreationRefusals =
     [
@@ -181,12 +133,11 @@ public class UserServiceApplicationTests
     /// target member carries it on.
     /// </summary>
     /// <remarks>
-    /// The legacy grid dispatched to exactly one of four procedures per postback:
-    /// <c>GetUsers</c> (<c>L725</c>, <c>L746</c>), <c>GetUsersByEmail</c> (<c>L769</c>, <c>L793</c>),
+    /// The legacy grid dispatched to exactly one of four procedures per postback: <c>GetUsers</c>
+    /// (<c>L725</c>, <c>L746</c>), <c>GetUsersByEmail</c> (<c>L769</c>, <c>L793</c>),
     /// <c>GetUsersByUserName</c> (<c>L816</c>, <c>L840</c>) and <c>GetUsersByProfileProperty</c>
-    /// (<c>L864</c>, <c>L889</c>) - eight overloads in all, every one of them returning an
-    /// <c>ArrayList</c> and reporting its grand total through a by-reference argument. The unfiltered
-    /// shape is the fourth and takes no filter, which is why only three appear here.
+    /// (<c>L864</c>, <c>L889</c>) - eight overloads in all, every one of them returning an <c>ArrayList</c>
+    /// and reporting its grand total through a by-reference argument.
     /// </remarks>
     private static readonly string[] LegacySearchShapes =
     [
@@ -199,11 +150,6 @@ public class UserServiceApplicationTests
     /// Every collaborator of <see cref="UserService"/>, stood up as a mock, together with the recordings
     /// the assertions read back.
     /// </summary>
-    /// <remarks>
-    /// Nested inside the test class on purpose. A shared fixture file would couple this suite to its
-    /// siblings, and the whole value of these assertions is that they pin one aggregate's translation
-    /// independently of anything else in the project.
-    /// </remarks>
     private sealed class Subject
     {
         private Subject()
@@ -211,8 +157,7 @@ public class UserServiceApplicationTests
             // Both account-lifecycle workflows now open ONE explicit transaction - creation so that the
             // account row and its external credential are published together, deletion so that the grant
             // cascade, the assignments, the membership, the account row and the credential removal are
-            // all-or-nothing. Loose behaviour would hand back a null scope and the await-using would
-            // dereference it, so this stub is required rather than decorative.
+            // all-or-nothing.
             UnitOfWork
                 .Setup(unitOfWork => unitOfWork.BeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
@@ -259,8 +204,8 @@ public class UserServiceApplicationTests
         public Mock<IPermissionService> Permissions { get; } = new();
 
         /// <summary>
-        /// Gets the role contract mock, reached only by the member-services operations and only for the
-        /// two membership primitives they delegate.
+        /// Gets the role contract mock, reached only by the member-services operations and only for the two
+        /// membership primitives they delegate.
         /// </summary>
         public Mock<IRoleService> RoleService { get; } = new();
 
@@ -315,8 +260,9 @@ public class UserServiceApplicationTests
         /// Gets the tenant-facts holder the detail read consults before falling back to a portal read.
         /// </summary>
         /// <remarks>
-        /// Left reporting itself unresolved, which is what a caller outside a request scope genuinely is, so
-        /// every case here exercises the persistence fall-back exactly as it did before the holder existed.
+        /// Left reporting itself unresolved, which is what a caller outside a request scope genuinely is,
+        /// so every case here exercises the persistence fall-back exactly as it did before the holder
+        /// existed.
         /// </remarks>
         public Mock<IPortalContextHolder> PortalContext { get; } = new();
         /// <summary>
@@ -420,9 +366,7 @@ public class UserServiceApplicationTests
             string? SortBy,
             bool Descending);
 
-        /// <summary>
-        /// The arguments of <c>IUserRepository.ListAccountChoicesAsync</c>, captured verbatim.
-        /// </summary>
+        /// <summary>The arguments of <c>IUserRepository.ListAccountChoicesAsync</c>, captured verbatim.</summary>
         /// <param name="PortalId">The tenant the page was taken within.</param>
         /// <param name="PageIndex">The zero-based page index.</param>
         /// <param name="PageSize">The page size, zero meaning unpaged.</param>
@@ -610,8 +554,7 @@ public class UserServiceApplicationTests
 
             // The account-deletion cascade calls the STAGE-ONLY member, never its committing sibling: the
             // whole cascade is one transaction and a suboperation that committed inside it would make the
-            // sequence partially durable. The call log records the staging so the ordering assertions can
-            // prove it happens before the single commit.
+            // sequence partially durable.
             subject.Permissions.Setup(permissions => permissions.StageUserPermissionRemovalAsync(
                     It.IsAny<int>(),
                     It.IsAny<int>(),
@@ -745,9 +688,7 @@ public class UserServiceApplicationTests
             return subject;
         }
 
-        /// <summary>
-        /// Builds the account row the repository answers a read with.
-        /// </summary>
+        /// <summary>Builds the account row the repository answers a read with.</summary>
         /// <returns>A plausible stored account holding exactly one tenant membership.</returns>
         public static User StoredRow()
         {
@@ -794,22 +735,7 @@ public class UserServiceApplicationTests
     // The contract shape: what the four by-reference arguments and the retrieval member became.
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Proves the by-reference idiom is gone from the account contract entirely.
-    /// </summary>
-    /// <remarks>
-    /// The legacy surface reported through its arguments in four places, all of them
-    /// <c>Public Shared</c>: <c>CreateUser(ByRef objUser As UserInfo) As UserCreateStatus</c>
-    /// (<c>UserController.vb:L156</c>) mutated the account and returned a status;
-    /// <c>DeleteUser(ByRef objUser, notify, deleteAdmin) As Boolean</c> (<c>L200</c>) mutated it and
-    /// returned a flag; <c>GetPassword(ByRef user, passwordAnswer) As String</c> (<c>L433</c>) wrote a
-    /// clear-text credential onto it; and <c>GetUserMembership(ByRef objUser)</c> (<c>L638</c>) was a
-    /// <c>Sub</c> that mutated it and reported nothing at all. A fifth idiom returned the grand total the
-    /// same way, in eight overloads. Every one of them produced two answers that no single type tied
-    /// together, so a caller could read the object and never look at the status, or read the status and
-    /// never notice the object had changed underneath it. This test is the standing guarantee that none of
-    /// them can come back: an argument the callee writes to is invisible at the call site.
-    /// </remarks>
+    /// <summary>Proves the by-reference idiom is gone from the account contract entirely.</summary>
     [Fact]
     public void AccountContract_DeclaresNoByReferenceArgumentAnywhere()
     {
@@ -840,11 +766,6 @@ public class UserServiceApplicationTests
     /// Proves every account operation is asynchronous and reports its outcome through the returned result
     /// rather than through a flag, a status or a thrown exception for an expected failure.
     /// </summary>
-    /// <remarks>
-    /// Rule T6 requires that every input-output bound member return a task, and the result type is what
-    /// replaced the eighteen-member status enumeration and the boolean the deletion returned. Both are
-    /// asserted here in one place so a member added later cannot quietly return a bare value.
-    /// </remarks>
     [Fact]
     public void AccountContract_IsAsynchronousThroughoutAndReportsThroughAResult()
     {
@@ -880,23 +801,8 @@ public class UserServiceApplicationTests
     /// returns carries one.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// MIGRATION: password retrieval is deliberately not carried forward, and this is the assertion that
-    /// keeps it out. The legacy store was reversible by configuration - the membership provider was
-    /// registered with <c>passwordFormat="Encrypted"</c> and <c>enablePasswordRetrieval="true"</c>
-    /// (<c>Website/release.config:L239</c>, <c>L245</c>) with the key that decrypts every stored
-    /// credential committed to source control at <c>L90-L92</c> - and <c>GetPassword</c>
-    /// (<c>UserController.vb:L433-L445</c>) existed solely to hand one out, throwing only when the
-    /// installation had switched retrieval off. The target hashes one way, so there is nothing to return
-    /// and no member that could return it. The divergence and the administrative reset that replaces it
-    /// are recorded in <c>MIGRATION_NOTES.md</c> under the password-storage heading.
-    /// </para>
-    /// <para>
-    /// The rule is applied to response shapes only. A submission legitimately carries a credential -
-    /// <see cref="ChangePasswordRequest"/> exists to accept one - and the flags and instants a response
-    /// does carry about a credential, such as whether a change is outstanding and when one last happened,
-    /// disclose nothing because they are not text.
-    /// </para>
+    /// keeps it out.
     /// </remarks>
     [Fact]
     public void AccountContract_OffersNoWayToObtainAStoredCredential()
@@ -946,21 +852,9 @@ public class UserServiceApplicationTests
     }
 
     /// <summary>
-    /// Proves no untyped collection survives anywhere on the account contract or in the shapes it exchanges.
+    /// Proves no untyped collection survives anywhere on the account contract or in the shapes it
+    /// exchanges.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The legacy account controller returned <c>ArrayList</c> twenty times and <c>Hashtable</c> once
-    /// (<c>GetUserSettings</c>, <c>UserController.vb:L656</c>). Neither declares what it holds, so the
-    /// caller cast every element and the compiler checked none of it - which is how a grid came to render
-    /// a collection whose contents it could only discover at run time. Every one of them is now a typed
-    /// envelope or a typed contract, and this test is what stops one coming back.
-    /// </para>
-    /// <para>
-    /// A sequence that declares no element type is refused for the same reason as the two named classes:
-    /// the non-generic interfaces are exactly as silent about their contents.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void AccountContract_CarriesNoUntypedCollectionOnAnySignatureOrShape()
     {
@@ -1042,14 +936,9 @@ public class UserServiceApplicationTests
     /// Proves the deletion guard offers no override, so the legacy escape hatch cannot be reopened.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: the legacy signature was
-    /// <c>DeleteUser(ByRef objUser, ByVal notify As Boolean, ByVal deleteAdmin As Boolean) As Boolean</c>
-    /// (<c>UserController.vb:L200</c>), and <c>L209-L210</c> made the tenant's designated administrator
-    /// deletable whenever the CALLER passed <c>deleteAdmin</c> as true. That is an authorisation decision
-    /// delegated to whichever screen happened to be calling, and the target does not carry it: the
-    /// administrator is refused unconditionally, and reassigning the designation is the supported way to
-    /// remove that account. The <c>notify</c> switch goes with the excluded mail subsystem. Both
-    /// divergences are recorded in <c>MIGRATION_NOTES.md</c>.
+    /// The legacy signature was <c>DeleteUser(ByRef objUser, ByVal notify As Boolean, ByVal deleteAdmin As
+    /// Boolean) As Boolean</c>, and <c>L209-L210</c> made the tenant's designated administrator deletable
+    /// whenever the CALLER passed <c>deleteAdmin</c> as true.
     /// </remarks>
     [Fact]
     public void AccountContract_OffersNoCallerSuppliedOverrideOfTheAdministratorGuard()
@@ -1111,14 +1000,6 @@ public class UserServiceApplicationTests
     /// </summary>
     /// <param name="legacyStatus">The legacy status the refusal stands for.</param>
     /// <param name="expectedCode">The code the target reports it under.</param>
-    /// <remarks>
-    /// The legacy member returned one of eighteen enumeration values and the caller compared against
-    /// whichever ones it cared about (<c>UserController.vb:L156-L183</c>). Collapsing ten distinguishable
-    /// outcomes onto one generic failure would be the easy translation and the wrong one: a screen that
-    /// cannot tell "that name is taken" from "that address is taken" from "the credential store is
-    /// unreachable" cannot tell the account holder what to do next. This is the mapping, asserted one
-    /// legacy status at a time.
-    /// </remarks>
     [Theory]
     [MemberData(nameof(CreationRefusalCases))]
     public async Task CreateUser_NamesEachLegacyRefusalWithItsOwnCode(
@@ -1138,14 +1019,12 @@ public class UserServiceApplicationTests
             legacyStatus);
     }
 
-    /// <summary>
-    /// Proves the refusal catalogue is one code per legacy outcome, in both directions.
-    /// </summary>
+    /// <summary>Proves the refusal catalogue is one code per legacy outcome, in both directions.</summary>
     /// <remarks>
     /// Two legacy statuses sharing a code would make them indistinguishable, which is the collapse the
-    /// per-status test above exists to prevent; one legacy status carrying two codes would make the
-    /// mapping ambiguous from the other side, so a reviewer checking a target refusal against the legacy
-    /// procedure could not tell which statement produced it. Both are refused here.
+    /// per-status test above exists to prevent; one legacy status carrying two codes would make the mapping
+    /// ambiguous from the other side, so a reviewer checking a target refusal against the legacy procedure
+    /// could not tell which statement produced it. Both are refused here.
     /// </remarks>
     [Fact]
     public void CreationRefusals_MapEachLegacyOutcomeToItsOwnCode()
@@ -1171,14 +1050,6 @@ public class UserServiceApplicationTests
     /// Proves no outcome is inferred from an unset value: a success carries no reason and every refusal
     /// carries a populated one.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy member initialised its local to <c>UserCreateStatus.AddUser</c> at
-    /// <c>UserController.vb:L158</c> and overwrote it at <c>L161</c>, so the value zero meant "not
-    /// attempted yet" rather than any outcome at all. Code that leaned on the unset value would therefore
-    /// have read a not-yet-attempted creation as a definite one. The result type removes the whole class
-    /// of fault by construction - success and failure are separate states rather than two values of one
-    /// integer - and this test is what proves the service never lands in a third, half-populated one.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_DrawsNoOutcomeFromAnUnsetValue()
     {
@@ -1218,14 +1089,6 @@ public class UserServiceApplicationTests
     /// Proves only the roles the tenant flags for automatic assignment are enrolled, and that the flag is
     /// the whole of the test.
     /// </summary>
-    /// <remarks>
-    /// The legacy loop read every role the tenant declared and enrolled the new account in each one whose
-    /// <c>AutoAssignment</c> was true (<c>UserController.vb:L172-L179</c>). The flag is the only
-    /// condition: a public role is not automatically assigned, and a role carrying membership terms is
-    /// enrolled if it is flagged, so a filter written over any other column would enrol the wrong set. The
-    /// mixed collection below is arranged so that a filter testing visibility, or one testing nothing at
-    /// all, produces a different answer from the correct one.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_EnrolsOnlyTheRolesTheTenantFlagsForAutomaticAssignment()
     {
@@ -1261,24 +1124,11 @@ public class UserServiceApplicationTests
     /// absence marker has not become a date in the year one.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy call passed the marker explicitly for both bounds -
-    /// <c>AddUserRole(PortalID, UserID, RoleID, Null.NullDate, Null.NullDate)</c> at
-    /// <c>UserController.vb:L177</c>, repeated at <c>RoleController.vb:L76</c> - and
-    /// <c>Null.NullDate</c> is <c>Date.MinValue</c> (<c>Null.vb:L66-L70</c>). Under Rule T7 the nullable
-    /// type replaces the marker, and BOTH assertions below are deliberate: the first states the target
-    /// value, and the second states that the legacy marker has not leaked into the domain in its place.
-    /// </para>
-    /// <para>
     /// THE TWO ARE EQUIVALENT AT THE COLUMN, WHICH IS WHY THIS IS PARITY RATHER THAN A DIVERGENCE, and the
-    /// evidence is in the legacy write path itself. <c>Null.GetNull</c> (<c>Null.vb:L183-L186</c>)
-    /// substitutes <c>DBNull</c> for any date whose date part equals <c>NullDate.Date</c> - the comment
-    /// there says it compares only the date part to avoid subtle time differences - so the marker was
-    /// converted on the way out and the column received NULL every time. It could not have received
-    /// anything else in any case: SQL Server's <c>datetime</c> range begins at 1753-01-01, so
-    /// 0001-01-01 was never a storable value. A migrated row and its legacy self therefore hold the same
-    /// thing, and a target that wrote <c>DateTime.MinValue</c> instead would be the one diverging.
-    /// </para>
+    /// evidence is in the legacy write path itself. <c>Null.GetNull</c> substitutes <c>DBNull</c> for any
+    /// date whose date part equals <c>NullDate.Date</c> - the comment there says it compares only the date
+    /// part to avoid subtle time differences - so the marker was converted on the way out and the column
+    /// received NULL every time.
     /// </remarks>
     [Fact]
     public async Task CreateUser_LeavesBothEnrolmentBoundsUnsetRatherThanAtTheLegacyAbsenceMarker()
@@ -1313,12 +1163,6 @@ public class UserServiceApplicationTests
     /// Proves a refusal decided before the enrolment reads no role, stages nothing and commits nothing.
     /// </summary>
     /// <param name="legacyStatus">The legacy status the refusal stands for.</param>
-    /// <remarks>
-    /// The legacy member gated the whole of its enrolment block on the status being success
-    /// (<c>UserController.vb:L163</c>), so a refused creation touched neither the role collection nor the
-    /// tenant cache. Reading roles for an account that will not exist would be harmless in itself; staging
-    /// or committing one would not be, and the same guard covers both.
-    /// </remarks>
     [Theory]
     [MemberData(nameof(RefusalsBeforeStagingCases))]
     public async Task CreateUser_ReadsNoRoleAndStagesNothingWhenARefusalPrecedesTheEnrolment(
@@ -1342,16 +1186,6 @@ public class UserServiceApplicationTests
     /// Proves the creation request cannot ask for an installation-wide account, which is how the legacy
     /// guard on the enrolment block is carried forward.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy block skipped enrolment entirely for a host account -
-    /// <c>If Not objUser.IsSuperUser Then</c> at <c>UserController.vb:L166</c> - because a host account
-    /// is beyond any single tenant's roles. The guard survives as an absence rather than as a branch: the
-    /// request contract exposes no way to declare one, so the case the legacy branch existed to handle
-    /// cannot arise through this member at all. That is the stronger translation, because a branch can be
-    /// reached with the wrong value and a missing member cannot be reached at all. The deletion guard
-    /// enforces the same rule from the other end, where the account already exists and the flag can
-    /// therefore be true.
-    /// </remarks>
     [Fact]
     public async Task CreateUser_CannotBeAskedToCreateAnInstallationWideAccount()
     {
@@ -1374,9 +1208,7 @@ public class UserServiceApplicationTests
         subject.StagedAccounts.Should().ContainSingle().Which.IsSuperUser.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Proves every instant a creation records comes from the injected clock.
-    /// </summary>
+    /// <summary>Proves every instant a creation records comes from the injected clock.</summary>
     /// <remarks>
     /// The legacy code read the ambient clock inline wherever it needed an instant, which is why its date
     /// handling could not be asserted at all. Every instant below is the one the substituted clock
@@ -1416,9 +1248,7 @@ public class UserServiceApplicationTests
     // The single commit point, and the two coarse legacy cache clears.
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Proves an accepted creation reaches the commit point exactly once.
-    /// </summary>
+    /// <summary>Proves an accepted creation reaches the commit point exactly once.</summary>
     /// <remarks>
     /// The legacy creation had no commit point at all: the membership provider wrote the account, the
     /// enrolment loop issued one statement per flagged role, and nothing enclosed them, so a failure part
@@ -1458,9 +1288,7 @@ public class UserServiceApplicationTests
     /// MIGRATION: the legacy member cleared the whole tenant cache inside its success branch -
     /// <c>DataCache.ClearPortalCache(objUser.PortalID, False)</c> at <c>UserController.vb:L164</c> - and
     /// the target replaces that coarse sweep with two scoped discards, the tenant's entries and this
-    /// account's. Scoping is the improvement; the placement is the parity: discarding before the
-    /// credential store has accepted the credential would evict entries for an account that is about to
-    /// be withdrawn again.
+    /// account's.
     /// </remarks>
     [Fact]
     public async Task CreateUser_DiscardsTheTenantAndAccountEntriesOnlyOnAnAcceptedCreation()
@@ -1501,15 +1329,6 @@ public class UserServiceApplicationTests
     /// Proves the three refusals a deletion can reach carry three distinct reasons, where the legacy member
     /// carried one boolean for all of them.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>DeleteUser</c> returned <c>Boolean</c> (<c>UserController.vb:L200</c>) and set it
-    /// false from three unrelated places - the administrator guard at <c>L209-L210</c>, a refusal from the
-    /// membership provider at <c>L231</c>, and the exception handler at the foot of the method, which
-    /// swallowed every fault into the same false. A caller therefore learned that the deletion had not
-    /// happened and nothing whatever about why: the account holder saw the same outcome whether the
-    /// account did not exist, was protected, or the store was unreachable. Each is now its own reason, and
-    /// this test is what stops them collapsing back together.
-    /// </remarks>
     [Fact]
     public async Task DeleteUser_SeparatesTheRefusalsTheLegacyBooleanCouldNotTellApart()
     {
@@ -1546,16 +1365,7 @@ public class UserServiceApplicationTests
             .Should().AllSatisfy(message => message.Should().NotBeNullOrWhiteSpace());
     }
 
-    /// <summary>
-    /// Proves refusing the tenant's designated administrator leaves everything else untouched.
-    /// </summary>
-    /// <remarks>
-    /// The legacy guard read the designation off the tenant row - <c>Convert.ToInt32(dr("AdministratorId"))</c>
-    /// at <c>UserController.vb:L209</c>, an explicit conversion in a file whose companion screens compiled
-    /// with Option Strict off - and, when the deletion was not permitted, skipped the whole cascade at
-    /// <c>L217</c>. The target reads the designation from a typed nullable column, so there is no
-    /// conversion left to get wrong, and the guard still stands ahead of every destructive step.
-    /// </remarks>
+    /// <summary>Proves refusing the tenant's designated administrator leaves everything else untouched.</summary>
     [Fact]
     public async Task DeleteUser_RefusesTheDesignatedAdministratorWithoutTouchingAnythingElse()
     {
@@ -1597,20 +1407,8 @@ public class UserServiceApplicationTests
     /// precedes the single commit.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The order is part of the ported contract rather than an incidental detail. The legacy member cleared
-    /// folder grants at <c>UserController.vb:L220</c>, module grants at <c>L224</c> and page grants at
-    /// <c>L228</c>, and only then asked the membership provider to remove the account at <c>L231</c>. A
-    /// grant outliving the account that held it is inherited by the next account to be issued the same
-    /// identifier, which is precisely why the legacy code cleared first and why the target still does.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the three separate calls are one call to the permission contract, which owns both grant
-    /// tables and states the direct-grants-only rule once. The consolidation and its reasoning are recorded
-    /// in <c>MIGRATION_NOTES.md</c>; what is asserted here is that consolidating them did not move them
-    /// after the removal they must precede, and that the whole cascade is staged rather than committed
-    /// piecemeal - the legacy sequence was several independent statements with nothing enclosing them.
-    /// </para>
+    /// The three separate calls are one call to the permission contract, which owns both grant tables and
+    /// states the direct-grants-only rule once.
     /// </remarks>
     [Fact]
     public async Task DeleteUser_ReleasesEveryGrantAndEnrolmentBeforeTheAccountAndCommitsOnceAfterwards()
@@ -1663,13 +1461,6 @@ public class UserServiceApplicationTests
     /// Proves both cache entries the legacy deletion cleared are discarded, and discarded after the commit
     /// rather than before it.
     /// </summary>
-    /// <remarks>
-    /// The legacy member cleared two entries in its success branch - the whole tenant cache at
-    /// <c>UserController.vb:L249</c> and the account's own entry at <c>L250</c>, the only place in the
-    /// file where both were cleared together. Both survive as scoped discards, and both are issued after
-    /// the commit: discarding before it would repopulate an entry from rows the commit was about to
-    /// remove.
-    /// </remarks>
     [Fact]
     public async Task DeleteUser_DiscardsBothLegacyCacheEntriesAfterTheCommit()
     {
@@ -1693,16 +1484,6 @@ public class UserServiceApplicationTests
     /// Proves the deletion is recorded under the legacy event name, against the account deleted and the
     /// caller who deleted it.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy entry was written by
-    /// <c>objEventLog.AddLog("Username", objUser.Username, _portalSettings, objUser.UserID,
-    /// EventLogType.USER_DELETED)</c> at <c>UserController.vb:L240</c>, into a store the logging provider
-    /// family owned and which is out of scope. The store is gone and the NAME is not: the event travels to
-    /// an audit sink under the same <c>USER_DELETED</c> string, so an operator's existing expectation of
-    /// what a deletion looks like in the trail still holds. The legacy record carried a single user field
-    /// and so could not distinguish the administrator from the account they removed; the target carries
-    /// both, which is why the acting caller below is deliberately not the subject.
-    /// </remarks>
     [Fact]
     public async Task DeleteUser_RecordsTheDeletionUnderItsLegacyEventName()
     {
@@ -1747,20 +1528,10 @@ public class UserServiceApplicationTests
     /// are not transposed.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// THIS IS THE ASSERTION THE FILE EXISTS FOR. The legacy grid dispatched to one of four procedures per
     /// postback, selected by a drop-down: the unfiltered <c>GetUsers</c>, <c>GetUsersByEmail</c>,
     /// <c>GetUsersByUserName</c> and <c>GetUsersByProfileProperty</c>. Each is now a nullable argument on
-    /// one member, and three of those arguments sit adjacent and are text. A transposition between two of
-    /// them compiles cleanly, satisfies every workflow test - a page still comes back, still typed, still
-    /// paged - and quietly searches the wrong column. Nothing but an assertion on the forwarded arguments
-    /// can see it, so the values below are chosen so that no two could be mistaken for one another.
-    /// </para>
-    /// <para>
-    /// The filters are asserted one at a time because the member refuses more than one, which preserves
-    /// the legacy dispatch exactly: the grid could search by name or by address or by profile answer, never
-    /// by two at once.
-    /// </para>
+    /// one member, and three of those arguments sit adjacent and are text.
     /// </remarks>
     [Fact]
     public async Task ListUsers_LandsEachLegacySearchProcedureOnItsOwnArgument()
@@ -1842,12 +1613,6 @@ public class UserServiceApplicationTests
     /// <summary>
     /// Proves one text value placed in each filter position in turn reaches a different argument each time.
     /// </summary>
-    /// <remarks>
-    /// The test above uses distinguishable values, which catches a transposition by the value that arrives.
-    /// This one uses the SAME value three times, which catches the narrower fault of a member that forwards
-    /// whatever it is given to one fixed argument regardless of which one the caller filled - a mistake the
-    /// distinguishable-values test would also catch, but only for two of the three positions.
-    /// </remarks>
     [Fact]
     public async Task ListUsers_SendsOneValuePlacedInEachPositionToADifferentArgument()
     {
@@ -1890,18 +1655,10 @@ public class UserServiceApplicationTests
     /// which is the whole reason it is a separate member.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The listing reads the tenant's account-policy settings to decide which columns it may publish, reads
     /// the tenant's profile-property declarations, issues a batched profile-value read to fill the address
     /// and telephone columns, and reads the portal itself to learn which account it must not offer for
-    /// deletion. A picker renders a key and two captions, so it needs none of them - and this test is what
-    /// stops one being reintroduced by a later edit that reuses the listing's body.
-    /// </para>
-    /// <para>
-    /// The portal read is the sharpest of the four, because it is the one whose removal from the account
-    /// DETAIL read was a separate finding: a read that exists to decide an affordance the payload does not
-    /// carry is a round trip with no reader.
-    /// </para>
+    /// deletion.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1962,12 +1719,6 @@ public class UserServiceApplicationTests
     /// <summary>
     /// Proves the picker's projection carries the key and the two captions and cannot carry anything else.
     /// </summary>
-    /// <remarks>
-    /// Asserted against the CONTRACT TYPE rather than against one instance, because the exposure this
-    /// endpoint closes would return the moment a member were added to the transfer object - and every
-    /// existing caller would keep compiling. The three names are written out so that widening the type
-    /// fails this test rather than passing silently.
-    /// </remarks>
     [Fact]
     public void AccountChoiceContract_CarriesTheKeyAndTwoCaptionsOnly()
     {
@@ -1988,10 +1739,10 @@ public class UserServiceApplicationTests
     /// discarding it.
     /// </summary>
     /// <remarks>
-    /// The account listing admits <c>Email</c> as an ordering and this member does not, and the difference is
-    /// the projection: ordering a drop-down by a value none of its options shows is an ordering the operator
-    /// cannot verify. The refusal carries its own code so a client can tell which set it was measured
-    /// against.
+    /// The account listing admits <c>Email</c> as an ordering and this member does not, and the difference
+    /// is the projection: ordering a drop-down by a value none of its options shows is an ordering the
+    /// operator cannot verify. The refusal carries its own code so a client can tell which set it was
+    /// measured against.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2061,24 +1812,9 @@ public class UserServiceApplicationTests
     }
 
     /// <summary>
-    /// Proves the legacy "return every row" request is forwarded as an unpaged request rather than
-    /// silently becoming a first page.
+    /// Proves the legacy "return every row" request is forwarded as an unpaged request rather than silently
+    /// becoming a first page.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy unpaged overloads passed -1 for the page index, the page size and the total
-    /// alike - <c>Return GetUsers(portalId, False, -1, -1, -1)</c> at <c>UserController.vb:L686</c>,
-    /// repeated at <c>L705</c> - and the marker meant "do not page, return everything". The target marker
-    /// is 0 rather than -1, because the request contract declares a plain integer whose absent value is
-    /// zero and the envelope reports unpaged by testing the same. That translation is the fault line: a
-    /// mapping that carried -1 through unchanged would be refused by the negative-size guard, and one that
-    /// substituted the contract's default page size would answer a first page of ten where the caller asked
-    /// for the whole collection - a wrong answer that looks entirely well-formed.
-    /// </para>
-    /// <para>
-    /// Both halves are asserted: the size the store is asked for, and the envelope the caller reads back.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListUsers_ForwardsTheLegacyEveryRowRequestWithoutSubstitutingAPageSize()
     {
@@ -2112,15 +1848,12 @@ public class UserServiceApplicationTests
         outcome.Value.PageSize.Should().Be(UnpagedPageSize);
     }
 
-    /// <summary>
-    /// Proves the grand total travels on the same value as the records it counts.
-    /// </summary>
+    /// <summary>Proves the grand total travels on the same value as the records it counts.</summary>
     /// <remarks>
     /// The legacy overloads reported the total through a by-reference argument the caller had declared -
     /// eight of them did, at <c>UserController.vb:L725</c>, <c>L746</c>, <c>L769</c>, <c>L793</c>,
     /// <c>L816</c>, <c>L840</c>, <c>L864</c> and <c>L889</c> - so the records and their total were two
-    /// separate answers a caller could pair up wrongly, or forget to read at all. One envelope carries
-    /// both, and a pager that renders the wrong number of pages is no longer reachable.
+    /// separate answers a caller could pair up wrongly, or forget to read at all.
     /// </remarks>
     [Fact]
     public async Task ListUsers_CarriesTheGrandTotalOnTheSameValueAsTheRecords()
@@ -2154,15 +1887,7 @@ public class UserServiceApplicationTests
             "the element type is declared, which the legacy ArrayList never was");
     }
 
-    /// <summary>
-    /// Proves a page past the end of the collection is an empty page that still knows the total.
-    /// </summary>
-    /// <remarks>
-    /// The legacy pairing made this case particularly easy to get wrong: an empty <c>ArrayList</c> came
-    /// back and the by-reference total was whatever the procedure had assigned, so a caller that treated
-    /// "no rows" as "no records" rendered a pager claiming the collection was empty when it was not.
-    /// Emptiness is a successful answer here, and the total is unaffected by which page was asked for.
-    /// </remarks>
+    /// <summary>Proves a page past the end of the collection is an empty page that still knows the total.</summary>
     [Fact]
     public async Task ListUsers_ReportsAPageBeyondTheLastAsAnEmptySuccessThatKeepsTheTotal()
     {
@@ -2187,17 +1912,7 @@ public class UserServiceApplicationTests
     // Membership settings: the one Hashtable becomes a typed contract, and the cache is not reproduced.
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// Proves the tenant's account settings are a typed contract rather than a keyed bag.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: <c>GetUserSettings</c> returned <c>Hashtable</c> (<c>UserController.vb:L656</c>), so
-    /// every consumer indexed it by a string literal and coerced whatever came back. A key spelt wrongly
-    /// silently yielded nothing, a value of the wrong type failed at the point of use rather than the point
-    /// of reading, and no tooling could enumerate what the collection was supposed to hold. The typed
-    /// contract makes each setting a named member of a declared type, which is what turns those three
-    /// classes of run-time fault into compile-time ones.
-    /// </remarks>
+    /// <summary>Proves the tenant's account settings are a typed contract rather than a keyed bag.</summary>
     [Fact]
     public async Task MembershipSettings_AreATypedContractRatherThanAKeyedBag()
     {
@@ -2240,17 +1955,6 @@ public class UserServiceApplicationTests
     /// Proves the settings source is consulted on every read, because the legacy cache is deliberately not
     /// reproduced.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy read was cached under <c>SettingsKey(portalId)</c> - <c>"UserSettings|"</c>
-    /// concatenated with the tenant identifier, composed at <c>UserController.vb:L924</c> - with an expiry
-    /// of <c>TimeSpan.FromMinutes(Globals.PerformanceSetting)</c> at <c>L665</c>. That entry is not
-    /// reintroduced, and the reason is correctness rather than performance: the rows behind it are ordinary
-    /// module settings, writable through the module surface as well as through the settings write beside
-    /// this read, so an entry only this member knew how to evict would go stale on a write it never saw.
-    /// The decision, and the measured legacy lifetime of three minutes that anyone reinstating it must
-    /// reproduce rather than round up, are recorded in <c>MIGRATION_NOTES.md</c>. What is asserted here is
-    /// that the read really is uncached, so nobody reads a stale answer believing it fresh.
-    /// </remarks>
     [Fact]
     public async Task GetMembershipSettings_ConsultsTheSourceOnEveryReadBecauseTheLegacyCacheIsNotReproduced()
     {
@@ -2284,27 +1988,6 @@ public class UserServiceApplicationTests
     /// Proves an absent settings source reads as the legacy DEFAULTS - flagged as unstored - and still
     /// refuses a write, which is the asymmetry the legacy read left the caller to discover.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy read could legitimately return <c>Nothing</c>. The guard at
-    /// <c>UserController.vb:L663</c> only populated and cached the collection when the tenant actually had
-    /// an account module instance, and the member returned the uninitialised local otherwise - so a caller
-    /// received a null reference with no indication that this was a defined outcome rather than a fault,
-    /// and indexing it threw. Every legacy CONSUMER of that null then applied the same defaults
-    /// <c>UserModuleBase.GetSettings</c> applied for an absent key (<c>UserModuleBase.vb:L94-L194</c>), so
-    /// the values an operator saw were never undefined.
-    /// </para>
-    /// <para>
-    /// This member therefore returns those defaults directly and records the absence of a store on the
-    /// document instead of in the status line. The earlier arrangement - a successful result carrying no
-    /// value - was translated by the API surface into <c>404 Not Found</c>, and runtime testing measured the
-    /// cost: four screens that read this document only to decide which columns to render raised a
-    /// screen-level "not found" alert above healthy content, and the settings screen disabled its own save
-    /// control while the server was healthy. Because there is still nowhere to write settings that have no
-    /// source, the WRITE continues to report its own reason - now as a conflict rather than as a missing
-    /// resource, since the read for the same address answers 200.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task MembershipSettings_ReadAsDefaultsAndRefuseAWriteWhenTheTenantHasNoSource()
     {
@@ -2320,13 +2003,7 @@ public class UserServiceApplicationTests
         read.Error.Should().BeNull();
 
         // A TENANT WITH NO SETTINGS SOURCE IS ANSWERED WITH THE LEGACY DEFAULTS, NOT WITH AN ABSENCE, and
-        // this assertion is the one that changed. Returning no value made the API surface answer 404, which
-        // runtime testing showed was both untrue - the tenant exists, so its settings resource does - and
-        // damaging: four screens that merely read this document to decide which columns to render raised a
-        // screen-level "not found" alert over healthy content, and the settings screen disabled its own save
-        // control against a healthy server. The legacy reader applied a measured default for every absent
-        // key (UserModuleBase.vb:L94-L194), so defaults ARE the legacy answer; what the caller needs to know
-        // additionally is that nothing is stored, and that now travels in the document.
+        // this assertion is the one that changed.
         read.Value.Should().NotBeNull("the legacy defaults are the answer when nothing is stored");
         read.Value!.IsStored.Should().BeFalse("no settings source exists for this tenant");
         read.Value.RecordsPerPage.Should().Be(10, "the measured legacy default applies");
@@ -2360,19 +2037,9 @@ public class UserServiceApplicationTests
     /// carries, and that the shipped boundary is the legacy one.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// The legacy boundary lived in configuration: the membership provider was registered with
-    /// <c>minRequiredPasswordLength="7"</c> and <c>minRequiredNonalphanumericCharacters="0"</c>
-    /// (<c>Website/release.config:L242-L243</c>), so seven purely alphanumeric characters were acceptable
-    /// and six were not. That policy is preserved verbatim rather than tightened, because tightening one
-    /// during a migration locks out existing account holders who chose a credential the old rules allowed.
-    /// </para>
-    /// <para>
-    /// What this asserts, and why it is not the enforcement test a sibling suite already owns: the boundary
-    /// MOVES when the bound policy moves. A service that had hard-coded seven would pass an enforcement
-    /// test at seven and quietly ignore a hardened installation, so the third case below raises the
-    /// configured minimum and requires the previously acceptable credential to be refused.
-    /// </para>
+    /// <c>minRequiredPasswordLength="7"</c> and <c>minRequiredNonalphanumericCharacters="0"</c>, so seven
+    /// purely alphanumeric characters were acceptable and six were not.
     /// </remarks>
     [Fact]
     public async Task CreateUser_HonoursTheBoundCredentialPolicyRatherThanAConstantOfItsOwn()
@@ -2438,14 +2105,7 @@ public class UserServiceApplicationTests
     /// caller is handed rather than on an argument the callee wrote to.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: <c>GetUserMembership(ByRef objUser As UserInfo)</c> (<c>UserController.vb:L638</c>) was a
-    /// <c>Sub</c>. It returned nothing at all and its whole effect was to reach the external credential
-    /// store and write what it found onto the account object the caller had passed in, so a caller that
-    /// forgot to call it read an account whose approval and lock-out facts were simply absent - and could
-    /// not tell that apart from an account that really was neither approved nor locked. The member has no
-    /// counterpart: the facts are materialised by the read path and travel on the returned response, which
-    /// is why nothing here has to be called in the right order for them to be present. The omission is
-    /// recorded in <c>MIGRATION_NOTES.md</c> among the named legacy members that are not ported.
+    /// <c>GetUserMembership(ByRef objUser As UserInfo)</c> was a <c>Sub</c>.
     /// </remarks>
     [Fact]
     public async Task AccountContract_HasNoMutatingMembershipReaderBecauseTheFactsArriveOnTheResponse()
@@ -2510,9 +2170,7 @@ public class UserServiceApplicationTests
         ];
     }
 
-    /// <summary>
-    /// Builds a profile declaration the tenant holds.
-    /// </summary>
+    /// <summary>Builds a profile declaration the tenant holds.</summary>
     /// <param name="propertyDefinitionId">The declaration identifier the store filters on.</param>
     /// <param name="propertyName">The name a caller filters by.</param>
     /// <returns>A declared profile property.</returns>
@@ -2527,9 +2185,7 @@ public class UserServiceApplicationTests
         IsVisible = true,
     };
 
-    /// <summary>
-    /// Builds a second stored account, so a page can hold more than one row.
-    /// </summary>
+    /// <summary>Builds a second stored account, so a page can hold more than one row.</summary>
     /// <returns>A plausible second stored account.</returns>
     private static User SecondStoredRow()
     {
@@ -2575,9 +2231,7 @@ public class UserServiceApplicationTests
         Authorize = true,
     };
 
-    /// <summary>
-    /// Builds a role the tenant declares.
-    /// </summary>
+    /// <summary>Builds a role the tenant declares.</summary>
     /// <param name="roleId">The role identifier.</param>
     /// <param name="roleName">The role name.</param>
     /// <param name="automatic">Whether the role is assigned automatically on creation.</param>
@@ -2592,9 +2246,7 @@ public class UserServiceApplicationTests
         IsPublic = isPublic,
     };
 
-    /// <summary>
-    /// Drives the account-creation member to the refusal that stands for one legacy status.
-    /// </summary>
+    /// <summary>Drives the account-creation member to the refusal that stands for one legacy status.</summary>
     /// <param name="legacyStatus">The legacy status to reach.</param>
     /// <returns>The subject, so its recordings can be read, and the refusal it produced.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
@@ -2688,13 +2340,6 @@ public class UserServiceApplicationTests
                         It.IsAny<CancellationToken>()))
                     .ThrowsAsync(new InvalidOperationException("the credential store is unreachable"));
 
-                // THE CLASSIFIER IS ARRANGED, and it has to be. This case stands for the store itself failing,
-                // and the service now absorbs only a failure the Domain classifier POSITIVELY attributes to the
-                // store - so simulating the outage means saying it is one, not merely throwing something. The
-                // service previously converted every non-cancellation exception into this refusal, which meant a
-                // programming fault inside the request was reported to the caller as an external store fault;
-                // this theory is about the reason-CODE mapping, so it states the premise the mapping needs and
-                // leaves the classification rule to be asserted where it belongs.
                 subject.StoreFailures
                     .Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception>()))
                     .Returns(true);

@@ -5,58 +5,19 @@ namespace DnnMigration.Api.Extensions;
 /// is refused at start-up instead of serving traffic under a name nothing else agrees on.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <strong>WHY THIS EXISTS.</strong> The public identity of a deployment is read in three places that must
-/// agree: the reverse proxy's <c>server_name</c> (and therefore which requests its port-80 redirect
-/// captures), the certificate that name is issued for, and this API's own host filter and cross-origin
-/// allow-list. The container artefacts previously carried <c>dnn.example.com</c> as a literal in two of
-/// those places while parameterising only the third, so a deployment that followed the documented
-/// environment workflow got a redirect that never matched its browsers, a certificate that matched no
-/// server name, and an API that refused its own traffic with 400. All three are now derived from one
-/// required setting - and a required setting that is merely *present* is not enough, because the value most
-/// likely to be present is the illustration from the template.
-/// </para>
-/// <para>
-/// <strong>WHAT IS REFUSED, AND WHY EXACTLY THIS SET.</strong> RFC 2606 reserves
-/// <c>example.com</c>, <c>example.net</c> and <c>example.org</c>, and RFC 6761 reserves the
-/// <c>.example</c> top-level domain, for documentation. A name inside either can never be served to a real
-/// browser, so accepting one cannot be correct - it can only be a template value that was never replaced.
-/// The literal editing markers a template or a ticket leaves behind are refused for the same reason.
-/// </para>
-/// <para>
 /// <strong>WHAT IS DELIBERATELY NOT REFUSED, WHICH MATTERS MORE.</strong> RFC 2606 also reserves
-/// <c>.test</c>, <c>.invalid</c> and <c>.localhost</c>, and none of those is rejected here. A private
-/// deployment on <c>admin.acme.test</c>, an internal certificate authority issuing for a <c>.test</c> name,
-/// and the loopback entries the container health probe depends on are all legitimate, and a validator that
-/// refused them would convert a hardening measure into an outage. Nor is a wildcard host, an IP literal or
-/// <c>localhost</c> refused: the base topology's own probe addresses <c>localhost</c>, and deciding whether
-/// a wildcard is acceptable is a policy question this type does not answer.
-/// </para>
-/// <para>
-/// The check runs at start-up over configuration only. It never inspects a request, so no caller can reach
-/// it and no request can be refused by it.
-/// </para>
+/// <c>.test</c>, <c>.invalid</c> and <c>.localhost</c>, and none of those is rejected here.
 /// </remarks>
 internal static class ReservedDeploymentHosts
 {
-    /// <summary>
-    /// The second-level domains RFC 2606 reserves for documentation.
-    /// </summary>
+    /// <summary>The second-level domains RFC 2606 reserves for documentation.</summary>
     private static readonly string[] DocumentationDomains =
         ["example.com", "example.net", "example.org"];
 
-    /// <summary>
-    /// The top-level domain RFC 6761 reserves for documentation.
-    /// </summary>
-    /// <remarks>
-    /// Held as a label rather than as a suffix string so that <c>admin.acme.example</c> is recognised while
-    /// a real name that merely contains the word - <c>example-hosting.com</c>, say - is not.
-    /// </remarks>
+    /// <summary>The top-level domain RFC 6761 reserves for documentation.</summary>
     private const string DocumentationTopLevelLabel = "example";
 
-    /// <summary>
-    /// The editing markers a template, a ticket or a copied snippet leaves behind.
-    /// </summary>
+    /// <summary>The editing markers a template, a ticket or a copied snippet leaves behind.</summary>
     /// <remarks>
     /// Matched as a whole LABEL, never as a substring: a deployment legitimately named
     /// <c>changemakers.org</c> must not be refused because its first label starts with the same five
@@ -86,14 +47,7 @@ internal static class ReservedDeploymentHosts
     /// <param name="hostOrAuthority">
     /// A configured host name, optionally carrying a port, a leading wildcard label or a trailing root dot.
     /// </param>
-    /// <returns>
-    /// A sentence naming the defect, or <see langword="null"/> when the value is usable.
-    /// </returns>
-    /// <remarks>
-    /// A sentence rather than a boolean, because the caller reports it to an operator who has to act on it:
-    /// "this is a documentation name" and "this is an unreplaced editing marker" send that operator to two
-    /// different places in the deployment template.
-    /// </remarks>
+    /// <returns>A sentence naming the defect, or <see langword="null"/> when the value is usable.</returns>
     internal static string? DescribeRejection(string hostOrAuthority)
     {
         string host = Normalise(hostOrAuthority);
@@ -141,21 +95,6 @@ internal static class ReservedDeploymentHosts
     /// <summary>Reduces a configured entry to the bare host name the checks compare.</summary>
     /// <param name="hostOrAuthority">The configured entry.</param>
     /// <returns>The lower-cased host name, without wildcard label, port or trailing root dot.</returns>
-    /// <remarks>
-    /// <para>
-    /// Four shapes arrive here and each is handled deliberately. A leading <c>*.</c> is the host filter's
-    /// wildcard-subdomain form, and <c>*.example.com</c> is as much a documentation name as
-    /// <c>example.com</c> is. A port is legitimate in both a host-filter entry and a browser origin, and it
-    /// says nothing about which name is being served. A trailing dot is the fully-qualified spelling of the
-    /// same name. Case is irrelevant to DNS, so the comparison is made on a lower-cased value with an
-    /// ordinal comparer rather than by a culture-sensitive comparison that could vary with the host's
-    /// locale.
-    /// </para>
-    /// <para>
-    /// A bracketed IPv6 literal is returned as-is apart from its port, which is correct by omission: no
-    /// address literal can match a documentation NAME, so it falls through every check and is accepted.
-    /// </para>
-    /// </remarks>
     private static string Normalise(string hostOrAuthority)
     {
         string host = hostOrAuthority.Trim().ToLowerInvariant();

@@ -14,42 +14,6 @@ namespace DnnMigration.IntegrationTests.Infrastructure;
 /// Covers the rule that decides whether a failure means the store could not serve - which the transport
 /// answers 503 with a retry hint - or means this application has a defect, which stays 500.
 /// </summary>
-/// <remarks>
-/// <para>
-/// MIGRATION: the condition these facts guard was measured with the delivered container topology and the
-/// database stopped: every data endpoint, sign-in included, answered <c>500 Internal Server Error</c>. The
-/// payload disclosed nothing and the readiness view already reported <c>503</c> to an orchestrator, so what
-/// was wrong was the instruction the status carried - a caller was told to report a server defect when the
-/// truth was that a dependency was down and the request would succeed on a retry.
-/// </para>
-/// <para>
-/// <strong>Both directions matter, and the false direction matters more.</strong> Answering 503 for a defect
-/// tells a caller to retry a request that can never succeed and hides the fault behind a retry loop, which is
-/// strictly worse than the 500 being replaced. Every fact below that asserts <see langword="false"/> is
-/// therefore load-bearing rather than padding: a constraint violation, an invalid object name, a permission
-/// refusal and an ordinary application fault must all keep their existing answer.
-/// </para>
-/// <para>
-/// <strong>Severity is the decision, and that is a measured conclusion.</strong> A stopped SQL Server was
-/// probed through a raw connection open, an Entity Framework query with retrying enabled and one with it
-/// disabled; all three produced one <see cref="SqlException"/> with <c>Number = 0</c>, <c>Class = 20</c>,
-/// <c>IsTransient</c> <see langword="false"/> and no inner exception. Keying on the client's transient flag
-/// or on error numbers would have closed nothing. The fabrication below therefore parameterises SEVERITY,
-/// which is what the sibling <see cref="DuplicateKeyTranslationTests"/> fabrication does not need to do -
-/// severity is no part of that decision, and it is the whole of this one.
-/// </para>
-/// <para>
-/// The real-world half is asserted in the integration project, where an unreachable server is dialled for
-/// real and the container-resolved classifier is asked about the exception it actually raises. That is what
-/// keeps the fabrication here honest: if the pinned client ever stopped reporting an unreachable server at
-/// severity 20, that test would fail while these would not.
-/// </para>
-/// <para>
-/// The classifier is <c>internal</c> to the Infrastructure assembly and is reached through the
-/// <c>InternalsVisibleTo</c> that assembly already declares for this one. Nothing is made public for a
-/// test's benefit.
-/// </para>
-/// </remarks>
 [Trait("Category", "Integration")]
 public class StoreFailureClassificationTests
 {
@@ -69,9 +33,6 @@ public class StoreFailureClassificationTests
     {
         IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
 
-        // Number 0 is not a placeholder: it is the number the client actually reports for a server it could
-        // not reach, measured through three separate call paths. A rule that needed a recognisable number
-        // would have classified the commonest outage of all as a defect.
         SqlException outage = Fabricate(severity, (Number: 0, Message: "network-related or instance-specific error"));
 
         classifier.IsStoreUnavailable(outage).Should().BeTrue(
@@ -108,9 +69,6 @@ public class StoreFailureClassificationTests
     {
         IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
 
-        // Reported below the fatal boundary, which is exactly why the number is named in the rule: the store
-        // was reachable and did not answer in time, so the connection is intact and the request is still
-        // worth retrying. This is the one arm severity alone would miss.
         SqlException timeout = Fabricate(RefusalSeverity, (Number: -2, Message: "Execution Timeout Expired."));
 
         classifier.IsStoreUnavailable(timeout).Should().BeTrue(
@@ -129,9 +87,6 @@ public class StoreFailureClassificationTests
 
         SqlException outage = Fabricate(FatalSeverity, (Number: 0, Message: "connection forcibly closed"));
 
-        // Two wrappers deep, which is the shape a write produces: the mapper wraps the provider fault, and a
-        // retry strategy that exhausted its attempts wraps that. A surface-only test would classify the same
-        // outage correctly on a read and as a defect on a write.
         DbUpdateException flushFailure = new("An error occurred while saving the entity changes.", outage);
         InvalidOperationException outermost = new("The operation could not be completed.", flushFailure);
 
@@ -169,28 +124,15 @@ public class StoreFailureClassificationTests
             + "and that wrapper is what says the transport in question was the one to the store");
     }
 
-    /// <summary>
-    /// A transport fault with NO data-access link anywhere in its chain keeps the answer it had.
-    /// </summary>
+    /// <summary>A transport fault with NO data-access link anywhere in its chain keeps the answer it had.</summary>
     /// <param name="failure">A transport or timing fault raised by something other than the store.</param>
     /// <remarks>
-    /// <para>
     /// THIS IS THE FACT THAT WAS INVERTED, and it is the reason the two arms above stopped being
     /// unconditional. <see cref="SocketException"/> and <see cref="TimeoutException"/> are raised by every
-    /// outbound socket and every waited-upon asynchronous primitive in the process, not only by the database
-    /// client: an in-process cache whose single-flight budget expired, a
-    /// <see cref="System.Threading.SemaphoreSlim"/> wait that timed out, an
-    /// <see cref="System.Net.Http.HttpClient"/> call to some other dependency. Classifying the bare type as
-    /// an outage told every one of those callers that the DATABASE was down and to retry after the hint -
-    /// which is the false direction this suite's own preamble calls strictly worse than the status it
-    /// replaced, because a defect wearing a retry hint is a defect nobody investigates.
-    /// </para>
-    /// <para>
-    /// The narrowing is deliberately structural rather than message-based. Nothing is matched on the text of
-    /// a message, so a fault is admitted only when a link in its chain is positively a provider or mapper
-    /// type; a cache or an unrelated dependency has no such link and therefore cannot borrow the store's
-    /// status.
-    /// </para>
+    /// outbound socket and every waited-upon asynchronous primitive in the process, not only by the
+    /// database client: an in-process cache whose single-flight budget expired, a <see
+    /// cref="System.Threading.SemaphoreSlim"/> wait that timed out, an <see
+    /// cref="System.Net.Http.HttpClient"/> call to some other dependency.
     /// </remarks>
     [Theory]
     [MemberData(nameof(TransportFailuresOutsideStoreContext))]
@@ -206,14 +148,9 @@ public class StoreFailureClassificationTests
     }
 
     /// <summary>
-    /// A sibling branch of a parallel failure cannot lend its store context to an unrelated transport fault.
+    /// A sibling branch of a parallel failure cannot lend its store context to an unrelated transport
+    /// fault.
     /// </summary>
-    /// <remarks>
-    /// The chain walk carries the context DOWNWARDS into a branch and never sideways between branches. Were
-    /// it carried across, one unlucky pairing of a genuine store fault with a cache timeout in the same
-    /// parallel operation would classify the cache defect as an outage - the exact confusion this narrowing
-    /// exists to prevent, reintroduced through the aggregate.
-    /// </remarks>
     [Fact]
     public void ASiblingBranchDoesNotLendItsStoreContextToATransportFault()
     {
@@ -221,7 +158,7 @@ public class StoreFailureClassificationTests
 
         // Left branch: an in-process wait that expired, with no data-access link of any kind. Right branch:
         // a mapper wrapper around an ordinary constraint-shaped refusal, which is a data-access link but is
-        // not itself an outage. Neither branch is an availability condition, so nor is the aggregate.
+        // not itself an outage.
         AggregateException parallel = new(
             new TimeoutException("a single-flight cache budget expired"),
             new DbUpdateException(
@@ -271,9 +208,6 @@ public class StoreFailureClassificationTests
     {
         IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
 
-        // The caller is the exception handler, mid-way through composing a response to one failure. A
-        // classifier that threw here would replace a well-formed error payload with no payload at all, which
-        // is the one outcome worse than the wrong status code.
         classifier.IsStoreUnavailable(null).Should().BeFalse(
             "an error path must never be handed a second failure while handling the first");
     }
@@ -284,9 +218,6 @@ public class StoreFailureClassificationTests
     {
         IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
 
-        // An exception chain is built from arbitrary references and nothing forbids a cycle. This is not a
-        // hypothetical guard: the classifier runs while a failure response is being composed, so a spin here
-        // costs the caller the response as well as the request.
         Exception deepest = new("innermost");
         Exception chain = deepest;
         for (int depth = 0; depth < 200; depth++)
@@ -301,16 +232,10 @@ public class StoreFailureClassificationTests
     }
 
     /// <summary>
-    /// Transport and timing faults whose chain positively identifies the store path, and which are therefore
-    /// availability conditions.
+    /// Transport and timing faults whose chain positively identifies the store path, and which are
+    /// therefore availability conditions.
     /// </summary>
     /// <returns>One chain per row.</returns>
-    /// <remarks>
-    /// Each row is the shape a real failure arrives in. The mapper wrapper and the exhausted retry strategy
-    /// are the two outermost links a failed flush produces, and a provider fault at ORDINARY severity is
-    /// included on purpose: it is not an outage by itself, so it proves the admission comes from the link
-    /// being a provider type rather than from its severity.
-    /// </remarks>
     public static TheoryData<Exception> TransportFailuresInStoreContext() =>
         new()
         {
@@ -334,8 +259,8 @@ public class StoreFailureClassificationTests
         };
 
     /// <summary>
-    /// Transport and timing faults with no data-access link anywhere in the chain, which must keep the answer
-    /// they had.
+    /// Transport and timing faults with no data-access link anywhere in the chain, which must keep the
+    /// answer they had.
     /// </summary>
     /// <returns>One failure per row.</returns>
     public static TheoryData<Exception> TransportFailuresOutsideStoreContext() =>
@@ -368,27 +293,10 @@ public class StoreFailureClassificationTests
             new OperationCanceledException("the caller went away"),
         };
 
-    /// <summary>
-    /// Builds a <see cref="SqlException"/> carrying a chosen severity and error numbers.
-    /// </summary>
+    /// <summary>Builds a <see cref="SqlException"/> carrying a chosen severity and error numbers.</summary>
     /// <param name="severity">The severity class every fabricated error carries.</param>
     /// <param name="errors">The error numbers and messages to attach.</param>
     /// <returns>The fabricated exception.</returns>
-    /// <remarks>
-    /// <para>
-    /// A <see cref="SqlException"/> cannot be constructed by a consumer - every constructor and factory is
-    /// non-public - so reflection over the pinned client is the only way to present the classifier with a
-    /// chosen severity. The cost is accepted knowingly, because the alternative is to leave the boundary
-    /// between "the connection is gone" and "the store refused this" untested, and that boundary is the whole
-    /// rule. Each lookup fails with a message naming the member it could not find, so a client that changes
-    /// shape reads as "the fabrication needs updating" rather than as a mysterious null.
-    /// </para>
-    /// <para>
-    /// The severity is a parameter here and a constant in the sibling duplicate-key fabrication, because the
-    /// two decisions rest on different facts: that one is decided by the error number alone, this one is
-    /// decided primarily by severity.
-    /// </para>
-    /// </remarks>
     private static SqlException Fabricate(byte severity, params (int Number, string Message)[] errors)
     {
         ConstructorInfo? collectionConstructor = typeof(SqlErrorCollection)

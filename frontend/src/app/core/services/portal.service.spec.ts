@@ -1,71 +1,7 @@
 /**
- * Specification for {@link PortalService} — the typed transport over the portal
- * resource, its settings projection and its host-name aliases.
- *
- * The legacy tree carries ZERO automated tests of any kind, so every assertion below
- * is net-new coverage rather than a port of an existing one. This file is also where
- * the paging and search contract is pinned down for the whole application: the role,
- * user and module specifications follow the shape established here, so a decision
- * taken in this file is a decision taken four more times downstream.
- *
- * ---------------------------------------------------------------------------
- * WHAT IS UNDER TEST, AND WHAT DELIBERATELY IS NOT.
- *
- * The service is a transport, so the only behaviour it can get wrong is the request
- * it puts on the wire and the payload it hands back. Every test therefore asserts
- * some combination of four things and nothing else: the URL, the method, the request
- * body or query string, and the value the caller receives. That is the whole surface.
- *
- * Three neighbouring concerns are owned elsewhere and are NOT asserted here, because
- * asserting them would mean testing two units at once and would leave both specs
- * claiming the same guarantee:
- *
- *   * TRANSLATION of a failure into something a person reads. The error interceptor
- *     owns that. Here a failure is only ever checked for having reached the caller
- *     unchanged — no message wording, no severity, no user-facing text.
- *   * HEADERS. The correlation identifier and the bearer token are attached by
- *     interceptors registered in `app.config.ts`, and the testing backend below is
- *     configured with the real client but NO interceptor chain, precisely so that
- *     what this file observes is the service's own contribution and nothing else.
- *   * URL CONSTRUCTION. `core/config/api-endpoints.ts` builds every path from the
- *     configured base. This specification does not import it — see the next section.
- *
- * ---------------------------------------------------------------------------
- * ⚠️ EVERY EXPECTED URL IS A RELATIVE LITERAL, AND THAT IS THE POINT.
- *
- * The `test` target in `angular.json` declares NO `fileReplacements` and no
- * configurations at all, so a specification compiles against `environment.ts` — which
- * IS the production environment file, the development one being the replacement rather
- * than the other way round. Its `apiBaseUrl` is the RELATIVE `'/api/v1'`, and it has
- * to stay relative: the proxy serves the bundle and forwards `/api/` to the API
- * container on that same origin, and the compose service name it forwards to does not
- * resolve in a browser at all.
- *
- * So the expected URLs below are spelled out as literal relative strings rather than
- * read back from the endpoint catalogue. Importing the catalogue would make this file
- * agree with whatever that module happens to produce, including a doubled version
- * segment or an absolute host — the two mistakes in this area that no compiler, no
- * linter and no successful build detects. Writing the literal makes the specification
- * an independent check on the catalogue instead of a mirror of it.
- *
- * ---------------------------------------------------------------------------
- * ⚠️ A STRING MATCHER COMPARES AGAINST THE URL *INCLUDING* ITS QUERY STRING.
- *
- * `HttpTestingController.expectOne('...')` filters on `request.urlWithParams`, not on
- * `request.url`. Two consequences run through every test below, and both are
- * deliberate rather than incidental:
- *
- *   * For a call that sends NO query string, the string matcher is the STRICTEST
- *     available assertion — matching `'/api/v1/portals/3/aliases'` proves both the
- *     path and the total absence of a query string in one step. That is exactly why
- *     the unpaged alias listing and the "no legacy query key" cases use it.
- *   * For a call that DOES send a query string, a string matcher would have to spell
- *     out the serialised parameters and would then be asserting encoding order as
- *     though it were contract. Those calls use the predicate overload against
- *     `request.url` and assert the parameters individually, by name and by value.
- *
- * Paging here is OFFSET paging — a page index and a page size — and there is no
- * alternative addressing scheme to assert, so none is looked for.
+ * Specification for {@link PortalService} — the typed transport over the portal resource, its settings
+ * projection and its host-name aliases. The legacy tree carries ZERO automated tests of any kind, so
+ * every assertion below is net-new coverage rather than a port of an existing one.
  */
 
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
@@ -101,12 +37,7 @@ import type {
 /** The portal collection. */
 const PORTALS_URL = '/api/v1/portals';
 
-/**
- * The identifier used for every single-portal case.
- *
- * A plainly ordinary value, so that the two extraordinary ones — zero and minus one —
- * stand out as the deliberate cases they are rather than blending into the rest.
- */
+/** The identifier used for every single-portal case. */
 const PORTAL_ID = 3;
 
 /** One portal. */
@@ -116,6 +47,8 @@ const PORTAL_URL = '/api/v1/portals/3';
 const PORTAL_SETTINGS_URL = '/api/v1/portals/3/settings';
 
 /** One portal's alias collection. */
+const PORTAL_ADMINISTRATORS_URL = '/api/v1/portals/3/administrators';
+
 const PORTAL_ALIASES_URL = '/api/v1/portals/3/aliases';
 
 /** The identifier used for every single-alias case. */
@@ -124,20 +57,6 @@ const PORTAL_ALIAS_ID = 7;
 /** One alias of one portal. */
 const PORTAL_ALIAS_URL = '/api/v1/portals/3/aliases/7';
 
-/**
- * The query-string key the legacy alias editor used, retained here ONLY so that its
- * absence can be asserted by name rather than inferred from a count.
- *
- * MIGRATION: the alias identifier is a PATH segment named `portalAliasId` in the
- * target, not a query parameter. The legacy edit screen passed it in the query string
- * under this abbreviated spelling. Naming it makes the regression it guards against
- * legible: a reintroduction would be a request that still reaches the right path and
- * still returns 200, differing only by a parameter the server ignores.
- *
- * Honesty note, reproduced verbatim from the planning record for the sibling endpoint
- * catalogue rather than re-measured for this file: the legacy citation for this key is
- * `Website/admin/Portal/EditPortalAlias.ascx.vb:L57`.
- */
 const LEGACY_ALIAS_QUERY_KEY = 'paid';
 
 // ---------------------------------------------------------------------------
@@ -145,20 +64,9 @@ const LEGACY_ALIAS_QUERY_KEY = 'paid';
 // ---------------------------------------------------------------------------
 
 /**
- * The parameter names a collection request may carry, as literals.
- *
- * Spelled out here rather than imported from the query-string helper for the same
- * reason the URLs are: a specification that reads the names back from the module that
- * emits them cannot detect a rename, because both sides would move together. These
- * are the names the SERVER binds, so they are contract, and the two that are easiest
- * to get wrong are recorded explicitly:
- *
- *   * `pageIndex`, not `page`. The shared pagination component's input is a ONE-based
- *     `page`, mapped to this ZERO-based wire index in the feature stores. Neither side
- *     is to be corrected to match the other.
- *   * `sortDir`, not `sortDirection`. The server binds the abbreviated name and its
- *     values are the capitalised member names, so an abbreviated or lower-cased value
- *     is answered with a 400 rather than quietly defaulted.
+ * The parameter names a collection request may carry, as literals. Spelled out here rather than imported
+ * from the query-string helper for the same reason the URLs are: a specification that reads the names
+ * back from the module that emits them cannot detect a rename, because both sides would move together.
  */
 const QUERY_KEY = {
   pageIndex: 'pageIndex',
@@ -173,19 +81,7 @@ const QUERY_KEY = {
 // Failure-document fixtures.
 // ---------------------------------------------------------------------------
 
-/**
- * The shape of an RFC 7807 failure document, declared LOCALLY and minimally.
- *
- * Deliberately not imported from `core/models/problem-details.model`: this file does
- * not assert the failure contract, it asserts that whatever the server wrote reaches
- * the caller unchanged. A local declaration keeps the fixture honest about being a
- * fixture, and keeps the failure contract owned by the specification that does test it.
- *
- * MEASURED, not assumed: the API writes NO `code` member. It writes the standard
- * members plus exactly two extensions, a trace identifier and a correlation
- * identifier, so a failure CODE travels inside `type`, rendered as
- * `urn:dnnmigration:error:<code>`. That is why the cases below carry their code there.
- */
+/** The shape of an RFC 7807 failure document, declared LOCALLY and minimally. */
 interface FailureDocument {
   readonly type: string;
   readonly title: string;
@@ -196,12 +92,8 @@ interface FailureDocument {
 }
 
 /**
- * The W3C trace identifier and the pipeline-validated correlation identifier.
- *
- * The API attaches BOTH to every problem document, so a fixture omitting them describes a
- * response it does not send. They are not interchangeable: the correlation identifier is the
- * value the pipeline validated for this request and the one that appears in the server's log
- * and on the audit trail, so it is the one a caller should quote.
+ * The W3C trace identifier and the pipeline-validated correlation identifier. The API attaches BOTH to
+ * every problem document, so a fixture omitting them describes a response it does not send.
  */
 const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
 const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
@@ -234,14 +126,6 @@ function failureDocument(
 /**
  * Recovers the failure code from a document that reached the caller.
  *
- * Reads the value back out of the transport rather than out of the fixture, which is
- * what makes the dotted-code cases below real assertions instead of tautologies: the
- * string is written on one side of the wire and recovered on the other.
- *
- * Accepts `unknown` because that is honestly what a failure body is — the caller
- * cannot know the server wrote a document at all — and narrows explicitly rather than
- * asserting a type it has not checked.
- *
  * @param body The body carried by the failure.
  * @returns The code, or `null` when the body carries no recognisable one.
  */
@@ -267,13 +151,7 @@ function failureCodeOf(body: unknown): string | null {
 /**
  * One row of the portal listing.
  *
- * The listing row is a genuinely different contract from the detail record — it carries
- * the alias host names as bare strings and the tallies the grid displayed, and it omits
- * everything the grid never showed. Using the detail contract here would test a body
- * the server does not send for this endpoint.
- *
- * @param portalId The identifier the row carries. Callers pass the extraordinary values
- * deliberately, so nothing is defaulted.
+ * @param portalId The identifier the row carries.
  * @param portalName The display name.
  * @returns The row.
  */
@@ -292,12 +170,6 @@ function portalListItem(portalId: number, portalName: string): PortalListItem {
 
 /**
  * A page of portal rows, in the envelope a collection endpoint actually writes.
- *
- * The paging facts are NESTED under `meta`; they are not siblings of `items`. The two
- * arrangements are indistinguishable to a type checker and to an assertion on a
- * successful status, because reading a member the body does not carry yields
- * `undefined` at run time while compiling perfectly — so flushing the flat shape would
- * produce a green test over a body the server never sends.
  *
  * @param items The rows on the page.
  * @param pageIndex The zero-based index of the page these rows came from.
@@ -323,14 +195,11 @@ function portalListBody(
 }
 
 /**
- * One portal in full.
+ * One portal in full. Every member the contract declares is present, including the ones holding a legacy
+ * sentinel, because the API serialises with its ignore condition set to never: a member with no value
+ * travels as its sentinel or as `null`, and never goes missing.
  *
- * Every member the contract declares is present, including the ones holding a legacy
- * sentinel, because the API serialises with its ignore condition set to never: a member
- * with no value travels as its sentinel or as `null`, and never goes missing.
- *
- * @param portalId The identifier. Passed rather than defaulted, so the zero and
- * minus-one cases read as the deliberate choices they are.
+ * @param portalId The identifier.
  * @returns The record.
  */
 function portalDetail(portalId: number): PortalDetail {
@@ -380,14 +249,10 @@ function portalDetail(portalId: number): PortalDetail {
 }
 
 /**
- * One portal's settings projection.
- *
- * ⚠️ There is NO settings TABLE behind this contract. Portal configuration lives as
- * COLUMNS on the portal row, so this is a projection of that row and not a bag of
- * key/value pairs — which is why the service publishes no `getSetting(key)`,
- * `setSetting(key, value)` or per-key patch member, and why nothing here asserts one.
- * The legacy per-request composite of the same name was an ambient object assembled
- * from those columns, never a persisted aggregate.
+ * One portal's settings projection. ⚠️ There is NO settings TABLE behind this contract. Portal
+ * configuration lives as COLUMNS on the portal row, so this is a projection of that row and not a bag of
+ * key/value pairs — which is why the service publishes no `getSetting(key)`, `setSetting(key, value)` or
+ * per-key patch member, and why nothing here asserts one.
  *
  * @param portalId The identifier the projection belongs to.
  * @returns The projection.
@@ -437,9 +302,6 @@ function portalSettings(portalId: number): PortalSettings {
  * @param isCurrent Whether the request that read the row resolved the tenant through it.
  * @returns The alias.
  */
-// The current-alias flag defaults to FALSE, which is the answer for every row a fixture
-// builds unless it says otherwise: it is the server's per-request projection, and a
-// helper that defaulted it to true would arrange the withheld case by accident.
 function portalAlias(
   portalId: number,
   portalAliasId: number,
@@ -451,11 +313,6 @@ function portalAlias(
 
 /**
  * Wraps a single record in the success envelope the API writes.
- *
- * The metadata companion is PRESENT AND NULL rather than absent, because that is what
- * the server writes: it serialises with its ignore condition set to never, so a
- * response with no page to describe writes the member with a null value. Flushing the
- * member out altogether would test a body the server never sends.
  *
  * @param data The payload.
  * @returns The envelope to flush.
@@ -471,11 +328,6 @@ function envelope<T>(data: T): ApiResponse<T> {
 
 /**
  * A portal-creation request, with every member the contract declares.
- *
- * MIGRATION: replaces a FIFTEEN-parameter positional call, eleven of whose parameters
- * were strings, so adjacent arguments were interchangeable to the compiler and a
- * transposed pair produced a portal with its description in its keywords and no error
- * anywhere. A named contract cannot be transposed.
  *
  * @param overrides Members to replace, for the fidelity cases.
  * @returns The request body.
@@ -500,10 +352,6 @@ function createPortalRequest(overrides: Partial<CreatePortalRequest> = {}): Crea
 
 /**
  * A portal-update request, with every member the contract declares.
- *
- * MIGRATION: replaces a TWENTY-SEVEN-parameter positional call. The member count here
- * is the same twenty-seven, which is the point — the arity did not shrink, the
- * addressing changed from position to name.
  *
  * @param overrides Members to replace, for the sentinel cases.
  * @returns The request body.
@@ -547,10 +395,6 @@ function updatePortalRequest(overrides: Partial<UpdatePortalRequest> = {}): Upda
 /**
  * A settings-update request.
  *
- * The contract is the portal-update contract WITHOUT the identifier, because the
- * identifier is already in the path and accepting a second copy in the body would let
- * the two disagree.
- *
  * @param overrides Members to replace.
  * @returns The request body.
  */
@@ -563,12 +407,12 @@ function updatePortalSettingsRequest(
   return { ...settings, ...overrides };
 }
 
-/** An alias-creation request. Its single member is the host name. */
+/** An alias-creation request. */
 function createPortalAliasRequest(httpAlias = 'contoso.example.test'): CreatePortalAliasRequest {
   return { httpAlias };
 }
 
-/** An alias-update request. Its single member is the host name. */
+/** An alias-update request. */
 function updatePortalAliasRequest(httpAlias = 'www.contoso.example.test'): UpdatePortalAliasRequest {
   return { httpAlias };
 }
@@ -582,13 +426,7 @@ interface Observed<T> {
   /** The values the caller received, in order. */
   readonly values: readonly T[];
 
-  /**
-   * The failures the caller received.
-   *
-   * Typed as `unknown` because that is honestly what reaches a subscriber: a caller
-   * cannot know in advance that a failure is a transport failure, so the narrowing is
-   * done explicitly by {@link soleFailure} rather than assumed by this declaration.
-   */
+  /** The failures the caller received. */
   readonly failures: readonly unknown[];
 
   /** Whether the call completed. */
@@ -596,13 +434,9 @@ interface Observed<T> {
 }
 
 /**
- * Subscribes immediately and records the outcome.
- *
- * Subscribing is what ISSUES the request — the service returns a cold observable and
- * nothing in it starts a call — so every test below observes first and only then
- * expects a request. Recording rather than awaiting keeps each test synchronous and
- * deterministic, and lets an assertion state exactly how many values arrived, which is
- * how an extra emission or a missing one gets caught rather than overlooked.
+ * Subscribes immediately and records the outcome. Subscribing is what ISSUES the request — the service
+ * returns a cold observable and nothing in it starts a call — so every test below observes first and only
+ * then expects a request.
  *
  * @param source The call to observe.
  * @returns The record, readable once the request has been flushed.
@@ -653,13 +487,6 @@ function soleFailure(observed: Observed<unknown>): HttpErrorResponse {
 /**
  * Asserts that a request carried no query string whatsoever.
  *
- * Three checks rather than one, because they fail differently and each names its own
- * regression: the count catches an added parameter, the equality names which one was
- * added, and comparing the addressed URL against the bare path catches a parameter
- * appended to the path itself rather than through the parameter collection. The legacy
- * alias key is then asserted absent BY NAME, so its reintroduction is reported as
- * itself rather than as an off-by-one in a count.
- *
  * @param request The observed request.
  * @param description What the request was, for the failure message.
  */
@@ -684,10 +511,9 @@ describe('PortalService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      // The real client with NO interceptor chain. This specification is about the
-      // service's own contribution to a request, and running the interceptors here
-      // would mean asserting two units at once and would attach headers this file has
-      // no business claiming.
+      // The real client with NO interceptor chain. This specification is about the service's own
+      // contribution to a request, and running the interceptors here would mean asserting two units at once
+      // and would attach headers this file has no business claiming.
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
 
@@ -696,21 +522,15 @@ describe('PortalService', () => {
   });
 
   afterEach(() => {
-    // The single most important line in this file. It fails if the service issued a
-    // request no test expected, which is the only automatic way an invented endpoint
-    // or a stray second call gets caught. Every test below therefore also contributes
-    // to one collective assertion: that the surface is exactly the twelve members it
-    // claims to be and no more.
     httpMock.verify();
   });
 
   describe('the service itself', () => {
     it('resolves from the root injector as a single instance', () => {
       expect(service).toBeTruthy();
-      // Declared `providedIn: 'root'`, so two resolutions are the same object. A
-      // per-injector service would give each caller its own, which for a stateless
-      // transport would be harmless but would also mean the declaration was not doing
-      // what it says.
+      // Declared `providedIn: 'root'`, so two resolutions are the same object. A per-injector service would
+      // give each caller its own, which for a stateless transport would be harmless but would also mean the
+      // declaration was not doing what it says.
       expect(TestBed.inject(PortalService))
         .withContext('the same instance is shared by every caller')
         .toBe(service);
@@ -748,9 +568,8 @@ describe('PortalService', () => {
         }),
       );
 
-      // A predicate matcher, because this call DOES carry a query string and a string
-      // matcher would have to spell out the serialised parameters — which would assert
-      // encoding order as though it were contract.
+      // A predicate matcher, because this call DOES carry a query string and a string matcher would have to
+      // spell out the serialised parameters — which would assert encoding order as though it were contract.
       const request = httpMock.expectOne(
         (candidate) => candidate.url === PORTALS_URL && candidate.method === 'GET',
         'the paged portal listing',
@@ -776,18 +595,6 @@ describe('PortalService', () => {
     });
 
     it('sends a page index of zero as "0" rather than omitting it', () => {
-      // ⚠️ ZERO-BASED, and load-bearing. The legacy screen counted from one and
-      // subtracted one immediately before calling the provider:
-      // `Website/admin/Portal/Portals.ascx.vb:L142` reads
-      //   Portals = PortalController.GetPortalsByName(Filter + "%", CurrentPage - 1, PageSize, TotalRecords)
-      // with the one-based counter declared at `:L47` as
-      //   Private _CurrentPage As Integer = 1
-      // The wire now carries the DATA layer's base directly, so the first page is 0.
-      //
-      // Zero is the value most easily lost on the way out, because a helper that
-      // treats a falsy value as absent drops it — and the request then succeeds,
-      // returning whichever page the server defaults to. The assertion is that the
-      // parameter is PRESENT and reads "0".
       const observed = observe(service.list({ pageIndex: 0, pageSize: 20 }));
 
       const request = httpMock.expectOne(
@@ -806,11 +613,9 @@ describe('PortalService', () => {
     });
 
     it('sends a later page index verbatim, with no adjustment in either direction', () => {
-      // The third page is index 2. Neither the service nor the query-string helper may
-      // add or subtract one: the one-based counter survives only inside the shared
-      // pagination component, and the mapping between the two bases happens in the
-      // feature store. An adjustment here would serve the neighbouring page and report
-      // success while doing it — a defect no status code and no type checker reveals.
+      // The third page is index 2. Neither the service nor the query-string helper may add or subtract one:
+      // the one-based counter survives only inside the shared pagination component, and the mapping between
+      // the two bases happens in the feature store.
       const observed = observe(service.list({ pageIndex: 2, pageSize: 20 }));
 
       const request = httpMock.expectOne(
@@ -829,13 +634,6 @@ describe('PortalService', () => {
     });
 
     it('transmits the free-text filter exactly as typed, undecorated', () => {
-      // ⚠️ NO CLIENT-SIDE WILDCARD. The legacy call site composed the pattern itself,
-      // concatenating a trailing wildcard onto the operator's text BEFORE it reached
-      // the data layer — the `Filter + "%"` argument at `Portals.ascx.vb:L142`.
-      // Pattern composition now belongs entirely behind the repository interface, so
-      // neither this service, nor the shared search input, nor the query-string helper
-      // may contribute a character. Decorating the value here would double whatever
-      // pattern the repository already builds.
       const observed = observe(service.list({ pageIndex: 0, pageSize: 20, query: 'Cont' }));
 
       const request = httpMock.expectOne(
@@ -860,11 +658,6 @@ describe('PortalService', () => {
     });
 
     it('transmits the portal-name filter exactly as typed, under its own wire name', () => {
-      // The listing accepts TWO textual restrictions and they are different
-      // parameters: the paging contract's general free-text filter, asserted above,
-      // and this name-specific one supplied separately. Both are raw, and the
-      // undecorated rule applies to each — so both are asserted rather than one being
-      // taken as evidence for the other.
       const observed = observe(service.list({ pageIndex: 0, pageSize: 20 }, { name: 'Cont' }));
 
       const request = httpMock.expectOne(
@@ -883,10 +676,6 @@ describe('PortalService', () => {
     });
 
     it('omits a page size the caller did not supply rather than substituting its own', () => {
-      // The service contributes no default. The effective page size is a per-portal
-      // setting, so an omitted size has to reach the server as an omission for the
-      // server's own default to apply. The shared client-side default exists for a
-      // caller to send deliberately, and is sent verbatim when it is.
       const withoutSize = observe(service.list({ pageIndex: 0 }));
 
       const first = httpMock.expectOne(
@@ -924,29 +713,12 @@ describe('PortalService', () => {
 
       request.flush(envelope(detail));
 
-      // Asserting the exact array proves three things at once: one emission, the
-      // unwrapped payload rather than the envelope, and nothing extra. Returning the
-      // envelope is the quietest defect available here — it compiles, it returns 200,
-      // and every member reads as `undefined` because the real body had them a level
-      // deeper.
       expect(observed.values).toEqual([detail]);
       expect(observed.isComplete()).toBeTrue();
     });
 
     it('addresses portal 0 and portal -1, because both are real portals', () => {
       // ⚠️ TWO FACTS COLLIDE, and a guard on either one drops a legitimate request.
-      //
-      //   * `01.00.00.SqlDataProvider:L77` declares
-      //       [PortalID] [int] IDENTITY (-1, 1) NOT NULL
-      //     so the FIRST portal ever created carries -1 and the second carries 0.
-      //   * `Library/Components/Shared/Null.vb:L41-L45` defines the absent-integer
-      //     marker as -1, its body being literally `Return -1`.
-      //
-      // The same number therefore means both "the first portal" and "no portal",
-      // distinguishable only by context a transport does not have. A truthiness test
-      // would drop the request for portal 0; a comparison against the marker would
-      // drop the request for portal -1. Neither may be treated as absent, and the
-      // route constraint on the server accepts every integer for the same reason.
       const zero = observe(service.getById(0));
       const first = httpMock.expectOne('/api/v1/portals/0');
       expect(first.request.method).toBe('GET');
@@ -986,19 +758,6 @@ describe('PortalService', () => {
     });
 
     it('transmits an empty string and a false boolean rather than eliding either', () => {
-      // ⚠️ SENTINEL FIDELITY on the way OUT. The legacy absent-text marker is literally
-      // the empty string — `Library/Components/Shared/Null.vb:L71-L75` has the body
-      // `Return ""` — and the absent-boolean marker is literally false, at `:L76-L80`
-      // with the body `Return False`. So neither value means "no value" in this domain;
-      // each is a value. The API serialises with its ignore condition set to NEVER, so
-      // the two sides of the wire agree that a written member is present regardless of
-      // what it holds.
-      //
-      // Dropping a member here because it looked empty would ask for a different portal
-      // than the one described, and would do it silently: the request still succeeds.
-      //
-      // The false boolean rides on the child-portal flag because that is the ONLY
-      // boolean either portal request contract declares — the update contract has none.
       const request = createPortalRequest({
         description: '',
         keyWords: '',
@@ -1030,11 +789,7 @@ describe('PortalService', () => {
     });
 
     it('lets a 409 duplicate-alias conflict reach the caller untouched', () => {
-      // The refusal is reported by the server when the requested host name already
-      // resolves to a portal. The document is asserted for having ARRIVED INTACT, not
-      // for what it says: turning it into something a person reads is the error
-      // interceptor's job, and asserting a message here would duplicate that guarantee
-      // in a file that does not own it.
+      // The refusal is reported by the server when the requested host name already resolves to a portal.
       const document = failureDocument(
         'portal.alias_duplicate',
         409,
@@ -1079,15 +834,9 @@ describe('PortalService', () => {
     });
 
     it('transmits the minus-one marker and a zero-valued enumeration member unchanged', () => {
-      // ⚠️ SENTINEL FIDELITY, the numeric half. `Null.vb:L41-L45` defines the
-      // absent-integer marker as -1, and the page references below legitimately hold
-      // it: a portal with no splash page really does carry -1 in that column. A helper
-      // that mapped -1 to an omission would silently clear the reference instead of
-      // leaving it alone.
-      //
-      // The zero-valued enumeration member is the mirror image of the same hazard. Its
-      // first member is deliberately 0, so a serialiser that treated falsy as absent
-      // would drop the very setting the caller was changing.
+      // The zero-valued enumeration member is the mirror image of the same hazard. Its first member is
+      // deliberately 0, so a serialiser that treated falsy as absent would drop the very setting the caller
+      // was changing.
       const request = updatePortalRequest({
         splashTabId: -1,
         siteLogHistory: -1,
@@ -1113,9 +862,9 @@ describe('PortalService', () => {
         .withContext('a zero-valued enumeration member is transmitted as 0')
         .toBe(0);
       expect(body.userRegistration).toBe(0);
-      // TWENTY-EIGHT: the twenty-seven legacy members plus the revision marker, which describes no
-      // portal attribute and lands on no column. The point of this count is unchanged - NOTHING is
-      // pruned for looking empty - and the marker is the one deliberate addition to the set.
+      // TWENTY-EIGHT: the twenty-seven legacy members plus the revision marker, which describes no portal
+      // attribute and lands on no column. The point of this count is unchanged - NOTHING is pruned for
+      // looking empty - and the marker is the one deliberate addition to the set.
       expect(Object.keys(body).length)
         .withContext('all twenty-seven members travel plus the revision marker, none pruned for looking empty')
         .toBe(28);
@@ -1126,23 +875,6 @@ describe('PortalService', () => {
     });
 
     it('distinguishes a user quota of zero from a user quota of minus one', () => {
-      // ⚠️ TWO DIFFERENT FACTS THAT MUST NEVER BE COALESCED.
-      //
-      //   * 0 is the value a newly created portal receives when the host has configured
-      //     no quota: `Library/Components/Portal/PortalController.vb:L355-L357` reads
-      //       Dim intUserQuota As Integer = 0
-      //       If Convert.ToString(Common.Globals.HostSettings("UserQuota")) <> "" Then
-      //           intUserQuota = Convert.ToInt32(Common.Globals.HostSettings("UserQuota"))
-      //     so the zero is a deliberate "no ceiling", not a missing value.
-      //   * -1 is what a database NULL becomes on the way in:
-      //     `PortalController.vb:L87` reads
-      //       objPortalInfo.UserQuota = Convert.ToInt32(Null.SetNull(dr("UserQuota"), objPortalInfo.UserQuota))
-      //     and the property it assigns is a non-nullable `Integer`
-      //     (`PortalInfo.vb:L181`), which is precisely WHY absence needed a sentinel at
-      //     all rather than simply being null.
-      //
-      // Both therefore occur in real data and mean different things. Sending them as
-      // one value would change a portal's ceiling without anyone asking.
       const unlimited = observe(service.update(PORTAL_ID, updatePortalRequest({ userQuota: 0 })));
       const firstCall = httpMock.expectOne(PORTAL_URL);
       expect((firstCall.request.body as UpdatePortalRequest).userQuota)
@@ -1166,11 +898,6 @@ describe('PortalService', () => {
 
     it('lets a 403 refusal reach the caller, having attempted no check of its own', () => {
       // Some members of the update contract may only be set by a host-level operator.
-      // That rule lives on the server, and there is deliberately no client-side
-      // pre-check to assert: a transport that decided for itself which members a caller
-      // may send would be a second, divergent copy of an authorisation rule, and the
-      // copy would be the one nobody updated. The request goes out in full and the
-      // refusal comes back.
       const document = failureDocument(
         'portal.not_permitted',
         403,
@@ -1214,29 +941,6 @@ describe('PortalService', () => {
     });
 
     it('lets the last-portal refusal reach the caller with its dotted code intact', () => {
-      // ⚠️ THE CODE IS ONE STRING THAT HAPPENS TO CONTAIN A DOT.
-      //
-      // The dot is a spelling convention inside a single opaque identifier, not a
-      // separator between a namespace and a name. Splitting on it — or matching only
-      // the trailing half — would turn one identifier into two tokens and break the
-      // one thing a caller is supposed to branch on. So the value is written on one
-      // side of the wire, recovered on the other, and compared WHOLE.
-      //
-      // ⚠️ THE CODE IS `portal.last_remaining`. An earlier revision of this spec asserted
-      // the LEGACY RESOURCE KEY `Portal.LastPortal` as though it were an emittable failure
-      // code. It is not: it is the key of a localised string held in
-      // `Website/App_GlobalResources/SharedResources.resx` and read at
-      // `Library/Components/Portal/PortalController.vb:L200` through
-      // `Localization.GetString("LastPortal")`. Nothing in the API publishes it, so the
-      // whole case was internally consistent and externally false — a client written against
-      // it would branch on a code it could never receive, and the refusal it was supposed to
-      // recognise would fall through to generic handling.
-      //
-      // The refusal itself is the migration of a legacy behaviour rather than a new
-      // rule: the legacy member reported it by RETURNING that localised message, with an
-      // empty string meaning success, so a caller had to compare display text to learn
-      // whether the delete had happened. Here the outcome is a failure whose stable code is
-      // what a caller branches on and whose message is what a human reads.
       const emittedCode = 'portal.last_remaining';
       const document = failureDocument(
         emittedCode,
@@ -1275,13 +979,9 @@ describe('PortalService', () => {
     });
 
     it('carries the refusal as a COMPLETE document, extensions included', () => {
-      // Every member below is present on every refusal this API emits: `ApiResults.Problem`
-      // supplies the type, status and detail, and `ValidationProblemDetailsFactory` then
-      // fills the title from its per-status vocabulary and attaches the trace and
-      // correlation identifiers. A fixture missing any of them would let a consumer that
-      // depended on a missing member pass here and fail against the real server — most
-      // consequentially the support reference, which is read from `correlationId` first and
-      // falls back to `traceId`.
+      // Every member below is present on every refusal this API emits: `ApiResults.Problem` supplies the
+      // type, status and detail, and `ValidationProblemDetailsFactory` then fills the title from its
+      // per-status vocabulary and attaches the trace and correlation identifiers.
       const document = failureDocument(
         'portal.last_remaining',
         409,
@@ -1326,26 +1026,6 @@ describe('PortalService', () => {
 
     it('projects columns of the portal row, carrying none of the retired settings', () => {
       // ⚠️ THERE IS NO SETTINGS TABLE, so there is no key/value surface to test.
-      //
-      // Four findings settle this, three negative and one positive. The legacy abstract
-      // data surface declares no portal-setting member among its 269; the concrete
-      // provider invokes no portal-setting procedure among its 245; no such table
-      // appears anywhere in the 88-script schema chain, which contains only module,
-      // host, page-module and schedule settings tables; and positively, the legacy
-      // composite of this name was built per request from
-      // `HttpContext.Current.Items("PortalSettings")` — an ambient object assembled from
-      // COLUMNS ON THE PORTAL ROW, never a persisted aggregate.
-      //
-      // Consequently the service publishes one whole-document read and one whole-document
-      // write, and no `getSetting(key)`, `setSetting(key, value)` or per-key patch member
-      // exists. Nothing below probes for one: reaching for an absent method would require
-      // defeating the type system, and a specification that does that stops describing
-      // the contract it is meant to pin down.
-      //
-      // Seven legacy properties are deliberately NOT carried forward, and their absence
-      // is asserted by name rather than left implied — an accidental reintroduction would
-      // otherwise pass unnoticed, since a superset still satisfies every other assertion
-      // in this file.
       const retired = [
         'inlineEditorEnabled',
         'controlPanelMode',
@@ -1396,9 +1076,6 @@ describe('PortalService', () => {
 
       const body = pending.request.body as UpdatePortalSettingsRequest;
       const members = Object.keys(body);
-      // TWENTY-SEVEN: the twenty-six editable members plus the revision marker. The marker is on BOTH
-      // portal write contracts deliberately - the two routes replace the same columns through the same
-      // mapper, so protecting only one would move the lost-update surface rather than remove it.
       expect(members.length)
         .withContext('the update contract without its identifier, plus the revision marker: twenty-seven members')
         .toBe(27);
@@ -1419,15 +1096,10 @@ describe('PortalService', () => {
 
   describe('listAliases', () => {
     it('gets the alias collection UNPAGED, with no query string at all', () => {
-      // ⚠️ THE ONLY PAGED MEMBER OF THIS SERVICE IS THE PORTAL LISTING. A portal has a
-      // handful of host names, so paging them would add coordinates a caller would then
-      // have to thread through for no benefit — and a pager that silently truncated an
-      // alias list would hide the alias a tenant is failing to resolve on.
-      //
-      // The string matcher below compares against the URL INCLUDING its query string, so
-      // matching the bare path already proves that no page index, page size, sort field
-      // or sort direction was sent. The explicit checks that follow name each regression
-      // rather than leaving it to a count.
+      // ⚠️ THE ONLY PAGED MEMBER OF THIS SERVICE IS THE PORTAL LISTING. A portal has a handful of host
+      // names, so paging them would add coordinates a caller would then have to thread through for no
+      // benefit — and a pager that silently truncated an alias list would hide the alias a tenant is
+      // failing to resolve on.
       const aliases = [
         portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost'),
         portalAlias(PORTAL_ID, 8, 'localhost:4200'),
@@ -1469,10 +1141,9 @@ describe('PortalService', () => {
     });
 
     it('lets a 409 duplicate-alias conflict reach the caller untouched', () => {
-      // The tenant-resolution consequence of getting this wrong is why the server
-      // refuses rather than accepting a second identical host name: an alias identifies
-      // a tenant, so two portals answering to one host name would make resolution
-      // depend on row order.
+      // The tenant-resolution consequence of getting this wrong is why the server refuses rather than
+      // accepting a second identical host name: an alias identifies a tenant, so two portals answering to
+      // one host name would make resolution depend on row order.
       const document = failureDocument(
         'portal.alias_duplicate',
         409,
@@ -1504,10 +1175,6 @@ describe('PortalService', () => {
 
       const pending = httpMock.expectOne(PORTAL_ALIAS_URL);
       expect(pending.request.method).toBe('GET');
-      // ⚠️ The alias identifier is the last PATH segment. The legacy screen carried it
-      // in the query string under an abbreviated name; asserting its absence here is
-      // what stops that spelling drifting back in, since a stray parameter the server
-      // ignores would still return 200.
       expectNoQueryString(pending, 'reading one portal alias');
 
       pending.flush(envelope(alias));
@@ -1519,14 +1186,6 @@ describe('PortalService', () => {
 
   describe('updateAlias', () => {
     it('puts the alias to its own address and unwraps the stored row from the 200', () => {
-      // ⚠️ THE ENDPOINT ANSWERS 200 CARRYING THE STORED ROW, NOT 204. The action reports its
-      // outcome through `ApiResults.Complete(Result<PortalAliasDto>)`, whose success arm is
-      // `Ok(ApiResponse<T>.Success(value))`, so there IS an envelope and it is unwrapped by the
-      // same decoder `createAlias` and `getAlias` use. The fixture below deliberately answers
-      // with a host name the caller did not submit, because that is the whole reason the body
-      // is worth reading: the row is the server's, and a member that discarded the answer
-      // would leave a consumer holding the value it typed plus a guess at `isCurrent`, which
-      // only the server can decide.
       const request = updatePortalAliasRequest();
       const stored = portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'www.contoso.example.test');
 
@@ -1552,9 +1211,9 @@ describe('PortalService', () => {
     });
 
     it('lets a duplicate-alias refusal reach the caller as the 409 it is', () => {
-      // `portal.alias_duplicate` carries the `duplicate` token, which the server's mapping
-      // classifies as a conflict: the request is well formed and the STATE of the tenant
-      // declines it, so renaming the alias makes the identical request succeed.
+      // `portal.alias_duplicate` carries the `duplicate` token, which the server's mapping classifies as a
+      // conflict: the request is well formed and the STATE of the tenant declines it, so renaming the alias
+      // makes the identical request succeed.
       const document = failureDocument(
         'portal.alias_duplicate',
         409,
@@ -1593,23 +1252,7 @@ describe('PortalService', () => {
   });
 
   describe('the closed surface', () => {
-    it('issues exactly twelve requests for its twelve members, at exactly these addresses', () => {
-      // The collective assertion this whole file has been building toward. Every member
-      // is called once, WITHOUT flushing, so that every request it produced is open at
-      // the same moment and can be enumerated together. The enumeration is what makes
-      // the closure explicit: a thirteenth member, a duplicated call, a retried request
-      // or a second call smuggled inside one member would all change this list.
-      //
-      // Several plausible routes DO NOT EXIST and none is invented here: there is no
-      // key/value settings accessor, no site-wizard operation, no portal-template
-      // operation, no arbitrary-SQL execution, no expired-portal listing, no bulk
-      // delete, no recycle-bin route, no filesystem or upload route, no permission
-      // mutation, no cache invalidation and no users-online route. The page collection
-      // beneath a portal is absent too — that route is served by the page controller and
-      // belongs to `tab.service.ts`, whose own specification asserts it; requesting it
-      // from here would make two services own the same rows. The health probe is
-      // likewise unreachable: it is mapped at the host root, outside the versioned
-      // prefix, so no member of a versioned resource service can address it.
+    it('issues exactly thirteen requests for its thirteen members, at exactly these addresses', () => {
       const observations = [
         observe(service.list({})),
         observe(service.getById(PORTAL_ID)),
@@ -1618,6 +1261,7 @@ describe('PortalService', () => {
         observe(service.delete(PORTAL_ID)),
         observe(service.getSettings(PORTAL_ID)),
         observe(service.updateSettings(PORTAL_ID, updatePortalSettingsRequest())),
+        observe(service.listAdministrators(PORTAL_ID)),
         observe(service.listAliases(PORTAL_ID)),
         observe(service.createAlias(PORTAL_ID, createPortalAliasRequest())),
         observe(service.getAlias(PORTAL_ID, PORTAL_ALIAS_ID)),
@@ -1629,7 +1273,7 @@ describe('PortalService', () => {
 
       expect(issued.length)
         .withContext('one request per member, and no member issues two')
-        .toBe(12);
+        .toBe(13);
       expect(issued.map((request) => `${request.request.method} ${request.request.urlWithParams}`))
         .withContext('every address, in call order, including the absence of any query string')
         .toEqual([
@@ -1640,6 +1284,7 @@ describe('PortalService', () => {
           `DELETE ${PORTAL_URL}`,
           `GET ${PORTAL_SETTINGS_URL}`,
           `PUT ${PORTAL_SETTINGS_URL}`,
+          `GET ${PORTAL_ADMINISTRATORS_URL}`,
           `GET ${PORTAL_ALIASES_URL}`,
           `POST ${PORTAL_ALIASES_URL}`,
           `GET ${PORTAL_ALIAS_URL}`,
@@ -1647,10 +1292,6 @@ describe('PortalService', () => {
           `DELETE ${PORTAL_ALIAS_URL}`,
         ]);
 
-      // Every address sits under the versioned prefix and every one is RELATIVE. An
-      // absolute base would type-check, lint, bundle and deploy without complaint, and
-      // would leave both containers reporting healthy while every call from a browser
-      // failed — so it is asserted here rather than assumed.
       for (const request of issued) {
         expect(request.request.url.startsWith('/api/v1/'))
           .withContext(`${request.request.url} is relative and versioned`)
@@ -1664,17 +1305,20 @@ describe('PortalService', () => {
       issued[4].flush(null, { status: 204, statusText: 'No Content' });
       issued[5].flush(envelope(portalSettings(PORTAL_ID)));
       issued[6].flush(envelope(portalSettings(PORTAL_ID)), { status: 200, statusText: 'OK' });
-      issued[7].flush(envelope([portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')]));
-      issued[8].flush(envelope(portalAlias(PORTAL_ID, 9, 'contoso.example.test')), {
+      issued[7].flush(
+        envelope([{ userId: 11, username: 'host', displayName: 'Host Account' }]),
+      );
+      issued[8].flush(envelope([portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')]));
+      issued[9].flush(envelope(portalAlias(PORTAL_ID, 9, 'contoso.example.test')), {
         status: 201,
         statusText: 'Created',
       });
-      issued[9].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')));
-      issued[10].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'renamed.example.test')), {
+      issued[10].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'localhost')));
+      issued[11].flush(envelope(portalAlias(PORTAL_ID, PORTAL_ALIAS_ID, 'renamed.example.test')), {
         status: 200,
         statusText: 'OK',
       });
-      issued[11].flush(null, { status: 204, statusText: 'No Content' });
+      issued[12].flush(null, { status: 204, statusText: 'No Content' });
 
       for (const observed of observations) {
         expect(observed.isComplete())
@@ -1684,22 +1328,10 @@ describe('PortalService', () => {
       }
     });
   });
-  // -------------------------------------------------------------------------
   // THE RESPONSE CONTRACT IS CHECKED, NOT ASSERTED
-  //
-  // `http.get<PortalDetail>(…)` compiles to `http.get(…)`: the interface is erased and
-  // nothing inspects the body. Every case below flushes a body the server would never
-  // send and requires the OBSERVABLE TO FAIL at the transport boundary, naming the member
-  // — because the alternative is a blank field, a `NaN` or a silently empty grid surfacing
-  // several layers away from the response that caused it, with no way back to this seam.
-  //
-  // The violation names the member path and the expected type and NEVER the offending
-  // value, so a report cannot carry portal data into a log.
-  // -------------------------------------------------------------------------
   describe('refuses a response that does not match its contract', () => {
     /**
-     * Asserts that a pending request answered with `body` fails with a contract violation
-     * naming `path`.
+     * Asserts that a pending request answered with `body` fails with a contract violation naming `path`.
      *
      * @param observed The observation of the call under test.
      * @param pending The request the call issued.
@@ -1732,10 +1364,6 @@ describe('PortalService', () => {
     }
 
     it('refuses a page with no metadata rather than reporting an empty first page', () => {
-      // ⚠ THE WORST AVAILABLE FAILURE MODE, WHICH THIS PREVENTS. A page whose metadata is
-      // absent used to normalise to a total of zero and no rows: a SUCCESSFUL response
-      // stating that the installation has no portals. An operator would conclude the
-      // records were gone.
       const observed = observe<unknown>(service.list({}));
 
       expectViolationAt(observed, httpMock.expectOne(PORTALS_URL), { items: [] }, 'response.meta');
@@ -1781,9 +1409,6 @@ describe('PortalService', () => {
     });
 
     it('refuses a registration mode outside the published code table', () => {
-      // ⚠ ZERO IS THE PERMISSIVE MEMBER, WHICH IS WHY THIS IS REFUSED RATHER THAN COERCED.
-      // Coercing an unknown code to `NoRegistration` would present a portal as accepting
-      // no registrations on the strength of a code this client simply did not recognise.
       const observed = observe<unknown>(service.getById(PORTAL_ID));
 
       expectViolationAt(
@@ -1794,18 +1419,9 @@ describe('PortalService', () => {
       );
     });
 
-    // ⚠ MINOR (client/API contract) — THE REVISION MARKER, REFUSED IN BOTH DIRECTIONS AND ON BOTH READS.
-    //
-    // `PortalDetailDto.ConcurrencyToken` and `PortalSettingsDto.ConcurrencyToken` are both declared
-    // `public string ... = string.Empty` and are both populated by `PortalMappings.ConcurrencyTokenFor`,
-    // so neither read can legitimately omit the member or serve a null for it. The decoders widened it
-    // to `string | null` anyway, and the consequence was silent: the null decoded, flowed into the
-    // update contract - whose member IS nullable, because the server treats a token-less write as
-    // last-writer-wins - and the optimistic check the marker exists to perform was skipped with nothing
-    // anywhere reporting that it had been. A lost update presents as a successful save.
-    //
-    // Four cases, because the two failure shapes and the two reads are independent: absence and null,
-    // on the detail and on the settings projection.
+    // `PortalDetailDto.ConcurrencyToken` and `PortalSettingsDto.ConcurrencyToken` are both declared `public
+    // string ... = string.Empty` and are both populated by `PortalMappings.ConcurrencyTokenFor`, so neither
+    // read can legitimately omit the member or serve a null for it.
 
     it('refuses a detail whose revision marker is absent', () => {
       const observed = observe<unknown>(service.getById(PORTAL_ID));
@@ -1822,9 +1438,6 @@ describe('PortalService', () => {
     });
 
     it('refuses a detail whose revision marker arrived as null', () => {
-      // Tolerating this was the defect itself, so the null case is asserted separately from absence:
-      // `nullable(decodeString)` admitted exactly this and nothing downstream could tell the
-      // difference between "no revision to check against" and "a portal at an unknown revision".
       const observed = observe<unknown>(service.getById(PORTAL_ID));
 
       expectViolationAt(
@@ -1861,11 +1474,8 @@ describe('PortalService', () => {
     });
 
     it('accepts the empty string as a revision marker, because that is the server unset spelling', () => {
-      // The counterpart case, and it matters: the member is non-nullable on the server and its
-      // declared default IS the empty string, so an installation that has never derived a token serves
-      // one. Refusing it would make a legitimate response undecodable, and substituting anything for it
-      // would fabricate a marker - which, were it ever to match, would defeat the check it appears to
-      // satisfy.
+      // The counterpart case, and it matters: the member is non-nullable on the server and its declared
+      // default IS the empty string, so an installation that has never derived a token serves one.
       const observed = observe(service.getById(PORTAL_ID));
 
       httpMock
@@ -1877,15 +1487,6 @@ describe('PortalService', () => {
     });
 
     it('refuses a detail whose envelope carries the payload at the top level', () => {
-      // The quietest defect this decoding exists to catch: a body that is a valid portal
-      // but is NOT wrapped. Every member would have read as `undefined` behind a 200.
-      //
-      // The `data` member is what catches it, and it is the precise diagnosis: the payload
-      // is missing from where the envelope declares it. The envelope's `meta` is NOT what
-      // refuses this — an absent `meta` is tolerated, because it is framing the caller never
-      // sees and refusing an otherwise perfect payload over a discarded member would make
-      // this client a blocker on a legitimate serialiser change. A PAGE's metadata is
-      // required, because there the total and the coordinates are the page itself.
       const observed = observe<unknown>(service.getById(PORTAL_ID));
 
       expectViolationAt(
@@ -1919,10 +1520,6 @@ describe('PortalService', () => {
     });
 
     it('accepts a null host name, because the read projection publishes it as nullable', () => {
-      // The counterpart case, so that the decoders are shown to admit what the contract
-      // actually declares rather than merely to reject. `httpAlias` is nullable on the read
-      // projection and non-nullable on both request contracts, which is exactly why the
-      // three alias types are declared separately.
       const observed = observe(service.getAlias(PORTAL_ID, PORTAL_ALIAS_ID));
 
       httpMock
@@ -1956,14 +1553,10 @@ describe('PortalService', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // WHO ANNOUNCES A FAILURE
-  //
-  // Every request is marked as presented by its caller, which is what stops one failure
-  // being shown twice — once as the interceptor's transient notification and once as the
-  // caller's own in-page banner or legacy-worded message. The interceptor still re-throws;
-  // it only stays silent.
-  // -------------------------------------------------------------------------
+  // Every request is marked as presented by its caller, which is what stops one failure being shown twice —
+  // once as the interceptor's transient notification and once as the caller's own in-page banner or
+  // legacy-worded message. The interceptor still re-throws; it only stays silent.
   describe('marks every request as presented by its caller', () => {
     it('marks every one of the twelve operations', () => {
       service.list({}).subscribe({ error: () => undefined });

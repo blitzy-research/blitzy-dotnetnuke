@@ -1,91 +1,3 @@
-/**
- * KARMA + JASMINE SPECIFICATION FOR THE RFC 7807 ERROR SURFACE.
- *
- * ## Framework, and why it is not a preference
- *
- * Karma with Jasmine, fixed rather than chosen. The migration plan resolves the
- * runner conflict explicitly in favour of Karma because the mandated acceptance
- * command is `ng test --watch=false --browsers=ChromeHeadless --code-coverage`,
- * which IS the Karma invocation; selecting Jest would make the mandated command
- * invalid. Nothing here uses Jest, any DOM-testing-library helper, or any spy
- * mechanism other than Jasmine's own.
- *
- * ## Provenance: this specification has no predecessor
- *
- * The legacy tree contains ZERO automated tests, and that was measured rather
- * than assumed. Searching both legacy trees for test-shaped file names returns
- * only substring noise — `UserCreateStatus.vb` and `PasswordUpdateStatus.vb` match
- * on "teSt", the bundled rich-text editor contributes three `special*` files that
- * match on "spec", and `Website/js/ClientAPITests/` is a MANUAL browser harness of
- * `.htm` pages rather than an automated suite. Searching for test-framework
- * attributes returns only a third-party readme, pre-built binaries and a build
- * script. No `.vbproj` or `.csproj` in the repository is a test project. So every
- * assertion below is net-new, and no legacy test was ported to produce it.
- *
- * The component under test likewise has no in-scope legacy ancestor. The plan
- * cites an `asp:ValidationSummary` rendering path; that control occurs zero times
- * in the in-scope markup and zero times anywhere under `Website/`, placing the
- * citation in the same family as the plan's own measured-vacuous exclusions. The
- * real analogue, `Library/Components/Skins/ModuleMessage.vb`, sits in an excluded
- * sub-tree and is therefore a reference only. Where an assertion below is
- * justified by legacy behaviour, the justifying file and line are named on it.
- *
- * ## Why this file matters beyond its own assertions
- *
- * It is the ONLY route by which the component is type-checked at all.
- * `tsconfig.app.json` declares `files: ["src/main.ts"]` and compiles by import
- * graph, so a component that nothing imports yet is silently skipped by
- * `ng build`. `tsconfig.spec.json` includes `src/**` + `/*.spec.ts`, so importing
- * the component here pulls it — and its template, under `strictTemplates` — into a
- * real compilation. The specification therefore deliberately touches EVERY public
- * member of the component and both of its exported types, so that none of them can
- * rot unnoticed.
- *
- * ## Dependency contract discrepancies, resolved in favour of the real files
- *
- * Three points where the planning notes for this file describe a contract the
- * shipped dependencies do not have. In each case the real dependency wins, because
- * an assertion written against an imagined API is worse than no assertion:
- *
- * 1. `ProblemDetails.correlationId` EXISTS and is the support reference. The
- *    planning notes name only `traceId`. `problemSupportReference` prefers the
- *    correlation identifier — the value that also travels on the response header
- *    and appears in the server's own audit records — and falls back to the W3C
- *    trace identifier only when no correlation identifier was published. Both
- *    orderings are asserted below.
- * 2. A `traceId` of `null` is NOT EXPRESSIBLE and is asserted as absent instead.
- *    The model declares `readonly traceId?: string`, with no null in the union, and
- *    documents why at length: the framework's problem-details type annotates each
- *    standard member with a per-member null-omission condition, and a per-member
- *    condition overrides the collection-wide `DefaultIgnoreCondition` of `Never`.
- *    A null member is therefore omitted from the document rather than serialised as
- *    `null`, which the model records as verified against live `401` and `400`
- *    responses. Writing a null here would need a cast, and a cast to prove a wire
- *    shape the wire cannot produce proves nothing. The absent case is asserted, and
- *    so is the present-but-`undefined` case, which is the type-safe analogue and
- *    exercises the same `=== undefined` guard the utility uses.
- * 3. `role="alert"` IS co-located with `aria-live` on the live region, by design.
- *    The template's own reasoning is that `role="alert"` implies
- *    `aria-live="assertive"` and `aria-atomic="true"`, and that stating the SAME
- *    values it implies makes the behaviour legible without creating a second,
- *    competing mechanism. That reasoning is sound, so the assertion below pins the
- *    property that actually matters: the stated values must MATCH the ones the role
- *    implies, never contradict them.
- *
- * ## Determinism
- *
- * No focused or skipped specs, no `console`, no timers, no clock reads. Every
- * fixture is a frozen module-level constant declared as the real interface, so a
- * mistyped member is a compile error rather than a silently absent one.
- *
- * The component derives every rendered value with `computed()` over a SIGNAL input
- * and declares no `effect()`, so `componentRef.setInput` followed by
- * `detectChanges()` is sufficient: `computed` is pull-based and re-evaluates during
- * template evaluation. `TestBed.flushEffects()` was verified to exist in the
- * installed `@angular/core@19.2.25` and `TestBed.tick()` was verified NOT to, but
- * neither is called, because there is no effect to flush and the stable path
- * suffices.
- */
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 
 import {
@@ -144,19 +56,6 @@ const TRACE = '.error-banner__trace';
 // ---------------------------------------------------------------------------
 
 /**
- * Finds an element that the assertion requires to be present.
- *
- * `querySelector` honestly returns `Element | null`, and this narrows it with an
- * explicit check that THROWS a descriptive error rather than with a non-null
- * assertion. The distinction is practical rather than stylistic: an assertion
- * operator would turn a missing element into an unhelpful "cannot read properties
- * of null", whereas this names the selector that failed to match.
- *
- * `DebugElement.query` is deliberately not used for the same reason. It is typed as
- * returning a non-nullable `DebugElement` while returning null at runtime, so it
- * type-checks a dereference that can fail — which is precisely the hole a strict
- * compiler exists to close.
- *
  * @param host The component's host element.
  * @param selector The selector to match.
  * @returns The matched element.
@@ -177,12 +76,6 @@ function requireElement(host: HTMLElement, selector: string): HTMLElement {
 
 /**
  * The trimmed visible text of an element.
- *
- * `textContent` is `string | null`, narrowed with a nullish fallback rather than an
- * assertion. Reading `textContent` rather than the parsed-markup property is itself
- * part of the contract under test: a value that reached the document as markup would
- * appear here as its literal characters, which is exactly what the escaping
- * assertions below rely on.
  *
  * @param element The element to read.
  * @returns The trimmed text, empty when there is none.
@@ -237,21 +130,7 @@ function hasElement(host: HTMLElement, selector: string): boolean {
   return host.querySelector(selector) !== null;
 }
 
-// ---------------------------------------------------------------------------
 // FIXTURES
-// ---------------------------------------------------------------------------
-//
-// EVERY fixture is declared with its real interface - `ProblemDetails` or
-// `ValidationProblemDetails` - and never as a bare literal and never through a
-// cast. That is what makes a mistyped member a COMPILE error: an object literal
-// assigned to an annotated target is excess-property checked, so `titel` or
-// `traceID` fails the build instead of silently arriving as `undefined` and
-// producing a green test that proves nothing.
-//
-// The wording is reproduced VERBATIM from the legacy resource files wherever a
-// legacy equivalent exists, including one legacy misspelling that is deliberately
-// preserved. Inventing friendlier wording here would quietly weaken the parity
-// these fixtures exist to demonstrate.
 
 /** A 404 carrying both a type heading and an occurrence-specific sentence. */
 const NOT_FOUND_WITH_DETAIL: ProblemDetails = {
@@ -267,7 +146,7 @@ const NOT_FOUND_TITLE_ONLY: ProblemDetails = {
   status: 404,
 };
 
-/** A refusal. Legacy evidence puts this in the WARNING band, never the danger band. */
+/** A refusal. */
 const PERMISSION_REFUSED: ProblemDetails = {
   type: 'urn:dnnmigration:error:authz.forbidden',
   title: 'Forbidden',
@@ -291,26 +170,16 @@ const STATUSLESS: ProblemDetails = {
   detail: 'Something went wrong upstream.',
 };
 
-/**
- * A status outside the set this API is known to return.
- *
- * The reachable set is documentation only - 400, 401, 403, 404, 409, 422, 429 and
- * 500 - and the status is chosen by the server, so an unlisted one is ordinary
- * rather than exceptional. 599 exercises the exhaustive `default` arm that the
- * workspace's no-fallthrough rule requires the component's `switch` to carry.
- */
+/** A status outside the set this API is known to return. */
 const UNMAPPED_STATUS: ProblemDetails = {
   status: 599,
   detail: 'A gateway reported an unrecognised condition.',
 };
 
 /**
- * A status of exactly zero.
- *
- * Zero is a LEGITIMATE value in this data and never a synonym for absent - the
- * legacy schema seeds `Roles.RoleID`, `Tabs.TabID` and `Modules.ModuleID` with
- * `IDENTITY(0,1)`, so zero identifies a real row. A component testing its status
- * for truthiness would send this down the "no status" path.
+ * A status of exactly zero. Zero is a LEGITIMATE value in this data and never a synonym for absent - the
+ * legacy schema seeds `Roles.RoleID`, `Tabs.TabID` and `Modules.ModuleID` with `IDENTITY(0,1)`, so zero
+ * identifies a real row.
  */
 const ZERO_STATUS: ProblemDetails = {
   status: 0,
@@ -318,11 +187,8 @@ const ZERO_STATUS: ProblemDetails = {
 };
 
 /**
- * A status of minus one.
- *
- * Minus one is the legacy integer "absent" marker AND a real identifier at the same
- * time: `Portals.PortalID` is `IDENTITY(-1,1)`, so -1 names the first portal ever
- * created. The collision is why nothing may treat -1 as missing.
+ * A status of minus one. Minus one is the legacy integer "absent" marker AND a real identifier at the
+ * same time: `Portals.PortalID` is `IDENTITY(-1,1)`, so -1 names the first portal ever created.
  */
 const NEGATIVE_ONE_STATUS: ProblemDetails = {
   status: -1,
@@ -330,11 +196,9 @@ const NEGATIVE_ONE_STATUS: ProblemDetails = {
 };
 
 /**
- * A document whose text members are the empty string.
- *
- * The legacy string "absent" marker IS the empty string - `Null.vb` returns
- * literally `""` - so an empty string arrives where another system would send null,
- * and it must not produce a blank heading or a message-less banner.
+ * A document whose text members are the empty string. The legacy string "absent" marker IS the empty
+ * string - `Null.vb` returns literally `""` - so an empty string arrives where another system would send
+ * null, and it must not produce a blank heading or a message-less banner.
  */
 const EMPTY_TEXT_MEMBERS: ProblemDetails = {
   type: '',
@@ -356,28 +220,14 @@ const TRACE_REFERENCE_ONLY: ProblemDetails = {
   traceId: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
 };
 
-/**
- * Carries a BLANK correlation identifier alongside a usable trace identifier.
- *
- * A blank identifier joins nothing to nothing, so the utility reports it as absent
- * and falls through - tested explicitly rather than by truthiness, because blank is
- * a legitimate value in this data rather than a synonym for missing.
- */
+/** Carries a BLANK correlation identifier alongside a usable trace identifier. */
 const BLANK_CORRELATION_REFERENCE: ProblemDetails = {
   status: 500,
   correlationId: '   ',
   traceId: '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
 };
 
-/**
- * Declares both identifier members and leaves both `undefined`.
- *
- * This is the type-safe analogue of the "explicitly null" wire case, which the real
- * contract cannot express: the model declares these members as `?: string` with no
- * null in the union, because the framework omits a null standard member from the
- * document rather than serialising it. Present-but-undefined exercises the same
- * `=== undefined` guard, which is what the utility actually tests.
- */
+/** Declares both identifier members and leaves both `undefined`. */
 const UNDEFINED_REFERENCES: ProblemDetails = {
   status: 500,
   detail: 'A proxy returned a document carrying no identifiers.',
@@ -386,17 +236,9 @@ const UNDEFINED_REFERENCES: ProblemDetails = {
 };
 
 /**
- * A validation failure across several fields, one of them with two messages.
- *
- * Keys are the server's model-state keys reproduced as the server spells them -
- * Pascal-cased, because they name model members rather than JSON members and the
- * camel-case body policy does not apply to dictionary keys.
- *
- * Wording is verbatim legacy: the portal-alias sentence is the measured
- * `DuplicatePortalAlias` resource value, and the role-name sentence is the literal
- * `ErrorMessage` attribute of `valRoleName` at
- * `Website/admin/Security/editroles.ascx` L31 - leading break tag included, because
- * that is exactly what the legacy stored.
+ * A validation failure across several fields, one of them with two messages. Keys are the server's
+ * model-state keys reproduced as the server spells them - Pascal-cased, because they name model members
+ * rather than JSON members and the camel-case body policy does not apply to dictionary keys.
  */
 const VALIDATION_ACROSS_FIELDS: ValidationProblemDetails = {
   type: 'urn:dnnmigration:error:validation.failed',
@@ -412,15 +254,6 @@ const VALIDATION_ACROSS_FIELDS: ValidationProblemDetails = {
   },
 };
 
-/**
- * A single field whose messages repeat.
- *
- * The repetition is real legacy output rather than a contrived case:
- * `Website/admin/Portal/Signup.ascx.vb` L191-L196 appends its message INSIDE a
- * per-character loop over the portal name, so one submission yields the identical
- * sentence once per invalid character. Collapsing duplicates would therefore
- * discard messages the server sent.
- */
 const REPEATED_FIELD_MESSAGE: ValidationProblemDetails = {
   status: 422,
   detail: 'The portal name contains characters that are not allowed.',
@@ -433,15 +266,6 @@ const REPEATED_FIELD_MESSAGE: ValidationProblemDetails = {
   },
 };
 
-/**
- * A failure code that genuinely contains a dot.
- *
- * `Portal.LastPortal` must survive whole. Its wording is stored under the BARE key
- * `LastPortal` in `Website/App_GlobalResources/SharedResources.resx` and read as
- * `Localization.GetString("LastPortal")` at
- * `Library/Components/Portal/PortalController.vb:200`, so the dotted form is the
- * code rather than a path, and any general "split on the dot" rule would corrupt it.
- */
 const DOTTED_FAILURE_CODE: ValidationProblemDetails = {
   status: 409,
   errors: {
@@ -449,14 +273,7 @@ const DOTTED_FAILURE_CODE: ValidationProblemDetails = {
   },
 };
 
-/**
- * A message the server keyed to the request as a whole rather than to a field.
- *
- * The empty-string key is what the validation bridge writes when a rule reports no
- * property name, and `$` is what the body binder writes when the payload itself
- * could not be read. Neither has a control to sit beside, so both belong beside the
- * summary - and neither may be discarded merely because the key is empty.
- */
+/** A message the server keyed to the request as a whole rather than to a field. */
 const FORM_LEVEL_ONLY: ValidationProblemDetails = {
   status: 400,
   errors: {
@@ -466,11 +283,9 @@ const FORM_LEVEL_ONLY: ValidationProblemDetails = {
 };
 
 /**
- * Both a form-level message and a per-field one, so their ORDER is observable.
- *
- * A message the server keyed to the request as a whole has no control to sit beside,
- * so it belongs immediately under the sentence it qualifies - above the per-field
- * list rather than buried inside it.
+ * Both a form-level message and a per-field one, so their ORDER is observable. A message the server keyed
+ * to the request as a whole has no control to sit beside, so it belongs immediately under the sentence it
+ * qualifies - above the per-field list rather than buried inside it.
  */
 const MIXED_LEVEL_MESSAGES: ValidationProblemDetails = {
   status: 409,
@@ -482,11 +297,8 @@ const MIXED_LEVEL_MESSAGES: ValidationProblemDetails = {
 };
 
 /**
- * A field key that looks like a legacy sentinel.
- *
- * `-1` is not an array-index key, so its position in the dictionary is its
- * insertion order, and it must be rendered verbatim rather than mistaken for
- * "absent".
+ * A field key that looks like a legacy sentinel. `-1` is not an array-index key, so its position in the
+ * dictionary is its insertion order, and it must be rendered verbatim rather than mistaken for "absent".
  */
 const SENTINEL_FIELD_KEY: ValidationProblemDetails = {
   status: 422,
@@ -495,14 +307,7 @@ const SENTINEL_FIELD_KEY: ValidationProblemDetails = {
   },
 };
 
-/**
- * A field whose every message is blank.
- *
- * Blank is not the same question as absent. The empty string is the legacy string
- * "absent" marker, so a server that writes one produces an entry with a key and
- * nothing to say - and rendering it would put an empty term and an empty definition
- * on screen. The entry has to be dropped, while the banner itself still renders.
- */
+/** A field whose every message is blank. */
 const BLANK_FIELD_MESSAGES: ValidationProblemDetails = {
   status: 422,
   detail: 'The role could not be saved.',
@@ -517,18 +322,6 @@ const BOLD_MARKUP_DETAIL: ProblemDetails = {
   detail: '<b>x</b>',
 };
 
-/**
- * A detail carrying a script payload modelled on a MEASURED legacy resource value.
- *
- * `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` stores an
- * `Advertising.Text` value that is a live advertising block: an inline `<script>`
- * assigning a publisher identifier, plus a second `<script>` whose `src` loads from
- * a remote host. It is stored HTML-escaped, so a naive search never finds it. The
- * legacy renderer assigned such text straight to a Web Forms label
- * (`ModuleMessage.vb` L150, `lblMessage.Text = strMessage`) with no encoding call
- * anywhere in the file, which is what made it executable. The remote reference here
- * is written scheme-relative so this fixture cannot be mistaken for a live URL.
- */
 const SCRIPT_MARKUP_DETAIL: ProblemDetails = {
   status: 400,
   detail:
@@ -536,26 +329,11 @@ const SCRIPT_MARKUP_DETAIL: ProblemDetails = {
     '<script src="//pagead2.googlesyndication.com/pagead/show_ads.js"></script>',
 };
 
-/**
- * A detail opening with ONE break tag.
- *
- * `Website/admin/Portal/Signup.ascx.vb` L221 prefixes exactly one when the two
- * password fields disagree.
- */
 const SINGLE_LEADING_BREAK: ProblemDetails = {
   status: 400,
   detail: '<br>This is an invalid Page Name',
 };
 
-/**
- * A detail opening with SEVERAL break tags, in both spellings.
- *
- * Several rather than one because the legacy append happens inside a per-character
- * loop (`Signup.ascx.vb` L191-L196 and L212-L216), so a name with three invalid
- * characters accumulates three. Both spellings appear in the legacy: `<br>` at
- * `Signup.ascx.vb` L193, and `<br/>` at `Website/admin/Users/User.ascx.vb` L187 and
- * `ModuleMessage.vb` L153.
- */
 const MANY_LEADING_BREAKS: ProblemDetails = {
   status: 400,
   detail: '<br><br/><br />  <BR>The Page Name you chose is already being used for another page ' +
@@ -563,13 +341,10 @@ const MANY_LEADING_BREAKS: ProblemDetails = {
 };
 
 /**
- * Break markup inside the PER-FIELD dictionary values, not only in the summary.
- *
- * Nine validator `ErrorMessage` attributes in
- * `Website/admin/Security/editroles.ascx` open with a break tag - L31, L92, L95,
- * L110, L113, L124, L127, L142 and L145 - and those attributes are exactly what
- * becomes the problem document's per-field dictionary. The `<br/>` spelling is the
- * one `Website/admin/Users/User.ascx.vb` L187 prefixes to its password message.
+ * Break markup inside the PER-FIELD dictionary values, not only in the summary. Nine validator
+ * `ErrorMessage` attributes in `Website/admin/Security/editroles.ascx` open with a break tag - L31, L92,
+ * L95, L110, L113, L124, L127, L142 and L145 - and those attributes are exactly what becomes the problem
+ * document's per-field dictionary.
  */
 const FIELD_LEADING_BREAKS: ValidationProblemDetails = {
   status: 422,
@@ -584,18 +359,6 @@ const FIELD_LEADING_BREAKS: ValidationProblemDetails = {
 /** The three presentational bands the component may choose between. */
 const EXPECTED_BANDS: readonly ErrorBannerSeverity[] = ['danger', 'warning', 'calm'];
 
-/**
- * Substrings that must NEVER appear anywhere in the rendered banner.
- *
- * The legacy leaked a stack trace by design:
- * `Library/Components/Exceptions/ErrorContainer.vb` L54-L70 branched on
- * `objUserInfo.IsSuperUser` and, for those who were, passed `exc.ToString` - the
- * exception's entire string form - through as the displayed message. RFC 7807
- * carries no stack trace, no exception, no inner exception and no developer
- * message, and its shape does not vary by environment, so that disclosure is closed
- * for every caller including super-users. The support reference is the only
- * sanctioned diagnostic.
- */
 const FORBIDDEN_DISCLOSURES: readonly string[] = [
   'stackTrace',
   'stack trace',
@@ -621,17 +384,7 @@ interface StatusWordingCase {
   readonly band: ErrorBannerSeverity;
 }
 
-/**
- * Every status the API is currently known to answer with, unaided by document text.
- *
- * The list is illustrative rather than exhaustive, exactly as the model documents:
- * the status is chosen by the server, so the set is not enforced anywhere and an
- * unlisted status is ordinary. It is covered here because the fallback wording and
- * the band are two separate rules and each status exercises both at once.
- *
- * `problem` is typed as `ProblemDetails` through this interface, so each literal
- * below is excess-property checked and a mistyped member fails the build.
- */
+/** Every status the API is currently known to answer with, unaided by document text. */
 const STATUS_WORDING: readonly StatusWordingCase[] = [
   { problem: { status: 400 }, expected: REQUEST_REJECTED, band: 'danger' },
   { problem: { status: 401 }, expected: NOT_AUTHENTICATED, band: 'warning' },
@@ -653,19 +406,8 @@ describe('ErrorBannerComponent', () => {
   let host: HTMLElement;
 
   beforeEach(async () => {
-    // The component is STANDALONE, so it goes in `imports`. Putting a standalone
-    // component in the legacy declaration array is a hard error, and the target
-    // declares no module class anywhere - every component in it is standalone.
-    //
-    // NO HTTP PROVIDERS ARE REGISTERED, deliberately. The component has no
-    // constructor, calls `inject` nowhere and declares `imports: []`, so it makes no
-    // request and needs no backend - real or testing. Registering the testing
-    // backend "for symmetry" would oblige this suite to verify no outstanding
-    // request in an `afterEach`, and a suite that registers a backend and forgets
-    // that check passes an unexpected request silently. Registering nothing cannot
-    // fail that way, and it also removes any possibility of the classic
-    // provider-ordering mistake in which the testing backend is registered before
-    // the real client and the real `HttpBackend` is left in place.
+    // NO HTTP PROVIDERS ARE REGISTERED, deliberately. The component has no constructor, calls `inject`
+    // nowhere and declares `imports: []`, so it makes no request and needs no backend - real or testing.
     await TestBed.configureTestingModule({
       imports: [ErrorBannerComponent],
     }).compileComponents();
@@ -673,10 +415,6 @@ describe('ErrorBannerComponent', () => {
     fixture = TestBed.createComponent(ErrorBannerComponent);
     component = fixture.componentInstance;
 
-    // Annotated rather than inferred: `ComponentFixture.nativeElement` is typed
-    // loosely by the framework, and naming the type here keeps every helper below
-    // working against a real `HTMLElement` without any weakly typed value entering
-    // this file.
     const rootElement: HTMLElement = fixture.nativeElement;
     host = rootElement;
 
@@ -685,12 +423,6 @@ describe('ErrorBannerComponent', () => {
 
   /**
    * Binds a problem and settles the view.
-   *
-   * `componentRef.setInput` is the only correct way to write a SIGNAL input from a
-   * spec; assigning to the member would replace the signal itself rather than its
-   * value. One `detectChanges` is then sufficient because every derived member is a
-   * pull-based `computed()` and the component declares no `effect()`, so there is
-   * nothing queued to flush.
    *
    * @param problem The document to bind, or null for the empty state.
    */
@@ -722,12 +454,7 @@ describe('ErrorBannerComponent', () => {
 
   describe('the live region', () => {
     it('is already in the document BEFORE any failure is bound', () => {
-      // The single most important structural assertion in this file. A live region
-      // that is inserted into the document at the same moment as its first message
-      // is announced inconsistently - several screen readers register the region
-      // only after insertion and therefore miss the very first message, which is
-      // the one that matters. Asserting this with nothing bound is what proves the
-      // region is persistent rather than conditional.
+      // The single most important structural assertion in this file.
       expect(hasElement(host, LIVE_REGION))
         .withContext('the region must exist while there is no problem at all')
         .toBeTrue();
@@ -737,13 +464,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('states only the announcement semantics its role already implies', () => {
-      // `role="alert"` IS co-located with `aria-live` here, and that is deliberate
-      // rather than an oversight. Redundancy is only harmful when the stated value
-      // CONTRADICTS the implied one - `role="alert"` with `aria-live="polite"` is
-      // the genuine defect. `role="alert"` implies assertive, atomic announcement,
-      // so stating exactly those two values leaves one coherent mechanism and makes
-      // it legible to a reader of the template. This assertion therefore pins
-      // agreement, which is the property that actually matters.
       const region = requireElement(host, LIVE_REGION);
 
       expect(region.getAttribute('role')).toBe('alert');
@@ -810,21 +530,6 @@ describe('ErrorBannerComponent', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // THE FAILURE THAT CARRIES NO DOCUMENT
-  //
-  // A class of failure this banner could not previously show AT ALL, and the invisibility was the
-  // whole defect. The runtime decoders that check each response against its published contract run
-  // inside each service's own mapping, which is DOWNSTREAM of the interceptor's error handling — so a
-  // `200` whose body does not match its contract throws a plain error carrying no problem document,
-  // no status and no support reference. Every screen binds a nullable document, so such a failure
-  // rendered nothing: a listing became permanently empty, a form became permanently unusable, and no
-  // surface anywhere said why.
-  //
-  // The second input is what makes that failure presentable. It is ORDERED BENEATH the document
-  // rather than merged with it, so a real document's own explanation always wins.
-  // -------------------------------------------------------------------------
-
   describe('a failure carrying no document', () => {
     it('shows the bound sentence when there is no document at all', () => {
       bindFallback('The account listing could not be read.');
@@ -850,10 +555,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('presents it at the default band, because no status resolved a severity', () => {
-      // ⚠ THE STRONGEST BAND, NOT A CALMER ONE. A failure nobody anticipated is the one most worth
-      // showing, and a decoder failure means the server and the client disagree about a published
-      // contract — which is a fault rather than a refusal. There is no status to resolve a severity
-      // from, so the band must come from the default rather than from a guess.
       bindFallback('The account listing could not be read.');
 
       expect(band()).toBe('danger');
@@ -863,9 +564,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('carries no support reference, because there is none to carry', () => {
-      // The response was a success as far as the transport was concerned, so the server logged no
-      // failure and published no correlation identifier for one. Inventing a reference would send an
-      // operator to a support desk with a value that appears in no log.
       bindFallback('The account listing could not be read.');
 
       expect(hasElement(host, TRACE)).toBeFalse();
@@ -886,9 +584,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('stays silent for an empty sentence, which is a caller with nothing to say', () => {
-      // ⚠ EMPTINESS IS TESTED EXPLICITLY RATHER THAN BY TRUTHINESS ANYWHERE ELSE IN THIS DATA, and
-      // here it is the one place emptiness legitimately means absence: a consumer binding a store
-      // slice that has authored no sentence must produce no banner rather than an empty one.
       bindFallback('');
 
       expect(component.hasProblem()).toBeFalse();
@@ -934,11 +629,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('emits no image, so the severity cue cannot fail to load', () => {
-      // MIGRATION: the legacy renderer paired each message type with a raster asset
-      // - `~/images/red-error.gif`, `~/images/yellow-warning.gif` and
-      // `~/images/green-ok.gif` at `ModuleMessage.vb` L134/L140/L146 - and all three
-      // are a documented non-port. The design system permits no CSS asset reference
-      // and ships one static asset only, so the cue is text. Text cannot 404.
       for (const problem of [PERMISSION_REFUSED, RATE_LIMITED, SERVER_FAULT]) {
         bind(problem);
 
@@ -975,9 +665,8 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('shows the severity word as visible text rather than as a hidden label', () => {
-      // Colour independence, which is a different requirement from contrast: a
-      // visually hidden word would satisfy a screen reader and fail a sighted
-      // reader who cannot distinguish the hue.
+      // Colour independence, which is a different requirement from contrast: a visually hidden word would
+      // satisfy a screen reader and fail a sighted reader who cannot distinguish the hue.
       bind(SERVER_FAULT);
 
       const word = requireElement(host, SEVERITY_WORD);
@@ -1028,9 +717,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('never renders a blank heading or a blank sentence for empty text members', () => {
-      // The legacy string "absent" marker IS the empty string, so empty members
-      // arrive where another system would send null. Neither may produce an empty
-      // line, and the sentence must fall back rather than disappear.
       bind(EMPTY_TEXT_MEMBERS);
 
       expect(optionalText(host, TITLE))
@@ -1079,19 +765,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ presents a 403 as a WARNING and NOT as danger', () => {
-      // Asserted in BOTH directions, because "the warning hook is present" alone
-      // would pass if both hooks were somehow applied at once.
-      //
-      // MIGRATION: the legacy application is the authority for this twice over.
-      // First, `Website/admin/Security/AccessDenied.ascx.vb` L41-L47 performs no
-      // permission check at all - it only presents a denial - and BOTH branches of
-      // its `Page_Load` render at `ModuleMessage.ModuleMessageType.YellowWarning`:
-      // the message passed through the query string at L43, and the localised
-      // default at L45. Second, the legacy renderer styled the bands differently -
-      // `ModuleMessage.vb` L115-L158 gives `YellowWarning` the ordinary `Normal`
-      // heading class while `RedError` gets `NormalRed`, whose sole declaration sits
-      // under the comment "text style used for error messages". The legacy withheld
-      // the red for a refusal, and so does this.
       bind(PERMISSION_REFUSED);
 
       expect(band()).withContext('the warning hook is present').toBe('warning');
@@ -1101,14 +774,9 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ presents a 429 CALMLY rather than as a red failure', () => {
-      // MIGRATION: provably net-new. The legacy `ModuleMessageType` enum declares
-      // exactly three members at `ModuleMessage.vb` L36-L40 - `GreenSuccess`,
-      // `YellowWarning` and `RedError` - with no informational or calm member, so
-      // nothing was carried across and nothing could be. The band exists because the
-      // credential rate limiter is the compensating control for the legacy CAPTCHA
-      // this migration deliberately removed: a refusal meaning "you are early" must
-      // not be dressed as a fault, or it reports a failure where the system is
-      // working exactly as configured.
+      // MIGRATION: provably net-new. The legacy `ModuleMessageType` enum declares exactly three members at
+      // `ModuleMessage.vb` L36-L40 - `GreenSuccess`, `YellowWarning` and `RedError` - with no informational
+      // or calm member, so nothing was carried across and nothing could be.
       bind(RATE_LIMITED);
 
       expect(band()).toBe('calm');
@@ -1121,11 +789,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('still renders an UNMAPPED status, through the exhaustive default arm', () => {
-      // The component's `switch` is over the three-member severity union rather than
-      // over the status, and the workspace forbids an unhandled case, so an
-      // unrecognised status is absorbed by the imported classification's own
-      // catch-all and lands in the danger band - which is right, because a failure
-      // nobody anticipated is the one most worth showing.
       bind(UNMAPPED_STATUS);
 
       expect(hasElement(host, BANNER)).withContext('it must still render').toBeTrue();
@@ -1180,17 +843,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ renders a script payload as inert visible text and creates NO script element', () => {
-      // MIGRATION: this closes a measured vulnerability rather than expressing a
-      // preference. The legacy renderer ended its path at `ModuleMessage.vb` L150
-      // with `lblMessage.Text = strMessage`, assigned raw to an `asp:Label`, which
-      // Web Forms renders UNENCODED - and that file contains no encoding call at all.
-      // Against it sits the real payload surface: across the 37 in-scope resource
-      // files, 76 of 1182 values carry an HTML tag, and one is a live advertising
-      // block whose second tag loads from a remote host. Some legacy call sites
-      // encoded defensively - `AccessDenied.ascx.vb` L43 wraps its query-string
-      // message in `HttpUtility.HtmlEncode` while L45 does not - which is precisely
-      // the shape of a defence-in-depth failure. Here the encoding is STRUCTURAL: no
-      // member of the component is markup and the template binds every value as text.
       bind(SCRIPT_MARKUP_DETAIL);
 
       expect(host.querySelector('script'))
@@ -1218,12 +870,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('surfaces no stack trace, exception, credential or developer diagnostic', () => {
-      // MIGRATION: this REVERSES a legacy disclosure rather than reproducing one.
-      // `Library/Components/Exceptions/ErrorContainer.vb` L54-L70 branched on
-      // `If objUserInfo.IsSuperUser` and, for those who were, passed `exc.ToString` -
-      // the entire stack trace - through as the displayed message. RFC 7807 carries
-      // no such member and its shape does not vary by environment, so the exposure is
-      // closed for every caller including super-users.
       for (const problem of [SERVER_FAULT, BOTH_REFERENCES, VALIDATION_ACROSS_FIELDS]) {
         bind(problem);
 
@@ -1250,14 +896,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ resolves SEVERAL leading breaks, in both spellings and either case', () => {
-      // Several rather than one because the legacy append happens INSIDE A
-      // PER-CHARACTER LOOP: `Website/admin/Portal/Signup.ascx.vb` L191-L196 and
-      // L212-L216 run `For intCounter = 1 To <text>.Length` and append a break each
-      // time the character is not in the allowed set, so a name with three bad
-      // characters accumulates three breaks. Both spellings exist in the legacy -
-      // `<br>` at `Signup.ascx.vb` L193 and `<br/>` at
-      // `Website/admin/Users/User.ascx.vb` L187 - so both are covered here, along
-      // with a spaced and an upper-case form.
       bind(MANY_LEADING_BREAKS);
 
       expect(requireText(host, MESSAGE))
@@ -1269,11 +907,9 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ resolves leading breaks in the PER-FIELD values, not only in the sentence', () => {
-      // Nine validator `ErrorMessage` attributes in
-      // `Website/admin/Security/editroles.ascx` open with a break tag - L31, L92,
-      // L95, L110, L113, L124, L127, L142 and L145 - and those attributes are exactly
-      // what becomes the per-field dictionary, so the same normalisation has to reach
-      // this list.
+      // Nine validator `ErrorMessage` attributes in `Website/admin/Security/editroles.ascx` open with a
+      // break tag - L31, L92, L95, L110, L113, L124, L127, L142 and L145 - and those attributes are exactly
+      // what becomes the per-field dictionary, so the same normalisation has to reach this list.
       bind(FIELD_LEADING_BREAKS);
 
       const details = allText(host, FIELD_MESSAGE);
@@ -1305,11 +941,9 @@ describe('ErrorBannerComponent', () => {
         .withContext('only the first character is lower-cased, so a key still matches a control')
         .toEqual(['portalName', 'roleName', 'email']);
 
-      // BRACKET ACCESS, which is the only syntactically available form: `errors` is
-      // an index-signature type and the workspace enables
-      // `noPropertyAccessFromIndexSignature`, so `errors.Email` is a compile error by
-      // design. The rule earns its keep - a key is only ever known at runtime, and
-      // dot access would let a typo compile as a silent `undefined`.
+      // BRACKET ACCESS, which is the only syntactically available form: `errors` is an index-signature type
+      // and the workspace enables `noPropertyAccessFromIndexSignature`, so `errors.Email` is a compile
+      // error by design.
       const emailMessages: readonly string[] = VALIDATION_ACROSS_FIELDS.errors['Email'];
       const portalMessages: readonly string[] = VALIDATION_ACROSS_FIELDS.errors['PortalName'];
 
@@ -1321,9 +955,9 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('preserves a repeated message once per occurrence rather than collapsing it', () => {
-      // Tracking by message text would make the second occurrence collide with the
-      // first and silently drop a message the server sent. The per-character legacy
-      // loop produces exactly this input, so the collapse would be real data loss.
+      // Tracking by message text would make the second occurrence collide with the first and silently drop
+      // a message the server sent. The per-character legacy loop produces exactly this input, so the
+      // collapse would be real data loss.
       bind(REPEATED_FIELD_MESSAGE);
 
       const details = allText(host, FIELD_MESSAGE);
@@ -1339,11 +973,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ keeps a dotted failure code WHOLE, never splitting it at the dot', () => {
-      // `Portal.LastPortal` genuinely contains a dot: its wording is stored under the
-      // BARE key `LastPortal` in `Website/App_GlobalResources/SharedResources.resx`
-      // and read as `Localization.GetString("LastPortal")` at
-      // `Library/Components/Portal/PortalController.vb:200`, so the dotted form is
-      // the code and not a path. Any general "split on the dot" rule would corrupt it.
       bind(DOTTED_FAILURE_CODE);
 
       const labels = allText(host, FIELD_LABEL);
@@ -1392,10 +1021,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('drops a field whose messages are ALL BLANK, so no empty row is rendered', () => {
-      // Blank and absent are different questions. The empty string is the legacy
-      // string "absent" marker, so a server writing one produces an entry with a key
-      // and nothing to say; rendering it would put an empty term and an empty
-      // definition on screen. The entry goes, the banner stays.
       bind(BLANK_FIELD_MESSAGES);
 
       expect(hasElement(host, BANNER)).withContext('the banner still renders').toBeTrue();
@@ -1415,12 +1040,6 @@ describe('ErrorBannerComponent', () => {
 
   describe('the support reference', () => {
     it('⭐ prefers the CORRELATION identifier over the trace identifier', () => {
-      // The correlation identifier is the value the server validated for the request,
-      // and it is what appears on the response header, on the request envelope in the
-      // server's log and on every audit event the request produced. The W3C trace
-      // identifier is taken from whatever diagnostic activity happened to be current,
-      // so it appears in none of those records and quoting it yields a reference an
-      // operator cannot find.
       bind(BOTH_REFERENCES);
 
       expect(component.supportReference())
@@ -1442,9 +1061,6 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('treats a BLANK correlation identifier as absent and falls through', () => {
-      // Tested with an explicit emptiness check rather than by truthiness, because a
-      // blank string is a legitimate value in this data - the legacy string "absent"
-      // marker IS the empty string - and a blank identifier joins nothing to nothing.
       bind(BLANK_CORRELATION_REFERENCE);
 
       expect(component.supportReference()).toBe(
@@ -1461,14 +1077,7 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ renders nothing broken when both identifiers are present but undefined', () => {
-      // The type-safe analogue of the "explicitly null" wire case. The real contract
-      // declares these members as `?: string` with no null in the union, because the
-      // framework's problem-details type carries a per-member null-omission condition
-      // that OVERRIDES the collection-wide serialiser policy - so a null member is
-      // omitted from the document rather than written as `null`, which the model
-      // records as verified against live 401 and 400 responses. Present-but-undefined
-      // exercises the same `=== undefined` guard, and nothing may render the word
-      // "undefined".
+      // The type-safe analogue of the "explicitly null" wire case.
       bind(UNDEFINED_REFERENCES);
 
       expect(optionalText(host, TRACE)).toBeNull();
@@ -1488,10 +1097,9 @@ describe('ErrorBannerComponent', () => {
 
   describe('sentinel discipline', () => {
     it('⭐ does not treat a status of ZERO as absent', () => {
-      // Zero is a legitimate value in this data: the legacy schema seeds
-      // `Roles.RoleID`, `Tabs.TabID` and `Modules.ModuleID` with `IDENTITY(0,1)`, so
-      // zero identifies a real row. A component testing its status for truthiness
-      // would send this down the "no status" path and drop the banner.
+      // Zero is a legitimate value in this data: the legacy schema seeds `Roles.RoleID`, `Tabs.TabID` and
+      // `Modules.ModuleID` with `IDENTITY(0,1)`, so zero identifies a real row. A component testing its
+      // status for truthiness would send this down the "no status" path and drop the banner.
       bind(ZERO_STATUS);
 
       expect(hasElement(host, BANNER)).withContext('the banner must still render').toBeTrue();
@@ -1503,9 +1111,9 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('⭐ does not treat a status of MINUS ONE as absent', () => {
-      // Minus one is simultaneously the legacy integer "absent" marker and a real
-      // identifier: `Portals.PortalID` is `IDENTITY(-1,1)`, so -1 names the first
-      // portal ever created. The collision is why nothing may read -1 as missing.
+      // Minus one is simultaneously the legacy integer "absent" marker and a real identifier:
+      // `Portals.PortalID` is `IDENTITY(-1,1)`, so -1 names the first portal ever created. The collision is
+      // why nothing may read -1 as missing.
       bind(NEGATIVE_ONE_STATUS);
 
       expect(hasElement(host, BANNER)).toBeTrue();
@@ -1613,12 +1221,9 @@ describe('ErrorBannerComponent', () => {
 
   describe('rendered appearance', () => {
     /**
-     * The banner's paint, copied out as plain strings.
-     *
-     * The Karma target loads the global stylesheet, so the token sheet is present and
-     * every custom property resolves here exactly as it does in the application. The
-     * values are copied immediately rather than held as a live declaration, which
-     * would otherwise read whichever element was still attached at the end.
+     * The banner's paint, copied out as plain strings. The Karma target loads the global stylesheet, so
+     * the token sheet is present and every custom property resolves here exactly as it does in the
+     * application.
      *
      * @param problem The document to bind.
      * @returns The colours the banner resolved to.
@@ -1638,41 +1243,11 @@ describe('ErrorBannerComponent', () => {
         border: style.borderTopColor,
         background: style.backgroundColor,
 
-        // The ACCENT EDGE, read as the physical left border because the component declares
-        // it logically and the document is left-to-right here. It is the one border the
-        // component widens, and with two of the three bands now sharing a surface it is the
-        // property that separates all three.
         accent: style.borderLeftColor,
       };
     }
 
     it('paints only the danger band in the error colour, from ONE token', () => {
-      // Measured provenance: the legacy renderer gave `RedError` the `NormalRed`
-      // heading class - the sole pure-red declaration, sitting under the comment "text
-      // style used for error messages" - and gave `YellowWarning` the ordinary
-      // `Normal` class.
-      //
-      // ⚠ ONE TOKEN, NOT TWO, AND THIS CASE USED TO REQUIRE TWO. An earlier revision split
-      // the role across `--color-danger` for the border and a darkened `#B30000` for the
-      // text, on the ground that the measured legacy red reads 4.00:1 on the page
-      // background - enough for the 3:1 that governs a non-text boundary, short of the
-      // 4.5:1 that governs the text inside it. That second token has been WITHDRAWN: the
-      // THE BAND'S BORDER AND ITS TEXT COME FROM ONE TOKEN, AND ONE IS ALL THE VOCABULARY HAS.
-      // A darkened sibling for danger TEXT was declared briefly and is withdrawn. The colour
-      // vocabulary is closed at the nine values the design specification enumerates; the
-      // specification's precedence order puts design-system compliance FIRST and accessibility
-      // THIRD, asked for "with zero visual change", so a new hue is precisely what may not be
-      // admitted on accessibility grounds - and the argument that spacing, radius and elevation
-      // are net additions does not reach a colour, because those three families have no legacy
-      // values and no table entry to contradict while the colour table enumerates nine rows and
-      // marks each an exact match.
-      //
-      // The measurement that prompted the sibling is real and is kept on the record: #FF0000 is
-      // 4.00:1 on white and 3.45:1 on the grid stripe, and Lighthouse confirmed 3.446:1
-      // independently. It is stated on `--color-danger`'s own declaration rather than absorbed,
-      // and it is answered without a hue - the type ramp's legible floor removed the 10-11 px
-      // sizes the worst ratios were measured at, and severity is announced as a WORD in the live
-      // region, so the state never depends on hue at all.
       const danger = paintOf(SERVER_FAULT);
 
       expect(danger.color).toBe('rgb(255, 0, 0)');
@@ -1686,9 +1261,9 @@ describe('ErrorBannerComponent', () => {
       expect(warning.color).not.toBe('rgb(255, 0, 0)');
       expect(calm.color).not.toBe('rgb(255, 0, 0)');
 
-      // And neither withdrawn candidate's value appears anywhere at all - #B30000, which was
-      // proposed for the warning band, nor #B80000, which was declared as a danger-text sibling
-      // and removed with the closed nine-colour vocabulary.
+      // And neither withdrawn candidate's value appears anywhere at all - #B30000, which was proposed for
+      // the warning band, nor #B80000, which was declared as a danger-text sibling and removed with the
+      // closed nine-colour vocabulary.
       expect(danger.color).not.toBe('rgb(179, 0, 0)');
       expect(warning.color).not.toBe('rgb(179, 0, 0)');
       expect(calm.color).not.toBe('rgb(179, 0, 0)');
@@ -1698,19 +1273,10 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('distinguishes the three bands from one another within the closed palette', () => {
-      // ⚠ THE SURFACE ALONE CANNOT SEPARATE ALL THREE, AND THIS CASE USED TO REQUIRE THAT
-      // IT DID. It asserted the warning band's surface was the legacy pale yellow
-      // `rgb(255, 255, 153)`, which was reached through a tenth token that has since been
-      // withdrawn - the value is absent from the design specification's nine-colour table.
-      // The palette holds exactly two neutral surfaces, the page background and the
-      // secondary surface, and its third fill is the selected-row tint whose documented role
-      // is a selected grid row; painting a warning with it would make a refusal look like a
-      // selection. So the warning and the calm band share a surface, which is a recorded
-      // visible divergence rather than a defect.
-      //
-      // What is asserted instead is what is actually true and what actually orients a
-      // reader: every PAIR of bands differs in at least one colour property, and the accent
-      // edge - the one border the component widens - differs across all three.
+      // ⚠ THE SURFACE ALONE CANNOT SEPARATE ALL THREE, AND THIS CASE USED TO REQUIRE THAT IT DID. It
+      // asserted the warning band's surface was the legacy pale yellow `rgb(255, 255, 153)`, which was
+      // reached through a tenth token that has since been withdrawn - the value is absent from the design
+      // specification's nine-colour table.
       const danger = paintOf(SERVER_FAULT);
       const warning = paintOf(PERMISSION_REFUSED);
       const calm = paintOf(RATE_LIMITED);
@@ -1737,12 +1303,7 @@ describe('ErrorBannerComponent', () => {
     });
 
     it('carries the severity as a WORD, which is what a reader who perceives no colour gets', () => {
-      // ⚠ THE NON-COLOUR CUE IS NOW LOAD-BEARING, and it is asserted here rather than
-      // assumed. With the danger text at 4.00:1 on the page background - below the 4.5:1
-      // minimum for normal text, a ratio the closed palette leaves in place - the word is
-      // what makes the state perceivable without perceiving the hue. It must be real text
-      // in the document, and it must sit inside the live region so it is announced with the
-      // message rather than after it.
+      // ⚠ THE NON-COLOUR CUE IS NOW LOAD-BEARING, and it is asserted here rather than assumed.
       for (const problem of [SERVER_FAULT, PERMISSION_REFUSED, RATE_LIMITED]) {
         bind(problem);
 
@@ -1756,9 +1317,9 @@ describe('ErrorBannerComponent', () => {
           .withContext('the severity word must not be empty')
           .toBeGreaterThan(0);
 
-        // ⚠ INSIDE THE LIVE REGION, not merely somewhere in the document. The announcement
-        // semantics sit on the wrapper, and the region is atomic — so a severity word placed
-        // outside it would be visible but never spoken with the message it qualifies.
+        // ⚠ INSIDE THE LIVE REGION, not merely somewhere in the document. The announcement semantics sit on
+        // the wrapper, and the region is atomic — so a severity word placed outside it would be visible but
+        // never spoken with the message it qualifies.
         expect(live.getAttribute('role'))
           .withContext('the region carrying the word must be the announced one')
           .toBe('alert');

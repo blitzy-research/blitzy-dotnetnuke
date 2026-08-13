@@ -7,26 +7,9 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// The terminal shape of the mapped DotNetNuke tables, read from <c>Schema/TerminalSchema.manifest</c>.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <strong>This is an ORACLE, and its independence is the whole point.</strong> The manifest was derived
-/// by replaying the 83 versioned legacy upgrade scripts in
-/// <c>Website/Providers/DataProviders/SqlDataProvider</c> and corroborated against the Red Gate
-/// fresh-install snapshot that ships beside them. Nothing this solution emits contributed to it. That
-/// matters because the integration database is provisioned from <c>Schema/DnnSchema.sql</c>, which used to
-/// describe itself as having been scripted FROM the entity model: comparing the model against a database
-/// built from a model-emitted script compares the model with itself, and a model that is internally
-/// consistent and uniformly wrong satisfies every such assertion.
-/// </para>
-/// <para>
 /// The manifest's own header records how it was derived, which legacy statement establishes each record,
 /// and what it deliberately does not assert. It also records the two drifted declarations that measuring
 /// against it found on the first run.
-/// </para>
-/// <para>
-/// Loading is strict rather than forgiving. A record with the wrong field count, an unknown record type, a
-/// duplicate key, or a totals line that disagrees with what was parsed all raise immediately, because a
-/// silently half-read oracle is worse than none: every comparison against it would still pass.
-/// </para>
 /// </remarks>
 internal static class TerminalSchema
 {
@@ -51,10 +34,6 @@ internal static class TerminalSchema
     public static IReadOnlyDictionary<string, TerminalForeignKey> ForeignKeys => Document.Value.ForeignKeys;
 
     /// <summary>Gets the counts the manifest declares for itself in its <c>TOTALS</c> record.</summary>
-    /// <remarks>
-    /// Exposed so a test can state the size of the oracle it is comparing against. A truncated resource is
-    /// already refused at load time, so this is documentation rather than the guard itself.
-    /// </remarks>
     public static TerminalSchemaTotals DeclaredTotals => Document.Value.Totals;
 
     /// <summary>Returns the columns of one table, in name order.</summary>
@@ -273,11 +252,6 @@ internal static class TerminalSchema
     /// <param name="lineNumber">The manifest line, for diagnosis.</param>
     /// <param name="line">The manifest line text, for diagnosis.</param>
     /// <returns>The action as <c>sys.foreign_keys</c> spells it.</returns>
-    /// <remarks>
-    /// The manifest spells the action the way the legacy DDL does - "ON DELETE CASCADE" or its absence -
-    /// while the catalogue spells it with an underscore. Normalising here means neither the manifest nor a
-    /// comparison has to know about the other's spelling.
-    /// </remarks>
     private static string DeleteAction(string field, int lineNumber, string line) => field switch
     {
         "CASCADE" => "CASCADE",
@@ -328,10 +302,6 @@ internal static class TerminalSchema
     /// <param name="value">The record.</param>
     /// <param name="lineNumber">The manifest line, for diagnosis.</param>
     /// <param name="line">The manifest line text, for diagnosis.</param>
-    /// <remarks>
-    /// A duplicate would silently shadow the earlier record, which is how an oracle quietly stops asserting
-    /// what it appears to assert.
-    /// </remarks>
     private static void Add<T>(Dictionary<string, T> target, string key, T value, int lineNumber, string line)
     {
         if (!target.TryAdd(key, value))
@@ -380,7 +350,9 @@ internal sealed record TerminalTable(
 /// <param name="Table">The legacy table name.</param>
 /// <param name="Name">The legacy column name, with its original casing.</param>
 /// <param name="DataType">The store type name, lower-cased, without any length specifier.</param>
-/// <param name="MaxLength">The declared length in characters, or <see langword="null"/> for a type without one.</param>
+/// <param name="MaxLength">
+/// The declared length in characters, or <see langword="null"/> for a type without one.
+/// </param>
 /// <param name="IsNullable">Whether the column admits nulls.</param>
 /// <param name="Identity">The identity seed and increment, or <see langword="null"/>.</param>
 /// <param name="Provenance">The legacy script and line that established this shape.</param>

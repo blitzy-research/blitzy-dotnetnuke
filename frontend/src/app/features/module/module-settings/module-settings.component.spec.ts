@@ -24,19 +24,9 @@ import { TokenStorageService } from '../../../core/services/token-storage.servic
 import type { AuthSession, CurrentUser } from '../../../core/models/auth.model';
 import type { ModuleSettingsSeed } from './module-settings.component';
 
-// =====================================================================================================
 // THE SESSION THE CATALOGUE READ IS CONDITIONED ON
-//
 // The advisory key list is requested only when the caller administers the tenant, because the catalogue
-// endpoint is declared under the administrator policy and would otherwise answer 403. Neither
-// `AuthStore.holdsPortalAdministration` nor `AuthStore.permissions` is writable — both are projections
-// over the stored session — so storing a real session is the only supported way to state that standing,
-// and it is the same instrument the shared permission directive's own specification reaches for.
-//
-// Every case OUTSIDE the advisory describe leaves the session absent, which is why none of them sees a
-// catalogue request: the read is withheld, and the suite's `httpMock.verify()` proves it stayed withheld
-// rather than merely going unasserted.
-// =====================================================================================================
+// endpoint is declared under the administrator policy and would otherwise answer 403.
 
 /** Builds a caller snapshot carrying exactly the standing each case needs. */
 function userWith(administersPortal: boolean): CurrentUser {
@@ -52,9 +42,6 @@ function userWith(administersPortal: boolean): CurrentUser {
     isSuperUser: false,
     isPortalAdministrator: administersPortal,
     roles: administersPortal ? ['Administrators'] : [],
-    // The keys the CALLER holds are irrelevant here and are deliberately empty: this screen reads the
-    // keys the DEFINITION declares, which is a different fact, and an administrator named in no grant
-    // row legitimately holds none.
     permissions: [],
   };
 }
@@ -72,14 +59,6 @@ function sessionWith(administersPortal: boolean): AuthSession {
   };
 }
 
-/**
- * The sixteen members the server's update contract declares, and the only members a submission may carry.
- *
- * Spelled out here rather than derived from the type, so that widening the wire contract to re-admit a
- * value the server discards fails this expectation instead of passing silently. This is the regression
- * guard for the eight members that were removed: six placement values the server does not project, and
- * two superseded spellings of the instruction flags.
- */
 const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
   'allTabs',
   'applyToAllModules',
@@ -104,9 +83,6 @@ const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
 
 /**
  * Builds a fully populated module, overriding only what a test cares about.
- *
- * Every field carries a value distinguishable from its own default, so a test that asserts a seeded value
- * cannot pass by accident on a control that was never written.
  *
  * @param overrides The fields to replace.
  * @returns The module state.
@@ -138,11 +114,6 @@ function moduleOf(overrides: Partial<ModuleSettingsSeed> = {}): ModuleSettingsSe
 
 /**
  * Builds the module read payload the server publishes, overriding only what a test cares about.
- *
- * Every one of the twenty-three members the read decoder requires is present, and the falsy ones are
- * present EXPLICITLY rather than omitted. That is not defensive padding: the API serialises with
- * `DefaultIgnoreCondition = JsonIgnoreCondition.Never`, so `-1`, `0`, `''` and `false` all appear in the
- * real JSON, and a fixture that dropped them would be testing a wire shape the server never sends.
  *
  * @param overrides The members to replace.
  * @returns A complete module read payload.
@@ -180,12 +151,6 @@ function moduleDetailOf(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
 }
 
 /**
- * Builds the definition read payload, which is the ONLY carrier of the cache default.
- *
- * `defaultCacheTime` defaults to 0 here, matching `ModuleDefinitionInfo.vb`, whose constructor sets
- * `_DefaultCacheTime = 0`. A default of 0 means "caching supported, zero-second default" and is a
- * different fact from -1, which means "this definition records no default at all".
- *
  * @param overrides The members to replace.
  * @returns A complete definition read payload.
  */
@@ -206,11 +171,9 @@ function definitionOf(overrides: Partial<ModuleDefinition> = {}): ModuleDefiniti
 }
 
 /**
- * Builds one page of the tenant's page list for the "Move To Page" picker.
- *
- * `tabId` defaults to 0 and `parentId` to -1, because both are real values this schema produces: `TabID`
- * is `IDENTITY(0, 1)` so the first page is 0, and a root-level page records -1 as its parent. Neither may
- * be read as "absent".
+ * Builds one page of the tenant's page list for the "Move To Page" picker. `tabId` defaults to 0 and
+ * `parentId` to -1, because both are real values this schema produces: `TabID` is `IDENTITY(0, 1)` so the
+ * first page is 0, and a root-level page records -1 as its parent.
  *
  * @param overrides The members to replace.
  * @returns A complete page list entry.
@@ -238,10 +201,6 @@ function tabOf(overrides: Partial<TabListItem> = {}): TabListItem {
 /**
  * Builds the settings bag the placement read returns.
  *
- * Two maps, held apart exactly as the server returns them: one is recorded against the module and applies
- * on every page it appears on, the other belongs to one occurrence on one page, and they land in two
- * different tables.
- *
  * @param overrides The members to replace.
  * @returns A complete settings bag.
  */
@@ -260,19 +219,17 @@ describe('ModuleSettingsComponent', () => {
   let component: ModuleSettingsComponent;
 
   /**
-   * The testing backend, asserted against in `afterEach` so no request escapes unaccounted for.
-   *
-   * Held at the outermost scope on purpose: the guard has to apply to EVERY spec in the file, including the
+   * The testing backend, asserted against in `afterEach` so no request escapes unaccounted for. Held at
+   * the outermost scope on purpose: the guard has to apply to EVERY spec in the file, including the
    * presentational ones that are expected to issue nothing at all, because "issues nothing" is itself a
    * claim worth proving.
    */
   let httpMock: HttpTestingController;
 
   /**
-   * Assigns an input the way an OnPush component requires.
-   *
-   * Writing to the field directly does not mark the component dirty, so the view would not re-render and
-   * every assertion after it would read stale markup.
+   * Assigns an input the way an OnPush component requires. Writing to the field directly does not mark
+   * the component dirty, so the view would not re-render and every assertion after it would read stale
+   * markup.
    *
    * @param name The input's name.
    * @param value The value to set.
@@ -318,9 +275,6 @@ describe('ModuleSettingsComponent', () => {
   /**
    * The disclosure head whose text is the given heading and whose nesting matches.
    *
-   * Two regions legitimately share the heading 'Basic Settings' and two share 'Advanced Settings', so a head
-   * is located by its identifier rather than by its wording.
-   *
    * @param section The region key.
    * @returns The head.
    */
@@ -330,11 +284,6 @@ describe('ModuleSettingsComponent', () => {
 
   /**
    * Ensures a region is open, clicking its head only when it is currently closed.
-   *
-   * The head is a toggle, so this helper must be idempotent: a test that re-seeds the component and then
-   * asks for the form again would otherwise CLOSE everything the previous call opened. The disclosure state
-   * deliberately survives a re-seed — an operator's open regions should not snap shut when the data
-   * refreshes — so "open" cannot be implemented as an unconditional click.
    *
    * @param section The region key.
    */
@@ -350,10 +299,8 @@ describe('ModuleSettingsComponent', () => {
   }
 
   /**
-   * Opens every region, so the whole form is in the document.
-   *
-   * The order matters: a nested region's head does not exist until its parent is open, so `pageSettings`
-   * must be opened before `other`.
+   * Opens every region, so the whole form is in the document. The order matters: a nested region's head
+   * does not exist until its parent is open, so `pageSettings` must be opened before `other`.
    */
   function openEverything(): void {
     for (const section of ['security', 'pageSettings', 'other', 'specificSettings']) {
@@ -364,7 +311,7 @@ describe('ModuleSettingsComponent', () => {
   /**
    * A form control element by field name.
    *
-   * @param field The field name.
+   * @param fieldName The field name.
    * @returns The element, or `null`.
    */
   function field<T extends HTMLElement>(fieldName: string): T | null {
@@ -372,16 +319,6 @@ describe('ModuleSettingsComponent', () => {
   }
 
   /**
-   * The shared field region a named control sits inside.
-   *
-   * ⚠ FOUND BY WALKING UP FROM THE CONTROL, NEVER BY POSITION OR BY A DERIVED IDENTIFIER. Every field on
-   * this screen is now an `app-form-field`, which owns its own identifier scheme: the help paragraph is
-   * `<for>-help` and the message region is `<for>-error`, both derived from the `for` the caller supplied.
-   * Three fields on this screen supply NO `for` - the read-only definition name, the permissions region
-   * and the visibility group all caption something other than one control - and for those the component
-   * falls back to a per-instance counter, so their identifiers are not predictable from a field name at
-   * all. Walking up from the control works for both kinds and does not depend on field order.
-   *
    * @param controlId The control's declared identifier.
    * @returns The enclosing field region.
    */
@@ -391,9 +328,6 @@ describe('ModuleSettingsComponent', () => {
 
   /**
    * The shared field region whose caption begins with the given wording.
-   *
-   * For the three fields that name no single control and therefore have no `for` to walk up from. The
-   * caption is the field's visible name, which is the one stable, meaningful handle those fields have.
    *
    * @param caption The caption's leading wording.
    * @returns The enclosing field region.
@@ -407,13 +341,11 @@ describe('ModuleSettingsComponent', () => {
   }
 
   /**
-   * A field's rendered help text, revealing it first when it is still collapsed.
-   *
-   * ⚠ THE HELP IS A DISCLOSURE NOW, AND THAT IS A RESTORATION RATHER THAN A REGRESSION. This screen used
-   * to render its hints as always-visible text, which the rest of the application does not: the shared
-   * component keeps help behind a keyboard-reachable toggle and removes the panel from the DOM while it is
-   * closed, which is what `labelcontrol.ascx` did - a help link revealing a bordered panel. So the text is
-   * present only after the affordance is pressed, and this helper presses it.
+   * A field's rendered help text, revealing it first when it is still collapsed. ⚠ THE HELP IS A
+   * DISCLOSURE NOW, AND THAT IS A RESTORATION RATHER THAN A REGRESSION. This screen used to render its
+   * hints as always-visible text, which the rest of the application does not: the shared component keeps
+   * help behind a keyboard-reachable toggle and removes the panel from the DOM while it is closed, which
+   * is what `labelcontrol.ascx` did - a help link revealing a bordered panel.
    *
    * @param region The field region to read.
    * @returns The trimmed text, or `null` when the field declares no help at all.
@@ -505,9 +437,6 @@ describe('ModuleSettingsComponent', () => {
     const element = field<HTMLInputElement>(fieldName);
     expect(element).withContext(`${fieldName} must be rendered`).not.toBeNull();
 
-    // Narrowed by a real control-flow check rather than by a non-null assertion. An assignment target
-    // cannot be optionally chained, so this is the one place a guard is needed instead, and returning early
-    // is honest: the expectation above has already failed the spec, so there is nothing left to type into.
     if (element === null) {
       return;
     }
@@ -541,12 +470,7 @@ describe('ModuleSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Confirms the open destructive dialog.
-   *
-   * The shared dialog prefixes a warning glyph to a dangerous confirm label, so the button is located by
-   * its danger class rather than by its text.
-   */
+  /** Confirms the open destructive dialog. */
   function confirmDialog(): void {
     const confirmButton = q<HTMLButtonElement>('.confirm-dialog__button--danger');
     expect(confirmButton).withContext('the confirmation must be open').not.toBeNull();
@@ -556,9 +480,7 @@ describe('ModuleSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Abandons the open destructive dialog.
-   */
+  /** Abandons the open destructive dialog. */
   function cancelDialog(): void {
     const cancelButton = qa<HTMLButtonElement>('.confirm-dialog__button').find(
       (button) => (button.textContent ?? '').trim() === 'Cancel',
@@ -570,17 +492,7 @@ describe('ModuleSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Consumes the listing re-read the store issues after a settled write.
-   *
-   * MIGRATION: THIS RE-READ BELONGS TO THE STORE, NOT TO THIS SCREEN, AND IT IS CONSUMED RATHER THAN
-   * ASSERTED AS A BEHAVIOUR. `core/state/module.store.ts` re-reads the module listing once a removal
-   * settles, because a removal DETACHES a placement rather than destroying a row -
-   * `DeleteTabModule(TabId, ModuleId)` at `ModuleController.vb:L837`, never `DeleteModule` at L819 - so
-   * only the listing knows whether the row should still be shown. It is answered here so the closing
-   * `verify()` has nothing outstanding to report, while the separate `expectNone` on the module's OWN url
-   * is what proves that the removed module itself is never re-fetched.
-   */
+  /** Consumes the listing re-read the store issues after a settled write. */
   function drainListingReread(): void {
     for (const request of httpMock.match(
       (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
@@ -591,16 +503,9 @@ describe('ModuleSettingsComponent', () => {
     fixture.detectChanges();
   }
 
-
   beforeEach(async () => {
     // The screen orchestrates its own reads and writes through `core/state/module.store.ts`, which reaches
-    // `ModuleService` and `TabService` and therefore `HttpClient`. NEITHER SERVICE IS MOCKED, deliberately:
-    // a stub would only prove that it returned what it was told to, whereas the real transport put behind
-    // the testing backend proves the exact url, the exact verb and the exact request body, and lets
-    // `verify()` prove that no endpoint outside the published contract was invoked. `provideHttpClient()`
-    // is registered BEFORE `provideHttpClientTesting()` because the testing backend replaces the real one.
-    // `provideRouter([])` satisfies the return-to-listing navigation the cancel and delete paths perform,
-    // and installs no guards - guard behaviour belongs to the guards' own specs, not here.
+    // `ModuleService` and `TabService` and therefore `HttpClient`.
     await TestBed.configureTestingModule({
       imports: [ModuleSettingsComponent],
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
@@ -620,9 +525,7 @@ describe('ModuleSettingsComponent', () => {
   // THE CLOSED-CONTRACT GUARD, AND THE REASON EVERY "NO REQUEST WAS ISSUED" CLAIM IN THIS FILE IS A PROOF
   // RATHER THAN A HOPE. `verify()` fails the spec when ANY request is still outstanding, so a screen that
   // invented an endpoint - a dedicated relocation command above all, which does not exist in the module API
-  // and must never be expected - cannot pass by having its request quietly ignored. It is equally what
-  // makes the `expectNone` assertions load-bearing: without this, "no re-fetch happened" would only mean
-  // "no re-fetch was looked for".
+  // and must never be expected - cannot pass by having its request quietly ignored.
   afterEach(() => {
     httpMock.verify();
   });
@@ -632,20 +535,7 @@ describe('ModuleSettingsComponent', () => {
   });
 
   describe('router input binding', () => {
-    /**
-     * REGRESSION GUARD FOR A REAL, MEASURED PRODUCTION FAILURE. Do not weaken or delete this.
-     *
-     * `withComponentInputBinding()` does not bind only the inputs a route names. On every activation it
-     * reflects the component's inputs and calls `setInput(templateName, data[templateName])` for EVERY one,
-     * where `data` is the merged query parameters, path parameters and route data. An input whose name is not
-     * a key of that object receives `undefined` - it is not skipped and it does not keep its initialiser.
-     *
-     * This screen's route is `modules/:moduleId/settings`, so `moduleId` is the only name the router can
-     * supply and all seven presentation inputs arrive as `undefined`. When the setters did not accept it the
-     * screen threw out of `activateRoutes`, then threw again on every change-detection pass, and rendered an
-     * empty form skeleton with no visible error at all. `TestBed` never runs the router's input binder, so
-     * nothing else in this file can catch it - this test reproduces the binder's behaviour directly.
-     */
+    /** REGRESSION GUARD FOR A REAL, MEASURED PRODUCTION FAILURE. Do not weaken or delete this. */
     it('survives the router assigning undefined to every input it cannot supply', () => {
       const routerAssigned: readonly string[] = [
         'heading',
@@ -691,9 +581,6 @@ describe('ModuleSettingsComponent', () => {
         .withContext('an undefined privilege input must not lock the page picker on every routed visit')
         .toBeFalse();
 
-      // The two reads the routed activation triggered are consumed here rather than left parked, so the
-      // closing `verify()` has nothing outstanding to report. Answering them with a null payload is the
-      // honest response for this test: it asserts the binder survives, not what the module contains.
       httpMock.expectOne('/api/v1/modules/0').flush({ data: null });
       httpMock.expectOne('/api/v1/modules/0/settings').flush({ data: null });
       fixture.detectChanges();
@@ -819,8 +706,6 @@ describe('ModuleSettingsComponent', () => {
     it('removes a closed region\'s CONTENTS rather than hiding them', () => {
       // .module-settings__body declares display:grid, and the user-agent [hidden] rule loses to any author
       // rule, so a hidden BODY would still be visible. Removing the contents is the only correct collapse.
-      // What remains behind is the empty, class-less placeholder the neighbouring spec pins down, which
-      // exists purely so the toggle's aria-controls resolves in both states.
       expect(q('#module-settings-header')).toBeNull();
 
       open('security');
@@ -835,17 +720,6 @@ describe('ModuleSettingsComponent', () => {
       const head = toggleFor('pageSettings')!;
       expect(head.getAttribute('aria-expanded')).toBe('false');
 
-      // ⚠ CLOSED: THE REFERENCE IS PUBLISHED AND IT RESOLVES, WHICH IS THE OPPOSITE OF WHAT THIS SPEC
-      // USED TO ASSERT. Two earlier revisions each got half of this right. The first declared
-      // aria-controls never at all; the second declared it only while the region was open, reasoning
-      // that a closed region is REMOVED from the document so a constant attribute would leave a
-      // dangling IDREF. The reasoning was sound and the conclusion still wrong: a toggle whose
-      // aria-controls disappears is a control that names nothing in the state where a reader most needs
-      // to know what it governs, and assistive technology has no way to describe the target it is about
-      // to reveal. The template now keeps an EMPTY, `hidden` placeholder carrying the body's id while
-      // the region is closed, so the identity survives the state change and the reference resolves in
-      // both states - while the region's CONTENTS are still removed rather than hidden, which is what
-      // the neighbouring specs protect.
       const closedGoverned: string | null = head.getAttribute('aria-controls');
       expect(closedGoverned)
         .withContext('a collapsed toggle still names the region it governs')
@@ -1028,9 +902,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('takes the label from the resource file where it disagrees with the markup', () => {
-      // modulesettings.ascx declares text="Display Title?" but ModuleSettings.ascx.resx declares
-      // plDisplayTitle.Text = 'Display Container?'. The resource file is what the legacy screen rendered, so
-      // taking the markup value would have relabelled a control operators already know.
       const label = q<HTMLLabelElement>('label[for="module-settings-displayTitle"]');
       expect(label).not.toBeNull();
       expect((label?.textContent ?? '')).toContain('Display Container?');
@@ -1038,9 +909,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('preserves the legacy double space after a sentence, character for character', () => {
-      // Angular compiles templates with preserveWhitespaces disabled, so a run of whitespace in a TEXT NODE
-      // is collapsed to one space. Every migrated string is therefore bound from a constant, and this is the
-      // test that catches a regression back to template text.
       expect(hintFor('startDate')).toBe(
         'Enter the start date for displaying this module.  You may use the Calendar to pick a date.',
       );
@@ -1073,9 +941,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('renders every declared hint exactly as declared, across every region', () => {
-      // The sweep. Every hint is compared against its DECLARATION rather than against a copy retyped into
-      // this test, so a reworded resource cannot pass by matching a stale expectation here.
-      //
       // ⚠ EVERY HINT IS REVEALED FIRST, because the shared field keeps help behind a disclosure and removes
       // the panel from the DOM while it is closed. A sweep over rendered help elements would therefore find
       // NONE before the toggles are pressed, which is why this walks the toggles rather than the panels.
@@ -1107,12 +972,6 @@ describe('ModuleSettingsComponent', () => {
 
       expect(new Set<string>(rendered).size).withContext('no hint is rendered twice').toBe(15);
 
-      // ⚠ THE SIXTEENTH DECLARATION IS A DUPLICATE OF THE FIFTEENTH, WHICH IS WHY FIFTEEN ELEMENTS COVER
-      // SIXTEEN KEYS. `permissions` and `inheritViewPermissions` declare the SAME sentence - the legacy
-      // resource attached one help string to the region and to the switch inside it - and one field now
-      // carries them both, so exactly one element renders that sentence. Asserting the two declarations are
-      // identical is what makes the count of fifteen correct rather than merely convenient: if they ever
-      // diverged, one of the two would be going unrendered and this would fail.
       expect(declared['inheritViewPermissions'])
         .withContext('the switch and its region declare one shared sentence')
         .toBe(declared['permissions']);
@@ -1140,10 +999,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('accepts a negative cache period, because the legacy data-type check accepted one', () => {
-      // A deliberate parity assertion rather than an oversight. `Type="Integer"` imposed no lower bound, so
-      // the legacy screen accepted -1 and stored it. That is a latent legacy defect, and adding a bound here
-      // would be exactly the opportunistic optimisation the migration discipline forbids - it would reject
-      // input the legacy screen accepted. The defect is annotated on `integerDataTypeCheck` instead.
       type('cacheTime', '-1');
       component['form'].controls.cacheTime.markAsTouched();
       fixture.detectChanges();
@@ -1153,10 +1008,8 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('refuses a start date that is not a date, with the legacy message', () => {
-      // valtxtStartDate (modulesettings.ascx L78), Operator="DataTypeCheck" Type="Date". The id/resource-key
-      // mismatch in the source - id `valtxtStartDate`, key `valStartDate.` - is reproduced as wording only.
-      // The two date fields sit in the region that starts CLOSED (isexpanded="False"), so it is opened first;
-      // the surrounding block opens only pageSettings.
+      // valtxtStartDate, Operator="DataTypeCheck" Type="Date". The id/resource-key mismatch in the source -
+      // id `valtxtStartDate`, key `valStartDate.` - is reproduced as wording only.
       openEverything();
       component['form'].controls.startDate.setValue('2024-02-31');
       component['form'].controls.startDate.markAsTouched();
@@ -1203,8 +1056,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('locks the four far-reaching settings for a caller who is not a portal administrator', () => {
-      // ModuleSettings.ascx.vb:L333-L338 disabled these for a tab administrator, because each alters pages
-      // the caller does not administer.
       setInput('canManageAllPages', false);
       openEverything();
 
@@ -1264,9 +1115,6 @@ describe('ModuleSettingsComponent', () => {
       expect(emitted.length).toBe(1);
       expect(emitted[0]).toEqual({
         tabId: 7,
-        // Untouched picker, so nothing is being relocated. The destination is explicitly null rather than a
-        // copy of the page above: a request that named its own page as a destination would ask the server to
-        // perform a move to where the module already is.
         moveToTabId: null,
         moduleTitle: 'Latest News',
         allTabs: true,
@@ -1286,12 +1134,6 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // THE MOVE-TO-PAGE CONTRACT. These two specs exist because the screen previously sent the picker's value
-    // as `tabId`, the member the server uses to SELECT the placement being edited. Choosing any page other
-    // than the module's own therefore asked the server to update a placement on a page the module does not
-    // occupy, which it refused with `module.placement_not_found` - so the control was labelled with an action
-    // that could not succeed, and the module never moved. The page being edited and the page being moved to
-    // are two different answers and must travel as two different members.
     it('sends the chosen page as a relocation and keeps the edited page as the selector', () => {
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
@@ -1329,10 +1171,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('carries no member the server does not accept', () => {
-      // The six placement values the legacy screen edited - paneName, alignment, color, border, displayPrint and
-      // displaySyndicate - are not projected onto Dtos/Module/UpdateModuleRequest.cs, so sending them
-      // would have no effect and would misrepresent what was saved. The adapter drops them; this is the
-      // guard that keeps them dropped.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
@@ -1372,14 +1210,8 @@ describe('ModuleSettingsComponent', () => {
 
     it('keeps presentation-only placement state out of the wire request', () => {
       // MIGRATION: THIS FACT WAS RE-ORACLED, NOT WEAKENED. It was written when the screen still rendered an
-      //   alignment choice group, and it selected the group's fourth option to prove that operating a
-      //   presentation-only control could not smuggle its value onto the wire. The screen no longer renders
-      //   any of the six values - `paneName`, `alignment`, `color`, `border`, `displayPrint` and
-      //   `displaySyndicate` are absent from ModuleSettingsSeed and from the template, because none of
-      //   them is projected onto Dtos/Module/UpdateModuleRequest.cs - so the interaction it performed is
-      //   unreachable and `radios('alignment')` is empty. The obligation it asserted is stronger under the
-      //   surviving shape and is asserted here in both halves: no control exists to operate, so no reachable
-      //   interaction can introduce the member, and a submission carries none of the six.
+      // alignment choice group, and it selected the group's fourth option to prove that operating a
+      // presentation-only control could not smuggle its value onto the wire.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
@@ -1411,13 +1243,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('sends the default-settings instruction under the server contract spelling', () => {
-      // MIGRATION: THE CONTROL WAS RENAMED WITH THE CONTRACT, SO THIS FACT ADDRESSES IT BY ITS SURVIVING
-      //   NAME. The legacy screen spelled this check box `isDefaultModule`
-      //   (`Website/admin/Modules/modulesettings.ascx`), and an earlier revision of this screen kept that
-      //   spelling on the form while the server read `setAsDefaultSettings`. Both the control and the wire
-      //   member are now `setAsDefaultSettings`, and the superseded spelling is gone from the form, from
-      //   UpdateModuleRequest and from UPDATE_CONTRACT_MEMBERS. The obligation is unchanged: operating the
-      //   check box must reach the server under the member the server actually reads.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
@@ -1431,8 +1256,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('carries an operator instruction under the member the server reads', () => {
-      // The control is still named for the legacy check box; the wire member is applyToAllModules. The
-      // superseded isDefaultModule and allModules spellings are gone from the contract entirely.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
@@ -1450,12 +1273,6 @@ describe('ModuleSettingsComponent', () => {
 
       setInput('saving', true);
 
-      // ⚠ THE CONTROL IS NOW FOUND BY ITS BUSY CAPTION, AND THAT IS THE ASSERTION. This spec
-      // previously looked the button up as 'Update' and checked only `disabled`, which passed
-      // while the control was indistinguishable from one the form considered incomplete: same
-      // caption, same surface, no announced state. Disabled alone is silent to a screen reader
-      // and easy to miss with a pointer, and on a slow answer it reads as a press that never
-      // landed - which is what invites a second press.
       expect(actionButton('Update')).withContext('the resting caption is withdrawn').toBeNull();
 
       const busy = actionButton('Saving…');
@@ -1468,16 +1285,9 @@ describe('ModuleSettingsComponent', () => {
 
   describe('submission conclusion', () => {
     /**
-     * MIGRATION: the legacy redirect at `ModuleSettings.ascx.vb:L421` -
-     * `Response.Redirect(NavigateURL(), True)`, commented "Navigate back to admin page" - sat INSIDE the
-     * `If Page.IsValid Then` / `Try` block AFTER `UpdateModule` had returned, so a postback that threw fell
-     * through to `Catch` and never redirected. These specs pin both halves of that - a settled write leaves
-     * for the listing and announces, a rejected one stays put so the per-field messages remain reachable - and
-     * the third pins that the unchanged settings bag is never written at all.
-     *
-     * Driven through the ROUTE path rather than through the seed input, because that is the path the
-     * conclusion observer serves: a host that pins `settings` owns its own navigation and is handed the `save`
-     * output instead.
+     * The legacy redirect at `ModuleSettings.ascx.vb:L421` - `Response.Redirect(NavigateURL(), True)`,
+     * commented "Navigate back to admin page" - sat INSIDE the `If Page.IsValid Then` / `Try` block AFTER
+     * `UpdateModule` had returned, so a postback that threw fell through to `Catch` and never redirected.
      */
     const ECHO = {
       moduleId: 0,
@@ -1529,7 +1339,10 @@ describe('ModuleSettingsComponent', () => {
       return matched.length;
     }
 
-    /** Answers whatever is still outstanding, which is the store's own follow-up reads and not this screen's. */
+    /**
+     * Answers whatever is still outstanding, which is the store's own follow-up reads and not this
+     * screen's.
+     */
     function drain(): void {
       for (const request of http.match(() => true)) {
         const url = request.request.url;
@@ -1549,14 +1362,10 @@ describe('ModuleSettingsComponent', () => {
       setInput('pages', null);
       fixture.componentRef.setInput('moduleId', '0');
 
-      // The placement is supplied the way the route supplies it - as a string from a query parameter - so
-      // every write below addresses ONE occurrence of the module rather than the module itself. Omitting it
-      // is a materially different request, and with removal being soft the difference is consequential:
-      // naming a placement removes that placement, while naming none reaches the module.
-      //
       // ⚠ ASSIGNED HERE, BEFORE THE SEEDED ANSWERS, AND NOT INSIDE A TEST. Both reads are keyed on the
-      // placement, so assigning it re-issues them; assigning it later leaves two unanswered reads, the shell
-      // renders its spinner instead of the form, and every affordance the tests reach for is simply absent.
+      // placement, so assigning it re-issues them; assigning it later leaves two unanswered reads, the
+      // shell renders its spinner instead of the form, and every affordance the tests reach for is simply
+      // absent.
       fixture.componentRef.setInput('tabModuleId', '31');
       fixture.detectChanges();
 
@@ -1606,18 +1415,14 @@ describe('ModuleSettingsComponent', () => {
       fixture.detectChanges();
 
       // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
-      // registered, or from a form that was never dirty in the first place. `isDirty()` is the guard's own
-      // public surface, so this is asserted through the same call the guard makes rather than through the
-      // component's internals.
+      // registered, or from a form that was never dirty in the first place.
       expect(tracker.isDirty())
         .withContext('a dirty form with no write in flight is exactly what the guard exists to catch')
         .toBeTrue();
 
       // ⚠ SAMPLED AT THE INSTANT OF NAVIGATION, NOT AFTERWARDS. A later read cannot tell this fix from a
       // re-seed that happened to clear the flag on its own, and it is the navigation the save itself
-      // triggers that the guard would have refused. `window.confirm` blocks the JavaScript thread, so that
-      // refusal also made the success notification's auto-dismiss timer become due while the dialog stood -
-      // measured in a real browser, the confirmation was emitted and then removed without being painted.
+      // triggers that the guard would have refused.
       let dirtyAtNavigation: boolean | null = null;
       navigate.and.callFake(() => {
         dirtyAtNavigation = tracker.isDirty();
@@ -1672,9 +1477,6 @@ describe('ModuleSettingsComponent', () => {
     it('does not write the settings bag, because this screen never changes it', () => {
       submit();
 
-      // The whole point of the guard: this screen renders no control over a property-bag entry, so the bag it
-      // would send is the bag it read and the request cannot change anything. Re-sending it would replace both
-      // maps from a possibly stale read and silently revert a key another writer had changed in between.
       expect(
         http.match(
           (candidate) => candidate.method === 'PUT' && candidate.url === '/api/v1/modules/0/settings',
@@ -1700,9 +1502,6 @@ describe('ModuleSettingsComponent', () => {
 
       for (const request of http.match((candidate) => candidate.method === 'PUT')) {
         request.flush(
-          // `detail` omitted rather than null - see the note on `reject()` in 'per-field message
-          // association'. With `detail: null` the document is discarded and the messages this case's own
-          // title calls reachable would not exist at all.
           { type: 'about:blank', title: 'Bad Request', status: 400, errors: {} },
           { status: 400, statusText: 'Bad Request' },
         );
@@ -1716,12 +1515,7 @@ describe('ModuleSettingsComponent', () => {
       drain();
     });
 
-    /**
-     * Confirms the destructive dialog, which is the only way to reach the removal.
-     *
-     * The affordance is behind a privilege input, and the shared dialog prefixes a warning glyph to a
-     * dangerous confirm label, so the confirm button is located by its danger class rather than by its text.
-     */
+    /** Confirms the destructive dialog, which is the only way to reach the removal. */
     function confirmRemoval(): void {
       setInput('canDelete', true);
 
@@ -1744,9 +1538,6 @@ describe('ModuleSettingsComponent', () => {
 
       confirmRemoval();
 
-      // ⚠ THE ASSERTION THE DEFECT WOULD FAIL. All three of these used to be raised in the same statement
-      // block as the command, so the operator was told the module had been removed, the host component was
-      // told the same, and the screen was left - all before the server had been asked, let alone answered.
       expect(notify)
         .withContext('nothing is announced while the removal is still outstanding')
         .not.toHaveBeenCalled();
@@ -1803,10 +1594,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('does not resolve a removal against the listing re-read that follows it', () => {
-      // A successful removal makes the store re-read the listing, and that re-read can fail on its own
-      // account. Matching the operation as well as the write flag is what stops the store's aggregate
-      // failure from being reported as a failed removal - and, in the other direction, stops the re-read's
-      // own success from being announced twice.
       let removed = 0;
       component.remove.subscribe(() => (removed += 1));
 
@@ -1964,8 +1751,7 @@ describe('ModuleSettingsComponent', () => {
     it('names the visibility choice group with a caption that claims no control of its own', () => {
       // ⚠ A CAPTION AND NOT A `label`, and the shared field renders it that way BECAUSE this field declares
       // no `for`: a label names exactly one control, so pointing it at the first radio would name the group
-      // by side effect and make clicking its title select an option. The group is then named from that
-      // caption by reference, which is the only correct way to name a set.
+      // by side effect and make clicking its title select an option.
       const region = regionCaptioned('Visibility');
 
       expect(region).withContext('visibility must be a rendered field').not.toBeNull();
@@ -1994,22 +1780,11 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('describes every control by its own hint', () => {
-      // ⚠ THE DESCRIPTION IS APPLIED BY THE SHARED FIELD, ONTO THE PROJECTED CONTROL, and it names the help
-      // panel that field owns - `<for>-help`. The screen no longer composes the reference itself, which is
-      // the whole point of the conversion: one component owns the wiring for all 118 fields in the
-      // application instead of this screen owning a second copy of it.
-      //
-      // Asserted against the field's OWN published identifier rather than against a string built here, so a
-      // change to the shared scheme cannot leave this passing against a reference that no longer resolves.
       for (const name of ['moduleTitle', 'cacheTime', 'iconFile', 'header', 'footer']) {
         const control = field<HTMLElement>(name);
 
         expect(control).withContext(`${name} must be rendered`).not.toBeNull();
 
-        // ⚠ NOTHING IS NAMED WHILE THE HELP IS CLOSED, AND THAT IS CORRECT RATHER THAN MISSING. The shared
-        // field REMOVES the help panel from the document while collapsed, so naming it then would be a
-        // reference to an element that does not exist - which is worse than no description at all. This
-        // screen's own machinery named the hint unconditionally because its hint was always rendered.
         expect(control?.getAttribute('aria-describedby'))
           .withContext(`${name} must name nothing while its help is closed and it is valid`)
           .toBeNull();
@@ -2032,15 +1807,9 @@ describe('ModuleSettingsComponent', () => {
 
   describe('choice group naming', () => {
     /**
-     * MIGRATION - ⚠ THE NATIVE `name` IS LOAD-BEARING, AND `formControlName` DOES NOT SUPPLY IT. The reactive
-     * radio directive groups its members in the MODEL, by the control they share, and writes nothing on to the
-     * element. Every one of the browser's own radio behaviours is keyed off the native attribute instead:
-     * arrow keys moving the selection within the group, and the whole group occupying ONE tab stop rather
-     * than one per option. A group missing it degrades, for anyone navigating by keyboard, into a row of
-     * independent controls - which is a keyboard-operability regression against the legacy screen, whose
-     * `asp:RadioButtonList` rendered a shared name for exactly this reason.
-     *
-     * The name is written as a STATIC attribute equal to the control's own name, so the two cannot drift.
+     * ⚠ THE NATIVE `name` IS LOAD-BEARING, AND `formControlName` DOES NOT SUPPLY IT. The reactive radio
+     * directive groups its members in the MODEL, by the control they share, and writes nothing on to the
+     * element.
      */
     beforeEach(() => {
       setInput('canManageAllPages', true);
@@ -2079,19 +1848,9 @@ describe('ModuleSettingsComponent', () => {
 
   describe('per-field message association', () => {
     /**
-     * MIGRATION - ⚠ A `role="alert"` REGION IS ANNOUNCED ONCE AND NEVER AGAIN, SO IT CANNOT BE THE ONLY ROUTE
-     * TO THE MESSAGE. A person who hears the refusal, moves to the control to correct the value and then
-     * returns is told nothing, because the region has already spoken and nothing associates it with the
-     * control. The control's `aria-describedby` therefore names the region as well as the hint, which is what
-     * makes the message reachable FROM the field on every refocus.
-     *
-     * These cases also pin the identifier's uniqueness. The client message and the server messages were
-     * briefly two sibling elements that both bound `messageId(field)` - a duplicated id on the four controls
-     * that carry a client rule, and an `aria-describedby` resolving to whichever the browser found first.
-     * Both kinds now share ONE region, so the count assertions below are the regression guard for that.
-     *
-     * Driven through the ROUTE path, because a rejected write is what puts a problem document on the screen
-     * and the store's failure observer is only reached that way.
+     * ⚠ A `role="alert"` REGION IS ANNOUNCED ONCE AND NEVER AGAIN, SO IT CANNOT BE THE ONLY ROUTE TO THE
+     * MESSAGE. A person who hears the refusal, moves to the control to correct the value and then returns
+     * is told nothing, because the region has already spoken and nothing associates it with the control.
      */
     const ECHO = {
       moduleId: 0,
@@ -2148,18 +1907,13 @@ describe('ModuleSettingsComponent', () => {
       expect(outstanding.length).withContext('a write must be outstanding to reject').toBe(1);
 
       outstanding[0].flush(
-        // `detail` is OMITTED, not null. `isProblemDetails` is a conjunction over every member that is
-        // present, so `detail: null` fails the string test and the whole document is discarded in favour of a
-        // status-only fallback carrying no `errors` at all - which is exactly what a per-field assertion must
-        // not be written against. ASP.NET Core omits a null ProblemDetails member rather than emitting it, so
-        // absence is also the shape the server really sends.
+        // `detail` is OMITTED, not null.
         { type: 'about:blank', title: 'Bad Request', status: 400, errors },
         { status: 400, statusText: 'Bad Request' },
       );
 
       // TWO passes, deliberately. The failure reaches the screen through an EFFECT, so the first pass runs
-      // the effect and the problem document it writes dirties the view only for the pass after it. One pass
-      // would assert against markup rendered from the state as it was BEFORE the refusal was recorded.
+      // the effect and the problem document it writes dirties the view only for the pass after it.
       fixture.detectChanges();
       fixture.detectChanges();
     }
@@ -2282,9 +2036,9 @@ describe('ModuleSettingsComponent', () => {
       submit();
       reject({ ModuleTitle: ['A module title is required.', 'Title must be 256 characters or fewer.'] });
 
-      // ONE region, so one identifier and one description - not one region per message. Counted rather
-      // than assumed, because two regions sharing one identifier is exactly the defect that made the
-      // screen's own field machinery ambiguous before it was replaced.
+      // ONE region, so one identifier and one description - not one region per message. Counted rather than
+      // assumed, because two regions sharing one identifier is exactly the defect that made the screen's
+      // own field machinery ambiguous before it was replaced.
       expect(qa('#module-settings-moduleTitle-error').length).toBe(1);
 
       expect(messagesFor('moduleTitle')).toEqual([
@@ -2299,9 +2053,6 @@ describe('ModuleSettingsComponent', () => {
       submit();
       reject({ CacheTime: ['Cache duration must not be negative.'] });
 
-      // The server's message is on screen; now make the control fail locally as well. The problem document is
-      // held until the next save answers, so both reasons are live at once - which is precisely the state that
-      // duplicated the identifier when the two were separate elements.
       type('cacheTime', 'abc');
       // `touched`, not `dirty`, is what the client rule reports on, and dispatching `input` sets only the
       // latter - the same explicit mark every other validation case on this screen makes.
@@ -2335,12 +2086,6 @@ describe('ModuleSettingsComponent', () => {
 
       expect(control).withContext('the inherit switch must be rendered').not.toBeNull();
 
-      // ⚠ THE TWO-FIELD INDIRECTION IS GONE, AND ITS ABSENCE IS THE ASSERTION. The switch used to be
-      // described by the PERMISSIONS hint while reporting failures under its OWN control name, so the
-      // description had to be composed from two different field keys and no single identifier stem
-      // described the field. The shared component owns one region per field, so both the help and the
-      // message now belong to the same field and share one stem - and because that field declares no
-      // `for`, the stem is the component's own per-instance one rather than a name derived here.
       const region = regionCaptioned('Permissions');
 
       expect(region).withContext('the permissions field must be rendered').not.toBeNull();
@@ -2377,11 +2122,6 @@ describe('ModuleSettingsComponent', () => {
     });
 
     it('states invalidity on every control that can be refused, not only the reference', () => {
-      // ⚠ THE ACCESSIBILITY DEFECT THIS BLOCK EXISTS TO CLOSE. Nine controls and groups on this screen used
-      // to publish a reference to their error region and never publish `aria-invalid`, so assistive
-      // technology was handed a message with nothing to attach it to - the object it described never said it
-      // was invalid. Every error-capable control now states it, and states it from the SAME failure state
-      // the message is rendered from, so the two cannot disagree.
       submit();
       reject({
         ModuleTitle: ['A module title is required.'],
@@ -2450,32 +2190,12 @@ describe('ModuleSettingsComponent', () => {
     expect(fixture.debugElement.queryAll(By.css('a[routerLink]')).length).toBe(0);
   });
 
-  // =====================================================================================================
   // THE WIRE CONTRACT
-  // =====================================================================================================
-  //
-  // Everything above drives the screen through its inputs and asserts what it RENDERS. This block does the
-  // other half, and it is the half that cannot be faked: it lets the real `ModuleService` and the real
-  // `TabService` issue real `HttpClient` calls, intercepts them, and asserts the url, the verb and - above
-  // all - THE REQUEST BODY. A substituted service could not prove any of those; it would only echo back
-  // whatever it was configured to return.
-  //
-  // MIGRATION: EVERY URL ASSERTED HERE IS RELATIVE, AND THAT IS A DEPLOYMENT REQUIREMENT RATHER THAN A
-  //   STYLE CHOICE. `angular.json` declares `fileReplacements` under its `development` configuration only,
-  //   so the `test` target compiles against the workspace's default environment module - which IS the
-  //   production one, the polarity being inverted from the usual Angular scaffold - and that module
-  //   publishes the relative base path `/api/v1` because the reverse proxy forwards `/api/` to the API
-  //   container on the same origin. An absolute origin would pass a spec written against it while breaking
-  //   the container deployment, so not one appears anywhere in this file - neither in an assertion nor in
-  //   an import, since importing the environment module here would defeat the point of the base path being
-  //   relative in the first place.
-  //
-  // MIGRATION: `GET /api/v1/module-definitions/{moduleDefId}` IS PART OF THIS SCREEN'S READ SET, and it is
-  //   worth stating plainly because a reader working only from the module endpoint list would not expect
-  //   it. The three-state cache rule below is unimplementable without it: `defaultCacheTime` is recorded on
-  //   the DEFINITION and on nothing else, exactly as `ModuleSettings.ascx.vb:L136-L142` read
-  //   `objModuleDef.DefaultCacheTime` from a definition it fetched separately. The endpoint is the
-  //   published read-only definition lookup, not an invention.
+  // EVERY URL ASSERTED HERE IS RELATIVE, AND THAT IS A DEPLOYMENT REQUIREMENT RATHER THAN A STYLE CHOICE.
+  // `angular.json` declares `fileReplacements` under its `development` configuration only, so the `test`
+  // target compiles against the workspace's default environment module - which IS the production one, the
+  // polarity being inverted from the usual Angular scaffold - and that module publishes the relative base
+  // path `/api/v1` because the reverse proxy forwards `/api/` to the API container on the same origin.
   describe('wire contract', () => {
     /** The routed address used throughout: module 0, which is a REAL identifier. */
     const MODULE_URL = '/api/v1/modules/0';
@@ -2486,12 +2206,10 @@ describe('ModuleSettingsComponent', () => {
     let notify: jasmine.Spy;
 
     /**
-     * Drives the routed activation and answers the four reads the screen issues, in order.
-     *
-     * The order is the screen's own: the module and its settings are requested from the address, and the
-     * definition and the tenant's page list become addressable only once the module has resolved and
-     * disclosed its `moduleDefId` and `portalId`. Answering them in any other order would not reflect the
-     * real sequence.
+     * Drives the routed activation and answers the four reads the screen issues, in order. The order is
+     * the screen's own: the module and its settings are requested from the address, and the definition
+     * and the tenant's page list become addressable only once the module has resolved and disclosed its
+     * `moduleDefId` and `portalId`.
      *
      * @param detail The module payload to publish.
      * @param definition The definition payload to publish.
@@ -2533,16 +2251,11 @@ describe('ModuleSettingsComponent', () => {
       notify = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // THE DECLARED-PERMISSION ADVISORY
-    // ---------------------------------------------------------------------------------------------------
-    //
     // The advisory names the permission vocabulary the module's DEFINITION declares, beside the inherit
-    // switch that chooses whether to use it. It is read-only and nothing on the form depends on it, which
-    // is exactly what the last two cases here pin down: a refusal and a fault each leave the screen
-    // working and silent rather than banner-ing over a form that saved perfectly well.
+    // switch that chooses whether to use it.
     describe('the declared-permission advisory', () => {
-      /** The catalogue address. The filter travels as a query parameter and is asserted separately. */
+      /** The catalogue address. */
       const PERMISSIONS_URL = '/api/v1/permissions';
 
       let tokenStorage: TokenStorageService;
@@ -2584,10 +2297,6 @@ describe('ModuleSettingsComponent', () => {
 
         const request: TestRequest = expectCatalogue();
 
-        // ⚠ THE FILTER IS THE DEFINITION, NOT THE MODULE, and this is the assertion that pins it. The
-        // unfiltered listing answers from the API's closed key enumeration and touches no store at all,
-        // so it would report the same four keys for every module ever loaded and would say nothing about
-        // this one.
         expect(request.request.params.get('moduleDefinitionId')).toBe('14');
         expect(request.request.params.get('permissionCode'))
           .withContext('no filter this screen did not intend')
@@ -2604,8 +2313,8 @@ describe('ModuleSettingsComponent', () => {
 
       it('withholds the read entirely from a caller who does not administer the tenant', () => {
         // ⚠ WITHHELD, NOT RECOVERED FROM. The endpoint is declared under the administrator policy, so
-        // asking anyway would write a 403 into the network log of an editor entitled to be on this
-        // screen. `httpMock.verify()` in the suite's teardown is what makes this assertion binding.
+        // asking anyway would write a 403 into the network log of an editor entitled to be on this screen.
+        // `httpMock.verify()` in the suite's teardown is what makes this assertion binding.
         tokenStorage.store(sessionWith(false));
         activate();
 
@@ -2620,8 +2329,8 @@ describe('ModuleSettingsComponent', () => {
         expectCatalogue().flush({ data: [] });
         fixture.detectChanges();
 
-        // An empty answer and an unavailable answer both render nothing, which is correct: in neither
-        // case does this client have anything to say. What must NOT happen is a line asserting that the
+        // An empty answer and an unavailable answer both render nothing, which is correct: in neither case
+        // does this client have anything to say. What must NOT happen is a line asserting that the
         // definition declares no permissions, because that reads as a fact about the definition.
         expect(advisory()).toBeNull();
         expect(host().textContent ?? '').not.toContain('Permissions defined for this module type:');
@@ -2672,12 +2381,10 @@ describe('ModuleSettingsComponent', () => {
 
     describe('addressing', () => {
       /**
-       * MIGRATION: MODULE 0 IS A REAL MODULE, AND THIS IS THE GUARD AGAINST EVERY TRUTH TEST.
-       * `dbo.Modules.ModuleID` is declared `IDENTITY (0, 1)`, so the first module ever created carries the
-       * identifier 0. `if (moduleId)`, `moduleId > 0` and `moduleId ?? -1` would each silently refuse to
-       * load it, and none of the three would fail to compile. The screen must read `=== undefined` and
-       * nothing else, which is what these two expectations prove: had it applied a truth test, no request
-       * would exist to match and both would fail.
+       * MODULE 0 IS A REAL MODULE, AND THIS IS THE GUARD AGAINST EVERY TRUTH TEST. `dbo.Modules.ModuleID`
+       * is declared `IDENTITY (0, 1)`, so the first module ever created carries the identifier 0. `if
+       * (moduleId)`, `moduleId > 0` and `moduleId ?? -1` would each silently refuse to load it, and none
+       * of the three would fail to compile.
        */
       it('reads module 0, because zero is a real identifier and never an absence', () => {
         fixture.componentRef.setInput('moduleId', 0);
@@ -2694,11 +2401,6 @@ describe('ModuleSettingsComponent', () => {
         fixture.componentRef.setInput('moduleId', '0');
         fixture.detectChanges();
 
-        // Proven by the url alone: '/api/v1/modules/0' and not '/api/v1/modules/undefined' or NaN.
-        //
-        // Counted, so the address is a recorded expectation rather than a consequence of how `expectOne`
-        // happens to fail: that member asserts by throwing and the runner therefore reports this spec as
-        // claiming nothing at all.
         const detail = httpMock.expectOne(MODULE_URL);
 
         expect(detail.request.url)
@@ -2715,19 +2417,6 @@ describe('ModuleSettingsComponent', () => {
     // A REFUSED READ
     // ---------------------------------------------------------------------------------------------------
     describe('a read the server refuses', () => {
-      /**
-       * A REFUSAL IS NOT AN ABSENCE, and this screen used to present it as one - twice over.
-       *
-       * The server answers `GET /api/v1/modules/{id}` with 403 when the caller may not see the module and
-       * with 404 when there is none. Both leave the screen holding nothing, so the derivation behind the
-       * not-found affordance could not tell them apart. The refusal therefore arrived as a transient
-       * warning advisory with the problem document DISCARDED, while the page itself stated "the requested
-       * item could not be found" - one backend condition, two surfaces, one of them untrue.
-       *
-       * It is now the banner and nothing else, which is what the legacy access-denied page did: a heading
-       * and one `YellowWarning` module message (`Website/admin/Security/AccessDenied.ascx.vb:L41-L45`).
-       * The sibling module form and export screens present the same status the same way.
-       */
       it('presents the refusal in the banner alone, with no empty state beside it', () => {
         fixture.componentRef.setInput('pages', null);
         fixture.componentRef.setInput('moduleId', 0);
@@ -2735,9 +2424,7 @@ describe('ModuleSettingsComponent', () => {
 
         // BOTH reads are refused, because one authorization filter guards both endpoints - and both are
         // answered with the document, because the store holds ONE failure slot and the later answer
-        // replaces the earlier one. A fixture that gave only the first read a document would prove
-        // nothing about what an operator sees: the second, bodiless refusal would overwrite it and the
-        // banner would fall back to the shared wording with no trace identifier at all.
+        // replaces the earlier one.
         const refusal = {
           type: 'about:blank',
           title: 'Forbidden',
@@ -2773,16 +2460,8 @@ describe('ModuleSettingsComponent', () => {
       /**
        * ⚠ THE DEFINITION IS READ FOR THE ADDRESSED MODULE, NEVER FOR THE ONE LEFT BEHIND. Runtime testing
        * measured this on every move between two modules: the store's module slot still holds the previous
-       * module until the new address answers, so the definition read fired once with the OLD `moduleDefId`.
-       * Moving from module 2 (definition 4, administrative) to module 7 (definition 2) issued
-       * `GET /module-definitions/4`, which answers `404`, and the screen raised "The requested item could
-       * not be found." over a module whose own reads had all succeeded. The per-identifier memo those
-       * effects keep could not prevent it - it suppresses a REPEAT of one identifier, and a stale
-       * identifier is a different one.
-       *
-       * Asserted as an ABSENCE of the wrong request rather than as the presence of the right one, because
-       * only the absence distinguishes the fix from the defect: both arrangements eventually read the
-       * correct definition.
+       * module until the new address answers, so the definition read fired once with the OLD
+       * `moduleDefId`.
        */
       it('reads no definition until the loaded module is the one addressed', () => {
         activate();
@@ -2821,16 +2500,7 @@ describe('ModuleSettingsComponent', () => {
        * ⚠ THE REFUSAL THIS SCREEN RECEIVES ON ITS **OWN** READ IS HONOURED, AND THIS CASE EXISTS BECAUSE
        * IT WAS NOT. Measured against the running application: on an administrative module the three reads
        * answer 200 for the module, **403 `module.settings_protected`** for the settings, and 404 for the
-       * definition, because the tenant catalogue publishes no entry for an administrative definition. The
-       * store holds ONE failure slot, the 404 lands LAST and takes it, and the not-found branch of the
-       * announcer deliberately DISCARDS the document in favour of a transient advisory - so the banner
-       * emptied itself, the render gate consulted only the module read, and a full sixteen-control
-       * EDITABLE form rendered under no banner at all, offering a save the server had already refused.
-       *
-       * Three separate expectations, because each would pass on its own while the screen was still wrong:
-       * the form must be absent, the banner must be present, and the banner must carry the SETTINGS
-       * refusal rather than the definition's absence. The last is the load-bearing one - it is what proves
-       * the gate keys on this screen's own read and not on whichever failure happened to arrive last.
+       * definition, because the tenant catalogue publishes no entry for an administrative definition.
        */
       it('withholds the form and states the refusal when the SETTINGS read alone is refused', () => {
         fixture.componentRef.setInput('pages', null);
@@ -2845,15 +2515,12 @@ describe('ModuleSettingsComponent', () => {
           traceId: '00-settings-refusal-01',
         };
 
-        // The module itself reads cleanly, which is exactly the condition that used to admit the form.
         httpMock.expectOne(MODULE_URL).flush({ data: moduleDetailOf() });
         httpMock
           .expectOne(SETTINGS_URL)
           .flush(refusal, { status: 403, statusText: 'Forbidden' });
         fixture.detectChanges();
 
-        // The definition read becomes addressable once the module resolves, and it is answered LAST with
-        // the absence that used to overwrite the refusal above.
         httpMock.expectOne(DEFINITION_URL).flush(null, { status: 404, statusText: 'Not Found' });
         httpMock.expectOne(TABS_URL).flush({ data: [tabOf()] });
         fixture.detectChanges();
@@ -2876,9 +2543,8 @@ describe('ModuleSettingsComponent', () => {
       });
 
       /**
-       * The converse, which is what stops the fix above becoming a screen that never opens: a settings read
-       * that SUCCEEDS clears any refusal held from a previous address, so the form renders normally. Without
-       * this expectation a component that latched the refusal permanently would pass the case above.
+       * The converse, which is what stops the fix above becoming a screen that never opens: a settings
+       * read that SUCCEEDS clears any refusal held from a previous address, so the form renders normally.
        */
       it('reopens the form once a settings read succeeds', () => {
         activate();
@@ -2908,19 +2574,7 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // THE THREE-STATE CACHE RULE
-    // ---------------------------------------------------------------------------------------------------
-    //
-    // MIGRATION: THREE STATES, KEPT APART, EXACTLY AS THE LEGACY SCREEN KEPT THEM. `ModuleSettings.ascx
-    //   .vb:L136-L142` reads, verbatim: `If objModuleDef.DefaultCacheTime = Null.NullInteger Then rowCache
-    //   .Visible = False Else txtCacheTime.Text = objModule.CacheTime.ToString`. Three distinct facts fall
-    //   out of those five lines and each gets its own expectation below, because only separate expectations
-    //   can prove the absence of a coalesce. `cacheTime` and `defaultCacheTime` are DIFFERENT PROPERTIES on
-    //   DIFFERENT OBJECTS - `ModuleInfo.vb` initialises `_CacheTime` to 0 while `ModuleDefinitionInfo.vb`
-    //   initialises `_DefaultCacheTime` to 0 in its constructor and the schema admits -1 - so any
-    //   `cacheTime ?? defaultCacheTime`, any `effectiveCacheTime`, or any `!defaultCacheTime` truth test
-    //   would collapse two of the three states into one and pass a weaker suite than this one.
     describe('the three-state cache rule', () => {
       /** (a) -1 means the definition records no default at all, so the field must not exist. */
       it('removes the cache field from the DOM when the definition records no default', () => {
@@ -2966,30 +2620,7 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // FALSY VALUES ON THE WIRE
-    // ---------------------------------------------------------------------------------------------------
-    //
-    // MIGRATION: A FALSY VALUE IS DATA, AND THIS IS WHERE THAT IS ENFORCED RATHER THAN ASSERTED IN PROSE.
-    //   `Library/Components/Shared/Null.vb` returns the EMPTY STRING as its string sentinel (L71-L75) and
-    //   FALSE as its boolean sentinel (L76-L80), and the integer sentinel is -1 while 0 is an ordinary
-    //   value. So `''`, `false`, `0` and `-1` are all values this schema legitimately stores and
-    //   transmits, and a serialiser that dropped a member because it was falsy would silently clear a
-    //   column. The API's own posture matches: it writes every member with
-    //   `JsonIgnoreCondition.Never`, so a member missing from a request is a client defect, never a
-    //   shorthand for a default.
-    //
-    // MIGRATION: THE LEGACY ALIGNMENT PICKER HAS NO COUNTERPART HERE, AND THE REASON IS A CONTRACT GAP
-    //   RATHER THAN AN OMISSION IN THIS SPEC. `modulesettings.ascx:L122-L127` declared `cboAlign` with four
-    //   items - left, center, right, and `value=""` labelled "Not Specified" under the resource key
-    //   `Not_Specified` - and that fourth item is `Null.NullString`, a transmitted value rather than an
-    //   absence. It cannot be asserted on this screen because `UpdateModuleRequest` does not project
-    //   `alignment`, and neither does `ModuleDetail`: the six placement columns the legacy screen edited -
-    //   paneName, alignment, color, border, displayPrint and displaySyndicate - are absent from BOTH
-    //   contracts, so there is no control to select and no member to inspect. Posting one would draw an
-    //   HTTP 400 under the API's `JsonUnmappedMemberHandling.Disallow`. The RULE the alignment case exists
-    //   to prove is therefore proven below on the members the contract does project, which carry exactly
-    //   the same hazard: an emptied string, three falsy booleans and two zero-valued numbers.
     describe('falsy values survive the request body', () => {
       it('carries an emptied nullable string as an explicit member rather than dropping it', () => {
         activate(moduleDetailOf({ header: 'Header markup' }));
@@ -3009,16 +2640,6 @@ describe('ModuleSettingsComponent', () => {
         drainListingReread();
       });
 
-      /**
-       * MIGRATION: THE MEASURED ABSENCE OF VALIDATION IS ITSELF A PARITY REQUIREMENT, NOT AN OVERSIGHT.
-       * `modulesettings.ascx:L32` declares `txtTitle` with neither a `maxlength` attribute nor any
-       * validator, and the feature-wide census finds 0 `RequiredFieldValidator` and 0
-       * `RegularExpressionValidator`, so an empty title was accepted and saved by the legacy screen. Adding
-       * `Validators.required` here would reject input the legacy screen took, which is precisely the
-       * opportunistic tightening the migration discipline forbids. The companion case, `txtColor` at L132,
-       * likewise carried no validator - and it has no control at all here, for the contract reason recorded
-       * on the fourth data-type check.
-       */
       it('accepts an empty title and submits it, because the legacy screen required nothing', () => {
         activate(moduleDetailOf({ moduleTitle: 'Latest News' }));
         openEverything();
@@ -3089,14 +2710,10 @@ describe('ModuleSettingsComponent', () => {
       });
 
       /**
-       * MIGRATION: THE VISIBILITY ORDINALS ARE LOAD-BEARING BECAUSE THE LEGACY ENUM DECLARED NO VALUES.
-       * `Library/Components/Modules/ModuleInfo.vb:L30-L34` declares a three-member visibility enumeration -
-       * Maximized, then Minimized, then None - with NO explicit assignments, so the compiler's implicit
-       * ordinals 0, 1 and 2 are the values actually written to the column. `ModuleSettings.ascx.vb:L228`
-       * confirms the base with its own comment: `cboVisibility.SelectedIndex = 0 ' maximized`. 0 therefore
-       * means Maximized and is never "unset", and 2 means None - a chosen state in which the module is not
-       * rendered - and is never "missing". The target names the same three codes through `ModuleVisibility`,
-       * which is the only spelling used anywhere here.
+       * THE VISIBILITY ORDINALS ARE LOAD-BEARING BECAUSE THE LEGACY ENUM DECLARED NO VALUES.
+       * `Library/Components/Modules/ModuleInfo.vb:L30-L34` declares a three-member visibility enumeration
+       * - Maximized, then Minimized, then None - with NO explicit assignments, so the compiler's implicit
+       * ordinals 0, 1 and 2 are the values actually written to the column.
        */
       it('binds the stored code 0 to Maximized, which is a choice and not an unset field', () => {
         activate(moduleDetailOf({ visibility: MODULE_VISIBILITY.maximized }));
@@ -3134,18 +2751,13 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // THE MOVE-TO-PAGE PICKER
-    // ---------------------------------------------------------------------------------------------------
-    //
     // MIGRATION: THE MOVE TRAVELS AS A FIELD ON THE UPDATE AND NEVER AS AN INVENTED ENDPOINT. The legacy
-    //   relocation was a second call - `MoveModule(ModuleId, TabId, newTabId, "")` at
-    //   `ModuleController.vb:L1078`, fired from `ModuleSettings.ascx.vb:L403-L408` after the update had
-    //   returned - and no counterpart exists in the module API. A DEDICATED RELOCATION COMMAND UNDER THE
-    //   MODULE RESOURCE DOES NOT EXIST, and none is expected anywhere in this file - not in an assertion and
-    //   not as a literal path in a comment, so a search for one across this spec finds nothing. The closing
-    //   `verify()` is what turns that from an intention into a proof, because a screen that invented such a
-    //   call would leave an unmatched request behind. The page travels on the update instead.
+    // relocation was a second call - `MoveModule(ModuleId, TabId, newTabId, "")` at
+    // `ModuleController.vb:L1078`, fired from `ModuleSettings.ascx.vb:L403-L408` after the update had
+    // returned - and no counterpart exists in the module API. A DEDICATED RELOCATION COMMAND UNDER THE
+    // MODULE RESOURCE DOES NOT EXIST, and none is expected anywhere in this file - not in an assertion and
+    // not as a literal path in a comment, so a search for one across this spec finds nothing.
     describe('the move-to-page picker', () => {
       it('reads the tenant page list unpaged, sending no query parameter of any kind', () => {
         fixture.componentRef.setInput('pages', null);
@@ -3199,13 +2811,10 @@ describe('ModuleSettingsComponent', () => {
         ]);
       });
 
-      // ---------------------------------------------------------------------------------------------
       // THE MODULE-SPECIFIC SECTION — STORED SETTINGS ARE DISCLOSED, NOT DISCARDED
-      // ---------------------------------------------------------------------------------------------
       // Measured before these facts existed: the screen requested the settings bag on arrival, held the
       // response, wrote both maps back on every save — and rendered NEITHER. A module carrying two
-      // module-scoped settings, one with a 750-character value, showed an empty panel. The request was
-      // made, the data was in hand, and the operator was shown nothing.
+      // module-scoped settings, one with a 750-character value, showed an empty panel.
       it('discloses the stored settings the module actually carries, in both scopes', () => {
         activate(
           moduleDetailOf(),
@@ -3249,9 +2858,9 @@ describe('ModuleSettingsComponent', () => {
 
         openEverything();
 
-        // The section is still rendered. An operator being able to see that a module has no settings of
-        // its own is information the legacy placeholder could not convey — it either received a control
-        // or stayed silently empty, so "none" and "failed to load" looked identical.
+        // The section is still rendered. An operator being able to see that a module has no settings of its
+        // own is information the legacy placeholder could not convey — it either received a control or
+        // stayed silently empty, so "none" and "failed to load" looked identical.
         const empty = q('.module-settings__stored-empty');
 
         expect(empty).not.toBeNull();
@@ -3291,8 +2900,8 @@ describe('ModuleSettingsComponent', () => {
         expect(notice?.textContent).toContain('Announcements');
         expect(notice?.textContent).toContain('listed as');
 
-        // A STATEMENT, NOT A REFUSAL. The heading is optional on every tier — the legacy markup declares
-        // no presence validator, both server validators gate their only title rule on the value being
+        // A STATEMENT, NOT A REFUSAL. The heading is optional on every tier — the legacy markup declares no
+        // presence validator, both server validators gate their only title rule on the value being
         // non-empty, and the column is nullable — and a module in the measured data stores the empty
         // string, so a required rule here would make an existing record unsavable.
         expect(component['form'].controls.moduleTitle.valid).toBeTrue();
@@ -3307,9 +2916,7 @@ describe('ModuleSettingsComponent', () => {
         expect(q('.module-settings__notice')).toBeNull();
       });
 
-      // ---------------------------------------------------------------------------------------------
       // THE ICON REFERENCE MUST STAY INSIDE THE PORTAL'S OWN FOLDER
-      // ---------------------------------------------------------------------------------------------
       // Measured before the rule existed: a traversal path submitted from this screen reached the API and
       // was stored VERBATIM, because the module contracts were the one path still missing the shared
       // containment rule that the role and page contracts already applied.
@@ -3344,13 +2951,6 @@ describe('ModuleSettingsComponent', () => {
         expect(component['form'].controls.iconFile.valid).toBeTrue();
       });
 
-      // TWO PROPERTIES IN ONE SPEC, BOTH LOAD-BEARING. The relocation travels on the update the operator
-      // already submits - there is no move endpoint to invent, and `verify()` in this file's teardown would
-      // fail the spec if one were called. AND it travels as its own member: an earlier revision sent the
-      // chosen page as `tabId`, which is the member the server uses to SELECT the placement being edited, so
-      // choosing any page other than the module's own asked it to update a placement that does not exist. The
-      // save was refused `module.placement_not_found` and the module stayed put, which is why asserting
-      // `tabId` is 1 here would be asserting the bug.
       it('posts the chosen page as a relocation member of the update, not through a move endpoint', () => {
         activate(moduleDetailOf({ tabId: 0 }), definitionOf(), [
           tabOf({ tabId: 0, tabName: 'Home', parentId: -1 }),
@@ -3376,16 +2976,7 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // THE DATE SENTINEL, OVER THE WIRE
-    // ---------------------------------------------------------------------------------------------------
-    //
-    // MIGRATION: THE SENTINEL TEST IS ON THE CALENDAR DATE ALONE, WHICH IS WHAT THE LEGACY TEST WAS.
-    //   `Null.vb` sets `NullDate` to `Date.MinValue` (L64-L69) and its date overload of `IsNull`
-    //   (L222-L224) compares `objDate.Date.Equals(NullDate.Date)` under the source's own standing comment
-    //   about avoiding "subtle time differences". A stored instant of 0001-01-01 is therefore the sentinel
-    //   EVEN WITH A NON-ZERO TIME COMPONENT, and the second expectation below is the guard against a
-    //   `getTime()` equality, which would match midnight and miss 13:45 on the very same day.
     describe('the date sentinel', () => {
       it('blanks the sentinel date rather than rendering year one', () => {
         activate(moduleDetailOf({ startDate: '0001-01-01T00:00:00', endDate: null }));
@@ -3416,43 +3007,12 @@ describe('ModuleSettingsComponent', () => {
       });
     });
 
-    // ---------------------------------------------------------------------------------------------------
     // REMOVAL
-    // ---------------------------------------------------------------------------------------------------
-    //
-    // MIGRATION: THE CONFIRMATION IS PARITY, NOT AN ADDITION. `ModuleSettings.ascx.vb:L205` is
-    //   `ClientAPI.AddButtonConfirm(cmdDelete, Localization.GetString("DeleteItem"))`, and
-    //   `DeleteItem.Text` in the 353-entry `Website/App_GlobalResources/SharedResources.resx` is 'Are You
-    //   Sure You Wish To Delete This Item?'. The legacy delete was guarded by a browser confirm, so
-    //   guarding it with a dialog reproduces the affordance rather than inventing one.
-    //
-    // MIGRATION: THE REMOVAL IS SOFT AND THERE IS NO WAY BACK FROM THIS SCREEN. The legacy handler called
-    //   `DeleteTabModule(TabId, ModuleId)` (`ModuleController.vb:L837`), which detaches the placement,
-    //   rather than `DeleteModule` (L819). No restore and no purge endpoint exists, so none is expected.
-    // ---------------------------------------------------------------------------------------------------
-    // THE TWO NON-VALIDATING ACTIONS
-    // ---------------------------------------------------------------------------------------------------
-    //
-    // MIGRATION: ONLY ONE OF THE THREE ACTION BUTTONS EVER VALIDATED. `modulesettings.ascx:L222-L224`
-    //   declares `cmdUpdate` with no `causesvalidation` attribute, so it defaulted to true, while BOTH
-    //   `cmdCancel` (L223) and `cmdDelete` (L224) carry an explicit `causesvalidation="False"`. Abandoning
-    //   or removing therefore worked from a form the validators would have rejected, and reproducing that
-    //   means proving two things about each: that no message is raised, and that the action still happens.
     describe('the non-validating actions', () => {
       it('abandons from an invalid form without validating it or issuing a request', () => {
         activate();
         openEverything();
 
-        // The value is assigned to the CONTROL rather than typed into the element, which is the convention
-        // the validator specs above already established and it is forced by the markup: the field renders as
-        // `<input type="date">`, and a date input normalises unparseable text to the empty string, which the
-        // data-type check correctly passes. `2024-02-31` is the honest way to reach the invalid state - it
-        // matches the expected pattern yet names a day February does not have.
-        //
-        // It is deliberately left UNTOUCHED. That is what makes this test discriminating: a message is
-        // rendered only for a touched control, so submitting - which marks every control touched to reveal
-        // all messages at once - would surface one, while abandoning must not. Marking it touched here would
-        // have manufactured the very message the assertion then looks for.
         component['form'].controls.startDate.setValue('2024-02-31');
         fixture.detectChanges();
 
@@ -3528,10 +3088,6 @@ describe('ModuleSettingsComponent', () => {
 
         expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
 
-        // MIGRATION: THE DELETED MODULE IS NOT RE-READ, and this is the assertion that proves it. The
-        // store does re-read the LISTING afterwards - the placement is detached rather than destroyed, so
-        // only the listing knows whether the row should still appear - but re-reading the module that was
-        // just removed would be a contract breach, and there is no restore endpoint to make it meaningful.
         httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === MODULE_URL);
         drainListingReread();
       });
@@ -3557,20 +3113,9 @@ describe('ModuleSettingsComponent', () => {
       /**
        * MIGRATION: A REFUSAL IS AN ADVISORY AT WARNING SEVERITY, NOT AN ERROR, AND THE LEGACY SCREEN IS
        * UNAMBIGUOUS ABOUT IT. `Website/admin/Security/AccessDenied.ascx.vb` is fifty lines, performs no
-       * permission check of its own, and its `Page_Load` (L41-L47) has exactly two branches - one for a
-       * supplied message and one for the default wording - BOTH of which raise
-       * `ModuleMessage.ModuleMessageType.YellowWarning`. Neither raises `RedError`, though the vocabulary
-       * offered it and the tree uses it 27 times elsewhere. So a 403 is presented as a warning and is
-       * deliberately NOT dressed as a danger.
-       *
-       * ⚠ THE SURFACE IS THE IN-PAGE BANNER, AND THAT IS A CORRECTION THIS SPEC USED TO PIN THE WRONG WAY
-       * ROUND. It asserted the notification queue, on the same YellowWarning evidence. The severity
-       * reading was right and the surface was wrong: `UI.Skins.Skin.AddModuleMessage` inserted the message
-       * INTO the page, and the shared banner is what ports that - it resolves 403 to the warning band
-       * through `core/utils/form-errors.util.ts`, so the legacy severity survives either way, while the
-       * document's trace identifier, its title and its permanence do not survive a transient advisory.
-       * The sibling module form and export screens present the same status through the same banner, which
-       * is what gives one backend condition one presentation across the feature.
+       * permission check of its own, and its `Page_Load` has exactly two branches - one for a supplied
+       * message and one for the default wording - BOTH of which raise
+       * `ModuleMessage.ModuleMessageType.YellowWarning`.
        */
       it('presents a refused write in the banner at warning severity, never as an error', () => {
         activate();
@@ -3598,8 +3143,6 @@ describe('ModuleSettingsComponent', () => {
           'This module appears on every page and cannot be moved.',
         );
 
-        // The three things the discarded document used to cost. The trace identifier above all: it is the
-        // only join key between what the operator saw and what the server logged.
         expect(fixture.nativeElement.textContent).toContain('00-9f2c4d1b7a3e-01');
         expect(fixture.nativeElement.textContent).toContain('Forbidden');
 
@@ -3609,10 +3152,7 @@ describe('ModuleSettingsComponent', () => {
 
       /**
        * A REFUSAL WITH AN EMPTY BODY STILL REACHES THE BANNER, which is why the component needs no
-       * null-document fallback for this status. `problemFromCause` in `core/state/module.store.ts`
-       * synthesises `{ status: 403 }` from the status alone when neither a document nor a parsable text
-       * body is present, expressly so that severity and wording still resolve - so the band is still the
-       * legacy warning and the shared sentence for the status is still shown.
+       * null-document fallback for this status.
        */
       it('presents a refusal that carried no document at all, from its status alone', () => {
         activate();
@@ -3641,19 +3181,14 @@ describe('ModuleSettingsComponent', () => {
       });
 
       /**
-       * MIGRATION: THE PER-FIELD DICTIONARY IS READ WITH BRACKET ACCESS, WHICH THE COMPILER ENFORCES.
+       * THE PER-FIELD DICTIONARY IS READ WITH BRACKET ACCESS, WHICH THE COMPILER ENFORCES.
        * `ValidationProblemDetails.errors` is an index signature and `noPropertyAccessFromIndexSignature`
-       * is enabled, so `problem.errors.ModuleTitle` would not compile at all. The keys are .NET
-       * `ModelStateDictionary` keys and are NOT camel-cased, which is why the fixture below spells
-       * `ModuleTitle` with a leading capital exactly as the server publishes it.
+       * is enabled, so `problem.errors.ModuleTitle` would not compile at all.
        */
       it('lands a rejected field on its own control, keyed as the server spelled it', () => {
         activate();
 
-        // `detail` and `instance` are deliberately OMITTED rather than set to null. Unlike the DTO
-        // contracts, whose members the API writes unconditionally, the problem-details members are declared
-        // optional - `readonly detail?: string` - because RFC 7807 makes them optional and the model
-        // mirrors the specification. Assigning null would not type-check, which is the model doing its job.
+        // `detail` and `instance` are deliberately OMITTED rather than set to null.
         const problem: ValidationProblemDetails = {
           type: 'about:blank',
           title: 'One or more validation errors occurred.',
@@ -3711,26 +3246,17 @@ describe('ModuleSettingsComponent', () => {
     // ---------------------------------------------------------------------------------------------------
 
     /**
-     * MIGRATION: THE FOURTH DATA-TYPE CHECK IS PRESERVED AS A RULE THOUGH IT HAS NO TRANSPORTABLE CONTROL.
-     * A case-insensitive census of `Website/admin/Modules/` returns `asp:RequiredFieldValidator` 0,
+     * THE FOURTH DATA-TYPE CHECK IS PRESERVED AS A RULE THOUGH IT HAS NO TRANSPORTABLE CONTROL. A
+     * case-insensitive census of `Website/admin/Modules/` returns `asp:RequiredFieldValidator` 0,
      * `asp:RegularExpressionValidator` 0, `asp:CompareValidator` 4, `asp:CustomValidator` 0,
      * `asp:RangeValidator` 0 and `asp:ValidationSummary` 0 - so four `CompareValidator`s were the entire
-     * validation surface of the feature. Three of the four guard controls that still exist and are
-     * asserted above: `valtxtStartDate` (L78), `valtxtEndDate` (L88) and `valCacheTime` (L172). The
-     * fourth, `valBorder` (L138), guarded `txtBorder`, and `border` is one of six placement columns
-     * `UpdateModuleRequest` does not project - so there is no input to reject and no member to send. Its
-     * wording is nevertheless carried verbatim, break tag stripped, so that the rule is not lost and the
-     * control can be restored without re-deriving it the moment the server projects the column.
-     *
-     * Note the legacy inconsistency reproduced rather than corrected: the wording promises a range of 0
-     * to 9 while the declared validator was a plain integer data-type check that enforced no range at all.
+     * validation surface of the feature.
      */
     it('preserves the fourth data-type check as wording, its control having no wire contract', () => {
       expect(component['borderInvalidMessage'])
         .withContext('valBorder.ErrorMessage, verbatim, without the layout break tag it carries')
         .toBe('Invalid Border (must be a number between 0 and 9)');
 
-      // And there is genuinely no control to guard, which is the contract gap rather than an oversight.
       setInput('settings', moduleOf());
       openEverything();
       expect(field('border')).toBeNull();

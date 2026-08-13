@@ -18,19 +18,9 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Two separate review findings meet in this suite, and both were about a promise the API made and did not
-/// keep. Six write actions advertised a per-field error document while no validator resolved for their body
-/// at all, so semantically invalid input travelled past the boundary and surfaced as a persistence fault or
-/// a single-message problem document - either way carrying nothing a caller could act on. Four listings
-/// advertised a sort vocabulary that was the union of all of them, so each accepted the others' field names,
-/// answered <c>200</c>, and quietly ordered by something else.
-/// </para>
-/// <para>
 /// A unit test cannot close either finding. Whether a validator exists is a unit question; whether the
 /// framework RESOLVES it for the parameter an action actually binds, and whether its failure is rendered as
-/// the declared document, are properties of the composed pipeline. Likewise, whether a repository has an
-/// ordering arm is a unit question; whether the field survives the boundary, the service, and the
-/// skip-and-take is not. So every fact below goes over HTTP.
+/// the declared document, are properties of the composed pipeline.
 /// </para>
 /// <para>
 /// The ordering facts assert the returned sequence rather than only the status code, because a status code
@@ -124,8 +114,7 @@ public sealed class RequestValidationContractTests
     /// <remarks>
     /// This is the single most important fact in the suite. The value below was already refused by
     /// <c>POST</c>, so the column could only ever receive it through <c>PUT</c> - a rule a caller could
-    /// bypass by choosing the other verb is not a rule. The stored value is read back afterwards to prove
-    /// the refusal was a refusal and not merely a differently worded success.
+    /// bypass by choosing the other verb is not a rule.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_WithAnEscapingIconPath_IsRefusedAndStoresNothing()
@@ -202,11 +191,6 @@ public sealed class RequestValidationContractTests
     /// document carrying the legacy wording, and writes nothing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Equality is used rather than an inverted window, because the legacy comparison was strictly greater
-    /// than: a window that opens and closes at the same instant is a membership that is never in force, and
-    /// a rule that admitted it would silently store a lapsed assignment.
-    /// </remarks>
     [Fact]
     public async Task AssignRole_WithAnExpiryEqualToItsEffectiveDate_IsRefusedAndWritesNothing()
     {
@@ -243,12 +227,6 @@ public sealed class RequestValidationContractTests
     /// </summary>
     /// <param name="propertyName">The name the caller submitted.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The space case is deliberate and is the one a future reader is most likely to think is a bug: the
-    /// property name is an identifier used as a resource key, and the legacy screen carried a separate
-    /// localisation step for the human-readable label, so its pattern admits no space. The empty case is
-    /// what used to reach the <c>NOT NULL</c> column.
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("Preferred Name")]
@@ -273,15 +251,6 @@ public sealed class RequestValidationContractTests
     /// document, so the update verb is bounded as well as the create verb.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: the offending member used to be the visibility hint, submitted outside the three documented
-    /// modes. No such bound exists any more and none should: the legacy member was assigned by converting a
-    /// module setting without any check, so a value outside those three was representable and a caller that
-    /// read a definition and sent it back unchanged would be refused by a rule this migration had invented.
-    /// The property name carries a bound that IS measured - the regular expression declared on
-    /// <c>ProfilePropertyDefinition.vb:L228</c> - so the fact still asserts what it exists to assert: this
-    /// verb resolves a validator, rather than advertising a field-error document that nothing can produce.
-    /// </remarks>
     [Fact]
     public async Task UpdateProfileDefinition_WithARefusedPropertyName_NamesTheOffendingMember()
     {
@@ -306,32 +275,8 @@ public sealed class RequestValidationContractTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The two facts above name the offending member, which a refusal from model binding or from a column
-    /// constraint could also do. This one cannot be satisfied by anything except the resolved validator: an
-    /// over-long property CATEGORY breaks no binding rule, no route constraint and no column constraint that
-    /// answers a field-error document - the column is <c>nvarchar(50)</c>, so a body that reached the store
-    /// would be refused there as a server fault rather than as a named field - and the message asserted is
-    /// the legacy wording declared on the shared rules type. Both together are the proof: the filter looked
-    /// up an <c>IValidator&lt;T&gt;</c> for the DECLARED parameter type of each action and ran it.
-    /// </para>
-    /// <para>
-    /// It is asserted on the create verb AND the update verb because they bind DIFFERENT contracts with
-    /// DIFFERENT validators, and the filter resolves per parameter type. A validator registered for one and
-    /// missing for the other would leave one verb silently unvalidated, which is exactly the gap a suite
-    /// aimed at the wrong type would not see.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this fact replaces a unit suite that exercised the validator declared for the RESPONSE
-    /// projection, <c>ProfilePropertyDefinitionDto</c>. No action binds that type, so no request path ever
-    /// invoked it - assembly scanning registered it, which made it resolvable but not reachable - and its
-    /// twenty-five tests reported confidence in rules the write path did not apply. Its genuinely
-    /// legacy-derived assertions live on the two real request validators in
-    /// backend/tests/DnnMigration.UnitTests/Validation/ProfileDefinitionWriteContractValidatorTests.cs, in
-    /// the stronger both-verbs form, and the three it carried that had no legacy counterpart concerned
-    /// members the write contracts do not publish at all. This test is the standing proof that the rules
-    /// really are applied where the requests really arrive.
-    /// </para>
+    /// constraint could also do.
     /// </remarks>
     [Fact]
     public async Task ProfileDefinitionWrites_AreValidatedByTheValidatorResolvedForEachVerb()
@@ -402,17 +347,14 @@ public sealed class RequestValidationContractTests
     }
 
     /// <summary>
-    /// A write action still answers <c>400</c> when the body is absent altogether, now that the hand-written
-    /// null checks have been removed from the controllers.
+    /// A write action still answers <c>400</c> when the body is absent altogether, now that the
+    /// hand-written null checks have been removed from the controllers.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// This fact exists because of what was removed, not what was added. Making the registered validation
     /// filter the sole invocation path meant deleting ten hand-written call sites, and several of those had
-    /// also been checking the parameter for null. The check is not lost: the controllers carry
-    /// <c>[ApiController]</c>, nullable reference types are enabled, and the invalid-model-state filter is
-    /// not suppressed, so an absent body for a non-nullable parameter is refused by model binding before an
-    /// action body runs. Asserting it keeps that guarantee from being a matter of belief.
+    /// also been checking the parameter for null.
     /// </remarks>
     [Fact]
     public async Task CreateRoleGroup_WithNoBodyAtAll_StillAnswersBadRequest()
@@ -436,12 +378,6 @@ public sealed class RequestValidationContractTests
     /// fixed order by name.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Both directions are read and compared to each other rather than to a fixed expectation, so the fact
-    /// holds however many roles the tenant happens to hold and whatever their identifiers are. Before the
-    /// repair both requests answered <c>200</c> with the same name-ordered sequence, so the reversal is
-    /// precisely what was missing.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_AppliesTheRequestedOrdering()
     {
@@ -497,15 +433,15 @@ public sealed class RequestValidationContractTests
     }
 
     /// <summary>
-    /// The member listing orders by a field the repository has to reach the database for, and does so before
-    /// the page is cut.
+    /// The member listing orders by a field the repository has to reach the database for, and does so
+    /// before the page is cut.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The single-row page is the point. Ordering applied after a page has been taken would return the first
-    /// row of the DEFAULT order here, so a one-row descending page that carries the highest identifier
-    /// proves the ordering preceded the skip and take rather than following it - which is the whole
-    /// substance of the finding.
+    /// The single-row page is the point. Ordering applied after a page has been taken would return the
+    /// first row of the DEFAULT order here, so a one-row descending page that carries the highest
+    /// identifier proves the ordering preceded the skip and take rather than following it - which is the
+    /// whole substance of the finding.
     /// </remarks>
     [Fact]
     public async Task ListUsers_OrdersBeforeItPages()
@@ -546,8 +482,8 @@ public sealed class RequestValidationContractTests
     }
 
     /// <summary>
-    /// Each listing refuses the sort field names that belong to a different collection, naming the offending
-    /// member, instead of accepting them and quietly ordering by something else.
+    /// Each listing refuses the sort field names that belong to a different collection, naming the
+    /// offending member, instead of accepting them and quietly ordering by something else.
     /// </summary>
     /// <param name="route">The listing addressed.</param>
     /// <param name="sortBy">A field name that belongs only to another collection.</param>
@@ -765,11 +701,6 @@ public sealed class RequestValidationContractTests
 
     /// <summary>Builds a well formed profile property definition whose name carries a random suffix.</summary>
     /// <returns>A definition the validator accepts.</returns>
-    /// <remarks>
-    /// The data-type key is zero deliberately. The list subsystem that would supply a real key is outside
-    /// this migration's scope, so no endpoint can offer one, which is why the rule admits zero rather than
-    /// demanding a positive key that a caller has no way to obtain.
-    /// </remarks>
     private static CreateProfilePropertyDefinitionRequest NewDefinition() => new()
     {
         DataType = 0,
@@ -785,11 +716,9 @@ public sealed class RequestValidationContractTests
     /// <summary>Builds a well formed profile-definition update whose name carries a random suffix.</summary>
     /// <returns>An update the validator accepts.</returns>
     /// <remarks>
-    /// MIGRATION: the update verb binds its own contract because the terminal procedures honour different
-    /// member sets - <c>AddPropertyDefinition</c> declares a module-definition key that
-    /// <c>UpdatePropertyDefinition</c> does not - so the builder above cannot serve both verbs. Sending the
-    /// narrower shape here is what makes these tests exercise the schema the boundary now advertises rather
-    /// than a wider one the deserialiser happens to tolerate.
+    /// The update verb binds its own contract because the terminal procedures honour different member sets
+    /// - <c>AddPropertyDefinition</c> declares a module-definition key that <c>UpdatePropertyDefinition</c>
+    /// does not - so the builder above cannot serve both verbs.
     /// </remarks>
     private static UpdateProfilePropertyDefinitionRequest NewDefinitionUpdate() => new()
     {
@@ -832,11 +761,6 @@ public sealed class RequestValidationContractTests
     /// <param name="member">The member the document must name.</param>
     /// <param name="message">The message the document must carry for that member.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The message is compared exactly rather than by substring, because the legacy parity obligation is
-    /// about the wording an operator reads and a substring match cannot tell the migrated text apart from
-    /// the legacy text with its leading markup tag still attached.
-    /// </remarks>
     private static async Task ShouldReportAsync(
         HttpResponseMessage response,
         string member,

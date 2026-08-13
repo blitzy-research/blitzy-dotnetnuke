@@ -24,17 +24,10 @@ namespace DnnMigration.UnitTests.Services;
 /// <para>
 /// The credential and token halves of this service are covered by the two security suites, which assert the
 /// hashing contract as the sign-in path consumes it and the token contract as the sign-in path consumes it.
-/// This suite deliberately does not repeat either. What it owns is the workflow around them: which gate runs
-/// before which, what makes an account resolvable at all, the one branch that changes stored state during a
-/// sign-in, and the fact that nothing is committed on any path that ends in a refusal.
+/// This suite deliberately does not repeat either.
 /// </para>
 /// <para>
-/// Gate order is the substance of the suite rather than an incidental detail. Each gate leaks something if
-/// it runs in the wrong place: examining the credential before the lock lets an attacker confirm a guess on
-/// an already-locked account; examining it before the registration gate lets an unapproved registration be
-/// used as a credential oracle; and reporting a lock to an unauthorised caller confirms that the account
-/// exists at all. The assertions below therefore check not only the answer but which collaborators were
-/// never reached.
+/// Gate order is the substance of the suite rather than an incidental detail.
 /// </para>
 /// </remarks>
 public class AuthServiceTests
@@ -52,9 +45,9 @@ public class AuthServiceTests
     private const string StoredHash = "$2a$12$storedhashvalue";
 
     /// <summary>
-    /// The decoy stored form the hashing abstraction publishes, compared against when there is no real stored
-    /// form. Deliberately distinguishable from <see cref="StoredHash"/> so a test can assert WHICH value the
-    /// one comparison was made against.
+    /// The decoy stored form the hashing abstraction publishes, compared against when there is no real
+    /// stored form. Deliberately distinguishable from <see cref="StoredHash"/> so a test can assert WHICH
+    /// value the one comparison was made against.
     /// </summary>
     private const string DecoyHash = "$2a$12$decoyhashvalue";
 
@@ -76,8 +69,8 @@ public class AuthServiceTests
 
     private const string InsecureHostPasswordCode = "auth.insecure_host_password";
     /// <summary>
-    /// The reason the token service reports when a token record could not be persisted. It describes neither
-    /// the caller nor the presented token, so it is escalated rather than folded into a denial.
+    /// The reason the token service reports when a token record could not be persisted. It describes
+    /// neither the caller nor the presented token, so it is escalated rather than folded into a denial.
     /// </summary>
     private const string TokenStoreUnavailableCode = "TOKEN_STORE_UNAVAILABLE";
 
@@ -88,8 +81,8 @@ public class AuthServiceTests
     private const string InvalidRefreshTokenCode = "auth.invalid_refresh_token";
 
     /// <summary>
-    /// Reported when a correct code met a correct credential and the approval could not be written. Distinct
-    /// from the three above because nothing the caller submitted was wrong.
+    /// Reported when a correct code met a correct credential and the approval could not be written.
+    /// Distinct from the three above because nothing the caller submitted was wrong.
     /// </summary>
     private const string ApprovalStoreUnavailableCode = "auth.approval_store_unavailable";
 
@@ -98,8 +91,8 @@ public class AuthServiceTests
     /// replacement that would have retired it could not be written, so the sign-in is refused.
     /// </summary>
     /// <remarks>
-    /// Shaped like <see cref="ApprovalStoreUnavailableCode"/> rather than like a credential refusal, and for
-    /// the same reason: nothing the caller submitted was wrong. Its reason token ends in
+    /// Shaped like <see cref="ApprovalStoreUnavailableCode"/> rather than like a credential refusal, and
+    /// for the same reason: nothing the caller submitted was wrong. Its reason token ends in
     /// <c>store_unavailable</c>, which the Api edge answers <c>503</c>.
     /// </remarks>
     private const string CredentialMigrationStoreUnavailableCode =
@@ -108,8 +101,8 @@ public class AuthServiceTests
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The authentication contract offers the four public authentication operations plus the
-    /// authoritative remediation-state read used by the API authorization gate.
+    /// The authentication contract offers the four public authentication operations plus the authoritative
+    /// remediation-state read used by the API authorization gate.
     /// </summary>
     [Fact]
     public void AuthenticationContract_OffersExactlyFiveOperations()
@@ -155,8 +148,8 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// The tenant is read from the request rather than from any ambient source, and its absence is
-    /// refused as a malformed request rather than as a rejected credential.
+    /// The tenant is read from the request rather than from any ambient source, and its absence is refused
+    /// as a malformed request rather than as a rejected credential.
     /// </summary>
     /// <remarks>
     /// Zero and minus one are both real tenants, so the absent tenant cannot be defaulted to either.
@@ -214,9 +207,7 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// An account found within the tenant is used and the installation-wide read is not attempted.
-    /// </summary>
+    /// <summary>An account found within the tenant is used and the installation-wide read is not attempted.</summary>
     [Fact]
     public async Task SignIn_ResolvesTheAccountWithinTheTenantFirst()
     {
@@ -235,9 +226,7 @@ public class AuthServiceTests
             + "it is only worth a round trip when the tenant-scoped read finds nothing");
     }
 
-    /// <summary>
-    /// A host account signs in to a tenant it is not a member of.
-    /// </summary>
+    /// <summary>A host account signs in to a tenant it is not a member of.</summary>
     [Fact]
     public async Task SignIn_ResolvesAHostAccountOutsideTheTenant()
     {
@@ -252,9 +241,7 @@ public class AuthServiceTests
         result.Value.User.IsSuperUser.Should().BeTrue();
     }
 
-    /// <summary>
-    /// An ordinary account belonging to another tenant cannot sign in here.
-    /// </summary>
+    /// <summary>An ordinary account belonging to another tenant cannot sign in here.</summary>
     [Fact]
     public async Task SignIn_RefusesAnOrdinaryAccountFromAnotherTenant()
     {
@@ -284,21 +271,6 @@ public class AuthServiceTests
     /// An unapproved registration cannot sign in without its verification code, even with a correct
     /// credential - and the approval outcome is reported, because the credential was proved first.
     /// </summary>
-    /// <remarks>
-    /// The credential IS examined, and it is examined FIRST. That ordering is the whole of the fix: nothing
-    /// is written until the credential has been accepted, so the guessable verification code is never
-    /// sufficient on its own. Reporting the approval outcome is then safe, because only a caller that has
-    /// already proved the credential can reach it. The harness portal registers no sign-up mode, so the
-    /// outcome is the not-authorised arm rather than either verification arm.
-    /// <para>
-    /// THE CREDENTIAL IS COMPARED, AND THAT IS A SECOND CORRECTION. An earlier revision of this test asserted
-    /// the opposite - that no comparison happened - and it was measuring a defect rather than a guarantee. Not
-    /// comparing meant this path answered measurably sooner than one that did, so response time distinguished a
-    /// pending account from an active one however uniform the wording was. The comparison now happens exactly
-    /// once on every structurally valid attempt, and what keeps the account from being a credential oracle is
-    /// that this gate is reachable only once the comparison has SUCCEEDED.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignIn_RefusesAnUnapprovedRegistrationWithoutItsVerificationCode()
     {
@@ -326,12 +298,6 @@ public class AuthServiceTests
     /// </summary>
     /// <param name="suppliedCode">The code the submission carried.</param>
     /// <param name="expectedCode">The reason code the ladder selects for it.</param>
-    /// <remarks>
-    /// Reproduces the Login.ascx.vb:L168-L185 ladder: verified registration produces the "enter a code"
-    /// prompt when no code accompanied the submission and the "that code is wrong" answer when one did.
-    /// An absent code and an empty code are the same submission, because the legacy absent-string marker
-    /// IS the empty string; blanks are a supplied value and reach the invalid arm.
-    /// </remarks>
     [Theory]
     [InlineData(null, VerificationRequiredCode)]
     [InlineData("", VerificationRequiredCode)]
@@ -359,14 +325,8 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The verification code must match exactly.
-    /// </summary>
+    /// <summary>The verification code must match exactly.</summary>
     /// <param name="supplied">The code supplied.</param>
-    /// <remarks>
-    /// The comparison is ordinal and untrimmed on purpose. The code is machine generated and echoed back
-    /// from a link, so any difference at all means the caller did not follow the link that was sent.
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -444,9 +404,7 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The verification code is built from the tenant being signed in to and the account resolved.
-    /// </summary>
+    /// <summary>The verification code is built from the tenant being signed in to and the account resolved.</summary>
     [Fact]
     public async Task SignIn_BuildsTheVerificationCodeFromTheTenantAndTheAccount()
     {
@@ -471,9 +429,7 @@ public class AuthServiceTests
         rightTenant.IsSuccess.Should().BeTrue(rightTenant.Reason?.ToString());
     }
 
-    /// <summary>
-    /// A registration whose approval cannot be recorded is refused and nothing is committed.
-    /// </summary>
+    /// <summary>A registration whose approval cannot be recorded is refused and nothing is committed.</summary>
     /// <remarks>
     /// The credential is compared BEFORE the approval is attempted, so it is verified exactly once here.
     /// The refusal reports the approval outcome rather than a credential denial, because the credential was
@@ -496,9 +452,7 @@ public class AuthServiceTests
         result.IsFailure.Should().BeTrue();
 
         // NOT one of the three approval outcomes, and not the uniform denial either. The caller presented a
-        // correct code and a correct credential; what failed was the write. Reporting an invalid-code outcome
-        // here would tell this account's own owner that a code it copied correctly was wrong and send it hunting
-        // for a mistake it did not make, so the dependency failure is named as one and the Api edge answers 503.
+        // correct code and a correct credential; what failed was the write.
         result.Reason!.Code.Should().Be(ApprovalStoreUnavailableCode);
         harness.UnitOfWork.Verify(
             unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
@@ -511,9 +465,7 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A host account is not subject to the registration gate.
-    /// </summary>
+    /// <summary>A host account is not subject to the registration gate.</summary>
     /// <remarks>
     /// A host account is created by the installer rather than by registration, so it has no verification
     /// code to present and no tenant to be approved into.
@@ -560,18 +512,7 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// The lock is examined before the registration gate.
-    /// </summary>
-    /// <remarks>
-    /// MIGRATION: an earlier revision of this fact also asserted that the credential was never compared for
-    /// a locked account. It is now compared on every structurally valid attempt, deliberately: comparing it
-    /// only when the gates allowed it made the response time report which gate had refused, and closing that
-    /// channel is worth more than the work saved. The lock is still examined first, and the assertions that
-    /// say so - the reason reported, and the approval never recorded - are what this fact is about. The
-    /// comparison is pinned at exactly once, because performing it twice would reintroduce a timing
-    /// difference from the other direction.
-    /// </remarks>
+    /// <summary>The lock is examined before the registration gate.</summary>
     [Fact]
     public async Task SignIn_ExaminesTheLockBeforeTheRegistrationGate()
     {
@@ -603,13 +544,6 @@ public class AuthServiceTests
     /// A lock that has aged past the installation's automatic-unlock window is cleared and the sign-in
     /// continues.
     /// </summary>
-    /// <remarks>
-    /// Reproduces AspNetMembershipProvider.vb L64-L86, called from L1453-L1463: an absent
-    /// AutoAccountUnlockDuration setting means ten minutes, and a lock older than the window is cleared
-    /// before the credential is compared. An earlier revision declined to reproduce this at all, which left
-    /// every locked account waiting for an administrator where the legacy installation released it by
-    /// itself.
-    /// </remarks>
     [Fact]
     public async Task SignIn_ClearsALockThatHasAgedPastTheAutomaticUnlockWindow()
     {
@@ -631,9 +565,7 @@ public class AuthServiceTests
             "the loaded row is kept in step, so nothing later in the request calls the account locked");
     }
 
-    /// <summary>
-    /// A lock still inside the window is not cleared.
-    /// </summary>
+    /// <summary>A lock still inside the window is not cleared.</summary>
     /// <remarks>
     /// MIGRATION: as above, the credential comparison is no longer skipped for a locked account, so what is
     /// asserted here is that it costs the same rather than that it is absent. What the fact is about is
@@ -663,11 +595,6 @@ public class AuthServiceTests
     /// the same way rather than unlocking instantly.
     /// </summary>
     /// <param name="configured">The configured duration.</param>
-    /// <remarks>
-    /// Zero is the legacy's own disabling value (AspNetMembershipProvider.vb L72). A negative value would
-    /// have unlocked immediately under the legacy comparison, which is the one reading of a mistyped
-    /// configuration row that removes the lock-out control entirely; refusing it is a documented narrowing.
-    /// </remarks>
     [Theory]
     [InlineData("0")]
     [InlineData("-30")]
@@ -690,12 +617,10 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// An account whose lock instant is unknown is not unlocked.
-    /// </summary>
+    /// <summary>An account whose lock instant is unknown is not unlocked.</summary>
     /// <remarks>
-    /// With no instant there is no window to measure. Unlocking on an unknown would turn a missing fact into
-    /// an open door, so the lock stands and an administrator clears it.
+    /// With no instant there is no window to measure. Unlocking on an unknown would turn a missing fact
+    /// into an open door, so the lock stands and an administrator clears it.
     /// </remarks>
     [Fact]
     public async Task SignIn_DoesNotUnlockWhenTheLockInstantIsUnknown()
@@ -712,9 +637,7 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A refused sign-in writes nothing beyond the failure it is required to record.
-    /// </summary>
+    /// <summary>A refused sign-in writes nothing beyond the failure it is required to record.</summary>
     [Fact]
     public async Task SignIn_WritesNothingOnARefusal()
     {
@@ -751,9 +674,7 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A successful sign-in records the login once, at the instant the clock reports.
-    /// </summary>
+    /// <summary>A successful sign-in records the login once, at the instant the clock reports.</summary>
     [Fact]
     public async Task SignIn_RecordsTheLoginOnceAtTheClockInstant()
     {
@@ -766,13 +687,7 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// The login timestamp and any re-hash share one instant.
-    /// </summary>
-    /// <remarks>
-    /// The clock is read once and reused. Reading it twice would put two different instants on two rows
-    /// written for the same event, which is exactly the kind of skew that makes an audit trail hard to read.
-    /// </remarks>
+    /// <summary>The login timestamp and any re-hash share one instant.</summary>
     [Fact]
     public async Task SignIn_UsesOneInstantForEveryThingItWrites()
     {
@@ -885,28 +800,13 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A proven legacy credential whose immediate replacement the store refuses is refused a session, and the
-    /// distinct deadline-sensitive anomaly is recorded.
+    /// A proven legacy credential whose immediate replacement the store refuses is refused a session, and
+    /// the distinct deadline-sensitive anomaly is recorded.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// ⚠ THIS TEST WAS INVERTED, AND THE INVERSION IS THE FINDING. It previously asserted that the sign-in
-    /// still succeeded, on the reasoning that a transient store fault must not turn a credential already
-    /// proved correct into a refusal. That reasoning left out WHAT the stored credential still is when this
-    /// branch runs: a reversibly-encrypted legacy representation, decryptable with a key the legacy
-    /// installation committed to source control, and the one thing that retires it is the replacement that
-    /// just failed. Completing the sign-in told the account holder it had succeeded while leaving that
-    /// representation in place indefinitely - and because every later sign-in takes the same branch for as
-    /// long as the store stays unhappy, the compatibility window could close with the account still legacy.
-    /// </para>
-    /// <para>
     /// So the refusal is asserted here instead, and it is asserted to be a NAMED DEPENDENCY FAILURE rather
-    /// than the uniform credential denial: nothing the caller submitted was wrong, and reporting a credential
-    /// refusal would send an account holder hunting for a mistake it did not make. That is the same ruling
-    /// this suite already pins for an approval that cannot be written and for a token store that cannot record
-    /// a session. The credential itself is unharmed, a retry either completes the migration or refuses again,
-    /// and administrative reset remains the fallback. Recorded in MIGRATION_NOTES.md.
-    /// </para>
+    /// than the uniform credential denial: nothing the caller submitted was wrong, and reporting a
+    /// credential refusal would send an account holder hunting for a mistake it did not make.
     /// </remarks>
     [Fact]
     public async Task SignIn_WhenLegacyReplacementFails_RefusesTheSignIn()
@@ -950,31 +850,18 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A credential replaced by somebody else after this sign-in verified it, and before a session is minted
-    /// from it, is refused with the uniform denial.
+    /// A credential replaced by somebody else after this sign-in verified it, and before a session is
+    /// minted from it, is refused with the uniform denial.
     /// </summary>
     /// <param name="credentialEmptiedOutright">
     /// Whether the later read reports no credential at all rather than a different one.
     /// </param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// THIS IS THE RACE THE SIGN-IN PATH EXISTS TO LOSE SAFELY, and it is not hypothetical. Everything a
-    /// sign-in decides comes from ONE credential read taken before the comparison, and that comparison is the
-    /// one deliberately expensive step on the path - so the interval between reading the credential and issuing
-    /// a session is wide enough to matter. The change most likely to land inside it is an administrator
-    /// resetting the credential of an account they believe is compromised, which is to say: the one change
-    /// whose entire purpose is to stop exactly the session this request is about to mint. Without the second
-    /// look the sign-in completed anyway and the reset silently failed to end the session it existed to
-    /// prevent.
-    /// </para>
-    /// <para>
-    /// The refusal is the UNIFORM denial an incorrect credential receives, deliberately: the condition is
-    /// attacker-influenceable, so a distinct code would answer "that credential was right until a moment ago".
-    /// The distinction is recorded on the security diagnostics channel instead, which no response carries.
-    /// Both shapes of change are exercised - a different value, and an emptied record - because a check that
-    /// only compared non-null values would pass the first and admit the second.
-    /// </para>
+    /// sign-in decides comes from ONE credential read taken before the comparison, and that comparison is
+    /// the one deliberately expensive step on the path - so the interval between reading the credential and
+    /// issuing a session is wide enough to matter.
     /// </remarks>
     [Theory]
     [InlineData(false)]
@@ -1024,23 +911,9 @@ public class AuthServiceTests
     /// <param name="revocationStoreRefuses">Whether the token store can record the revocation.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THIS IS THE BACKSTOP, AND WITHOUT IT THE WINDOW IS NARROW RATHER THAN CLOSED. The look taken before
-    /// issuance refuses the common case, but between that look and the family actually being minted the sign-in
-    /// performs the profile-remediation read, the role read and the permission read - so a change can still
-    /// land inside that interval, and a family minted there is younger than the sweep the credential mutation
-    /// performed before its write. The mutation therefore sweeps again AFTER its write, and the two mechanisms
-    /// interlock: a family minted before that second sweep is ended by it, and a family minted after it can
-    /// only come from a request whose own post-issuance read - this one - observes the change.
-    /// </para>
-    /// <para>
-    /// REVOKING IS THE OPERATIVE HALF, not the refusal. The family exists in the store by the time this runs;
-    /// returning a failure alone would leave the caller holding exchangeable material, which is precisely what
-    /// an administrator's reset is performed to end. A revocation that cannot be PERSISTED is escalated as a
-    /// dependency failure rather than reported as a credential refusal, matching the ruling the rotation path
-    /// already makes - telling the caller its credential was wrong while its family stays exchangeable would be
-    /// the worst of both answers.
-    /// </para>
+    /// REVOKING IS THE OPERATIVE HALF, not the refusal. The family exists in the store by the time this
+    /// runs; returning a failure alone would leave the caller holding exchangeable material, which is
+    /// precisely what an administrator's reset is performed to end.
     /// </remarks>
     [Theory]
     [InlineData(false)]
@@ -1092,16 +965,14 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// The second look accepts the representation this sign-in itself wrote, so a work-factor upgrade does not
-    /// refuse its own session.
+    /// The second look accepts the representation this sign-in itself wrote, so a work-factor upgrade does
+    /// not refuse its own session.
     /// </summary>
     /// <remarks>
-    /// The negative half of the test above, and it is what makes that one evidence of anything rather than a
-    /// check that refuses whenever the credential moved. A sign-in that upgrades the stored cost legitimately
-    /// changes the credential mid-request, so the second look admits two values: the representation it
-    /// verified, and the representation it wrote. A guard that only admitted the former would have broken every
-    /// work-factor upgrade and every legacy migration - the two paths this application relies on to retire old
-    /// representations at all.
+    /// The negative half of the test above, and it is what makes that one evidence of anything rather than
+    /// a check that refuses whenever the credential moved. A sign-in that upgrades the stored cost
+    /// legitimately changes the credential mid-request, so the second look admits two values: the
+    /// representation it verified, and the representation it wrote.
     /// </remarks>
     [Fact]
     public async Task SignIn_AcceptsTheCredentialThisRequestItselfWrote()
@@ -1132,25 +1003,16 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A replacement the store refuses because the credential changed under it denies the sign-in rather than
-    /// treating the refusal as a transient store fault.
+    /// A replacement the store refuses because the credential changed under it denies the sign-in rather
+    /// than treating the refusal as a transient store fault.
     /// </summary>
-    /// <param name="legacyCredential">Whether the replacement is a legacy migration rather than a cost upgrade.</param>
+    /// <param name="legacyCredential">
+    /// Whether the replacement is a legacy migration rather than a cost upgrade.
+    /// </param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE STORE REFUSED THIS WRITE ON PURPOSE, and telling that apart from a store that could not accept it is
-    /// the whole reason the write reports a closed outcome rather than a boolean. "Nothing was written" has
-    /// three unrelated causes - the record is absent, the store is unreachable, and the credential changed
-    /// under us - and only the third means the representation this sign-in verified has been retired. A sign-in
-    /// that treated it as the second would mint a session from a credential an administrator had just replaced,
-    /// which is precisely the outcome the reset existed to prevent.
-    /// </para>
-    /// <para>
-    /// Both replacement kinds are exercised because they report DIFFERENT outcomes when the store is merely
-    /// unhappy - a cost upgrade proceeds, a legacy migration refuses with a named dependency failure - and a
-    /// supersession must collapse both onto the uniform denial regardless.
-    /// </para>
+    /// THE STORE REFUSED THIS WRITE ON PURPOSE, and telling that apart from a store that could not accept
+    /// it is the whole reason the write reports a closed outcome rather than a boolean.
     /// </remarks>
     [Theory]
     [InlineData(false)]
@@ -1219,12 +1081,6 @@ public class AuthServiceTests
     /// <summary>
     /// A legacy migration carries the legacy representation it verified as the write's expectation.
     /// </summary>
-    /// <remarks>
-    /// The companion of the cost-upgrade expectation asserted above, and the more consequential of the two: a
-    /// legacy sign-in replaces a representation the deployment can decrypt with a key committed to source
-    /// control, so an unconditional write here would roll back an administrative reset with the very value the
-    /// reset was performed to retire.
-    /// </remarks>
     [Fact]
     public async Task SignIn_MigratingALegacyCredential_CarriesTheVerifiedRepresentationAsTheExpectation()
     {
@@ -1252,22 +1108,10 @@ public class AuthServiceTests
     /// An out-of-date credential cost is regenerated from the submitted credential and stored once.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the ordering guarantee the credential-upgrade path rests on, and it belongs here rather
-    /// than beside the hasher because it is a property of the caller: the hasher answers three questions
-    /// and has no opinion about the sequence they are asked in. It previously lived in
-    /// backend/tests/DnnMigration.UnitTests/Security/BcryptPasswordHasherTests.cs, asserted against a
-    /// small local model of this method, and was moved here so that the sequence is pinned on the code
-    /// that actually implements it.
-    /// </para>
-    /// <para>
     /// Two facts are asserted together because either alone would permit a serious defect. The value
     /// written must be regenerated from the SUBMITTED plaintext, since that is the only place the correct
     /// credential exists at this point -- regenerating from the stored value would produce a hash of a
-    /// hash, and the account would become unopenable at the next sign-in. And it must be written exactly
-    /// once, because an upgrade that rewrote the row on every successful sign-in would turn a one-off
-    /// migration into permanent write traffic on the busiest path in the application.
-    /// </para>
+    /// hash, and the account would become unopenable at the next sign-in.
     /// </remarks>
     [Fact]
     public async Task SignIn_UpgradesAnOutOfDateCredentialCostOnceFromTheSubmittedCredential()
@@ -1296,15 +1140,7 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A credential already at the current cost is neither regenerated nor rewritten.
-    /// </summary>
-    /// <remarks>
-    /// The negative half of the upgrade path, and the one that keeps it a migration rather than a
-    /// permanent cost on every sign-in. The harness leaves staleness answering <see langword="false"/>,
-    /// which is the state of an installation whose stored values are already current, so this asserts the
-    /// steady state rather than an exceptional one.
-    /// </remarks>
+    /// <summary>A credential already at the current cost is neither regenerated nor rewritten.</summary>
     [Fact]
     public async Task SignIn_LeavesACredentialAlreadyAtTheCurrentCostUntouched()
     {
@@ -1326,20 +1162,12 @@ public class AuthServiceTests
             Times.Never());
     }
 
-    /// <summary>
-    /// A refused credential's stored value is not even examined for staleness.
-    /// </summary>
+    /// <summary>A refused credential's stored value is not even examined for staleness.</summary>
     /// <remarks>
-    /// <para>
     /// The order is what makes the upgrade path safe, and this is the assertion that pins it. Staleness is
     /// consulted only after current-scheme verification has succeeded; legacy classification belongs to the
-    /// separate bounded verifier and likewise cannot reach replacement until it has accepted the credential.
-    /// </para>
-    /// <para>
-    /// That the refusal writes nothing is asserted separately by
-    /// <see cref="SignIn_WritesNothingOnARefusal"/>. What this adds is that the question is never even
-    /// asked, which is the stronger statement and the one that forbids the dangerous ordering.
-    /// </para>
+    /// separate bounded verifier and likewise cannot reach replacement until it has accepted the
+    /// credential.
     /// </remarks>
     [Fact]
     public async Task SignIn_DoesNotExamineTheStoredValueForStalenessWhenTheCredentialWasRefused()
@@ -1364,22 +1192,6 @@ public class AuthServiceTests
     /// A credential-cost upgrade that cannot be persisted still signs the caller in, and now leaves a
     /// security event behind instead of nothing at all.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The finding this covers: the containment swallowed every non-cancellation exception in silence, so
-    /// an installation could keep verifying credentials at a superseded work factor indefinitely with no
-    /// operator signal. Silence is the worst possible outcome for this particular failure precisely because
-    /// the sign-in works perfectly either way, so nothing else would ever surface it.
-    /// </para>
-    /// <para>
-    /// Neither record carries the exception's MESSAGE, because a store failure's message can quote the value
-    /// it failed to write. The exception TYPE is carried, and where it is carried is asserted here: the audit
-    /// record's failure code is a stable code naming the CONDITION, and the type name travels the
-    /// security-diagnostics channel, whose <c>reasonCode</c> is documented to accept a type name and which has
-    /// no parameter a message could travel through. The audit column previously held the type name, which made
-    /// it change with a library version rather than with the condition it was documented to record.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignIn_RecordsAFailedCredentialCostUpgradeWithoutFailingTheSignIn()
     {
@@ -1420,9 +1232,7 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A cancelled credential-cost upgrade propagates rather than being recorded as a failure.
-    /// </summary>
+    /// <summary>A cancelled credential-cost upgrade propagates rather than being recorded as a failure.</summary>
     /// <remarks>
     /// A cancelled request is not a failed write, and recording it as one would fill the trail with events
     /// describing callers who simply navigated away. The containment's exception filter excludes
@@ -1448,9 +1258,7 @@ public class AuthServiceTests
         harness.AuditRecords.Should().NotContain(entry => entry.EventName == "PASSWORD_REHASH_FAILURE");
     }
 
-    /// <summary>
-    /// An accepted sign-in is recorded under the legacy success event name, with the real account.
-    /// </summary>
+    /// <summary>An accepted sign-in is recorded under the legacy success event name, with the real account.</summary>
     [Fact]
     public async Task SignIn_RecordsTheLegacySuccessEvent()
     {
@@ -1492,13 +1300,6 @@ public class AuthServiceTests
     /// A rejected credential is recorded under the legacy failure event name, NAMING THE ACCOUNT - which
     /// the legacy trail could not do.
     /// </summary>
-    /// <remarks>
-    /// The legacy audit passed <c>Null.NullInteger</c> as the account identifier
-    /// (<c>UserController.vb</c> L79), so its trail recorded that a sign-in had failed without recording
-    /// whose - which makes a credential-stuffing run against one account indistinguishable from scattered
-    /// mistyping across many. Recording the real identifier is a deliberate improvement and is asserted
-    /// here so it cannot regress to the legacy sentinel.
-    /// </remarks>
     [Fact]
     public async Task SignIn_RecordsTheLegacyFailureEventNamingTheAccount()
     {
@@ -1532,27 +1333,7 @@ public class AuthServiceTests
         harness.AuditRecords.Should().ContainSingle().Which.EventName.Should().Be("LOGIN_USERLOCKEDOUT");
     }
 
-    /// <summary>
-    /// An unapproved account's refusal is recorded under the legacy not-approved event name.
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// The trail carries the legacy event name and a failure code naming the gate, which is what an
-    /// operator investigating a failed registration needs to see.
-    /// </para>
-    /// <para>
-    /// MIGRATION: an earlier revision of this fact asserted that the CALLER received the uniform denial
-    /// here. It does not, and it must not. The approval ladder is reached only AFTER the credential has been
-    /// accepted, so the caller reading this answer has already proved it holds the account's password and
-    /// learns nothing from it that it did not already know - which is the condition that makes the
-    /// disclosure safe, and is stated on the member that produces it. Withholding it would also break the
-    /// flow it exists to serve: an account awaiting verified registration has to be told to enter its code,
-    /// and "invalid credentials" would make verified registration impossible to complete. The uniform denial
-    /// still governs every gate that closes AHEAD of credential acceptance, which is where account
-    /// enumeration would actually be possible; that separation is asserted by the facts covering an unknown
-    /// account and an unknown tenant.
-    /// </para>
-    /// </remarks>
+    /// <summary>An unapproved account's refusal is recorded under the legacy not-approved event name.</summary>
     [Fact]
     public async Task SignIn_RecordsTheLegacyNotApprovedEvent()
     {
@@ -1604,20 +1385,6 @@ public class AuthServiceTests
     /// A sign-out the token store could not complete records nothing, because the session did not end.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// THIS ASSERTION IS THE INVERSE OF WHAT THE CODE USED TO DO, AND THE FALSE RECORD IT REPLACES WAS WORSE
-    /// THAN NO RECORD. The event was written before the revocation result was examined, so the ONE case in
-    /// which the sign-out did not happen was also the case that produced a record saying it had: the store was
-    /// unreachable, the caller correctly received a failure and kept its refresh token - still exchangeable for
-    /// fresh access tokens - and the trail asserted that the session had ended. An investigation asking whether
-    /// a session was terminated was told yes about a live one, indistinguishable from a genuine termination.
-    /// </para>
-    /// <para>
-    /// Withholding the record is the only reading that agrees with the response. The two now say the same
-    /// thing, which is the whole of the fix.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignOut_RecordsNothingWhenTheTokenStoreCouldNotRevoke()
     {
@@ -1648,34 +1415,9 @@ public class AuthServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// ⚠ THIS FACT ASSERTED THE OPPOSITE AND THE EXPECTATION IS WITHDRAWN, because the reading it rested on
-    /// was shown to be unsound. It required an unrecognised token to be reported as a completed sign-out, on
-    /// the reading that a value the store cannot find can no longer mint a successor. That holds only for a
-    /// store that sees ALL of the state. With refresh families held per process it fails in the one case that
-    /// matters: replica B, asked to end a session established on replica A, does not recognise the token and
-    /// so would answer "signed out" while replica A went on honouring the very value presented for
-    /// revocation - and the client, told the sign-out succeeded, had already discarded its only copy, so the
-    /// live session could not even be retried.
-    /// </para>
-    /// <para>
-    /// THE IDEMPOTENCE PROMISE IS NOT LOST, IT IS RELOCATED TO WHERE IT IS PROVEN. The token service reports
-    /// success for a retirement it can prove - the family was retired now, or it holds the family and had
-    /// already retired it, or the store is authoritative across replicas and holds no such family - and
-    /// <see cref="SignOut_RecordsTheSessionEnding"/> is the fact that pins success and the record for that
-    /// path. Only an UNPROVEN retirement is refused, so the caller keeps the credential and can retry.
-    /// </para>
-    /// <para>
-    /// AND THE ORACLE CONCERN THAT MOTIVATED THE OLD EXPECTATION IS STILL HONOURED, by uniformity rather than
-    /// by always succeeding: a value this deployment never issued and a session this instance cannot reach
-    /// produce the SAME refusal, carrying no token material and naming neither condition, so the answer
-    /// still cannot be used to test whether a guessed token exists. That is asserted below rather than
-    /// assumed.
-    /// </para>
-    /// <para>
-    /// No record is written, for the reason its sibling above states: the event asserts that a session
-    /// ENDED, and an unconfirmed retirement is precisely the case in which it may not have.
-    /// </para>
+    /// was shown to be unsound. It required an unrecognised token to be reported as a completed sign-out,
+    /// on the reading that a value the store cannot find can no longer mint a successor.
     /// </remarks>
     [Fact]
     public async Task SignOut_RefusesAndRecordsNothingWhenTheRetirementCouldNotBeProven()
@@ -1726,9 +1468,8 @@ public class AuthServiceTests
     /// <remarks>
     /// The legacy call site supplied an address as its seventh argument and the legacy service did nothing
     /// with it but record it. It is now recorded by the Api layer's structured request log instead, and is
-    /// absent from this contract altogether - which is a stronger guarantee than accepting and ignoring
-    /// it, because an address that could grant or deny access would be an input a caller controls. This
-    /// test asserts the absence, since that is now the whole of the behaviour.
+    /// absent from this contract altogether - which is a stronger guarantee than accepting and ignoring it,
+    /// because an address that could grant or deny access would be an input a caller controls.
     /// </remarks>
     [Fact]
     public async Task SignIn_CannotBeInfluencedByTheCallersNetworkAddress()
@@ -1785,9 +1526,7 @@ public class AuthServiceTests
         result.Reason!.Message.Should().Be("An account name and a credential are both required.");
     }
 
-    /// <summary>
-    /// An approved registration that also used a shipped credential carries the advisory.
-    /// </summary>
+    /// <summary>An approved registration that also used a shipped credential carries the advisory.</summary>
     [Fact]
     public async Task SignIn_CanApproveARegistrationAndStillAdviseOnAShippedCredential()
     {
@@ -1810,13 +1549,6 @@ public class AuthServiceTests
     /// <summary>
     /// A shipped credential raises the must-change advisory on the response body, never as a status field.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: the legacy sign-in status enumeration carried two success-with-caveat values, promoted at
-    /// UserController.vb:L1144-L1152 when a known default credential was presented. Neither reaches the wire
-    /// as a status; both fold onto the response's must-change advisory, because forcing a credential change
-    /// was the legacy remediation for both. The accompanying reason is what keeps the two cases apart for the
-    /// API edge.
-    /// </remarks>
     [Fact]
     public async Task SignIn_WithAShippedCredential_RaisesTheMustChangeAdvisoryOnTheBody()
     {
@@ -1835,11 +1567,6 @@ public class AuthServiceTests
     /// <summary>
     /// A forced credential update recorded on the account row reaches the response as the advisory boolean.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: this was the highest-precedence value of the legacy post-credential check, read from the
-    /// account row's own update flag (UserController.vb:L1175-L1177, over the membership property at
-    /// UserMembership.vb:L323) and blocking in the legacy screen.
-    /// </remarks>
     [Fact]
     public async Task SignIn_WithAForcedCredentialUpdate_RaisesTheMustChangeAdvisory()
     {
@@ -1856,11 +1583,6 @@ public class AuthServiceTests
     /// An ordinary sign-in raises no remediation requirement or expiry advisory, and says so explicitly
     /// rather than by omission.
     /// </summary>
-    /// <remarks>
-    /// All three flags are plain booleans, so "not required" is a written <see langword="false"/> rather
-    /// than an absent field. The legacy null test treated a false boolean as absent, which is precisely the
-    /// ambiguity a nullable form would have reintroduced here.
-    /// </remarks>
     [Fact]
     public async Task SignIn_WithNothingOutstanding_RaisesNoAdvisory()
     {
@@ -1873,22 +1595,12 @@ public class AuthServiceTests
         result.Value.PasswordExpiring.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Every sign-in outcome is audited, and the outcome name is the legacy log type key.
-    /// </summary>
+    /// <summary>Every sign-in outcome is audited, and the outcome name is the legacy log type key.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy raised its entry for the refused outcomes only (<c>UserController.vb</c>
-    /// L1138-L1141). Every outcome is audited here, which is a documented superset, so the theory covers
-    /// an acceptance as well as each refusal. The asserted name is the outcome MEMBER NAME because that is
-    /// exactly what the legacy wrote as its log type key: <c>loginStatus.ToString</c> (L80).
-    /// </para>
-    /// <para>
     /// The tenant and resolved account identifier are asserted with it. Submitted names are deliberately
     /// excluded: unresolved probes remain anonymous rather than acquiring a second retention lifecycle in
     /// the audit store.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task SignIn_AuditsEveryOutcomeUnderItsLegacyName()
@@ -1929,9 +1641,7 @@ public class AuthServiceTests
     /// <remarks>
     /// The legacy audited this case and could not describe it: it always passed its integer absence
     /// sentinel as the account identifier, so a run of failures against one account and a run against many
-    /// names looked identical in the trail. A null identifier here means the submitted name matched no
-    /// account, and it is distinguishable from the previous fact's real identifier - which is the whole
-    /// point of carrying it.
+    /// names looked identical in the trail.
     /// </remarks>
     [Fact]
     public async Task SignIn_AuditsAnUnknownAccountNameWithoutAnIdentifier()
@@ -1948,15 +1658,12 @@ public class AuthServiceTests
             && entry.ActorUserId == null);
     }
 
-    /// <summary>
-    /// A submission whose tenant was never assigned is not audited at all.
-    /// </summary>
+    /// <summary>A submission whose tenant was never assigned is not audited at all.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Asserted because the absence is a decision. A missing tenant is a malformed request rather than a
     /// sign-in attempt, and the audit contract has no value that could stand for "unknown tenant" - the
     /// tenant column is seeded <c>IDENTITY(-1, 1)</c>, so both zero and minus one are real tenants.
-    /// Recording it against a manufactured tenant would put a fabricated fact in an audit trail.
     /// </remarks>
     [Fact]
     public async Task SignIn_WithNoTenantAssigned_IsNotAudited()
@@ -1970,16 +1677,13 @@ public class AuthServiceTests
         harness.AuditRecords.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// No audited sign-in entry can carry the submitted credential.
-    /// </summary>
+    /// <summary>No audited sign-in entry can carry the submitted credential.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Proven over the CONTRACT rather than over one call, because a per-call assertion would only show
     /// that today's call site is careful. No member of the audited payload is capable of carrying a
     /// credential, so no call site can leak one - which is what makes the closed method set a guarantee
-    /// instead of a convention. The credential used by the harness is searched for across every member
-    /// that could hold text, so a member added later without being considered fails this.
+    /// instead of a convention.
     /// </remarks>
     [Fact]
     public async Task SignIn_AuditsNothingThatCouldCarryTheCredential()
@@ -2011,29 +1715,8 @@ public class AuthServiceTests
             "the payload is closed, so a member added to it is a decision that has to be made here too");
     }
 
-    /// <summary>
-    /// A contained credential cost upgrade failure is recorded rather than lost.
-    /// </summary>
+    /// <summary>A contained credential cost upgrade failure is recorded rather than lost.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The containment itself is correct - a failed cost upgrade must not fail a sign-in whose credential
-    /// was right - but it used to be silent, and a silent containment is indistinguishable from an upgrade
-    /// that is working. The sign-in is asserted to still succeed alongside the entry, because the whole
-    /// point is that the caller is unaffected. The credential is not a parameter of either record.
-    /// </para>
-    /// <para>
-    /// THE AUDIT RECORD CARRIES A STABLE CODE AND THE DIAGNOSTIC CARRIES THE EXCEPTION TYPE, and the split is
-    /// what this fact pins. <c>AuditEvent.FailureCode</c> is documented as "the stable failure code ... the
-    /// same code the operation reported to its caller"; an earlier revision put
-    /// <c>exception.GetType().Name</c> there, which is chosen by whichever library threw and changes when an
-    /// implementation detail changes, so an audit query grouping on that column produced one bucket per
-    /// library version rather than one per condition. The type name is not lost - it travels the
-    /// security-diagnostics channel, whose <c>reasonCode</c> is documented to accept exactly "a failure code
-    /// from a Result, or the NAME of an exception type", and which accepts no message, no exception and no
-    /// object at all.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignIn_RecordsAContainedCredentialCostUpgradeFailure()
     {
@@ -2078,11 +1761,6 @@ public class AuthServiceTests
     /// C-03: an account whose profile is incomplete is admitted only to the remediation-limited session,
     /// with the blocking profile requirement raised.
     /// </summary>
-    /// <remarks>
-    /// The legacy gate is <c>UserController.vb</c> L1189-L1193 and its outcome was BLOCKING - the legacy flow
-    /// sent it to the profile step rather than admitting the caller onward. Here the sign-in still succeeds,
-    /// because the credential was correct, and the flag is what the client must act on.
-    /// </remarks>
     [Fact]
     public async Task SignIn_WhenTheProfileIsIncomplete_RaisesTheProfileAdvisory()
     {
@@ -2108,8 +1786,8 @@ public class AuthServiceTests
     /// <remarks>
     /// The legacy status enumeration was single-valued and tested the profile arm LAST, only while no other
     /// advisory had been raised, so it could never report both. This contract can, and the widening is
-    /// deliberate: hiding a blocking profile requirement behind a non-blocking credential reminder would lose
-    /// the more consequential of the two.
+    /// deliberate: hiding a blocking profile requirement behind a non-blocking credential reminder would
+    /// lose the more consequential of the two.
     /// </remarks>
     [Fact]
     public async Task SignIn_ReportsTheProfileAdvisoryTogetherWithACredentialAdvisory()
@@ -2125,15 +1803,7 @@ public class AuthServiceTests
         result.Value.MustUpdateProfile.Should().BeTrue();
     }
 
-    /// <summary>
-    /// C-03: the profile gate is not applied to an installation-wide account.
-    /// </summary>
-    /// <remarks>
-    /// Measured, not assumed: <c>Website/admin/Authentication/Login.ascx.vb</c> L511 wraps the whole
-    /// post-credential validation in <c>If Not objUser.IsSuperUser Then</c>, so a superuser never reached the
-    /// profile arm. Applying it would be able to lock an installation out of the only account that can
-    /// administer it. The gate must therefore not even be CONSULTED, which is what the verification asserts.
-    /// </remarks>
+    /// <summary>C-03: the profile gate is not applied to an installation-wide account.</summary>
     [Fact]
     public async Task SignIn_DoesNotApplyTheProfileGateToAHostAccount()
     {
@@ -2159,9 +1829,9 @@ public class AuthServiceTests
     /// credentials on missing evidence.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: this deliberately tightens the earlier advisory-only implementation. The profile state is
-    /// now a blocking authorization input, so treating a store failure as "profile complete" would let an
-    /// account bypass the gate precisely when its required state cannot be established.
+    /// This deliberately tightens the earlier advisory-only implementation. The profile state is now a
+    /// blocking authorization input, so treating a store failure as "profile complete" would let an account
+    /// bypass the gate precisely when its required state cannot be established.
     /// </remarks>
     [Fact]
     public async Task SignIn_WhenProfileRemediationCannotBeEvaluated_FailsClosed()
@@ -2238,14 +1908,13 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// C-04: the shipped-credential advisory still recognises exactly the four distributed credentials, and no
-    /// others, now that it compares fingerprints instead of plaintext.
+    /// C-04: the shipped-credential advisory still recognises exactly the four distributed credentials, and
+    /// no others, now that it compares fingerprints instead of plaintext.
     /// </summary>
     /// <remarks>
     /// This is the behaviour-preservation test for the fingerprint change. It pins BOTH directions: each of
     /// the two administrator credentials is recognised, and a credential that merely resembles one - a
-    /// different case, or a longer string with the same prefix - is not. A digest comparison that had been
-    /// weakened to a prefix or a case-insensitive match would pass the first half and fail the second.
+    /// different case, or a longer string with the same prefix - is not.
     /// </remarks>
     /// <param name="password">The submitted credential.</param>
     /// <param name="expectedAdvisory">Whether the advisory is expected.</param>
@@ -2258,8 +1927,8 @@ public class AuthServiceTests
     [InlineData("adm", false)]
 
     // A BLANK credential is deliberately not among these cases. It never reaches the advisory at all: the
-    // request-validity gate refuses it before any account is resolved, which SignIn_ReportsAMalformedRequestSeparately
-    // already pins. Including it here would assert a success that correctly does not happen.
+    // request-validity gate refuses it before any account is resolved, which
+    // SignIn_ReportsAMalformedRequestSeparately already pins.
     public async Task SignIn_RecognisesOnlyTheDistributedAdministratorCredentials(
         string password,
         bool expectedAdvisory)
@@ -2275,7 +1944,8 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// C-04: the host advisory likewise recognises exactly the two credentials the host account shipped with.
+    /// C-04: the host advisory likewise recognises exactly the two credentials the host account shipped
+    /// with.
     /// </summary>
     /// <param name="password">The submitted credential.</param>
     /// <param name="expectedAdvisory">Whether the advisory is expected.</param>
@@ -2296,15 +1966,12 @@ public class AuthServiceTests
         (result.Reason?.Code == InsecureHostPasswordCode).Should().Be(expectedAdvisory);
     }
 
-    /// <summary>
-    /// C-04: no plaintext credential appears anywhere in the compiled service.
-    /// </summary>
+    /// <summary>C-04: no plaintext credential appears anywhere in the compiled service.</summary>
     /// <remarks>
     /// The finding was that the four distributed credentials were embedded as string literals, which is
-    /// CWE-798. Asserting the BEHAVIOUR of the fingerprint comparison, as the theories above do, cannot catch
-    /// a reintroduction - a future edit could add the literals back beside the digests and every behavioural
-    /// test would still pass. This test reads the service's own metadata token stream instead, so a literal
-    /// reappearing in the source fails here regardless of whether anything uses it.
+    /// CWE-798. Asserting the BEHAVIOUR of the fingerprint comparison, as the theories above do, cannot
+    /// catch a reintroduction - a future edit could add the literals back beside the digests and every
+    /// behavioural test would still pass.
     /// </remarks>
     [Fact]
     public void Service_EmbedsNoDistributedCredentialAsPlaintext()
@@ -2317,11 +1984,6 @@ public class AuthServiceTests
                 $"\"{distributed}\" is a working credential and must exist only as a fingerprint");
         }
 
-        // The two shorter defaults are the ACCOUNT NAMES as well as credentials, and the account names
-        // legitimately remain as literals, so their absence cannot be asserted. Their fingerprints are
-        // asserted present instead, which proves the comparison is fingerprint-based for all four - and it
-        // is what keeps the absence assertions above honest, because a search that could find nothing at
-        // all would satisfy them without inspecting anything.
         foreach (string fingerprint in new[]
         {
             "8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918",
@@ -2340,17 +2002,6 @@ public class AuthServiceTests
     /// <param name="image">The bytes of the compiled assembly.</param>
     /// <param name="needle">The text to look for.</param>
     /// <returns><see langword="true"/> when the text appears anywhere in the image.</returns>
-    /// <remarks>
-    /// MIGRATION: this replaces a whole-image <c>Encoding.Unicode.GetString</c> followed by a substring test,
-    /// which was UNSOUND IN THE UNSAFE DIRECTION. Managed string literals are held as UTF-16 code units, but
-    /// nothing aligns the heap that holds them to an even offset within the file, and decoding the whole
-    /// image from offset zero reads 16-bit units from even offsets only - so a literal stored at an odd
-    /// offset is invisible. Every assertion of ABSENCE would then pass without having examined the literal
-    /// it names, which is precisely the failure mode this test exists to rule out, and it would flip on an
-    /// unrelated edit that shifted the layout by one byte. The needle is therefore ENCODED and matched
-    /// against the raw bytes at both parities, and UTF-8 is searched too because metadata outside the
-    /// user-string heap is stored that way.
-    /// </remarks>
     private static bool ImageContains(byte[] image, string needle) =>
         ContainsSequence(image, Encoding.Unicode.GetBytes(needle))
         || ContainsSequence(image, Encoding.UTF8.GetBytes(needle));
@@ -2381,11 +2032,6 @@ public class AuthServiceTests
     /// M-07: an accepted sign-in is recorded under the legacy event name, with the advisory flags and no
     /// credential.
     /// </summary>
-    /// <remarks>
-    /// The legacy named its event after the outcome (<c>LogTypeKey = loginStatus.ToString</c>,
-    /// <c>UserController.vb</c> L80), so an ordinary success is <c>LOGIN_SUCCESS</c>. The legacy sign-in path
-    /// did not record an accepted outcome at all; recording it is the deliberate addition.
-    /// </remarks>
     [Fact]
     public async Task SignIn_RecordsTheAcceptedOutcomeUnderTheLegacyEventName()
     {
@@ -2425,13 +2071,13 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// M-07: a refused credential is recorded under the legacy failure name, carrying the account identifier
-    /// the legacy trail could not.
+    /// M-07: a refused credential is recorded under the legacy failure name, carrying the account
+    /// identifier the legacy trail could not.
     /// </summary>
     /// <remarks>
-    /// <c>UserController.vb</c> L1140 always passed <c>Null.NullInteger</c> as the identifier, so the legacy
-    /// trail never recorded WHICH account a refusal concerned even when the code had just resolved one. That
-    /// is a documented divergence, and this test is what pins it.
+    /// <c>UserController.vb</c> L1140 always passed <c>Null.NullInteger</c> as the identifier, so the
+    /// legacy trail never recorded WHICH account a refusal concerned even when the code had just resolved
+    /// one. That is a documented divergence, and this test is what pins it.
     /// </remarks>
     [Fact]
     public async Task SignIn_RecordsARefusalWithTheAccountItResolved()
@@ -2452,9 +2098,7 @@ public class AuthServiceTests
         recorded.Properties.Should().NotContainKey("Username");
     }
 
-    /// <summary>
-    /// M-07: a sign-in for an account that does not exist is recorded with no account identifier.
-    /// </summary>
+    /// <summary>M-07: a sign-in for an account that does not exist is recorded with no account identifier.</summary>
     [Fact]
     public async Task SignIn_RecordsARefusalForAnUnknownAccountWithoutAnIdentifier()
     {
@@ -2475,13 +2119,7 @@ public class AuthServiceTests
             "an unresolved submitted name remains anonymous in the independently retained trail");
     }
 
-    /// <summary>
-    /// M-07: a locked account is recorded under the legacy lock-out event name.
-    /// </summary>
-    /// <remarks>
-    /// This and the failure name are the only two outcomes the legacy sign-in path recorded
-    /// (<c>UserController.vb</c> L1138-L1141), so they are the parity cases rather than additions.
-    /// </remarks>
+    /// <summary>M-07: a locked account is recorded under the legacy lock-out event name.</summary>
     [Fact]
     public async Task SignIn_RecordsALockedAccountUnderTheLegacyLockOutName()
     {
@@ -2495,9 +2133,7 @@ public class AuthServiceTests
             .Which.EventName.Should().Be("LOGIN_USERLOCKEDOUT");
     }
 
-    /// <summary>
-    /// Every collaborator is required.
-    /// </summary>
+    /// <summary>Every collaborator is required.</summary>
     /// <remarks>
     /// Driven from the constructor's own parameter list rather than from a hand-written call per position,
     /// so that a collaborator added later is covered without this test being edited and cannot be added
@@ -2549,26 +2185,8 @@ public class AuthServiceTests
         }
     }
 
-    /// <summary>
-    /// A correct verification code presented with an INCORRECT credential approves nothing.
-    /// </summary>
+    /// <summary>A correct verification code presented with an INCORRECT credential approves nothing.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// This is the account-takeover step the gate order used to permit, and it is worth stating exactly why it
-    /// was reachable. The verification code is not a secret: it is composed as the tenant identifier, a hyphen
-    /// and the account identifier, both of which appear in ordinary URLs, and it cannot be made secret because
-    /// accounts pending at cut-over already hold codes of that shape. Under the previous order the code was
-    /// compared - and the resulting approval PERSISTED - before any credential was examined, so a caller who
-    /// knew only a user name could approve somebody else's pending registration with a deliberately wrong
-    /// password. The refusal that followed made it look harmless; the state change was permanent, and it left
-    /// the account needing nothing but a password guess.
-    /// </para>
-    /// <para>
-    /// The assertions are therefore about what did NOT happen: no approval write, no commit, and the account
-    /// left unapproved in memory. The failure is additionally counted, which the companion test below pins.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignIn_WithACorrectVerificationCodeButAWrongCredential_ApprovesNothing()
     {
@@ -2608,16 +2226,13 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A wrong credential against an UNAPPROVED account is counted towards the lock-out, as it is for any other
-    /// account.
+    /// A wrong credential against an UNAPPROVED account is counted towards the lock-out, as it is for any
+    /// other account.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// A consequence of proving the credential before the approval gate, and an improvement rather than a side
-    /// effect. Under the previous order a wrong password against a pending account produced the not-approved
-    /// outcome, which never reached the counter - so pending accounts could be guessed against without limit and
-    /// could never lock, which is exactly the population an attacker can create at will on an installation with
-    /// open registration.
+    /// A consequence of proving the credential before the approval gate, and an improvement rather than a
+    /// side effect.
     /// </remarks>
     [Fact]
     public async Task SignIn_CountsAWrongCredentialAgainstAnUnapprovedAccount()
@@ -2630,12 +2245,10 @@ public class AuthServiceTests
 
         result.IsFailure.Should().BeTrue();
 
-        // AND IT LEARNS NOTHING ABOUT THE ACCOUNT'S APPROVAL STATE. This is the boundary that makes naming the
-        // three approval outcomes safe: they are reported only from behind an accepted credential, so a caller
-        // who fails the credential against an unapproved account is answered exactly as one who fails it against
-        // an approved account, an absent account or an absent tenant. Were this assertion to slacken to
-        // IsFailure alone, the enumeration oracle the uniform wording exists to close would be reopened by any
-        // future edit that moved the approval gate back in front of the credential.
+        // AND IT LEARNS NOTHING ABOUT THE ACCOUNT'S APPROVAL STATE. This is the boundary that makes naming
+        // the three approval outcomes safe: they are reported only from behind an accepted credential, so a
+        // caller who fails the credential against an unapproved account is answered exactly as one who
+        // fails it against an approved account, an absent account or an absent tenant.
         result.Reason!.Code.Should().Be(InvalidCredentialsCode);
         result.Reason!.Message.Should().Be(GenericDenial);
         harness.Users.Verify(
@@ -2648,15 +2261,8 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A refresh presented for an admissible account succeeds and ends no session.
-    /// </summary>
+    /// <summary>A refresh presented for an admissible account succeeds and ends no session.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The baseline the three refusals below are measured against. It also pins that the membership gates do
-    /// not revoke on the ordinary path, because a gate that ended a session every time it was consulted would
-    /// make continuous rotation impossible.
-    /// </remarks>
     [Fact]
     public async Task Refresh_ForAnAdmissibleAccount_SucceedsAndEndsNoSession()
     {
@@ -2669,34 +2275,17 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A refresh is refused, and the account's sessions ended, once the membership store reports a state that
-    /// would refuse a sign-in.
+    /// A refresh is refused, and the account's sessions ended, once the membership store reports a state
+    /// that would refuse a sign-in.
     /// </summary>
     /// <param name="isLockedOut">Whether the account has been locked since its token was issued.</param>
     /// <param name="isApproved">Whether the account is still approved.</param>
     /// <param name="credentialExists">Whether the account still holds a credential record.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// This is the substance of the finding. Approval and lock-out live in the external membership store
     /// rather than on the account row, so re-reading the account and its roles - which the service already
-    /// did - observed neither. A session whose account had since been locked by repeated wrong credentials,
-    /// or whose approval an administrator had withdrawn, went on minting fresh access tokens for as long as
-    /// the client kept exchanging. The whole point of a short access token is that authority is re-decided at
-    /// the exchange, and these were the two facts it never re-decided.
-    /// </para>
-    /// <para>
-    /// The revocation assertion matters as much as the refusal. Rotation has already consumed the presented
-    /// value and minted its successor by the time the gate is reached, so refusing alone would leave that
-    /// successor live in the store and belonging to nobody - and would leave an account that may no longer
-    /// sign in still holding the means to keep trying. Revoking is what makes the refusal durable rather than
-    /// a single declined request.
-    /// </para>
-    /// <para>
-    /// The wording is the same single refusal in every case, because the four causes the token service
-    /// distinguishes are deliberately collapsed and these three join them: telling an unauthenticated caller
-    /// which of them applied would describe the account behind a value it may merely have guessed.
-    /// </para>
+    /// did - observed neither.
     /// </remarks>
     [Theory]
     [InlineData(true, true, true)]
@@ -2726,9 +2315,9 @@ public class AuthServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// A host account is created by the installer, so it is approved into no tenant and has no verification
-    /// code to present. Applying the approval gate to one would lock the installation out of the account that
-    /// governs it, which is exactly why the exemption exists on sign-in and why it is carried across here
-    /// rather than reinvented.
+    /// code to present. Applying the approval gate to one would lock the installation out of the account
+    /// that governs it, which is exactly why the exemption exists on sign-in and why it is carried across
+    /// here rather than reinvented.
     /// </remarks>
     [Fact]
     public async Task Refresh_ForAnUnapprovedHostAccount_IsPermitted()
@@ -2744,25 +2333,14 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A refusal whose revocation cannot be written is escalated rather than answered as an ordinary refusal.
+    /// A refusal whose revocation cannot be written is escalated rather than answered as an ordinary
+    /// refusal.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The same rule that governs the rest of this service: a store that cannot be written describes neither
-    /// the caller nor the presented token, so reporting it as "your token is not valid" would state something
-    /// the service does not know. Here it matters more than usual, because the account has just been judged
-    /// inadmissible and the sessions it holds were meant to end - absorbing the outage would leave the family
-    /// exchangeable while telling the caller its own token was the problem.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the escalation is a TYPED FAILURE rather than a thrown exception, and an earlier revision of
-    /// this fact expected the exception. Both reach the caller as a server-side fault, but the reason carries
-    /// the store-unavailable code that the API layer maps to "service unavailable" rather than to
-    /// "unauthorised", which is the distinction the finding was about; it also keeps this service reporting
-    /// expected failures the one way it reports all of them. What the fact asserts is therefore unchanged and
-    /// is now stated positively: the answer must NOT be the invalid-token refusal.
-    /// </para>
+    /// The same rule that governs the rest of this service: a store that cannot be written describes
+    /// neither the caller nor the presented token, so reporting it as "your token is not valid" would state
+    /// something the service does not know.
     /// </remarks>
     [Fact]
     public async Task Refresh_WhenTheRefusalsRevocationCannotBeWritten_Escalates()
@@ -2784,27 +2362,12 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// On a verified-registration tenant the three legacy approval outcomes are selected exactly as the legacy
-    /// screen selected them, and each is reported to the caller.
+    /// On a verified-registration tenant the three legacy approval outcomes are selected exactly as the
+    /// legacy screen selected them, and each is reported to the caller.
     /// </summary>
     /// <param name="supplied">The verification code the submission carried, if any.</param>
     /// <param name="expectedCode">The outcome the ladder must select.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// This is <c>Login.ascx.vb</c> L168-L185 reproduced branch for branch, and it is the test that discharges
-    /// the parity obligation the earlier uniform-denial behaviour could not: the legacy screen told its user
-    /// which of the three had happened, and so does this. The tenant's registration mode is raised to verified
-    /// registration here because that is the only mode under which the legacy distinguished the first two
-    /// members at all - every other mode answers with the third.
-    /// </para>
-    /// <para>
-    /// The emptiness test is deliberately not a whitespace test. The legacy compared against
-    /// <c>Null.NullString</c>, which is the EMPTY STRING rather than a null reference (Rule T7), so a submission
-    /// of blanks was non-empty to the legacy and reported <c>InvalidCode</c>. The blank row below pins that,
-    /// which is why it does not share the outcome of the empty row beside it.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(null, VerificationRequiredCode)]
     [InlineData("", VerificationRequiredCode)]
@@ -2841,13 +2404,14 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A correct verification code presented WITH the correct credential approves the account and signs it in.
+    /// A correct verification code presented WITH the correct credential approves the account and signs it
+    /// in.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The other half of the reordering, and the one that proves nothing was lost by it: every observable
-    /// outcome for a caller who does present the right credential is unchanged - the approval is recorded, the
-    /// tracked row is committed, and tokens are issued.
+    /// outcome for a caller who does present the right credential is unchanged - the approval is recorded,
+    /// the tracked row is committed, and tokens are issued.
     /// </remarks>
     [Fact]
     public async Task SignIn_WithACorrectVerificationCodeAndCredential_ApprovesAndSignsIn()
@@ -2870,24 +2434,16 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// Exactly one credential comparison is performed on every structurally valid attempt, whatever the lookups
-    /// found - and when there is no stored form, the comparison is made against the decoy.
+    /// Exactly one credential comparison is performed on every structurally valid attempt, whatever the
+    /// lookups found - and when there is no stored form, the comparison is made against the decoy.
     /// </summary>
     /// <param name="scenario">Which world the attempt arrives in.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// The refusal wording is uniform across all of these, and uniform wording is not enough: an attempt that
-    /// returns before reaching a deliberately expensive comparison answers measurably sooner than one that does
-    /// not, so the response TIME distinguishes an unknown account from a real one and an attacker can enumerate
-    /// accounts by measuring. Time is not directly assertable in a unit test, but the thing that causes the
-    /// difference is: the number of comparisons performed. Pinning it at exactly one for every case is the
-    /// machine-checkable form of the guarantee.
-    /// </para>
-    /// <para>
-    /// EXACTLY ONE, not at least one. Two comparisons would be as measurable as none, and a path that compares
-    /// twice on some branch would leak in the opposite direction.
-    /// </para>
+    /// The refusal wording is uniform across all of these, and uniform wording is not enough: an attempt
+    /// that returns before reaching a deliberately expensive comparison answers measurably sooner than one
+    /// that does not, so the response TIME distinguishes an unknown account from a real one and an attacker
+    /// can enumerate accounts by measuring.
     /// </remarks>
     [Theory]
     [InlineData("unknown-tenant")]
@@ -2957,17 +2513,15 @@ public class AuthServiceTests
             "a second comparison would be as measurable as none");
     }
 
-    /// <summary>
-    /// A malformed request is refused without any comparison, because there is nothing to compare.
-    /// </summary>
+    /// <summary>A malformed request is refused without any comparison, because there is nothing to compare.</summary>
     /// <param name="username">The account name to submit.</param>
     /// <param name="password">The credential to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The boundary of the previous guarantee, and it is a real boundary rather than an exception to the rule.
-    /// These refusals are decided from the shape of the submission alone: no store is consulted, no account is
-    /// named to an attacker, and the answer carries its own distinct code - so the timing of an attempt that
-    /// omitted a credential entirely reveals nothing about any account.
+    /// The boundary of the previous guarantee, and it is a real boundary rather than an exception to the
+    /// rule. These refusals are decided from the shape of the submission alone: no store is consulted, no
+    /// account is named to an attacker, and the answer carries its own distinct code - so the timing of an
+    /// attempt that omitted a credential entirely reveals nothing about any account.
     /// </remarks>
     [Theory]
     [InlineData("", RawPassword)]
@@ -2986,22 +2540,10 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A failed attempt that the membership store could not count raises rather than answering with a denial.
+    /// A failed attempt that the membership store could not count raises rather than answering with a
+    /// denial.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The counter this write increments is the only thing that ever locks an account, so a write that did not
-    /// happen means the attempt does not count and no number of further attempts will either. Answering the
-    /// ordinary denial would present that as a normal wrong password, which is precisely how an attacker could
-    /// guess indefinitely against an unreachable store while every response looked unremarkable.
-    /// </para>
-    /// <para>
-    /// It is raised rather than returned because it describes neither the caller nor the credential: the Api
-    /// layer turns it into a generic problem document, which discloses nothing about the account while making
-    /// the outage impossible to miss.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task SignIn_WhenAFailedAttemptCannotBeCounted_RaisesRatherThanDenying()
     {
@@ -3019,13 +2561,6 @@ public class AuthServiceTests
     /// A successful sign-in whose counter reset could not be written raises rather than issuing tokens.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// It may look severe to refuse a sign-in whose credential was correct, and it is the right severity: the
-    /// same store answered a credential read moments earlier in this very request, so an outage here means it
-    /// became unreachable mid-request, and continuing would issue tokens while the lock-out control is known to
-    /// be down. Clearing the counters is the other half of that control - it is what stops failures accumulated
-    /// over weeks from locking an account whose owner keeps signing in successfully in between.
-    /// </remarks>
     [Fact]
     public async Task SignIn_WhenTheCounterResetCannotBeWritten_RaisesRatherThanIssuingTokens()
     {
@@ -3051,9 +2586,8 @@ public class AuthServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Distinct from an unreachable store, and treated differently on purpose: the control RAN and found
-    /// nothing, which on this path means the record was removed between the read that found it and the write
-    /// that followed. That is a race, and the only sensible handling of a race is to proceed. It is still
-    /// recorded, because a race that recurs is not a race.
+    /// nothing, which on this path means the record was removed between the read that found it and the
+    /// write that followed. That is a race, and the only sensible handling of a race is to proceed.
     /// </remarks>
     [Fact]
     public async Task SignIn_WhenTheBookkeepingRecordHasVanished_RecordsItAndProceeds()
@@ -3073,28 +2607,9 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A work-factor upgrade that the store refuses is recorded and does not fail the sign-in.
-    /// </summary>
-    /// <param name="storeThrows">
-    /// Whether the store raises rather than answering that it wrote nothing. Both are the same fact to the
-    /// caller.
-    /// </param>
+    /// <summary>A work-factor upgrade that the store refuses is recorded and does not fail the sign-in.</summary>
+    /// <param name="storeThrows">Whether the store raises rather than answering that it wrote nothing.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// Containing the failure is correct - the credential was right and the account keeps a still-valid
-    /// representation at the superseded cost - but an earlier revision contained it into an EMPTY handler and
-    /// also discarded the store's own return value, so an upgrade that never happened was indistinguishable
-    /// from one that did. That is a quiet, long-lived failure: an installation raises its work factor, believes
-    /// every credential re-hashes on next sign-in, and none of them does, with no error and no log line to
-    /// suggest otherwise.
-    /// </para>
-    /// <para>
-    /// Both routes to the failure are exercised, because guarding only against exceptions would have called a
-    /// silent no-op a successful upgrade.
-    /// </para>
-    /// </remarks>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -3135,15 +2650,9 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A work-factor upgrade that succeeds, and one that was never due, record nothing.
-    /// </summary>
+    /// <summary>A work-factor upgrade that succeeds, and one that was never due, record nothing.</summary>
     /// <param name="upgradeDue">Whether the stored form is reported as superseded.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The negative half of the previous test, and it is what makes that one evidence of anything: a recorder
-    /// that fired on every sign-in would satisfy the assertion above while carrying no information at all.
-    /// </remarks>
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -3172,8 +2681,8 @@ public class AuthServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Roles and permission keys change independently of a token's lifetime. They are loaded through
-    /// <c>/auth/me</c> and re-evaluated by server-side authorization, so the login path must not read or copy
-    /// them into long-lived bearer material.
+    /// <c>/auth/me</c> and re-evaluated by server-side authorization, so the login path must not read or
+    /// copy them into long-lived bearer material.
     /// </remarks>
     [Fact]
     public async Task SignIn_DoesNotResolveMutableAuthorityForTheTokenResponse()
@@ -3210,9 +2719,7 @@ public class AuthServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// Builds the installation-wide host account.
-    /// </summary>
+    /// <summary>Builds the installation-wide host account.</summary>
     /// <returns>The host account.</returns>
     private static User HostAccount() => new()
     {
@@ -3225,9 +2732,7 @@ public class AuthServiceTests
         IsSuperUser = true,
     };
 
-    /// <summary>
-    /// Builds an authentication service over substituted collaborators.
-    /// </summary>
+    /// <summary>Builds an authentication service over substituted collaborators.</summary>
     private sealed class Harness
     {
         private const string ClientBinding = "client-binding-placeholder";
@@ -3322,10 +2827,8 @@ public class AuthServiceTests
         /// suite were written against.
         /// </summary>
         /// <remarks>
-        /// A projection over <see cref="AuditRecords"/> rather than a second capture, so there is exactly one
-        /// audit stream and no test can pass against a record the service did not emit. The three facts the
-        /// structured record carries as members rather than as properties - the tenant and the acting account
-        /// - are folded back into the dictionary, because they are the same facts under the same names.
+        /// A projection over <see cref="AuditRecords"/> rather than a second capture, so there is exactly
+        /// one audit stream and no test can pass against a record the service did not emit.
         /// </remarks>
         public IReadOnlyList<(string EventName, IReadOnlyDictionary<string, string?> Properties)> AuditEvents =>
             AuditRecords
@@ -3359,8 +2862,9 @@ public class AuthServiceTests
         /// Whether the membership store still holds a credential record for the account. Defaults to true.
         /// </summary>
         /// <remarks>
-        /// Separate from the stored hash on purpose, because the two answer different questions: the record's
-        /// existence is what the refresh gate consults, while the hash is what a comparison is made against.
+        /// Separate from the stored hash on purpose, because the two answer different questions: the
+        /// record's existence is what the refresh gate consults, while the hash is what a comparison is
+        /// made against.
         /// </remarks>
         public bool CredentialOnFile { get; set; } = true;
 
@@ -3377,8 +2881,8 @@ public class AuthServiceTests
         public bool LegacyCredentialMatches { get; set; }
 
         /// <summary>
-        /// What the store reports when a failed attempt is recorded. Defaults to the ordinary outcome - counted,
-        /// and the account is still usable.
+        /// What the store reports when a failed attempt is recorded. Defaults to the ordinary outcome -
+        /// counted, and the account is still usable.
         /// </summary>
         public MembershipWriteOutcome FailedLoginOutcome { get; set; } = MembershipWriteOutcome.Recorded;
 
@@ -3389,26 +2893,26 @@ public class AuthServiceTests
         public MembershipWriteOutcome SuccessfulLoginOutcome { get; set; } = MembershipWriteOutcome.Recorded;
 
         /// <summary>
-        /// Whether the store accepts a replacement credential representation during the work-factor upgrade.
+        /// Whether the store accepts a replacement credential representation during the work-factor
+        /// upgrade.
         /// </summary>
         public CredentialWriteOutcome CredentialUpgradeAccepted { get; set; } = CredentialWriteOutcome.Replaced;
 
         /// <summary>
-        /// What the hashing abstraction reports for the one comparison the sign-in path performs. Defaults to a
-        /// match, because most tests here are about the workflow around a correct credential.
+        /// What the hashing abstraction reports for the one comparison the sign-in path performs. Defaults
+        /// to a match, because most tests here are about the workflow around a correct credential.
         /// </summary>
         public bool CredentialMatches { get; set; } = true;
 
         /// <summary>
-        /// Whether the stored credential is replaced by somebody else once this sign-in has read it, modelling
-        /// an administrative reset that lands while the deliberately expensive comparison is running.
+        /// Whether the stored credential is replaced by somebody else once this sign-in has read it,
+        /// modelling an administrative reset that lands while the deliberately expensive comparison is
+        /// running.
         /// </summary>
         /// <remarks>
-        /// When set, the first credential read reports <see cref="StoredCredential"/> - so the comparison this
-        /// sign-in performs is against the representation it legitimately found - and every later read reports
-        /// <see cref="CredentialValueAfterVerification"/>. That is the exact shape of the race: nothing about
-        /// the first read is wrong, and the credential simply is not the account's credential any more by the
-        /// time a session would be minted from it.
+        /// When set, the first credential read reports <see cref="StoredCredential"/> - so the comparison
+        /// this sign-in performs is against the representation it legitimately found - and every later read
+        /// reports <see cref="CredentialValueAfterVerification"/>.
         /// </remarks>
         public bool CredentialChangesAfterVerification { get; set; }
 
@@ -3417,17 +2921,16 @@ public class AuthServiceTests
         /// which is the read the sign-in path takes immediately before it mints a session.
         /// </summary>
         /// <remarks>
-        /// A sign-in reads the credential three times - once before the comparison, once before issuance and
-        /// once after it - and the three reads defend against different things, so a test has to be able to
-        /// name which one first observes the change. Setting this to the third read isolates the post-issuance
-        /// backstop, whose whole purpose is to catch a change that landed too late for the read before it.
+        /// A sign-in reads the credential three times - once before the comparison, once before issuance
+        /// and once after it - and the three reads defend against different things, so a test has to be
+        /// able to name which one first observes the change.
         /// </remarks>
         public int CredentialChangesFromRead { get; set; } = 2;
 
         /// <summary>
-        /// The representation later reads report when <see cref="CredentialChangesAfterVerification"/> is set.
-        /// A null value models the credential record being emptied outright, which is refused for the same
-        /// reason a different value is.
+        /// The representation later reads report when <see cref="CredentialChangesAfterVerification"/> is
+        /// set. A null value models the credential record being emptied outright, which is refused for the
+        /// same reason a different value is.
         /// </summary>
         public string? CredentialValueAfterVerification { get; set; } = "$2a$12$reset-by-an-administrator";
 
@@ -3437,14 +2940,10 @@ public class AuthServiceTests
         /// </summary>
         public int CredentialStateReads { get; private set; }
 
-        /// <summary>
-        /// Accounts whose sessions the service asked to have ended, in the order it asked.
-        /// </summary>
+        /// <summary>Accounts whose sessions the service asked to have ended, in the order it asked.</summary>
         public List<int> RevokedSessionUserIds { get; } = [];
 
-        /// <summary>
-        /// Whether the token store can end an account's sessions. Defaults to true.
-        /// </summary>
+        /// <summary>Whether the token store can end an account's sessions. Defaults to true.</summary>
         public bool SessionsRevoked { get; set; } = true;
 
         /// <summary>
@@ -3494,16 +2993,14 @@ public class AuthServiceTests
         public List<AuditEvent> AuditRecords { get; }
         /// <summary>
         /// Receives the anomalies the service absorbs rather than reports. Asserted on directly, because an
-        /// absorbed anomaly that is not recorded is indistinguishable from one that never happened - which is
-        /// the defect these assertions exist to keep closed.
+        /// absorbed anomaly that is not recorded is indistinguishable from one that never happened - which
+        /// is the defect these assertions exist to keep closed.
         /// </summary>
         public Mock<ISecurityDiagnostics> Diagnostics { get; }
 
         public AuthService Service { get; }
 
-        /// <summary>
-        /// Builds a harness whose collaborators all agree that the sign-in should succeed.
-        /// </summary>
+        /// <summary>Builds a harness whose collaborators all agree that the sign-in should succeed.</summary>
         /// <returns>The harness.</returns>
         public static Harness Ready()
         {
@@ -3595,9 +3092,6 @@ public class AuthServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result<IReadOnlyList<string>>.Success(Array.Empty<string>()));
 
-            // No credential-expiry window is configured, which is the shipped state: the legacy
-            // property defaulted the window to zero when the installation-wide setting was absent,
-            // and zero disables the check.
             harness.HostSettings
                 .Setup(settings => settings.GetSettingAsync(
                     It.IsAny<string>(),
@@ -3619,11 +3113,7 @@ public class AuthServiceTests
             // MIGRATION: THE STUB ANSWERS FROM THE HARNESS RATHER THAN WITH A CONSTANT, WHICH IS WHAT MAKES
             // THE LEGACY FACTS OPERATIVE. Two revisions each introduced a compatibility verifier, one
             // answering a boolean and one answering a two-part outcome that separates "this row is legacy"
-            // from "this credential matched". The two-part contract survived, so the stub is driven by the
-            // same harness members the withdrawn one used: a stored representation that is BCrypt is
-            // reported as CURRENT, so the sign-in path hands it to the hasher; anything else is reported as
-            // LEGACY, matching or not according to the harness. A constant would have left every fact that
-            // sets LegacyCredentialMatches silently inert.
+            // from "this credential matched".
             harness.LegacyCredentials
                 .Setup(verifier => verifier.Verify(
                     It.IsAny<string>(),
@@ -3635,9 +3125,8 @@ public class AuthServiceTests
                         ? LegacyCredentialVerification.Current
                         : LegacyCredentialVerification.Legacy(harness.LegacyCredentialMatches));
 
-            // Resolution by identifier, which the refresh path uses where the sign-in path resolves by name.
-            // The tenant-scoped lookup answers first and the installation-wide lookup answers only for a host
-            // account, exactly as the two GetByUsernameAsync setups above mirror for the sign-in path.
+            // Resolution by identifier, which the refresh path uses where the sign-in path resolves by
+            // name.
             harness.Users
                 .Setup(users => users.GetAsync(
                     It.Is<int?>(portalId => portalId != null),
@@ -3652,9 +3141,9 @@ public class AuthServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.InstallationWideAccount);
 
-            // Rotation succeeds by default and answers with the identity recorded against the presented value,
-            // which is where the refresh path reads the tenant and account from. Nothing the caller supplies
-            // reaches it.
+            // Rotation succeeds by default and answers with the identity recorded against the presented
+            // value, which is where the refresh path reads the tenant and account from. Nothing the caller
+            // supplies reaches it.
             harness.RefreshTokens
                 .Setup(store => store.InspectAsync(
                     It.IsAny<string>(),
@@ -3705,14 +3194,14 @@ public class AuthServiceTests
         }
 
         /// <summary>
-        /// Answers a credential-state read, counting it and honouring a credential change staged to land after
-        /// the first read.
+        /// Answers a credential-state read, counting it and honouring a credential change staged to land
+        /// after the first read.
         /// </summary>
         /// <returns>The state the store reports for this read.</returns>
         /// <remarks>
         /// The read is answered from a method rather than an inline tuple so that the ORDER of reads is
-        /// expressible. Nothing about the sign-in path is knowable from a stub that cannot tell its first read
-        /// from its second, and the race this exists to pin is defined by that difference.
+        /// expressible. Nothing about the sign-in path is knowable from a stub that cannot tell its first
+        /// read from its second, and the race this exists to pin is defined by that difference.
         /// </remarks>
         internal (bool Exists, string? Value, PasswordFormat? Format, string? Salt, bool IsApproved, bool IsLockedOut) ReadCredentialState()
         {
@@ -3732,9 +3221,7 @@ public class AuthServiceTests
                 IsLockedOut);
         }
 
-        /// <summary>
-        /// Signs in with the supplied particulars.
-        /// </summary>
+        /// <summary>Signs in with the supplied particulars.</summary>
         /// <param name="username">The account name to submit.</param>
         /// <param name="password">The credential to submit.</param>
         /// <param name="verificationCode">The verification code to submit.</param>
@@ -3755,9 +3242,7 @@ public class AuthServiceTests
                 },
                 CancellationToken.None);
 
-        /// <summary>
-        /// Exchanges a refresh token.
-        /// </summary>
+        /// <summary>Exchanges a refresh token.</summary>
         /// <param name="refreshToken">The value to present.</param>
         /// <returns>The outcome.</returns>
         public Task<Result<LoginResponse>> RefreshAsync(string refreshToken = "presented-refresh-token")

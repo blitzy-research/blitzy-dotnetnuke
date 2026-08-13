@@ -14,16 +14,16 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The subject here is the catalogue of permission DEFINITIONS - the rows of the <c>Permission</c> table that
-/// say which permissions exist and in which scope - and never the grants that award them to a role or an
-/// account. The legacy module- and page-keyed catalogue helpers remain application-layer capabilities, but
-/// the frozen API does not publish child resources for them.
+/// The subject here is the catalogue of permission DEFINITIONS - the rows of the <c>Permission</c> table
+/// that say which permissions exist and in which scope - and never the grants that award them to a role or
+/// an account. The legacy module- and page-keyed catalogue helpers remain application-layer capabilities,
+/// but the frozen API does not publish child resources for them.
 /// </para>
 /// <para>
 /// The catalogue carries no portal column: it is installation-wide reference data seeded by the upgrade
 /// scripts. These addresses take no tenant segment and no tenant query value, and the administrator gate is
-/// still evaluated against the tenant the request host resolves to - which is what keeps a member of a tenant
-/// from browsing it.
+/// still evaluated against the tenant the request host resolves to - which is what keeps a member of a
+/// tenant from browsing it.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -61,10 +61,6 @@ public sealed class PermissionApiTests
 
     /// <summary>A key filter narrows the listing to that one key.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The filter is typed as the closed key enumeration rather than as free text, so the answer is either
-    /// that one key or nothing at all - a caller cannot smuggle an arbitrary string into the query.
-    /// </remarks>
     [Fact]
     public async Task ListPermissionKeys_WithAKeyFilter_NarrowsToThatKey()
     {
@@ -98,10 +94,6 @@ public sealed class PermissionApiTests
 
     /// <summary>One catalogue definition is readable in full by its own identifier.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The record rather than the bare key is what a caller needs: a key alone cannot say which scope code or
-    /// which module definition declared it, and the same key is declared repeatedly across scopes.
-    /// </remarks>
     [Fact]
     public async Task GetPermission_ByIdentifier_ReturnsOkWithTheDefinition()
     {
@@ -153,9 +145,7 @@ public sealed class PermissionApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>
-    /// Unknown module and page identifiers return no catalogue metadata.
-    /// </summary>
+    /// <summary>Unknown module and page identifiers return no catalogue metadata.</summary>
     /// <param name="path">The resource-scoped catalogue address.</param>
     /// <returns>A task representing the test.</returns>
     [Theory]
@@ -171,24 +161,10 @@ public sealed class PermissionApiTests
     }
 
     /// <summary>
-    /// A portal administrator cannot use another tenant's module or page identifier to read catalogue metadata.
+    /// A portal administrator cannot use another tenant's module or page identifier to read catalogue
+    /// metadata.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// SEC-033, and the guarantee is now STRUCTURAL rather than conditional. An earlier revision published
-    /// these two child addresses and added the tenant-bound existence checks that made a foreign identifier
-    /// indistinguishable from an unknown one. The frozen API publishes neither address at all, so there is no
-    /// route on which a resource identifier - foreign, unknown or genuine - can be exchanged for catalogue
-    /// metadata. Asserting it with a REAL foreign module and a REAL foreign page is what keeps the fact
-    /// meaningful: it proves the absence holds for identifiers that do exist and are owned elsewhere, which is
-    /// the case an unknown-identifier probe cannot reach.
-    /// </para>
-    /// <para>
-    /// The response body is asserted to carry no catalogue member, because the refusal must disclose nothing
-    /// about the resource named in the address - not its existence, and not the permission model's shape.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ResourceScopedPermissionDefinitions_RefuseResourcesOwnedByAnotherTenant()
     {
@@ -232,15 +208,15 @@ public sealed class PermissionApiTests
     }
 
     /// <summary>
-    /// Every read on this resource is administrator-only, so a member of the tenant holding a valid token is
-    /// refused.
+    /// Every read on this resource is administrator-only, so a member of the tenant holding a valid token
+    /// is refused.
     /// </summary>
     /// <param name="path">The address to attempt as a member.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This proves the gate is portal-administrator membership read from stored role assignments rather than
-    /// mere authentication - and it matters more here than on most resources, because the catalogue describes
-    /// the shape of the installation's whole permission model.
+    /// This proves the gate is portal-administrator membership read from stored role assignments rather
+    /// than mere authentication - and it matters more here than on most resources, because the catalogue
+    /// describes the shape of the installation's whole permission model.
     /// </remarks>
     [Theory]
     [InlineData("/api/v1/permissions")]
@@ -255,17 +231,12 @@ public sealed class PermissionApiTests
     }
 
     /// <summary>
-    /// The catalogue exposes no mutator, because its rows are written only during module installation and that
-    /// subsystem lies beyond this migration's scope.
+    /// The catalogue exposes no mutator, because its rows are written only during module installation and
+    /// that subsystem lies beyond this migration's scope.
     /// </summary>
     /// <param name="method">The write verb to attempt.</param>
     /// <param name="path">The address to attempt it against.</param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>405</c> is accepted alongside <c>404</c> because which the router produces depends on whether any
-    /// action is registered for the address at all; the assertion worth making is that no write reaches a
-    /// handler.
-    /// </remarks>
     [Theory]
     [InlineData("POST", "/api/v1/permissions")]
     [InlineData("PUT", "/api/v1/permissions")]

@@ -13,11 +13,8 @@ namespace DnnMigration.UnitTests.Validation;
 /// <remarks>
 /// MIGRATION: THESE FACTS WERE WRITTEN AGAINST A VALIDATOR ON THE READ SHAPE AND ARE RE-POINTED AT THE
 /// WRITE SHAPE. One revision declared these bounds on <c>MembershipSettingsDto</c>, which is the shape this
-/// surface RETURNS; another had already split the write into <c>UpdateMembershipSettingsRequest</c>, which is
-/// the shape a caller actually submits and the only one an endpoint binds. A validator on a response
-/// projection can never run, so the bounds were being asserted against a validator no request reaches -
-/// which is why the file that carried them is withdrawn rather than kept alongside. Every bound it expressed
-/// is enforced on the write shape and asserted here, against the validator the pipeline resolves.
+/// surface RETURNS; another had already split the write into <c>UpdateMembershipSettingsRequest</c>, which
+/// is the shape a caller actually submits and the only one an endpoint binds.
 /// </remarks>
 public sealed class UpdateMembershipSettingsRequestValidatorTests
 {
@@ -125,11 +122,10 @@ public sealed class UpdateMembershipSettingsRequestValidatorTests
     [Fact]
     public void SecurityEmailValidation_IsPresentBoundedAndCompilable()
     {
-        // MIGRATION: RE-ORACLED. The revision these facts came from admitted an explicitly empty expression
-        // as "no address rule"; the surviving validator refuses it, and the reasoning is recorded on the rule
-        // itself: an empty pattern matches nothing, so a tenant that saved one would reject EVERY address at
-        // registration - a lock-out configured by accident. Omitting the member is the way to ask for no
-        // custom rule, because the contract's initialiser then supplies the measured legacy default.
+        // RE-ORACLED. The revision these facts came from admitted an explicitly empty expression as "no
+        // address rule"; the surviving validator refuses it, and the reasoning is recorded on the rule
+        // itself: an empty pattern matches nothing, so a tenant that saved one would reject EVERY address
+        // at registration - a lock-out configured by accident.
         ShouldAccept(
             settings => settings.SecurityEmailValidation = string.Empty,
             nameof(UpdateMembershipSettingsRequest.SecurityEmailValidation),

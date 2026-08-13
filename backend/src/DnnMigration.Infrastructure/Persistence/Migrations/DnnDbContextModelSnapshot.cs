@@ -3,36 +3,6 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 
 namespace DnnMigration.Infrastructure.Persistence.Migrations;
 
-// MIGRATION: model record for the intentionally empty baseline migration - metadata only, never
-// schema.
-//
-// This file records the twenty-one-entity model as it stands AFTER the baseline migration beside it
-// has been applied. Entity Framework Core diffs the next migration against exactly this record, so
-// an inaccuracy here corrupts every migration generated afterwards.
-//
-// The body below is generated code and must stay that way: it must remain semantically identical
-// both to the target model recorded by 20260730120000_InitialCreate.Designer.cs and to the model
-// DnnDbContext builds from the twenty-one IEntityTypeConfiguration classes under
-// Persistence/Configurations. The baseline is the only migration in this folder, so the model after
-// it is applied is by definition the model it targets, and the two records must not drift. If a
-// configuration changes, REGENERATE rather than hand-edit.
-//
-// It carries no data-definition language and no migration operation of any kind: the apply and
-// revert methods belong to the sibling migration, which declares both of them empty on purpose. The
-// full reasoning lives there; the short form is that the terminal DotNetNuke schema depends on
-// membership objects installed by an external tool, which the eighty-eight upgrade scripts only ever
-// amend and never originate, so a generated schema could not reproduce a valid database even in
-// principle. AAP Rule T4, "Schema is immutable".
-//
-// Three properties of the record look like mistakes and are not. First, six legacy table names are
-// singular while their siblings are plural, and the entity holding profile values does not share the
-// name of the table it maps, so entity and table names deliberately disagree in one place. Second,
-// every table is mapped plainly under the dbo schema with no name prefix, because the legacy
-// provider registration pins an empty prefix and dbo as the owner. Third, the value converters the
-// configurations declare are absent here: Entity Framework Core cannot serialise a converter into
-// generated model code, so a converted property is recorded in its STORE-facing form instead - the
-// two role billing-cycle properties as nullable one-character ANSI strings, and the permission key
-// as a required fifty-character ANSI string. That is the generator's behaviour, not an omission.
 [DbContext(typeof(DnnDbContext))]
 internal partial class DnnDbContextModelSnapshot : ModelSnapshot
 {

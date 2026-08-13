@@ -1,73 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 
-// Type-only, matching the service under test and the convention already used by the
-// sibling utility specifications. The session shape is erased at compile time, so this
-// specification pulls no runtime code out of the model and cannot be the reason a model
-// export appears in the test bundle.
 import type { AuthSession, CurrentUser } from '../models/auth.model';
 
 import { TokenStorageService } from './token-storage.service';
 
-/**
- * Specification for {@link TokenStorageService}.
- *
- * ## What is under test, and what deliberately is not
- *
- * The unit is the service and nothing else. It performs no HTTP, so no client provider,
- * no testing-transport provider and no request-verifying stub appear below — configuring
- * any of them would advertise a transport dependency this service does not have. The
- * bearer header and the decision that a 401 warrants a renewal belong to the authentication
- * interceptor's own specification; the sign-in and renewal REQUESTS belong to
- * `auth.service.spec.ts`, and the session commits that pair with them belong to
- * `core/state/auth.store.spec.ts`. None is exercised here.
- *
- * `sessionFromLoginResponse` is likewise not tested here. It is a pure projection
- * declared in `core/models/auth.model.ts`, so its coverage belongs with that model
- * rather than with this service; `core/state/auth.store.ts` routes both sign-in and
- * renewal through it, so `auth.store.spec.ts` exercises it in place. Sessions below are
- * built directly as {@link AuthSession} literals, which is exactly what that projection
- * produces.
- *
- * ## The load-bearing expectation
- *
- * `persistence posture` is the reason this file matters more than a getter round-trip
- * would justify. The migration plan requires token custody to be memory-first, and that
- * requirement is otherwise unfalsifiable — a service can claim it in a comment while
- * quietly writing to web storage. Those expectations measure the claim: after a session
- * is held, local storage, session storage and the cookie jar must contain no trace of
- * it. Web storage is readable by any script on the origin AND it survives a reload, so a
- * refresh token left there outlives the tab that obtained it; a cookie would additionally
- * be attached to every same-origin request, reintroducing the request-forgery surface
- * that bearer tokens exist to avoid.
- *
- * The cost is asserted rather than glossed: a fresh injector holds no session, which is
- * the sign-out-on-reload behaviour that memory-first custody accepts by design.
- *
- * ## Fixtures
- *
- * Every token value is transparently a placeholder — `fake-access-token`,
- * `fake-refresh-token`. Nothing here is shaped like a real credential: no JSON Web Token
- * with a decodable payload, no key material, no value that a secret scanner should have
- * to reason about. The legacy configuration this migration replaces committed a live
- * symmetric key to source control (`Website/release.config:L91`, a 3DES
- * `decryptionKey`), which is the habit these fixtures are chosen against. No expectation
- * logs a token, and this file makes no logging call of any kind.
- *
- * MIGRATION: the sixty-minute lifetime referenced by the fixtures is parity with the
- * legacy forms-authentication ticket — `Website/release.config:L147` declares
- * `timeout="60"` on `.DOTNETNUKE`. That ticket was a cookie (`cookieless="UseCookies"`
- * on the same line), so it survived a reload; nothing held by this service does. The
- * divergence is deliberate and is asserted below rather than left to prose.
- */
 describe('TokenStorageService', () => {
   /**
-   * A signed-in identity carrying two permission keys.
-   *
-   * Shared and frozen in effect by convention: no expectation mutates it, so a failure
-   * cannot be caused by an earlier one having altered it. `portalId` is deliberately 0,
-   * which is a legitimate tenant key rather than an absent one — `Portals.PortalID` is
-   * declared `IDENTITY(-1, 1)`, so both 0 and -1 are real keys and neither may be
-   * treated as "missing".
+   * A signed-in identity carrying two permission keys. Shared and frozen in effect by convention: no
+   * expectation mutates it, so a failure cannot be caused by an earlier one having altered it.
    */
   const USER: CurrentUser = {
     userId: 7,
@@ -87,12 +27,7 @@ describe('TokenStorageService', () => {
   /** An expiry far enough ahead that no expectation depends on the current clock. */
   const FAR_FUTURE = '2100-01-01T00:00:00.000Z';
 
-  /**
-   * Builds a session, overriding only what an expectation actually varies.
-   *
-   * Every member of {@link AuthSession} is required and none is optional, so the
-   * defaults are spelled out rather than left to inference.
-   */
+  /** Builds a session, overriding only what an expectation actually varies. */
   function aSession(overrides: Partial<AuthSession> = {}): AuthSession {
     return {
       accessToken: 'fake-access-token',
@@ -109,10 +44,6 @@ describe('TokenStorageService', () => {
   let service: TokenStorageService;
 
   beforeEach(() => {
-    // Cleared before the service is resolved, so the persistence expectations measure
-    // what THIS service wrote and not whatever the runner or a previously executed
-    // specification happened to leave behind. Nothing else is touched, so there is
-    // nothing to restore afterwards.
     localStorage.clear();
     sessionStorage.clear();
 
@@ -128,9 +59,8 @@ describe('TokenStorageService', () => {
     });
 
     it('is a singleton, so every reader agrees about who is signed in', () => {
-      // The identity matters rather than the equality: two instances would each hold
-      // their own session, and an interceptor could then present a token that a guard
-      // believed had been discarded.
+      // The identity matters rather than the equality: two instances would each hold their own session, and
+      // an interceptor could then present a token that a guard believed had been discarded.
       expect(TestBed.inject(TokenStorageService)).toBe(service);
     });
 
@@ -196,12 +126,9 @@ describe('TokenStorageService', () => {
     });
 
     it('returns the expiry exactly as the server stamped it, with no conversion or reformatting', () => {
-      // The load-bearing part of this expectation is the OFFSET form. A `Date`
-      // round-trip would normalise `+00:00` to `Z` and add the millisecond field,
-      // yielding '2100-01-01T00:00:00.000Z' — a different string for the same instant.
-      // Asserting the original comes back byte-for-byte therefore proves the getter
-      // parses nothing, reformats nothing and performs no arithmetic; a weaker fixture
-      // already in canonical form could not distinguish the two implementations.
+      // The load-bearing part of this expectation is the OFFSET form. A `Date` round-trip would normalise
+      // `+00:00` to `Z` and add the millisecond field, yielding '2100-01-01T00:00:00.000Z' — a different
+      // string for the same instant.
       const stamped = '2100-01-01T00:00:00+00:00';
 
       service.store(aSession({ expiresAtUtc: stamped }));
@@ -224,10 +151,9 @@ describe('TokenStorageService', () => {
     });
 
     it('replaces a previous session, so a rotated refresh token does not linger', () => {
-      // This is the case that matters. A renewal returns BOTH a new access token and a
-      // new refresh token; keeping the consumed one would have it presented again on the
-      // next renewal, which the server treats as a replay and answers by revoking the
-      // whole token family.
+      // This is the case that matters. A renewal returns BOTH a new access token and a new refresh token;
+      // keeping the consumed one would have it presented again on the next renewal, which the server treats
+      // as a replay and answers by revoking the whole token family.
       service.store(aSession());
 
       service.store(
@@ -296,9 +222,8 @@ describe('TokenStorageService', () => {
     it('writes nothing to local storage', () => {
       service.store(aSession());
 
-      // Absolute rather than a before-and-after delta, because the surrounding
-      // `beforeEach` empties both stores, so an entry of whatever kind is one this
-      // service created.
+      // Absolute rather than a before-and-after delta, because the surrounding `beforeEach` empties both
+      // stores, so an entry of whatever kind is one this service created.
       expect(localStorage.length).toBe(0);
     });
 
@@ -311,11 +236,6 @@ describe('TokenStorageService', () => {
     it('leaks neither token into any local-storage value, whatever the key', () => {
       service.store(aSession());
 
-      // Defence against the case a length check alone would miss: an entry written under
-      // an unexpected key, or a whole session serialised into one blob. Every value is
-      // read rather than only the keys this specification could think to guess, and the
-      // offenders are collected so a failure names what leaked instead of only that
-      // something did.
       const leaked = Object.keys(localStorage)
         .map((key) => localStorage.getItem(key))
         .filter((value) => value !== null && value.includes('fake-'));
@@ -326,9 +246,9 @@ describe('TokenStorageService', () => {
     it('leaks neither token into the cookie jar', () => {
       service.store(aSession());
 
-      // A cookie is the worst of the three surfaces: it survives a reload AND is attached
-      // automatically to every same-origin request, which reintroduces the request-forgery
-      // exposure that presenting a bearer token in a header avoids.
+      // A cookie is the worst of the three surfaces: it survives a reload AND is attached automatically to
+      // every same-origin request, which reintroduces the request-forgery exposure that presenting a bearer
+      // token in a header avoids.
       expect(document.cookie).withContext('access token').not.toContain('fake-access-token');
       expect(document.cookie).withContext('refresh token').not.toContain('fake-refresh-token');
     });
@@ -339,23 +259,14 @@ describe('TokenStorageService', () => {
       TestBed.resetTestingModule();
       TestBed.configureTestingModule({});
 
-      // The executable form of the divergence from legacy behaviour: the `.DOTNETNUKE`
-      // ticket was a cookie and survived a reload for its full sixty minutes, whereas a
-      // reload here ends the session and the person signs in again.
+      // The executable form of the divergence from legacy behaviour: the `.DOTNETNUKE` ticket was a cookie
+      // and survived a reload for its full sixty minutes, whereas a reload here ends the session and the
+      // person signs in again.
       expect(TestBed.inject(TokenStorageService).session()).toBeNull();
     });
   });
 
   describe('empty-string fidelity', () => {
-    // The legacy data layer encoded an absent string as the EMPTY STRING rather than as a
-    // null reference — `Library/Components/Shared/Null.vb` L71-L75 returns `""` literally.
-    // An empty value and an absent value are therefore distinct facts, and collapsing one
-    // into the other is the specific mistake these expectations exist to catch. The
-    // service derives each token with `??`, which is null-and-undefined-triggered only;
-    // had it been written with `||`, every expectation below would fail, because `''` is
-    // falsy. No expectation here uses `??`, `||` or any other coalescing, since doing so
-    // would paper over exactly the defect being tested.
-
     it('returns a stored empty access token as an empty string, not as null', () => {
       service.store(aSession({ accessToken: '' }));
 
@@ -378,9 +289,8 @@ describe('TokenStorageService', () => {
     });
 
     it('distinguishes an empty token from the absence of a session', () => {
-      // The two states the legacy sentinel could not tell apart, asserted side by side:
-      // holding a session whose token is empty is not the same as holding no session, and
-      // only the second yields null.
+      // The two states the legacy sentinel could not tell apart, asserted side by side: holding a session
+      // whose token is empty is not the same as holding no session, and only the second yields null.
       service.store(aSession({ accessToken: '' }));
       const whileHeld = service.accessToken();
 
@@ -392,9 +302,9 @@ describe('TokenStorageService', () => {
     });
 
     it('still reports a session as held when its access token is empty', () => {
-      // Presence of a session and usability of its token are separate questions. An empty
-      // token is a server contract violation, not a sign-out, and the caller that decides
-      // what to do about it needs to be able to see that a session exists.
+      // Presence of a session and usability of its token are separate questions. An empty token is a server
+      // contract violation, not a sign-out, and the caller that decides what to do about it needs to be
+      // able to see that a session exists.
       service.store(aSession({ accessToken: '' }));
 
       expect(service.isAuthenticated()).toBeTrue();
@@ -402,14 +312,6 @@ describe('TokenStorageService', () => {
   });
 
   describe('isAccessTokenExpired', () => {
-    // The service separates the expiry FACT from the expiry VERDICT deliberately, and the
-    // two are tested separately for the same reason. `accessTokenExpiresAt` hands back the
-    // stamped instant unread — proven above by the offset-form round trip — while this
-    // method is the only member that consults a clock, and it takes that clock as an
-    // argument. That is what makes both sides of the boundary assertable without waiting
-    // for real time to pass, so no clock stubbing, no installed fake timers and no
-    // patching of the global date constructor are needed anywhere in this file.
-
     it('reports expired when no session is held, because there is no token to rely on', () => {
       expect(service.isAccessTokenExpired(new Date('2024-01-01T00:00:00.000Z')))
         .withContext('no session')
@@ -443,9 +345,8 @@ describe('TokenStorageService', () => {
     });
 
     it('reports expired for an unreadable expiry rather than assuming it lies in the future', () => {
-      // Failing closed is the only safe direction: an instant that cannot be parsed cannot
-      // be shown to be valid, and treating it as valid would present a token the server is
-      // certain to reject.
+      // Failing closed is the only safe direction: an instant that cannot be parsed cannot be shown to be
+      // valid, and treating it as valid would present a token the server is certain to reject.
       service.store(aSession({ expiresAtUtc: 'not-an-instant' }));
 
       expect(service.isAccessTokenExpired(new Date('2024-01-01T00:00:00.000Z')))
@@ -454,10 +355,6 @@ describe('TokenStorageService', () => {
     });
 
     it('reports expired for an empty expiry, while the getter still reports it as empty', () => {
-      // The two halves of the empty-string contract held together. The stored value is
-      // returned untouched because that is what was stamped, yet the verdict fails closed
-      // because an empty string is not a readable instant. Preserving the value and
-      // trusting it are different decisions.
       service.store(aSession({ expiresAtUtc: '' }));
 
       expect(service.accessTokenExpiresAt()).withContext('value preserved').toBe('');
@@ -475,10 +372,6 @@ describe('TokenStorageService', () => {
     });
 
     it('reads the clock itself when no instant is supplied', () => {
-      // The default argument is part of the contract: a caller with no opinion about the
-      // clock should not have to construct one. A far-future expiry keeps this expectation
-      // independent of when it runs, which is why the fixture is dated 2100 rather than
-      // relative to now.
       service.store(aSession({ expiresAtUtc: FAR_FUTURE }));
 
       expect(service.isAccessTokenExpired()).withContext('expiry far in the future').toBeFalse();
@@ -493,21 +386,10 @@ describe('TokenStorageService', () => {
   });
 
   /**
-   * The auth epoch.
-   *
-   * ⚠ THIS COUNTER IS THE FOUNDATION EVERY ASYNCHRONOUS AUTHENTICATION PATH RESTS ON. The
-   * authentication service, the bearer interceptor and the session store each capture it before
-   * starting work and compare it before committing anything, so a defect here is a defect in
-   * all three at once. That is why its contract is specified at the owner rather than only
-   * through its consumers.
-   *
-   * Two properties matter and both are non-obvious:
-   *
-   * - EVERY transition advances it, including a session REPLACING another and including a clear
-   *   with nothing to clear. Skipping either would leave a window in which stale asynchronous
-   *   work observes a matching epoch and commits.
-   * - The comparison is exact equality, never an ordering test. "The session changed" is the
-   *   only fact being established; how much it changed by is not a question worth answering.
+   * The auth epoch. ⚠ THIS COUNTER IS THE FOUNDATION EVERY ASYNCHRONOUS AUTHENTICATION PATH RESTS ON. The
+   * authentication service, the bearer interceptor and the session store each capture it before starting
+   * work and compare it before committing anything, so a defect here is a defect in all three at once.
+   * That is why its contract is specified at the owner rather than only through its consumers.
    */
   describe('the auth epoch', () => {
     it('starts at zero, so no work can have been captured under an earlier value', () => {
@@ -536,9 +418,9 @@ describe('TokenStorageService', () => {
       expect(service.generation()).toBe(2);
     });
 
-    // ⚠ THE LOAD-BEARING CASE. Advancing only when a session was present would leave the second
-    // of two successive clears silent, so a renewal that began between them would still see a
-    // matching epoch and would resurrect a session that had been ended twice over.
+    // ⚠ THE LOAD-BEARING CASE. Advancing only when a session was present would leave the second of two
+    // successive clears silent, so a renewal that began between them would still see a matching epoch and
+    // would resurrect a session that had been ended twice over.
     it('advances on a clear even when no session was held', () => {
       service.clear();
 
@@ -616,23 +498,11 @@ describe('TokenStorageService', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE RETENTION SET FOR UNACKNOWLEDGED WITHDRAWALS
-  //
-  // ⚠ WHY THIS SECTION EXISTS AT ALL. Signing out discards the session at once, and the refresh
-  // token inside it is the ONLY credential that can end that session on the server — so a
-  // withdrawal refused by a rate limit, an outage or a dropped connection needs the credential
-  // to survive the discard or the session stays renewable until its absolute expiry with nothing
-  // left to withdraw it. The slot that survives the discard was the first half of that fix.
-  //
-  // ⚠ AND WHY IT IS A SET RATHER THAN A SLOT. A security review found the second half: one slot
-  // held one credential, so `sign out (refused) → sign in → sign out` overwrote the first
-  // session's credential with the second's and abandoned it silently. Every case below that
-  // names more than one credential exists because of that sequence. The expectations here
-  // measure CUSTODY only — that the right values are held, retired and ordered. Whether anything
-  // ever withdraws them belongs to `core/state/auth.store.spec.ts`, and whether the application
-  // ever asks it to belongs to the sign-in screen's own specification.
-  // -------------------------------------------------------------------------
+  // ⚠ WHY THIS SECTION EXISTS AT ALL. Signing out discards the session at once, and the refresh token
+  // inside it is the ONLY credential that can end that session on the server — so a withdrawal refused by a
+  // rate limit, an outage or a dropped connection needs the credential to survive the discard or the
+  // session stays renewable until its absolute expiry with nothing left to withdraw it.
 
   describe('pending revocations', () => {
     it('holds nothing before any sign-out', () => {
@@ -673,9 +543,8 @@ describe('TokenStorageService', () => {
     });
 
     it('keeps a repeated credential in its ORIGINAL position rather than moving it to the back', () => {
-      // It has been outstanding since the first retention, and the order is what decides which
-      // credential is given up when the bound is reached — so re-retaining must not make an old
-      // residue look new.
+      // It has been outstanding since the first retention, and the order is what decides which credential
+      // is given up when the bound is reached — so re-retaining must not make an old residue look new.
       service.retainForRevocation('first-session');
       service.retainForRevocation('second-session');
       service.retainForRevocation('first-session');
@@ -684,9 +553,9 @@ describe('TokenStorageService', () => {
     });
 
     it('holds at most four, dropping the OLDEST when a fifth arrives', () => {
-      // Four is the declared ceiling. The oldest end is given up deliberately: a credential
-      // retained earlier is nearer its own absolute expiry, so its residual window is the
-      // shortest of the set and abandoning it costs least.
+      // Four is the declared ceiling. The oldest end is given up deliberately: a credential retained
+      // earlier is nearer its own absolute expiry, so its residual window is the shortest of the set and
+      // abandoning it costs least.
       for (const credential of ['one', 'two', 'three', 'four', 'five']) {
         service.retainForRevocation(credential);
       }
@@ -766,8 +635,6 @@ describe('TokenStorageService', () => {
     });
 
     it('survives a later sign-in, so the previous session\'s residue is not lost to it', () => {
-      // The measured defect: the retained credential used to be overwritten by the NEXT
-      // sign-out, and nothing about a sign-in may quietly discard it either.
       service.retainForRevocation('first-session');
 
       service.store(aSession({ refreshToken: 'second-session' }));

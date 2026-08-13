@@ -1,63 +1,3 @@
-/**
- * The User Accounts listing screen.
- *
- * Replaces the DotNetNuke Web Forms control pair `Website/admin/Users/users.ascx` and
- * `Website/admin/Users/Users.ascx.vb`. Reached at `/users`, the empty child path of
- * `USER_ROUTES`.
- *
- * ---------------------------------------------------------------------------
- * THE CONTRACT WITH `user-list.component.html`
- * ---------------------------------------------------------------------------
- *
- * Seven `ng-template` declarations must exist at the TOP LEVEL of the template file,
- * outside every control-flow block, because the shared table renders rich cells and row
- * commands through an outlet fed by a `TemplateRef` this class captures:
- *
- * | Reference           | Renders                                                      |
- * |---------------------|--------------------------------------------------------------|
- * | `#editCommand`      | the row edit command, `routerLink` to `/users/{userId}`       |
- * | `#deleteCommand`    | the row delete command, calling {@link UserListComponent.requestDeletion} |
- * | `#manageRolesCommand` | the row roles command, `routerLink` to `/roles`             |
- * | `#emailCell`        | the electronic-mail cell, a `mailto:` anchor bound with `[href]` |
- * | `#createdDateCell`  | `{{ row.createdDate | dateDisplay: 'datetime' }}`            |
- * | `#lastLoginCell`    | `{{ row.lastLoginDate | dateDisplay: 'datetime' }}`         |
- * | `#approvedCell`     | `{{ row.isApproved | yesNo }}`                               |
- *
- * A missing declaration raises an error naming the reference rather than rendering a
- * silently wrong grid — see {@link UserListComponent.requireTemplate}.
- *
- * ---------------------------------------------------------------------------
- * WHAT THIS SCREEN DOES NOT DO
- * ---------------------------------------------------------------------------
- *
- * No request is issued from this file. Every fact shown and every request made belongs to
- * `core/state/user.store.ts`, which is injected and commanded; the transport, the endpoint
- * table, the query-parameter builder and the HTTP client are all unreachable from here by
- * design, because Minimal Change Clause item 5 confines data access to the store and its
- * service. Nothing is cached locally either: the legacy `DataCache` wrapper
- * (`Library/Components/Providers/Caching/DataCache.vb`, reached from 116 in-scope call
- * sites) is deliberately not reproduced anywhere in the client, so there is no cache map,
- * no expiry stamp and no staleness flag below.
- *
- * MIGRATION: view state disappears entirely. The legacy page index descended from
- * `ViewState("PageNo")` (`ManageUsers.ascx.vb` L174-L185, seeded at nought) and every
- * post-back re-bound the grid from scratch. Page, search and ordering are now signals the
- * store owns, and `Session(` appears nowhere in the legacy tree to begin with.
- *
- * MIGRATION: localisation is not ported. The framework's localisation package is outside
- * this workspace's closed dependency set, so none of the 48 in-scope localisation calls is
- * reproduced, and neither the tagged-template localisation helper nor a translation
- * attribute appears anywhere here. The twelve Users resource files were read for WORDING
- * ONLY, and every user-visible string below is a module-level constant carrying the
- * resource key it was taken from.
- *
- * MIGRATION: resource text is untrusted markup and is rendered as PLAIN TEXT ONLY. Across
- * the 37 in-scope resource files 76 values carry a raw HTML tag and one carries a live
- * script element; this directory's own `ModuleHelp.Text` is itself HTML. Nothing here is
- * ever bound as raw markup, no sanitiser bypass is used, and no help text is copied out of
- * a resource value — where the screen needs prose it is authored as real template markup.
- */
-
 import {
   ChangeDetectionStrategy,
   Component,
@@ -113,21 +53,7 @@ import type {
   DataTableSortChange,
 } from '../../../shared/components/data-table/data-table.component';
 
-// ---------------------------------------------------------------------------
 // WORDING
-// ---------------------------------------------------------------------------
-//
-// Every string below was read out of a legacy resource file and is recorded with the key
-// it came from, so a reader can trace the wording back to what the operator used to see.
-//
-// ⚠ THE RESOURCE VALUE IS THE AUTHORITY, NEVER THE MARKUP ATTRIBUTE. `Users.ascx.vb` L585
-// ran `Localization.LocalizeDataGrid`, which rewrote every heading from
-// `GetString(HeaderText & ".Header", ResourceFile)` at run time, so five of the markup
-// `headertext` values in `users.ascx` are contradicted by the resource file and the
-// resource file wins. `FirstName` renders as "First Name", `LastName` as "Last Name",
-// `DisplayName` as "Name", `CreatedDate` as "Created Date" and `LastLogin` as
-// "Last Login". Taking the markup attribute would have produced five wrong headings that
-// no compiler could have caught.
 
 /** `Users.ascx.resx` `ControlTitle_.Text`. */
 const PAGE_TITLE = 'User Accounts';
@@ -143,18 +69,7 @@ const PROFILE_DEFINITIONS_LABEL = 'Manage Profile Properties';
 
 /**
  * Disclosed when the tenant's account policy could not be read, so this listing is running on its
- * documented fallbacks — #5.
- *
- * AUTHORED, and reported as a net addition. There is no legacy wording to recover because the
- * legacy screen could not reach this state: `Website/admin/Users/Users.ascx.vb` read every setting
- * through `UserModuleBase.GetSetting(PortalId, key)`, which answered the hard-coded default for an
- * unreadable or absent key WITHOUT reporting that it had done so, and `Page_Init` L508-L517 then
- * applied that answer to the grid. The legacy screen was therefore structurally incapable of
- * saying this, and its silence is the reason a fallback could be mistaken for a preference.
- *
- * It names the two things the policy actually decides on this screen and nothing else, because
- * over-claiming here would repeat in a quieter voice the very error being fixed: the accounts
- * themselves are unaffected and the sentence must not imply otherwise.
+ * documented fallbacks — #5. AUTHORED, and reported as a net addition.
  */
 const POLICY_DEGRADED_NOTICE =
   'This site\u2019s user settings could not be read, so this list is shown at the default page size with the default columns. The accounts themselves are unaffected.';
@@ -163,83 +78,42 @@ const POLICY_DEGRADED_NOTICE =
 const SEARCH_LABEL = 'Search:';
 
 /**
- * Label for the search-type selector.
- *
- * MIGRATION: `users.ascx` L8 declared `ddlSearchType` with NO associated label of any kind,
- * so the legacy control reached assistive technology unnamed. The resource file supplies no
- * key for it either. This wording is therefore authored rather than ported, and it is an
- * accessibility addition with no visual counterpart in the legacy screen: the selector is
- * wrapped in the shared form field so that the name is programmatically associated.
+ * Label for the search-type selector. `users.ascx` L8 declared `ddlSearchType` with NO associated label
+ * of any kind, so the legacy control reached assistive technology unnamed.
  */
 const SEARCH_FIELD_LABEL = 'Search by';
 
-/**
- * `SharedResources.resx` `Edit.Text`.
- *
- * The local resource file carries NO `Edit` key, so the legacy three-level lookup at
- * `Users.ascx.vb` L550 — `Localization.GetString(imageColumn.CommandName, LocalResourceFile)`
- * — fell through to the shared global resources, where the value is "Edit".
- */
 const EDIT_COMMAND_LABEL = 'Edit';
 
-/** `Users.ascx.resx` `Delete.Text`. Present locally, so the shared value is never reached. */
+/** `Users.ascx.resx` `Delete.Text`. */
 const DELETE_COMMAND_LABEL = 'Delete';
 
-/**
- * `Users.ascx.resx` `UserRoles.Text`.
- *
- * The label is keyed by the legacy COMMAND NAME rather than by anything visible:
- * `Users.ascx` L34 declares `CommandName="UserRoles"` and L550 uses that name as the
- * resource key, which resolves to "Manage Roles".
- */
+/** `Users.ascx.resx` `UserRoles.Text`. */
 const MANAGE_ROLES_COMMAND_LABEL = 'Manage Roles';
 
-/** `SharedResources.resx` `DeleteItem.Text`, reached from `Users.ascx.vb` L523. */
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
-/** `Users.ascx.resx` `UserDeleted.Text`, reported at `Users.ascx.vb` L655 on success. */
 const USER_DELETED_MESSAGE = 'User Deleted Successfully';
 
-/**
- * `SharedResources.resx` `UserDeleteError.Text`, reported at `Users.ascx.vb` L657 on failure.
- *
- * The local resource file carries no `UserDeleteError` key, so this is another three-level
- * fall-through to the shared global resources.
- */
 const USER_DELETE_ERROR_MESSAGE = 'Error Deleting User';
 
-/** `SharedResources.resx` `All.Text`, the unfiltered affordance appended at `Users.ascx.vb` L308. */
 const ALL_FILTER_LABEL = 'All';
 
 /**
- * The notice shown while the tenant's opening-view policy has issued no query.
- *
- * AUTHORED, and there is no legacy wording to recover because the legacy screen showed NONE:
- * `Users.ascx.vb` L266 excluded the bare marker `"None"` from every branch of `BindData`, so
- * `grdUsers.DataSource` was assigned `Nothing` and the grid rendered unbound and silent. An
- * operator arriving on a tenant configured that way — which is every tenant that has configured
- * nothing, since `UserModuleBase.vb` L126-L130 defaulted the setting to that mode — was shown an
- * empty grid and left to work out that the accounts were merely unrequested.
- *
- * ⚠ THE ALTERNATIVE IS NOT SILENCE, IT IS A FALSEHOOD. Without this notice the shared grid renders
- * its own empty state, whose wording says nothing was found — and nothing was looked for. It names
- * both ways forward using the wording those affordances actually carry, so the sentence and the
- * controls agree.
+ * The notice shown while the tenant's opening-view policy has issued no query. AUTHORED, and there is no
+ * legacy wording to recover because the legacy screen showed NONE: `Users.ascx.vb` L266 excluded the bare
+ * marker `"None"` from every branch of `BindData`, so `grdUsers.DataSource` was assigned `Nothing` and
+ * the grid rendered unbound and silent.
  */
 const NO_QUERY_NOTICE =
   'No accounts have been requested yet. Choose a letter, or select All, to list this site’s accounts.';
 
 /**
- * `Users.ascx.resx` `Filter.Text`, verbatim.
- *
- * A pure 26-letter list: no "All" entry, no "0-9" entry and no punctuation beyond the
- * separators. `Users.ascx.vb` L306-L310 read this value and then APPENDED the unfiltered,
- * signed-in and unauthorised affordances to it before splitting, which is why the letters
- * and the "All" entry are assembled separately below.
+ * `Users.ascx.resx` `Filter.Text`, verbatim. A pure 26-letter list: no "All" entry, no "0-9" entry and no
+ * punctuation beyond the separators.
  */
 const LETTER_FILTER_LIST = 'A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z';
 
-/** The separator `Users.ascx.vb` L312 split {@link LETTER_FILTER_LIST} on. */
 const LETTER_FILTER_SEPARATOR = ',';
 
 /** `Users.ascx.resx` `Username.Header`. */
@@ -273,47 +147,16 @@ const LAST_LOGIN_HEADING = 'Last Login';
 const AUTHORIZED_HEADING = 'Authorized';
 
 /**
- * Placeholder for the free-text search control. Authored: the legacy textbox had none.
- *
- * ⚠ U-M13 — IT STATES THE PREDICATE, AND THE PREVIOUS WORDING PROMISED THE WRONG ONE. It read
- * "Search accounts", which an operator reasonably takes to mean a search of the account — anywhere
- * in it. The match is a STARTS-WITH: `Website/admin/Users/Users.ascx.vb` L269, L271 and L274 each
- * append a single TRAILING wildcard and nothing leading, and the target endpoint reproduces that
- * appending exactly. So typing `smith` finds `smithers` and does not find `johnsmith`, and an
- * operator working from the old wording would read that as missing data rather than as the rule.
- *
- * ⚠ IT NAMES NO FIELD, DELIBERATELY, and that is not vagueness. The axis is chosen in the selector
- * beside this box and is an OPEN SET — account name, electronic-mail address, or any profile
- * property the tenant has declared — so the field is what the selector says and the predicate is
- * what this says. Naming a field here would contradict the selector for two of its three kinds of
- * entry.
+ * Placeholder for the free-text search control. Authored: the legacy textbox had none. ⚠ U-M13 — IT
+ * STATES THE PREDICATE, AND THE PREVIOUS WORDING PROMISED THE WRONG ONE. It read "Search accounts", which
+ * an operator reasonably takes to mean a search of the account — anywhere in it.
  */
 const SEARCH_PLACEHOLDER = 'Begins with';
 
 /**
- * The filter-in-force disclosure — U-M12 and the other half of #7.
- *
- * ⚠ WHY THIS EXISTS AT ALL. The alphabet strip announces the entry in force through `aria-pressed`,
- * and it is TRUTHFUL for it to announce none while a free-text term is filtering the listing —
- * none of the twenty-seven entries is what is in force. But truthful silence still leaves an
- * operator unable to see that a filter is applied: the strip shows nothing pressed, exactly as it
- * does on an unfiltered listing, and the two states look identical.
- *
- * ⚠ IT ALSO CLOSES THE COMPOUND HALF OF #7, WHICH NOTHING ELSE COULD. Changing the search axis
- * re-queries nothing — `users.ascx` L8 declared `ddlSearchType` with no auto-post-back, and
- * `Users.ascx.vb` L586 read the selection at QUERY time — so after switching from account name to
- * electronic-mail address, the listing on screen is still filtered by the OLD axis until a search
- * is run. That is parity and is kept. What was missing is any way to see it: this sentence names
- * the axis the LISTING is filtered on, so an operator comparing it against the selector can see at
- * a glance that their new selection has not been applied yet.
- *
- * AUTHORED. The legacy screen rendered no such statement, because its filter travelled in the
- * query string and was therefore visible in the address bar of every filtered listing
- * (`FilterURL`, L446-L456). The target keeps the filter in a store, so the address no longer says
- * it and the screen must.
- *
- * `{field}` is substituted with the axis in words and `{text}` with the term exactly as it is being
- * matched. See {@link UserListComponent.filterDisclosure}.
+ * The filter-in-force disclosure — U-M12 and the other half of #7. ⚠ WHY THIS EXISTS AT ALL. The alphabet
+ * strip announces the entry in force through `aria-pressed`, and it is TRUTHFUL for it to announce none
+ * while a free-text term is filtering the listing — none of the twenty-seven entries is what is in force.
  */
 const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: {field} begins with \u201c{text}\u201d.';
 
@@ -324,208 +167,87 @@ const USERNAME_AXIS_WORDING = 'user name';
 const EMAIL_AXIS_WORDING = 'email';
 
 /**
- * The mark painted where a profile value the tenant has chosen to show is not recorded — U-M2.
- *
- * ⚠ MEASURED BEFORE IT WAS DESIGNED, AND THE MEASUREMENT CHANGED THE ANSWER. The postal address and
- * the telephone number are two of the columns this tenant's policy SHOWS, and both render nothing on
- * every row: measured across all two hundred and fifty-three accounts, `address` and `telephone` are
- * null on every one — on the detail endpoint as well as on the listing, so nothing is being dropped
- * in projection and there is no server-side value to recover. They are simply not recorded. An empty
- * cell is therefore TRUTHFUL, and the defect is that it is indistinguishable from a cell that failed
- * to render: two hundred and thirty-eight units of a grid saying nothing at all, with no way to tell
- * "nobody recorded this" from "this is broken".
- *
- * ⚠ NOT AN INVENTED PLACEHOLDER, AND SPECIFICALLY NOT A WORD. An em dash paints the absence without
- * ever being mistaken for a value — no address and no telephone number can be spelled this way,
- * whereas "None", "N/A" or "Unknown" are all things a person could have typed into a free-text
- * profile field. The same mark and the same reasoning already carry the absent host name on the
- * portal alias listing, so a reader meets one convention for absence across the console rather than
- * two.
+ * The mark painted where a profile value the tenant has chosen to show is not recorded — U-M2. ⚠ MEASURED
+ * BEFORE IT WAS DESIGNED, AND THE MEASUREMENT CHANGED THE ANSWER. The postal address and the telephone
+ * number are two of the columns this tenant's policy SHOWS, and both render nothing on every row:
+ * measured across all two hundred and fifty-three accounts, `address` and `telephone` are null on every
+ * one — on the detail endpoint as well as on the listing, so nothing is being dropped in projection and
+ * there is no server-side value to recover.
  */
 const ABSENT_PROFILE_VALUE_MARK = '\u2014';
 
-/**
- * What the mark above MEANS, for a reader who cannot see it.
- *
- * The mark itself is hidden from assistive technology and this sentence is exposed in its place,
- * because an em dash announces as punctuation or as nothing at all depending on the reader's
- * verbosity setting — so on its own it would restore exactly the silence it is there to break.
- */
+/** What the mark above MEANS, for a reader who cannot see it. */
 const ABSENT_PROFILE_VALUE_DESCRIPTION = 'not recorded';
 
 /**
- * The qualifier shown beside the approval word when an account is LOCKED OUT — U-M1.
- *
- * ⚠ THE APPROVAL WORD ALONE IS MISLEADING FOR THESE ACCOUNTS, WHICH IS WHY THIS EXISTS. The column
- * is the legacy `Authorized` column and it reports approval, which is genuinely a different fact
- * from lock-out — but an operator reads the column to answer one question, "can this account be
- * used", and for a locked-out account the answer is no while the cell says `Yes`. Measured on this
- * tenant: eleven of two hundred and fifty-three accounts are locked out and every one of them
- * rendered an unqualified `Yes`, so the only accounts an operator could actually find were the
- * thirty-four unapproved ones.
- *
- * MIGRATION: a net addition to the LISTING, and reported as one. Lock-out was legacy-visible only on
- * the per-account panel — `Website/admin/Users/Membership.ascx` is a read-only panel hosted beside
- * the account editor at `manageusers.ascx` L59-L63, and it carried the unlock command — so the
- * capability is legacy and only its DISCOVERABILITY is new. The approval word itself is unchanged
- * and no column is added: the fact is attached to the cell whose meaning it qualifies, which keeps
- * the tenant's `Column_Authorized` gate governing both.
+ * The qualifier shown beside the approval word when an account is LOCKED OUT — U-M1. ⚠ THE APPROVAL WORD
+ * ALONE IS MISLEADING FOR THESE ACCOUNTS, WHICH IS WHY THIS EXISTS. The column is the legacy `Authorized`
+ * column and it reports approval, which is genuinely a different fact from lock-out — but an operator
+ * reads the column to answer one question, "can this account be used", and for a locked-out account the
+ * answer is no while the cell says `Yes`.
  */
 const LOCKED_OUT_QUALIFIER = 'Locked';
 
 /**
  * What the qualifier above means, spelled out for a reader who meets it without the column heading.
- *
- * Exposed alongside the visible word rather than replacing it: the short word is what fits a grid
- * cell, and the sentence is what makes it unambiguous.
+ * Exposed alongside the visible word rather than replacing it: the short word is what fits a grid cell,
+ * and the sentence is what makes it unambiguous.
  */
 const LOCKED_OUT_DESCRIPTION = 'locked out, cannot sign in';
 
-/**
- * Accessible name for the alphabet strip's navigation landmark.
- *
- * AUTHORED, and invisible. `users.ascx` L14 wrapped the strip in a centred panel with no name
- * of any kind, so a screen reader met twenty-seven unexplained links. Naming the landmark
- * costs nothing visually and the resource file supplies no key for it, so the wording is
- * written here rather than ported.
- */
+/** Accessible name for the alphabet strip's navigation landmark. AUTHORED, and invisible. */
 const FILTER_STRIP_LABEL = 'Filter accounts by first letter';
 
-// ---------------------------------------------------------------------------
 // NAVIGATION TARGETS
-// ---------------------------------------------------------------------------
-//
-// Plain path strings, declared once. Each is bound through `routerLink`, so the router
-// owns URL construction and nothing here concatenates a query string — which is what the
-// legacy screen did at `Users.ascx.vb` L164-L188, assembling `filter`, `filterproperty`
-// and `currentpage` by hand into a string it then substituted a placeholder into.
 
 /** The listing's own segment, and the prefix of every account editor route. */
 const USERS_PATH = '/users';
 
-/** `Users.ascx.vb` L725 `ModuleActionType.AddContent`, whose editor target is the create form. */
 const ADD_USER_LINK = '/users/new';
 
 /**
- * `Users.ascx.vb` L732 `UserSettings.Action`.
- *
- * A TOP-LEVEL route rather than a child of `users`, because it configures the tenant and not
- * one account; `app.routes.ts` loads `settings/membership` directly.
+ * `Users.ascx.vb` L732 `UserSettings.Action`. A TOP-LEVEL route rather than a child of `users`, because
+ * it configures the tenant and not one account; `app.routes.ts` loads `settings/membership` directly.
  */
 const MEMBERSHIP_SETTINGS_LINK = '/settings/membership';
 
-/**
- * `Users.ascx.vb` L730 `ManageProfile.Action`.
- *
- * Also a top-level route, loaded directly by `app.routes.ts` as
- * `settings/profile-definitions`.
- */
 const PROFILE_DEFINITIONS_LINK = '/settings/profile-definitions';
 
-/**
- * Target of the third row command.
- *
- * MIGRATION: A REDUCTION, AND A DELIBERATE ONE. `Users.ascx.vb` L542 navigated to
- * `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`, a PER-ACCOUNT role screen. No
- * such route exists in the target's closed route set — the only membership route is
- * `/roles/:roleId/users`, which is keyed by ROLE and belongs to the role feature. A feature
- * may not import another feature, so this command navigates to the role listing by URL
- * string and the operator reaches a specific account's memberships from there. Recorded as a
- * documented functional reduction.
- */
 const MANAGE_ROLES_LINK = '/roles';
 
 // ---------------------------------------------------------------------------
 // THE SEARCH AXIS
 // ---------------------------------------------------------------------------
 
-/**
- * The two search fields the legacy `Select Case` matched by name.
- *
- * `Users.ascx.vb` L267-L276 switched on the selector's value with `Case "Email"`,
- * `Case "Username"` and `Case Else`, and `Page_Load` L577-L578 added exactly these two
- * entries before any tenant-declared profile property. The spellings are therefore the
- * legacy ones and are matched by identity, never case-folded.
- *
- * MIGRATION: a tenant that declares a profile property literally named `Username` or `Email`
- * produces a duplicate entry whose value collides with one of these two, and the account
- * field wins because the legacy switch tested it first. That quirk is PRESERVED rather than
- * corrected: the ordering below is the legacy ordering, and silently renaming or
- * de-duplicating a tenant's own declaration would be a behavioural change of exactly the
- * kind Minimal Change Clause item 1 forbids.
- */
 const USERNAME_SEARCH_FIELD = 'Username';
 
 /** The second of the two account fields the legacy switch matched by name. */
 const EMAIL_SEARCH_FIELD = 'Email';
 
-// ---------------------------------------------------------------------------
-//  THE ADDRESS
-//
-//  This listing keeps its search, its search AXIS and its page in the address, so a reload, a bookmark and
-//  the browser's own back and forward buttons all reproduce what is on screen. Runtime testing on the
-//  sibling portal listing measured what the absence of that cost: pager clicks advanced the grid while the
-//  address stayed on the bare route, pressing back from page three was not possible because paging created no
-//  history entry at all, and a fresh arrival landed on a page and a filter the operator could not see,
-//  because this store is provided at the application root and OUTLIVES this route.
-//
-//  ⚠ THIS LISTING HAS A THIRD STATE THE OTHER THREE DO NOT, and the address has to express it. An empty
-//  address does NOT mean "show everything": it means NOTHING HAS BEEN ASKED FOR, which is a real legacy state
-//  - `Users.ascx.vb` L266 compared against a magic string that fell through every branch and left the grid
-//  unbound - and it is distinct from the unfiltered listing, which really does ask the server for every
-//  account. Absence therefore leaves the tenant's policy to choose the opening view exactly as it does on a
-//  first ever visit, and the unfiltered listing is stated explicitly as `?searchby=all`.
+// THE ADDRESS
 
 /**
- * Address parameter carrying the axis a search applies to.
- *
- * The axis is an OPEN SET: the two account fields below plus any profile property the tenant declares, which
- * is why this parameter carries the field NAME rather than an index into a closed list. It also carries the
- * reserved {@link ALL_ACCOUNTS_TOKEN}, which names no axis at all.
+ * Address parameter carrying the axis a search applies to. The axis is an OPEN SET: the two account
+ * fields below plus any profile property the tenant declares, which is why this parameter carries the
+ * field NAME rather than an index into a closed list.
  */
 const SEARCH_BY_PARAM = 'searchby';
 
 /**
- * The {@link SEARCH_BY_PARAM} value standing for every account in the tenant, unfiltered.
- *
- * Reserved, and therefore unusable as a profile property name. That collision is accepted: it would require a
- * tenant to declare a property called exactly `all`, and the alternative - a second boolean parameter beside
- * the axis - would make two parameters able to contradict each other.
+ * The {@link SEARCH_BY_PARAM} value standing for every account in the tenant, unfiltered. Reserved, and
+ * therefore unusable as a profile property name.
  */
 const ALL_ACCOUNTS_TOKEN = 'all';
 
 /** Identifier for the search-type selector, so the shared form field can name it. */
 const SEARCH_FIELD_CONTROL_ID = 'user-list-search-field';
 
-/** The character `HtmlUtils.FormatEmail` tested for at `HtmlUtils.vb` L94. */
 const MAILBOX_SEPARATOR = '@';
 
 /**
- * The search, axis and page this listing is showing, as the address states them.
- *
- * Held as one object because they are restored TOGETHER on entry: every search command returns the listing to
- * the first page, so applying a search and a page separately would discard the page the address asked for.
- */
-/**
- * The grid columns this listing offers an ordering on, each mapped to the field the endpoint binds.
- *
- * ⚠ A MAP RATHER THAN A LIST, because the two vocabularies genuinely differ: the grid keys its columns in
- * camel case, while {@link UserSortField} is the endpoint's own Pascal-cased member set. Sending a column key
- * would work today - the model binder is case-insensitive, verified - but the STORE is typed to
- * `UserSortField`, so the translation has to exist somewhere and a declared map is the one place it can be
- * read off rather than inferred.
- *
- * ⚠ EVERY ENTRY WAS VERIFIED AGAINST THE RUNNING ENDPOINT, and so was every exclusion, because an affordance
- * that produces a refused request is worse than no affordance. `GET /api/v1/users` accepts exactly
- * DisplayName, Email, FirstName, IsSuperUser, LastName, UserId and Username, and answers anything else with a
- * field-level `400`. The five below were each issued and observed to return `200` with a genuinely different
- * order; `address`, `telephone`, `createdDate`, `lastLoginDate` and `approved` were each issued and observed
- * to be REFUSED, which is why those five headings stay inert. `UserId` and `IsSuperUser` are accepted by the
- * endpoint but have no heading here to attach an ordering to - this grid renders neither.
- *
- * MIGRATION: sorting is a NET ADDITION; the legacy grid declared no `AllowSorting`. It is offered because AAP
- * 0.3.2 specifies `sortBy`, `sortDir` and `sortChange` on the shared record grid and the review recorded
- * their absence here as an AAP compliance failure rather than a design choice.
+ * The search, axis and page this listing is showing, as the address states them. Held as one object
+ * because they are restored TOGETHER on entry: every search command returns the listing to the first
+ * page, so applying a search and a page separately would discard the page the address asked for.
  */
 const SORTABLE_COLUMNS: Readonly<Record<string, UserSortField>> = Object.freeze({
   userName: 'Username',
@@ -539,10 +261,9 @@ const SORTABLE_COLUMNS: Readonly<Record<string, UserSortField>> = Object.freeze(
 const SORTABLE_COLUMN_KEYS: readonly string[] = Object.freeze(Object.keys(SORTABLE_COLUMNS));
 
 /**
- * The grid column key an endpoint field came from, or `null`.
- *
- * Derived by reversing {@link SORTABLE_COLUMNS} at each call rather than by keeping a second frozen table,
- * because two tables can disagree and one cannot. The map has five entries, so the scan is free.
+ * The grid column key an endpoint field came from, or `null`. Derived by reversing {@link
+ * SORTABLE_COLUMNS} at each call rather than by keeping a second frozen table, because two tables can
+ * disagree and one cannot.
  *
  * @param field The endpoint field the store is holding, or undefined when it holds none.
  * @returns The column key to mark active in the grid, or `null` when no column corresponds.
@@ -558,40 +279,29 @@ function columnKeyForSortField(field: UserSortField | undefined): string | null 
 }
 
 interface UserListAddressQuery {
-  /** The search to apply. Mode `none` means the address asked for nothing. */
+  /** The search to apply. */
   readonly search: UserSearch;
 
-  /**
-   * The axis the search-type selector should show.
-   *
-   * Carried separately from {@link search} because the selector holds a value even in modes that have no
-   * axis of their own - the unfiltered listing and the nothing-asked-for state - and an operator returning
-   * to a bookmarked unfiltered listing should still find the selector where they left it.
-   */
+  /** The axis the search-type selector should show. */
   readonly axis: string;
 
   /** The page to read, counted from nought. */
   readonly pageIndex: number;
 
   /**
-   * The grid column to order by, or `null` to accept the endpoint's own default ordering.
-   *
-   * A COLUMN KEY, not an endpoint field: the address speaks the grid's vocabulary so that what is in the
-   * address matches what the heading is called. {@link SORTABLE_COLUMNS} performs the translation at the one
+   * The grid column to order by, or `null` to accept the endpoint's own default ordering. A COLUMN KEY,
+   * not an endpoint field: the address speaks the grid's vocabulary so that what is in the address
+   * matches what the heading is called. {@link SORTABLE_COLUMNS} performs the translation at the one
    * point the store is spoken to.
    */
   readonly sortBy: string | null;
 
-  /** The direction, or `null`. Only ever set alongside {@link UserListAddressQuery.sortBy}. */
+  /** The direction, or `null`. */
   readonly sortDir: SortDirection | null;
 }
 
 /**
  * Reads a search out of an address.
- *
- * The three prefix modes are distinguished by the AXIS, reproducing the legacy switch: the two account fields
- * are matched by name and anything else is a profile property, which is what keeps the third axis an open set
- * (`Users.ascx.vb` L268-L274).
  *
  * @param axis The axis parameter, or `null` when absent.
  * @param text The filter parameter, or `null` when absent.
@@ -602,9 +312,6 @@ function parseAddressSearch(axis: string | null, text: string | null): UserSearc
     return { mode: 'all' };
   }
 
-  // ⚠ AN ABSENT FILTER IS NOT AN EMPTY ONE. With no text there is nothing to match on, so the address has
-  // asked for nothing and the policy chooses the opening view - which is NOT the same as searching for the
-  // empty string, a query the legacy screen treated as no filter at all.
   if (text === null) {
     return { mode: 'none' };
   }
@@ -687,11 +394,7 @@ function searchParameters(search: UserSearch, axis: string): Params {
 function serialiseUserListQuery(query: UserListAddressQuery): Params {
   return {
     ...searchParameters(query.search, query.axis),
-    // ⚠ A SEARCH-LESS ADDRESS CARRIES NO MEANINGFUL PAGE, so one is corrected away rather than obeyed. Which
-    // page four IS depends on a result set nobody has asked for: with no search stated the tenant's policy
-    // chooses the opening view and returns to the first page, so an address naming a page would describe a
-    // screen that cannot exist. Every affordance on this screen writes the search ALONGSIDE the page for
-    // exactly this reason, so this branch is only ever reached by a hand-edited or truncated address.
+    // ⚠ A SEARCH-LESS ADDRESS CARRIES NO MEANINGFUL PAGE, so one is corrected away rather than obeyed.
     [PAGE_PARAM]: query.search.mode === 'none' ? null : firstPageParameter(query.pageIndex),
     [SORT_BY_PARAM]: query.sortBy,
     // Emitted only alongside a field, matching exactly what the reader accepts back, so a round trip through
@@ -700,23 +403,12 @@ function serialiseUserListQuery(query: UserListAddressQuery): Params {
   };
 }
 
-/** The scheme `HtmlUtils.FormatEmail` emitted at `HtmlUtils.vb` L95. */
 const MAILTO_SCHEME = 'mailto:';
 
 /**
- * Display wording for a search field, keyed by its legacy name.
- *
- * `AddSearchItem` (`Users.ascx.vb` L205-L218) resolved each entry through
- * `Localization.GetString(name, LocalResourceFile)` and FELL BACK TO THE RAW NAME when the
- * lookup returned nothing. These twenty-one entries are the `*.Text` values the Users
- * resource file actually supplies; the fallback is reproduced by
- * {@link searchFieldLabel}, which is what keeps the third search axis an OPEN SET — a
- * tenant may declare any profile property, and one this map does not know is labelled with
- * its own name rather than rejected.
- *
- * Typed with an optional value so that an unknown key reads as `undefined` at the type
- * level too; the workspace does not enable unchecked indexed access, so a bare
- * `Record<string, string>` would have claimed a value that is not there.
+ * Display wording for a search field, keyed by its legacy name. `AddSearchItem` (`Users.ascx.vb`
+ * L205-L218) resolved each entry through `Localization.GetString(name, LocalResourceFile)` and FELL BACK
+ * TO THE RAW NAME when the lookup returned nothing.
  */
 const SEARCH_FIELD_LABELS: Readonly<Record<string, string | undefined>> = Object.freeze({
   Username: 'Username',
@@ -751,31 +443,17 @@ export interface UserSearchFieldOption {
   readonly label: string;
 
   /**
-   * The template's tracking key: this entry's ordinal joined to its value.
-   *
-   * ⚠ CARRIED AS DATA RATHER THAN DERIVED IN THE TEMPLATE, and the composition is load-bearing on both
-   * halves. The ORDINAL is what keeps the key unique when a tenant declares a profile property literally
-   * named `Username` or `Email`: that produces a genuine duplicate of an account field's value, which the
-   * paired component preserves rather than de-duplicating because the legacy switch tested the account
-   * field first, so a key of the value alone would raise a duplicated-key error on exactly the tenant
-   * configuration this screen goes out of its way to keep working. The VALUE is what keeps the key STABLE:
-   * the entries are rebuilt by a `computed()` whenever the declared properties are re-read, so tracking by
-   * object identity re-created the entire list on every recomputation - Angular reports that as NG0956 -
-   * and tracking by ordinal alone would silently reuse a row for a different axis when the declarations
-   * change.
-   *
-   * The separator is the unit separator (U+001F), a control character that cannot occur in a profile
-   * property name, so no pair of ordinal and value can collide with another by concatenation.
+   * The template's tracking key: this entry's ordinal joined to its value. ⚠ CARRIED AS DATA RATHER THAN
+   * DERIVED IN THE TEMPLATE, and the composition is load-bearing on both halves.
    */
   readonly trackKey: string;
 }
 
 /**
- * The separator joining an entry's ordinal to its value in {@link UserSearchFieldOption.trackKey}.
- *
- * The unit separator rather than a printable character: a profile property name is free text from the
- * tenant, so any printable choice - a colon, a hyphen, a pipe - is a character a name may legitimately
- * contain, and two different pairs could then compose the same key.
+ * The separator joining an entry's ordinal to its value in {@link UserSearchFieldOption.trackKey}. The
+ * unit separator rather than a printable character: a profile property name is free text from the tenant,
+ * so any printable choice - a colon, a hyphen, a pipe - is a character a name may legitimately contain,
+ * and two different pairs could then compose the same key.
  */
 const SEARCH_FIELD_KEY_SEPARATOR = '\u001F';
 
@@ -795,47 +473,17 @@ function searchFieldOption(ordinal: number, value: string): UserSearchFieldOptio
 }
 
 /**
- * The electronic-mail cell of one row, already decided.
- *
- * MIGRATION: this is `HtmlUtils.FormatEmail` (`Library/Components/Shared/HtmlUtils.vb`
- * L89-L102) expressed as data rather than as markup. The legacy helper CONCATENATED an
- * anchor element around the stored value and returned it as a string that a label control
- * then emitted, which is a script-injection vector for any address containing markup. Here
- * the address and the link target travel separately, the template binds the target through
- * `[href]` so the framework's URL sanitiser sees it, and the address itself is interpolated
- * as text and therefore escaped.
- *
- * MIGRATION: `Globals.CloakText` (`Library/Components/Shared/Globals.vb` L1137-L1165) is NOT
- * ported. It converted every character of the address to its numeric code and rebuilt the
- * markup at run time through `document.write` inside an injected script element, as
- * obfuscation against address harvesters. Reproducing it would require writing raw markup
- * into the document, which this workspace forbids outright, and it never protected an
- * address from a client that executes script. A documented functional reduction.
+ * The electronic-mail cell of one row, already decided. this is `HtmlUtils.FormatEmail` expressed as data
+ * rather than as markup.
  */
 export interface UserEmailCell {
-  /** The address exactly as stored, for display. Empty when the account has none to show. */
+  /** The address exactly as stored, for display. */
   readonly text: string;
 
-  /**
-   * The `mailto:` target, or null when no link is warranted.
-   *
-   * Null in exactly the two cases the legacy helper declined to link: a blank value, and a
-   * value carrying no mailbox separator. `HtmlUtils.vb` L94 tested for the separator and L97
-   * returned the value UNCHANGED when it was absent, so a stored value that is not an
-   * address renders as plain text in both the legacy screen and this one.
-   */
   readonly mailto: string | null;
 }
 
-/**
- * Which optional columns the tenant shows.
- *
- * One member per `Column_*` setting the account policy carries. `Username` has NO member
- * because it has no setting: `Users.ascx.vb` L510-L511 made a column with an empty heading,
- * or a heading whose lower-cased form is `username`, visible UNCONDITIONALLY, and the
- * settings screen's resource file declares nine `Column_*` keys with no `Column_Username`
- * among them.
- */
+/** Which optional columns the tenant shows. One member per `Column_*` setting the account policy carries. */
 interface UserColumnVisibility {
   readonly firstName: boolean;
   readonly lastName: boolean;
@@ -849,17 +497,8 @@ interface UserColumnVisibility {
 }
 
 /**
- * The visibility a tenant that has configured nothing sees.
- *
- * MEASURED, NOT ASSUMED, and NOT uniformly true. `UserModuleBase.GetSettings`
- * (`Library/Components/Users/UserModuleBase.vb` L98-L124) filled each unset key with the
- * values below, so four of the nine columns were HIDDEN by default: the two name parts, the
- * address column's neighbour and the last-login column. Assuming a default of true would
- * have shown four columns the legacy screen did not.
- *
- * Applied only when the account policy could not be read at all — the store dispatches the
- * listing on both outcomes, so a tenant with an unreadable policy still sees its accounts,
- * and these are the closest thing to what it would have seen.
+ * The visibility a tenant that has configured nothing sees. MEASURED, NOT ASSUMED, and NOT uniformly
+ * true.
  */
 const LEGACY_DEFAULT_COLUMN_VISIBILITY: UserColumnVisibility = Object.freeze({
   firstName: false,
@@ -876,9 +515,6 @@ const LEGACY_DEFAULT_COLUMN_VISIBILITY: UserColumnVisibility = Object.freeze({
 /**
  * Resolves the wording for a search field, falling back to the field's own name.
  *
- * Reproduces `AddSearchItem` (`Users.ascx.vb` L211-L212): look the name up, and use the name
- * itself when the lookup yields nothing.
- *
  * @param fieldName The account field name or tenant-declared profile property name.
  * @returns The wording to show, never empty for a non-empty name.
  */
@@ -893,14 +529,10 @@ function resolveSearchFieldLabel(fieldName: string): string {
 }
 
 /**
- * Renders a nullable profile value as display text.
- *
- * The two states are kept distinct up to the point of display and are then rendered
- * identically, which is what the legacy screen did: `Null.NullString` is the EMPTY STRING
- * rather than null (`Library/Components/Shared/Null.vb` L71-L75), so a stored empty value and
- * an absent one were indistinguishable once read. The comparison is explicit against `null`
- * — never a coalesce, never a truthiness test — because the empty string is a legitimate
- * stored value on this contract and must not be turned into anything else.
+ * Renders a nullable profile value as display text. The two states are kept distinct up to the point of
+ * display and are then rendered identically, which is what the legacy screen did: `Null.NullString` is
+ * the EMPTY STRING rather than null, so a stored empty value and an absent one were indistinguishable
+ * once read.
  *
  * @param value The stored value, or null when the profile carries none.
  * @returns The value, or empty text when there is none.
@@ -914,16 +546,9 @@ function plainProfileText(value: string | null): string {
 }
 
 /**
- * Whether a profile value the tenant has chosen to show carries nothing to paint — U-M2.
- *
- * ⚠ THE EMPTY STRING COUNTS AS ABSENT HERE, AND THAT IS A DELIBERATE DEPARTURE FROM
- * {@link plainProfileText}'s null-only comparison. The two are answering different questions. That
- * function asks "what is the value", where an empty string is a legitimate stored value the legacy
- * null contract makes indistinguishable from an absence (`Null.vb` L71-L75) and must not be
- * rewritten. This one asks "is there anything for a reader to see", and the answer for an empty
- * string is no — the cell paints nothing either way, so leaving it unmarked would reinstate exactly
- * the blank cell the mark exists to explain. Whitespace is treated the same way and for the same
- * reason: a cell holding three spaces looks identical to one holding nothing.
+ * Whether a profile value the tenant has chosen to show carries nothing to paint — U-M2. ⚠ THE EMPTY
+ * STRING COUNTS AS ABSENT HERE, AND THAT IS A DELIBERATE DEPARTURE FROM {@link plainProfileText}'s
+ * null-only comparison. The two are answering different questions.
  *
  * @param value The stored value, or null when the profile carries none.
  * @returns True when the cell would otherwise paint nothing at all.
@@ -933,27 +558,11 @@ function isProfileValueAbsent(value: string | null): boolean {
 }
 
 /**
- * Whether a stored value is a mailbox this screen is willing to build a `mailto:` target from.
- *
- * ⚠ MAJOR (CWE-20 improper input validation) — THIS GATE DID NOT EXIST, AND ITS ABSENCE WAS AN
- * INJECTION. `dbo.Users.Email` is `[nvarchar] (256) NOT NULL` with no format constraint of any kind,
- * and the legacy application applied none either: `AddUser` stored whatever the caller supplied, so
- * the column holds arbitrary operator-supplied text on any installation with a history. The previous
- * rule was "contains an `@`", and everything after that character went into the address verbatim.
- *
- * A `mailto:` address is not opaque text to a mail client. Everything after a `?` is a QUERY, and its
- * `to`, `cc`, `bcc`, `subject` and `body` fields are honoured, so a stored value of
- * `a@b.example?bcc=harvester@elsewhere.example&body=…` composed a message that silently copied a
- * third party and pre-filled its own content. A `%0A` or a literal newline injects a HEADER. Two
- * separators — `a@b.example,victim@elsewhere.example` — address two mailboxes from one link. In every
- * case the operator sees the stored address in the cell and a different message in their mail client.
- *
- * The gate is deliberately CONSERVATIVE and structural rather than a full RFC 5322 grammar. It admits
- * exactly one separator with a non-empty local part and a non-empty domain, refuses every character
- * that carries meaning in a `mailto:` address or in a URL, and refuses whitespace and control
- * characters outright. A stricter-than-the-column rule is the correct direction here: a refused value
- * is still SHOWN, exactly as stored, so nothing is hidden from the operator — only the link is
- * withheld, and a link a mail client would misread is worth less than no link.
+ * Whether a stored value is a mailbox this screen is willing to build a `mailto:` target from. ⚠ MAJOR
+ * (CWE-20 improper input validation) — THIS GATE DID NOT EXIST, AND ITS ABSENCE WAS AN INJECTION.
+ * `dbo.Users.Email` is `[nvarchar] (256) NOT NULL` with no format constraint of any kind, and the legacy
+ * application applied none either: `AddUser` stored whatever the caller supplied, so the column holds
+ * arbitrary operator-supplied text on any installation with a history.
  *
  * @param value The stored value, already known to be non-blank.
  * @returns True when a `mailto:` target may be built from it.
@@ -971,12 +580,6 @@ function isLinkableMailbox(value: string): boolean {
     return false;
   }
 
-  // Everything that either carries meaning in a mailto address or terminates one. `?` opens the
-  // query; `&` and `=` are its field syntax; `,` and `;` separate recipients; `#` opens a fragment;
-  // `/` and `\` and `:` can restate a scheme; the quote and bracket family delimit display names and
-  // domain literals; `%` is percent-encoding, which is how a control character is smuggled in as
-  // text. Refused as a SET rather than escaped one by one, because escaping leaves the question of
-  // whether the escape was correct and refusing does not.
   if (/[?&=,;#/\\:<>()[\]"'%\s]/.test(value)) {
     return false;
   }
@@ -995,35 +598,11 @@ function isLinkableMailbox(value: string): boolean {
 }
 
 /**
- * Decides the electronic-mail cell for one address.
+ * Decides the electronic-mail cell for one address. Reproduces `HtmlUtils.FormatEmail` branch for branch,
+ * with ONE deliberate narrowing: a blank or whitespace-only value yields nothing at all; a value that is
+ * a linkable mailbox yields a linked address; anything else yields the value unchanged and unlinked.
  *
- * Reproduces `HtmlUtils.FormatEmail` (`HtmlUtils.vb` L89-L102) branch for branch, with ONE deliberate
- * narrowing: a blank or whitespace-only value yields nothing at all; a value that is a linkable
- * mailbox yields a linked address; anything else yields the value unchanged and unlinked. The blank
- * test is made on a TRIMMED COPY while the value displayed is the original, exactly as the legacy
- * helper did — it tested `String.IsNullOrEmpty(Email.Trim)` and then concatenated the untrimmed
- * `Email`.
- *
- * ⚠ MAJOR (CWE-20) — THE NARROWING IS THE FIX, AND IT MOVES NOTHING OUT OF SIGHT. The legacy test was
- * "contains an `@`", which linked any stored value carrying one and passed everything after it into
- * the target unexamined; see {@link isLinkableMailbox} for what that admitted. A value that fails the
- * gate now takes the SAME arm a value with no separator always took: shown exactly as stored, with
- * nothing to follow. So the set of values this screen DISPLAYS is unchanged and only the set it links
- * is narrowed — which is the one behaviour a `mailto:` target can get wrong.
- *
- * The target is assembled here rather than in the template, so that no binding concatenates a URL, and
- * it is then CHECKED rather than escaped. `encodeURIComponent` was tried and rejected: the gate already
- * refuses every character it would escape except one — `+`, which is legal in a local part and carries
- * meaning there, so escaping it would emit `grace%2Badmin@…` for a stored `grace+admin@…` and would
- * change the address for any client that does not decode the escape. Percent-escaping a value that
- * needs none is not a safety measure; it is a silent rewrite of what the operator stored.
- *
- * What replaces it is {@link isSafeMailtoTarget}, applied to the assembled target. That is a check on
- * the OUTPUT rather than a second copy of the input rule, which is what makes it worth having: it holds
- * whatever the gate above is later relaxed to admit, and whatever the assembly is later changed to do.
- *
- * @param value The stored address. Non-nullable on the row contract, because the column is
- * declared not-null with an empty-string default.
+ * @param value The stored address.
  * @returns The text to show and the link target, or a null target when no link is warranted.
  */
 function toEmailCell(value: string): UserEmailCell {
@@ -1037,9 +616,6 @@ function toEmailCell(value: string): UserEmailCell {
 
   const target = `${MAILTO_SCHEME}${value}`;
 
-  // The output check. Unreachable through the gate above, and deliberately not written as an assertion
-  // or an exception: a stored value can never be allowed to break the listing, so a target that cannot
-  // be shown to be safe simply is not offered and the value renders as text like any other.
   if (!isSafeMailtoTarget(target)) {
     return { text: value, mailto: null };
   }
@@ -1048,13 +624,9 @@ function toEmailCell(value: string): UserEmailCell {
 }
 
 /**
- * Whether an assembled `mailto:` target addresses exactly one mailbox and states nothing else.
- *
- * ⚠ MAJOR (CWE-20) — THE OUTPUT CHECK, AND IT IS NOT A DUPLICATE OF THE INPUT GATE. The gate answers
- * "may this stored value be linked at all"; this answers "does what I am about to emit say only what I
- * meant". The two can diverge — a relaxed gate, an assembly that gains a parameter, a scheme constant
- * that changes — and the whole class of defect this finding names is a target saying more than the
- * characters on the screen. Checking the emitted string is what holds through any of those changes.
+ * Whether an assembled `mailto:` target addresses exactly one mailbox and states nothing else. ⚠ MAJOR
+ * (CWE-20) — THE OUTPUT CHECK, AND IT IS NOT A DUPLICATE OF THE INPUT GATE. The gate answers "may this
+ * stored value be linked at all"; this answers "does what I am about to emit say only what I meant".
  *
  * @param target The assembled target.
  * @returns True when the target is a single-mailbox `mailto:` address.
@@ -1101,9 +673,9 @@ function isSafeMailtoTarget(target: string): boolean {
  * never tinted, and L23 set `GridLines="None"` so no cell carried a rule. The shared table is
  * therefore rendered without either affordance.
  *
- * MIGRATION: FIVE COLUMNS OFFER SORTING, AS A NET-NEW AFFORDANCE RATHER THAN A PORTED ONE. It
- * was previously declined here because `users.ascx` L22-L23 declares no `AllowSorting` and the
- * code-behind has no sort handler, which is true - and a case-insensitive census across BOTH
+ * MIGRATION: FIVE COLUMNS OFFER SORTING, AS A NET-NEW AFFORDANCE RATHER THAN A PORTED ONE. The
+ * affordance could be declined on the ground that `users.ascx` L22-L23 declares no `AllowSorting`
+ * and the code-behind has no sort handler, which is true - and a case-insensitive census across BOTH
  * legacy trees finds the attribute exactly ONCE in either of them, in
  * `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope. Not one in-scope
  * legacy grid could be reordered, INCLUDING the module listing which has offered sorting since
@@ -1139,8 +711,8 @@ function isSafeMailtoTarget(target: string): boolean {
     SearchInputComponent,
     // Names the search-type selector. Composed BESIDE the search control rather than folded
     // into it: widening the shared search control's surface for this one consumer, or adding
-    // an eleventh member to the shared library, would both be worse than composing the two
-    // members that already exist.
+    // a shared member for one caller, would both be worse than composing the two members that
+    // already exist.
     FormFieldComponent,
     // The per-row delete confirmation, with its focus trap and its escape handling. Its
     // PRESENCE IN THE DOM is what "open" means; it has no visibility input.
@@ -1189,7 +761,6 @@ export class UserListComponent implements OnInit {
    */
   private hasOpened = false;
 
-
   /** Carries the transient outcome of a reader-initiated removal. */
   private readonly notifications = inject(NotificationService);
 
@@ -1208,7 +779,6 @@ export class UserListComponent implements OnInit {
    * guard needs: see {@link canRemove}.
    */
   private readonly auth = inject(AuthStore);
-
 
   // -------------------------------------------------------------------------
   // CELL AND COMMAND TEMPLATES
@@ -1538,7 +1108,6 @@ export class UserListComponent implements OnInit {
    * condition that gives both statements a place to live.
    */
   protected readonly hasResults: Signal<boolean> = computed(() => this.totalCount() > 0);
-
 
   /**
    * Whether the listing has been asked for nothing at all, as distinct from having matched nothing.
@@ -1878,15 +1447,15 @@ export class UserListComponent implements OnInit {
    * The problem document behind a failed READ, or null when no read has failed.
    *
    * ⚠ #5 — CONFINED TO THE TWO READS WHOSE SUBJECT IS THIS SCREEN'S OWN CONTENT, AND THE ACCOUNT
-   * POLICY IS DELIBERATELY NOT ONE OF THEM. It used to be, and that was the defect: a failed
-   * policy read raised an assertive screen-level banner reading "Not Found", with a Try-again
-   * command, directly above a listing of two hundred and fifty-one healthy accounts. Nothing was
-   * missing from the screen — the listing had loaded, the rows were correct, and the only casualty
-   * was the tenant's preferred page size and column selection, for which this screen already holds
-   * a documented fallback. The banner therefore reported a failure of the listing that had not
-   * happened, and gave the operator a retry for a listing that needed none. The policy is an
-   * ENHANCEMENT to this screen, not a prerequisite of it, so its failure is disclosed quietly
-   * through {@link policyDegraded} instead of asserted here. See also the store's own
+   * POLICY IS DELIBERATELY NOT ONE OF THEM. Admitting it means a failed policy read raises an
+   * assertive screen-level banner reading "Not Found", with a Try-again command, directly above a
+   * listing of two hundred and fifty-one healthy accounts. Nothing is missing from such a screen —
+   * the listing has loaded, the rows are correct, and the only casualty is the tenant's preferred
+   * page size and column selection, for which this screen already holds a documented fallback. The
+   * banner would report a failure of the listing that has not happened, and would give the operator
+   * a retry for a listing that needs none. The policy is an ENHANCEMENT to this screen, not a
+   * prerequisite of it, so its failure is disclosed quietly through {@link policyDegraded} instead
+   * of asserted here. See also the store's own
    * `dispatchSettings`, which already dispatches the listing on BOTH policy outcomes for the same
    * reason.
    *
@@ -1947,11 +1516,11 @@ export class UserListComponent implements OnInit {
    * Whether this screen has a read failure to present at all.
    *
    * ⚠ THIS IS THE GATE, AND IT IS DELIBERATELY NOT "IS THERE A DOCUMENT". The failure surface is
-   * wrapped in a block, and that block used to be opened by {@link readFailure} alone — so a failure
-   * carrying no problem document opened nothing, and the authored summary beside it could never be
-   * reached however correctly it was bound. That is precisely the contract-violating `200` case: the
-   * decoders run downstream of the interceptor, so there is no document to gate on. The gate is
-   * therefore "either surface has something to say", which is the union of the two inputs the block
+   * wrapped in a block, and opening that block on {@link readFailure} alone means a failure carrying
+   * no problem document opens nothing, leaving the authored summary beside it unreachable however
+   * correctly it is bound. That is precisely the contract-violating `200` case: the decoders run
+   * downstream of the interceptor, so there is no document to gate on. The gate is therefore
+   * "either surface has something to say", which is the union of the two inputs the block
    * contains rather than one of them.
    *
    * Not derived from `store.failure() !== null`, because the store is provided at the application
@@ -2301,11 +1870,9 @@ export class UserListComponent implements OnInit {
         // equally what makes pressing Back onto the bare address return to the bare view rather than leaving
         // the previous rows and a pressed letter on screen.
         //
-        // An earlier revision kept the search in force for a bare address once the screen had opened, to stop
-        // a page turn discarding the opening view the tenant's policy had chosen. That is no longer needed and
-        // was measurably wrong: `onPageChange` now writes the search in force ALONGSIDE the page, so an
-        // affordance never produces a bare address carrying a page, and the only way to reach one is to ask
-        // for it.
+        // A page turn cannot discard the opening view the tenant's policy chose, because `onPageChange`
+        // writes the search in force ALONGSIDE the page. No affordance produces a bare address carrying a
+        // page, so the only way to reach one is to ask for it.
         this.store.stageSearch(
           query.search,
           query.pageIndex,
@@ -2394,19 +1961,19 @@ export class UserListComponent implements OnInit {
       return false;
     }
 
-    // ⚠ U-M5 — THE DESIGNATED-ADMINISTRATOR COMPARISON USED TO BE REPEATED HERE, AND REMOVING IT IS
-    // WHAT TOOK THIS SCREEN FROM FOUR REQUESTS PER LOAD TO THREE. It read the tenant's record purely to
-    // learn `Portals.AdministratorId` and compare it against the row — which is EXACTLY the comparison
+    // ⚠ U-M5 — THE DESIGNATED-ADMINISTRATOR COMPARISON IS NOT REPEATED HERE, WHICH IS WHY THIS SCREEN
+    // COSTS THREE REQUESTS PER LOAD RATHER THAN FOUR. Repeating it means reading the tenant's record
+    // purely to learn `Portals.AdministratorId` and compare it against the row — EXACTLY the comparison
     // the server has already made: `UserMappings.ToListItem` computes `canDelete` as
     // `!user.IsSuperUser && (portalAdministratorId is not { } designated || designated != user.UserId)`,
-    // so the flag consulted above already withholds the designated administrator. The client was issuing
-    // a whole extra request, on every visit, to recompute a verdict it was already being handed.
+    // so the flag consulted above already withholds the designated administrator. A client-side repeat
+    // costs a whole extra request, on every visit, to recompute a verdict it is already handed.
     //
-    // It is not merely redundant, it was WEAKER: the flag is published by the endpoint that enforces the
-    // removal and withholds every host account as well, while this clause covered one account only. And
-    // it was RACY: the tenant read settles independently of the listing, so for the interval before it
-    // arrived the clause protected nobody and the command was rendered on a row the server would refuse.
-    // Deferring wholly to the flag removes the request, the duplication and the window together.
+    // It is not merely redundant but WEAKER: the flag is published by the endpoint that enforces the
+    // removal and withholds every host account as well, while a local clause covers one account only.
+    // It is also RACY: the tenant read settles independently of the listing, so for the interval before
+    // it arrives the clause protects nobody and the command is rendered on a row the server would
+    // refuse. Deferring wholly to the flag avoids the request, the duplication and the window together.
     const caller: number | undefined = this.auth.currentUser()?.userId;
     const callerIsThisAccount: boolean = caller !== undefined && caller === account.userId;
 
@@ -2801,20 +2368,6 @@ export class UserListComponent implements OnInit {
   }
 
   /**
-   * Dispatches a prefix search on the axis currently chosen.
-   *
-   * Reproduces the legacy `Select Case SearchField` (`Users.ascx.vb` L267-L276) branch for branch
-   * AND IN THE LEGACY ORDER: the address axis was tested first, then the account name, then
-   * everything else fell through to a profile-property search. The order is preserved because it
-   * decides the winner when a tenant declares a profile property whose name collides with one of the
-   * two account fields.
-   *
-   * Each store command returns the listing to its first page, which is the reset the legacy screen
-   * performed at L631 and through the alphabet strip's page argument.
-   *
-   * @param text The reader's text, raw and exactly as typed.
-   */
-  /**
    * Whether one row's postal address is absent, so the cell paints the mark instead — U-M2.
    *
    * A method rather than a precomputed index, deliberately, and this is the one place on this class
@@ -2855,6 +2408,20 @@ export class UserListComponent implements OnInit {
     return FILTER_DISCLOSURE_TEMPLATE.replace('{field}', field).replace('{text}', text);
   }
 
+  /**
+   * Dispatches a prefix search on the axis currently chosen.
+   *
+   * Reproduces the legacy `Select Case SearchField` (`Users.ascx.vb` L267-L276) branch for branch
+   * AND IN THE LEGACY ORDER: the address axis was tested first, then the account name, then
+   * everything else fell through to a profile-property search. The order is preserved because it
+   * decides the winner when a tenant declares a profile property whose name collides with one of the
+   * two account fields.
+   *
+   * Each store command returns the listing to its first page, which is the reset the legacy screen
+   * performed at L631 and through the alphabet strip's page argument.
+   *
+   * @param text The reader's text, raw and exactly as typed.
+   */
   private dispatchSearch(text: string): void {
     // ⚠ THE ADDRESS IS WRITTEN AND THE STORE IS NOT TOUCHED. The subscription in `ngOnInit` applies the search
     // and issues the read, so writing the address is the whole of the change: the navigation emits, the

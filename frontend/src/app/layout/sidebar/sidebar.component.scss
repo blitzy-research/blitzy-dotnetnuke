@@ -1,206 +1,13 @@
-//  sidebar.component.scss
-//  Administration navigation rail — the shell's single primary-navigation landmark
-//
-//  ROLE
-//  ----
-//  Styles the one `navigation` landmark of the dnn-migration administration shell.
-//  The rail carries a disclosure control followed by one heading-plus-list group per
-//  preserved domain. This file lays out the rail's OWN contents with Flexbox and
-//  declares its fill, its ink, its type, its gutter and its trailing boundary.
-//
-//  It does NOT place the rail. Placement is a grid concern and belongs to the shell:
-//  src/styles/_layout.scss declares the `.shell__sidebar` region rule, assigns it the
-//  named sidebar area and states that the region rules there are "PLACEMENT ONLY".
-//  That same rule records that it deliberately declares no inline size, because "the
-//  shell's `auto` track measures this region intrinsically, so the width it occupies
-//  is decided by the rail's own box, in the rail's own scoped stylesheet". This is
-//  that stylesheet, and the width is
-//  therefore left INTRINSIC here as well — the rail is as wide as its longest
-//  destination label plus its gutter.
-//
-// MIGRATION: no rail width is declared, and that is a REPORTED TOKEN GAP rather than
-//  an omission. The vocabulary in src/styles/_tokens.scss declares no navigation-rail
-//  measure, and the shell's own region rule anticipated exactly this and forbade the
-//  obvious workaround: composing a width out of the spacing scale "would put the real
-//  design decision - the multiplier - outside the sole token owner". Writing a length
-//  here instead would breach the zero-hardcoded-values rule outright. The legacy
-//  source supplies nothing to preserve either — the skin's left-hand pane carried
-//  `valign="top"` and no `width` attribute at all — so the shell's intrinsic `auto`
-//  track is left to measure this component's own box. If a rail-width token is ever
-//  added to the vocabulary, it applies here and the shell's track follows it unchanged.
-//
-//  ZERO HARDCODED VALUES
-//  Every property value below resolves either to a design token declared in
-//  src/styles/_tokens.scss or to one of the six literals the plan permits — `0`,
-//  `none`, `auto`, `inherit`, `currentColor`, `transparent`. `block`, `flex`,
-//  `column`, `none` and `nowrap` name a layout mechanism rather than a measured
-//  design decision and have no token to resolve to. There is no colour literal, no
-//  length literal, no bare numeric weight, no importance flag, no asset-reference
-//  function and no raw media query anywhere in this file.
-//
-//  SELECTOR CONTRACT — shared with sidebar.component.html
-//  Emulated view encapsulation rewrites every selector below with this component's
-//  own content attribute, so all of them are confined to this component: they cannot
-//  reach the shell's other bands and they cannot reach a `<nav>`, `<ul>`, `<a>` or
-//  `<button>` that a feature screen renders inside `<main>`.
-//
-//    <nav class="app-sidebar">                     the navigation landmark
-//        .app-sidebar--collapsed                   state modifier, set from the signal
-//      <button class="app-sidebar__toggle">        the disclosure control
-//      <div class="app-sidebar__regions">          the disclosed region, [hidden] when collapsed
-//        <p class="app-sidebar__group">            one group label per domain - NOT a
-//                                                     heading, so the rail contributes nothing
-//                                                     to the document outline ahead of the h1
-//        <ul class="app-sidebar__list">            that group's destinations
-//          <li class="app-sidebar__item">
-//            <a class="app-sidebar__link">         a destination
-//              .app-sidebar__link--active          applied by routerLinkActive
-//
-//  A class name that drifts degrades the arrangement of the rail, never the
-//  correctness of its links, its buttons or its focus indication: the behaviour that
-//  is guaranteed by the ELEMENT is attached to the type selector, and only the
-//  structural layout is attached to the class vocabulary.
-//
-// MIGRATION: ⚠⚠ THIS STYLESHEET IS A NET ADDITION IN FULL, AND A VERTICAL NAVIGATION
-//  RAIL IS NET-NEW INFORMATION ARCHITECTURE. There was no component stylesheet to port
-//  because there was no left navigation rail to style. Measured in the only complete
-//  skin in the checkout,
-//  `Website/Portals/_default/Skins/MinimalExtropy/index.ascx` (126 lines): the menu
-//  control sits at L42-L47 declared `ControlOrientation="Horizontal"`, nested four
-//  containers deep inside the header band at L38-L41, so legacy navigation was a
-//  HORIZONTAL BAR between the logo band and the breadcrumb band, sharing that strip
-//  with the search container at L49. A second horizontal surface rendered a root-level
-//  link list across the footer at L109. The decisive evidence is L89: the skin's
-//  left-hand table cell is declared `visible="false"` alongside its top, content,
-//  right and bottom siblings, and it was a module CONTENT pane a tenant could drop
-//  modules into — never a navigation region. The vertical arrangement styled below is
-//  a decision of this migration, not a legacy structure being preserved.
-//
-// MIGRATION: the legacy menu's own presentation vocabulary is deliberately NOT ported,
-//  and it is described here by role and count rather than by class name so that no
-//  legacy selector text survives anywhere in this file. The menu was drawn by a
-//  swappable navigation provider named at L42 and configured through ELEVEN separate
-//  node-class parameters plus a child-indicator flag, with fly-out submenus. The
-//  provider family and the menu control library are both out of scope, so none of it
-//  carries over: no provider indirection, no per-node class vocabulary, no fly-outs,
-//  no child indicators. The legacy stylesheet's three class families for that menu,
-//  for its tree variant and for the superseded tab strip — nine, six and ten selectors
-//  respectively, plus one background rule the sheet itself marks as legacy at
-//  `default.css` L806 — are likewise not reproduced and not tokenised. There is
-//  therefore no measured menu treatment to reproduce and none is invented. What the
-//  plan does supply is the token vocabulary seeded from the legacy portal's own
-//  measured values, and every declaration below resolves to it — so the rail reads as
-//  part of the same application as the band above it without claiming a lineage it
-//  does not have.
-//
-// MIGRATION: the runtime stylesheet cascade is replaced by one build-time bundle.
-//  `Website/Default.aspx.vb` assembled four ordered levels per request in
-//  `ManageStyleSheets` (L355-L408) — the required host default sheet, then the skin
-//  package sheet, then the per-skin-file sheet, then the per-portal override sheet —
-//  probing the filesystem with `File.Exists` for levels two to four and caching the
-//  result behind a performance-setting check. It was called TWICE, at L587 and L593,
-//  deliberately straddling the skin injection at L590 so the skin's own sheets landed
-//  in the middle of the cascade. Here there is no probing, no cache, no per-request
-//  ordering and no per-portal override hook: this file is scoped to this component by
-//  the compiler and ships in one bundle. That per-portal override level is why the
-//  legacy per-portal sheet ships empty, and why the host default sheet is the sole
-//  authoritative provenance for every token this file consumes.
-//
-// MIGRATION: runtime skin selection is replaced by a static compile-time component.
-//  `LoadSkin` (L217-L243) resolved a skin path at run time, loaded it as a control,
-//  data-bound it and then set the document type from it. Skinning and containers are
-//  out of scope, so there is no runtime layout selection, no skin registry and no
-//  theme selector; one composition serves every tenant.
-//
-//  ACCESSIBILITY, at no visual cost
-//  The list markers are suppressed because the destinations are presented as a
-//  navigation list and not as prose, which is a presentation change only — the `<ul>`
-//  and its `<li>` children are retained, so the list and its length are still
-//  announced. The focus ring comes from the shared mixin, which is the one place the
-//  ring is defined, and it reaches BOTH the disclosure control and every destination.
-//  The current destination is carried by weight and fill as well as by ink, so it
-//  survives a colour-vision deficiency and a monochrome rendering; the paired template
-//  additionally emits `aria-current="page"` from the same router state, so the visual
-//  treatment and the announcement cannot disagree.
-//
-// MIGRATION: the focus indication is a NET ADDITION. A census of the legacy portal's
-//  stylesheets for focus selectors and outline declarations returns zero in both, so a
-//  keyboard operator had no visible indication of position anywhere in the legacy
-//  chrome. Adding it changes nothing the legacy portal rendered AT REST, so the gain
-//  costs no visual fidelity — which is the standing the design system gives an
-//  accessibility improvement of this kind.
-//
-// MIGRATION: the spacing, radius and elevation scales this file draws on are NET
-//  ADDITIONS. The legacy portal has no spacing system at all, and a census returns zero
-//  `border-radius` and zero `box-shadow` declarations in both reference stylesheets.
-//  The rail's gutter, its inter-group rhythm and its destination corner therefore have
-//  no measured legacy counterpart; they resolve to the shared scales so the rail keeps
-//  the same rhythm as every other surface in the application rather than inventing one.
-//  No elevation is consumed here at all: the rail is bounded by an edge, not lifted off
-//  the page, which is the same choice the shared bordered surface makes.
-//
-// MIGRATION: the type treatment is CONSOLIDATED, not copied. The closest legacy
-//  analogue to a chrome link declared `font-weight: bold`, a point-unit size and the
-//  Tahoma/Arial/Helvetica stack — one of three near-identical legacy families, and one
-//  of only three point-unit sizes in a sheet otherwise written in pixels. The plan
-//  collapses those three families into a single base stack whose first entry is still
-//  Tahoma, so the rendering is visually indistinguishable, and it collapses the two
-//  legacy unit systems into one root-relative ramp so the whole rail scales with the
-//  reader's own font size. Bold is deliberately NOT carried to every destination: this
-//  file reserves weight as the second channel that marks the CURRENT destination, and a
-//  rail in which every entry were bold could not use weight to distinguish one.
-//
-// MIGRATION: the responsive layer is a NET ADDITION and this file needs no part of it.
-//  A census returns zero viewport queries in both legacy stylesheets, so there is no
-//  responsive behaviour to preserve. The one arrangement change the rail participates
-//  in — stacking above the content on a narrow viewport and sitting beside it from the
-//  `md` step upward — is declared once in the shell's grid in `src/styles/_layout.scss`
-//  and is not restated here. This file consequently authors NO breakpoint at all: a
-//  single flex column reflows correctly at every width, so there is nothing for a
-//  viewport query to change. Authoring one directly is barred outside the shared mixin
-//  partial in any case, and no breakpoint mixin is included below because none is
-//  needed — the mixin surface is reached here solely for the hover guard and the focus
-//  ring.
-//
-// MIGRATION: no panel treatment is inherited for this rail. The two legacy panel class
-//  names that the admin markup applied most often — one appearing about twenty times
-//  and one six to eight times — are defined in ZERO stylesheets repository-wide, so
-//  there is no measured surface, border or padding to reproduce. The rail's own fill,
-//  gutter and trailing edge below are therefore a token-based net addition, stated as
-//  such rather than presented as preserved legacy appearance.
-
 // Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
 // here; a `@use` elsewhere does not.
 @use '../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  1. HOST
-// -----------------------------------------------------------------------------
-//  The shell renders `<app-sidebar class="shell__sidebar" />`, so THIS HOST IS THE GRID
-//  ITEM: the region class sits on this element and the shell's named sidebar area places
-//  it directly, with no wrapper in between. A grid item is blockified automatically, but
-//  `block` is declared anyway because the host is also rendered as an ordinary element in
-//  specifications that mount the rail on its own, and an unknown element is inline by
-//  default — an inline host would collapse the rail's block padding.
-//  `display: contents` is deliberately NOT used: the rail is a real box with a fill and a
-//  boundary of its own, and removing it from the box tree would drop both.
 :host {
   display: block;
 
-  // WHICH SHELL ARRANGEMENT IS IN FORCE, PUBLISHED AS A READABLE FACT RATHER THAN
-  // RESTATED AS A WIDTH IN TYPESCRIPT. `0` is the stacked arrangement, in which the rail
-  // is a full-width band ABOVE the content; `1` is the side-by-side arrangement, in which
-  // it is a column BESIDE it. The component reads this resolved value to decide the rail's
-  // DEFAULT disclosure state, which is why the fact is published here instead of being
-  // derived from a `window.matchMedia` string: the breakpoint set is declared once, in
-  // `_mixins.scss`, and this file consumes it through the shared mixin exactly as every
-  // other responsive rule does. A media-query literal in the component class would be a
-  // SECOND definition of the same threshold, free to drift from the first with nothing to
-  // detect the drift - which is the failure the mixin's own header forbids.
-  //
-  // The value is a unitless number so it can be compared without parsing a length, and it
-  // is declared on the host rather than on the rail because the component reads it from its
-  // own element.
+  // WHICH SHELL ARRANGEMENT IS IN FORCE, PUBLISHED AS A READABLE FACT RATHER THAN RESTATED AS A WIDTH IN
+  // TYPESCRIPT. `0` is the stacked arrangement, in which the rail is a full-width band ABOVE the content;
+  // `1` is the side-by-side arrangement, in which it is a column BESIDE it.
   --app-sidebar-side-by-side: 0;
 
   @include mx.respond-above('md') {
@@ -208,27 +15,8 @@
   }
 }
 
-// -----------------------------------------------------------------------------
-//  2. THE RAIL
-// -----------------------------------------------------------------------------
-//  Flexbox, not Grid: the rail stacks its two children along one axis, and the shell
-//  around it already owns the two-dimensional placement. No block size is declared.
-//
-//  ⚠ THE INLINE SIZE IS NOW DECLARED IN THE SIDE-BY-SIDE STATE ONLY, and the header above no
-//  longer tells the whole story. An intrinsic width measures the rail's CONTENT, and the active
-//  destination is painted at the bold weight - so the widest label is wider on the route where it
-//  happens to be active than on any other, and the rail's width therefore depended on where the
-//  operator was standing. Measured: 185px on `/settings/profile-definitions`, where the longest
-//  label "Manage Profile Properties" is active, against 176px everywhere else, which shifted the
-//  ENTIRE page 9px sideways on arrival and back again on departure. The definite size is the measured
-//  widest state, so the rail cannot move; it is taken from the vocabulary rather than authored here,
-//  and it is applied to the rail rather than to the shell's track because the track's own note asks
-//  for exactly that.
-//
-//  The trailing boundary uses the muted ink rather than the border token, matching the
-//  treatment the band above it gives its own lower boundary, so the two chrome edges
-//  read as one system. It is declared on the INLINE end so it separates the rail from
-//  the content beside it in both writing directions.
+// ⚠ THE INLINE SIZE IS NOW DECLARED IN THE SIDE-BY-SIDE STATE ONLY, and the header above no longer tells
+// the whole story.
 .app-sidebar {
   display: flex;
   flex-direction: column;
@@ -243,134 +31,40 @@
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
 
-  // THE PAINTED SURFACE FILLS THE REGION THE SHELL GAVE IT, and this closes a visible
-  // defect rather than adding an effect. The shell's grid stretches this component's HOST
-  // to the full height of the sidebar-and-main row, but the fill and the trailing boundary
-  // are painted by THIS element, whose height was its own content - so on every
-  // authenticated screen the tinted strip and its one-pixel edge stopped part way down and
-  // left a white notch above the footer. Measured at 1280x900: the rail painted 441.75px
-  // against a main region of 811.75px.
-  //
-  // A MINIMUM rather than a fixed size, so a rail with more groups than the viewport is
-  // tall still grows instead of clipping, and a percentage rather than a viewport unit so
-  // it tracks the region the shell allocated rather than the window. In the stacked
-  // arrangement the row is `auto`, so the percentage has no definite height to resolve
-  // against and behaves as `auto` - the band keeps hugging its content there, which is
-  // what that arrangement wants.
+  // THE PAINTED SURFACE FILLS THE REGION THE SHELL GAVE IT, and this closes a visible defect rather than
+  // adding an effect.
   min-block-size: var(--size-full);
 
-  // THE DEFINITE INLINE SIZE, ABOVE THE THRESHOLD ONLY, and that condition is the whole reason this
-  // is a branch. Below it the shell stacks the regions into one column and the rail is a full-width
-  // band, so a definite inline size there would leave the band narrower than the page it sits across.
-  // The threshold comes from the shared mixin, never from a query literal, so it cannot drift from
-  // the shell's own.
-  //
-  // ⚠ IT SITS AT THE END OF THE RULE ON PURPOSE. Sass is changing the ordering semantics of a plain
-  // declaration that FOLLOWS a nested rule, and warns about every such declaration today; placing
-  // this branch mid-rule made the build emit six deprecation warnings against the five declarations
-  // after it. Every nested block in this file therefore comes after the rule's own declarations.
+  // THE DEFINITE INLINE SIZE, ABOVE THE THRESHOLD ONLY, and that condition is the whole reason this is a
+  // branch. Below it the shell stacks the regions into one column and the rail is a full-width band, so a
+  // definite inline size there would leave the band narrower than the page it sits across.
   @include mx.respond-above('md') {
     inline-size: var(--layout-rail-inline-size);
   }
 }
 
-//  Collapsed. The rail keeps its disclosure control and loses only its groups, so the
-//  control that re-expands it is never the thing that disappears. The gap is what
-//  would otherwise be left behind once the only sibling is gone, so it is removed
-//  rather than left to measure against nothing.
+// Collapsed. The rail keeps its disclosure control and loses only its groups, so the control that
+// re-expands it is never the thing that disappears.
 .app-sidebar--collapsed {
   gap: 0;
 }
 
-// -----------------------------------------------------------------------------
-//  3. THE DISCLOSURE CONTROL
-// -----------------------------------------------------------------------------
-//  A real `<button>`, taking its chrome from _forms.scss, so this rule adds only the
-//  rail's own arrangement: held to the full inline measure of the rail so the whole
-//  strip is pressable at every width, and its label kept on one line so the control's
-//  height does not change as the rail narrows — a control that reflowed while being
-//  pressed is a control that moves out from under the pointer.
-//
-//  Its name is stable across both states and the state is carried by `aria-expanded`
-//  alone, which is the position the paired template takes; nothing here draws a
-//  rotating marker, because the marker is text and the template owns it.
-//
-//  THE FOCUS RING IS ALREADY PRESENT AND IS NOT RE-DECLARED. The global form
-//  vocabulary applies the shared focus-ring mixin to `input, select, textarea, button`,
-//  so this control receives the two-tone `:focus-visible` ring without this rule asking
-//  for it. Re-including the mixin here would emit a byte-identical duplicate rule; the
-//  mixin is idempotent, so the omission costs nothing and the ring is guaranteed by the
-//  ELEMENT rather than by this class surviving a rename.
-//
-//  THE HIT AREA IS ENLARGED, from a spacing token. The global button chrome sets one
-//  spacing step of block padding, which suits a button sitting in a form row; this
-//  control is the rail's only affordance and is pressed far more often, so it takes the
-//  next step up. The value is a token, not a length, and the inline padding is left to
-//  the global rule because the full-measure width already makes the whole strip
-//  pressable.
-//
-//  BLITZY [A11Y]: the target this produces was MEASURED IN A BROWSER, not estimated, and
-//  the measurement is what makes the residual gap precise rather than alarming. Rendered
-//  height is 32 and rendered width 143 CSS pixels, arithmetically 13.75 of line height
-//  plus two spacing steps of 8 plus two borders of 1.
-//    * It CLEARS the level-AA minimum target size of 24 by 24 CSS pixels outright, on
-//      both axes, with the height alone a third above the floor.
-//    * It falls short only of the ENHANCED target of 44 by 44, which is a level-AAA
-//      criterion rather than the AA bar this application is held to.
-//  It is left at 32 deliberately. The height is the sum of the shared type ramp, the
-//  shared line height and the shared spacing scale, every one of them owned by the
-//  design system; reaching the enhanced figure would mean either a hardcoded length,
-//  which the zero-hardcoded-values rule forbids outright, or a spacing step out of
-//  proportion with every other control in the application. Design-system compliance
-//  outranks a generic accessibility recommendation in the governing precedence order, so
-//  the system's own scale is honoured and the enhanced-target gap is flagged here for
-//  designer review rather than silently corrected. The control is a full-width strip, so
-//  its pressable area is far larger than its height alone suggests, and it is keyboard
-//  operable with a verified visible focus ring either way.
 .app-sidebar__toggle {
   inline-size: var(--size-full);
   padding-block: var(--space-2);
   white-space: nowrap;
 }
 
-// -----------------------------------------------------------------------------
-//  4. THE DISCLOSED REGION
-// -----------------------------------------------------------------------------
-//  ⚠ THE `:not([hidden])` GUARD IS LOAD-BEARING. The paired template hides this
-//  region with the `hidden` attribute, which works because the user-agent stylesheet
-//  applies `display: none` to it — and a `display` declaration in an author sheet
-//  outweighs that, so an unguarded `display: flex` here would leave the groups on
-//  screen with `aria-expanded="false"` beside them. Attaching the layout to the
-//  not-hidden state is what keeps the attribute authoritative, so the collapsed rail
-//  is genuinely gone from the accessibility tree and from the layout alike rather than
-//  merely announced as gone.
-//
-//  RECONCILED WITH THE PAIRED TEMPLATE'S CONTRACT, DELIBERATELY AND ON THE RECORD. That
-//  template instructs this stylesheet not to declare `display` on this element, and
-//  gives its reason: an unguarded declaration "would override the property and leave a
-//  collapsed rail that still shows its links". The guard above neutralises precisely
-//  that hazard — when the attribute is present no author `display` rule matches at all,
-//  so the user agent's `display: none` stands unopposed — which means the SUBSTANCE of
-//  the contract is met rather than evaded. The guarded form is preferred over adding no
-//  `display` at all because the rhythm between a group heading and the list that
-//  follows it is then a flex `gap`, which needs no first-child or last-child rule to
-//  unwind and cannot be disturbed by a collapsing margin. The collapse behaviour this
-//  reasoning depends on is verified in a real browser rather than asserted; see the
-//  completion report.
+// ⚠ THE `:not([hidden])` GUARD IS LOAD-BEARING. The paired template hides this region with the `hidden`
+// attribute, which works because the user-agent stylesheet applies `display: none` to it — and a `display`
+// declaration in an author sheet outweighs that, so an unguarded `display: flex` here would leave the
+// groups on screen with `aria-expanded="false"` beside them.
 .app-sidebar__regions:not([hidden]) {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
-// -----------------------------------------------------------------------------
-//  5. GROUPS AND LISTS
-// -----------------------------------------------------------------------------
-//  A group heading is a real `<h2>`, so it appears in the document outline. It is
-//  toned down rather than enlarged: it labels a set of destinations and must not
-//  compete with the page title that the shared page-header component emits inside
-//  `<main>`. The margin is zeroed because the rhythm between groups is the region's
-//  gap, and a margin as well would add to it.
 .app-sidebar__group {
   margin: 0;
   color: var(--color-text-muted);
@@ -379,11 +73,6 @@
   line-height: var(--line-height-tight);
 }
 
-//  The destinations of one group. The markers are suppressed and the user-agent's own
-//  list indent and margin are removed, so the entries align with their heading; the
-//  `<ul>` and `<li>` elements themselves are retained, so the list and its length are
-//  still announced. A margin-block of nought is stated for the same reason as on the
-//  heading: the rhythm is the gap.
 .app-sidebar__list {
   display: flex;
   flex-direction: column;
@@ -393,76 +82,16 @@
   list-style: none;
 }
 
-// MIGRATION: the legacy bullet marker is dropped, and SUPPRESSING IT TAKES TWO RULES
-//  RATHER THAN ONE. The global reset reinstates the legacy marker progression
-//  faithfully — `ul li { list-style-type: square }` at _reset.scss L211, nesting to
-//  disc and then circle — and it declares that property DIRECTLY ON THE LIST ITEM. A
-//  declaration on the element always beats a value the element would otherwise have
-//  inherited, so `list-style: none` on the `<ul>` above does NOT reach these items on
-//  its own: the square markers survive it. This rule is what actually removes them, and
-//  it wins on specificity rather than on importance — emulated encapsulation rewrites
-//  the selector with this component's content attribute, giving one class plus one
-//  attribute against the reset's two type selectors, so no importance flag is needed
-//  anywhere.
-//
-//  The divergence itself is real but narrow: the legacy menu was never a list at all,
-//  it was provider-rendered markup, so no legacy list is being restyled here. The
-//  element is kept as a list item so the list and its length are still announced;
-//  only the marker glyph goes.
+// The divergence itself is real but narrow: the legacy menu was never a list at all, it was
+// provider-rendered markup, so no legacy list is being restyled here. The element is kept as a list item so
+// the list and its length are still announced; only the marker glyph goes.
 .app-sidebar__item {
   list-style: none;
 }
 
-// -----------------------------------------------------------------------------
-//  6. DESTINATIONS
-// -----------------------------------------------------------------------------
-//  Every anchor in the rail. Attached to the element type rather than to a class so
-//  that the chrome-link treatment holds however the paired template names its classes,
-//  and so that a drifting class name can never silently reinstate the global anchor
-//  hover. Confined to this component by emulated view encapsulation, so it cannot
-//  reach a feature screen's anchors.
-//
-//  The underline is cleared at rest and restored on hover, which is the same
-//  divergence the band above records and for the same reason: _reset.scss would
-//  otherwise underline every chrome destination permanently, which the legacy chrome
-//  demonstrably did not do. The hover goes through the shared mixin so it is guarded
-//  behind a hover-capability query — a touch device cannot enter the state on tap and
-//  then stay in it — and so that it outweighs the resting declaration beside it.
-//
-//  Hover changes INK AND UNDERLINE ONLY and paints no fill. The fill channel is
-//  reserved for the current destination below, so the two states compose instead of
-//  one masking the other; and the only remaining fill token light enough to sit under
-//  this ink is the hint yellow, whose documented role in the vocabulary is a form
-//  highlight and not a navigation hover.
-//
-// MIGRATION: ⚠ THE HOVER STATE DIVERGES DELIBERATELY, and it resolves a genuine
-//  conflict between two incompatible legacy conventions rather than picking freely.
-//  Both were measured. The closest legacy analogue to a chrome link declared all FOUR
-//  of its anchor states — unvisited, visited, hover and active — BYTE-IDENTICALLY, as
-//  no underline and the brand colour, so the legacy chrome link had NO HOVER FEEDBACK
-//  WHATSOEVER. The legacy GENERIC anchor did have feedback, but expressed it as an
-//  underline plus the fully saturated warning hue, and that value is the one the
-//  vocabulary now carries as the danger token.
-//  Neither is adopted verbatim. Reproducing "no feedback at all" would be a usability
-//  and accessibility regression, and spending the error signal on a benign navigation
-//  hover would dilute the one colour that has to stay unambiguous — quite apart from
-//  that hue measuring 4.00:1 and so failing the 4.5:1 minimum that binds on normal text.
-//  The state therefore resolves to the darker brand tint, which the vocabulary
-//  designates expressly as the link and hover companion to the brand colour and which
-//  clears the minimum on every surface in the system. This is a rank-1-beats-rank-2
-//  decision under the governing precedence order: design-system compliance outranks
-//  visual continuity with the legacy portal. The underline the legacy generic hover
-//  carried is retained alongside the ink shift, so the state is never signalled by
-//  colour alone.
-//
-// MIGRATION: the ink change is INSTANTANEOUS, and that is compliant and faithful at
-//  once. The shared mixin surface exports no duration, easing or motion member and
-//  explicitly instructs a component that wants motion to report the gap and render the
-//  static presentation instead; a component may not author its own reduced-motion
-//  guard, because raw viewport and feature queries are barred outside that partial. The
-//  legacy portal animated nothing either — a census returns zero `transition`, zero
-//  `animation`, zero `@keyframes` and zero `transform` in both reference stylesheets —
-//  so there is no motion to carry forward. Reported as a token gap, not worked around.
+// The underline is cleared at rest and restored on hover, which is the same divergence the band above
+// records and for the same reason: _reset.scss would otherwise underline every chrome destination
+// permanently, which the legacy chrome demonstrably did not do.
 .app-sidebar__link {
   display: block;
   padding-block: var(--space-1);
@@ -471,14 +100,9 @@
   color: var(--color-primary);
   text-decoration: none;
 
-  //  The rail's width is intrinsic, so a destination label with no break opportunity —
-  //  and an administration console is exactly where an unhyphenated compound label
-  //  turns up — would otherwise set the rail's measure by itself and push the content
-  //  beside it aside. The keyword restores the break opportunity that the initial
-  //  `normal` withholds, and costs nothing on wording that already wraps. Deliberately
-  //  NOT an `overflow` value: `hidden` would amputate the label and `auto` would make
-  //  every destination a scroll container, which clips the focus ring the rule below
-  //  depends on.
+  // The rail's width is intrinsic, so a destination label with no break opportunity — and an administration
+  // console is exactly where an unhyphenated compound label turns up — would otherwise set the rail's
+  // measure by itself and push the content beside it aside.
   overflow-wrap: break-word;
 
   @include mx.focus-ring;
@@ -489,33 +113,9 @@
   }
 }
 
-//  The current destination. Declared AFTER the anchor rule so that the current entry
-//  keeps its fill and its weight while the pointer is over it, and carried on two
-//  channels rather than one — fill and weight — so it is legible without colour. The
-//  fill is the selected-row token, which is the same value the data table uses for a
-//  chosen row, so "this is the one you are on" reads alike in the rail and in the grid.
-//
-// MIGRATION: the current-destination recipe consumes the selected tint, whose ONLY
-//  provenance in the legacy stylesheet is the selected-item rule of an out-of-scope
-//  legacy menu family — so the value is measured legacy but the family that carried it
-//  is not ported, and its class name appears nowhere in this file. That legacy rule
-//  paired the tint with a pointer cursor, a bold weight and, for its ink, an untokenised
-//  named neutral at the darkest end of the scale. Two of those are honoured and two are
-//  deliberately dropped:
-//    * the tint and the bold weight ARE reproduced, and they are the two channels that
-//      make the state legible without colour;
-//    * that darkest-neutral ink is NOT reproduced. It is not a vocabulary member — the
-//      same reason the legacy tab-strip background is not — and the ink is left to
-//      inherit the brand colour from the anchor rule. That is not merely a compliance
-//      substitution: the brand colour measures 8.24:1 on this tint, clearing AA and AAA
-//      for normal text, and the vocabulary records that muted ink would reach only
-//      3.59:1 here and must be promoted, which is exactly what inheriting does;
-//    * the pointer cursor is NOT declared. An anchor with a destination already has it,
-//      so declaring it would restate a browser default.
-//  The tint's own consumption contract in the vocabulary requires any surface painted
-//  with it to expose the state programmatically as well, and the paired template emits
-//  `aria-current="page"` from the very router state that applies this class — so the
-//  treatment and the announcement are driven by one source and cannot disagree.
+// MIGRATION: the current-destination recipe consumes the selected tint, whose ONLY provenance in the legacy
+// stylesheet is the selected-item rule of an out-of-scope legacy menu family — so the value is measured
+// legacy but the family that carried it is not ported, and its class name appears nowhere in this file.
 .app-sidebar__link--active {
   background-color: var(--color-selected);
   font-weight: var(--font-weight-bold);

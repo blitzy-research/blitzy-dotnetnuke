@@ -27,153 +27,63 @@ import type {
 } from '../models/role.model';
 
 /**
- * Specification for `core/services/role.service.ts`.
- *
- * The service wraps thirteen endpoints across two server resources — roles, and the groupings above them —
- * and its whole contract is that each method issues ONE request to ONE address with ONE unmodified body, and
- * returns whatever the HTTP client produced. That contract is almost entirely invisible to the compiler: a
- * method that quietly dropped a falsy query value, lower-cased a persisted code, computed a date, or fetched
- * something first to decide whether to proceed would type-check, bundle and deploy without complaint.
- * Everything below exists to make one of those failures loud.
- *
- * Three construction rules, each of which is easy to get wrong when adding a case:
- *
- * 1. `httpMock.verify()` runs after every case and is the load-bearing assertion of the file rather than a
- *    tidy-up step. It fails on any request opened and never asserted, and the cases asserting that something
- *    did NOT happen — no pre-emptive read before a delete, no second call anywhere — rely on it alone.
- * 2. Every URL is a literal root-relative string beginning `/api/v1/`, never a call into the endpoint module
- *    the service itself uses: asserting against that module would compare the service's output with its own
- *    input and would accept a template addressing `/api/v1/api/v1/roles`. The relative base is also what the
- *    `test` target compiles against, since it declares no environment replacement and the base module is the
- *    production one.
- * 3. Param-carrying requests are matched by predicate, not by string. The testing backend's string matcher
- *    compares url-with-params, so a string matcher would couple the assertion to parameter ORDER and would
- *    stop matching as soon as a parameter was added. The two listings match on method and PATH and inspect
- *    parameters by name; the eleven param-free operations match by exact string.
- *
- * Deliberately not asserted: validation, derived state, ordering, filtering, permission outcomes and date
- * arithmetic. None of that lives in the service, and a test asserting it would describe behaviour the file is
- * forbidden to have. Failures are asserted to PROPAGATE and nothing more. The bearer token, the correlation
- * identifier and the translation of a problem document belong to handlers this test bed deliberately does not
- * register, and two cases assert the ABSENCE of those headers.
- *
- * Three contract facts a reader may expect to be otherwise:
- *
- * - the group listing sends NO portal identifier. `listRoleGroups()` takes no arguments and its route
- *   template is parameterless, because the tenant is resolved server-side, so the case below asserts the
- *   query string is EMPTY.
- * - the two negative filter values are joined by a NAMED scope. The legacy selector encoded three intents in
- *   one integer; the endpoint splits them into a plain nullable group key plus a closed enumeration for the
- *   intent no key can express, and both halves are asserted.
- * - the assignment write answers 204 for both an add and an update, and the service types the success as
- *   nothing at all. Both statuses are exercised, which proves the service does not branch on the status to
- *   re-derive which write occurred.
- *
- * Legacy facts the assertions depend on: `RoleID` and `RoleGroupID` are `IDENTITY (0, 1)` and `PortalID` is
- * `IDENTITY (-1, 1)`, so zero and minus one are REAL keys; the legacy sentinel helper returned -1 for an
- * absent integer and the EMPTY STRING for an absent string, so one value meant both "the first row" and "no
- * row", which is why no falsy value may be dropped; the negative pseudo-role identifiers were declared as
- * STRING constants; and the legacy billing switch covers SIX persisted frequency codes, not four.
+ * Specification for `core/services/role.service.ts`. The service wraps thirteen endpoints across two
+ * server resources — roles, and the groupings above them — and its whole contract is that each method
+ * issues ONE request to ONE address with ONE unmodified body, and returns whatever the HTTP client
+ * produced.
  */
 
-// The wire addresses, written out rather than composed.
-//
-//  Stated as whole literals on purpose. Building them from a shared prefix would make a wrong prefix agree
-//  with itself across every case at once, which is precisely the failure the double-prefix hazard produces,
-//  and it would also stop these strings being greppable as the wire contract they are.
-
-/**
- * The role collection. Reads a page; accepts a creation.
- */
+/** The role collection. */
 const ROLES_URL = '/api/v1/roles';
 
-/**
- * One role, addressed with the identity seed itself so a truthiness guard cannot hide.
- */
+/** One role, addressed with the identity seed itself so a truthiness guard cannot hide. */
 const ROLE_ZERO_URL = '/api/v1/roles/0';
 
-/**
- * One role, addressed with an ordinary positive key.
- */
+/** One role, addressed with an ordinary positive key. */
 const ROLE_URL = '/api/v1/roles/7';
 
-/**
- * The accounts holding one role. Reads a page; accepts an assignment.
- */
+/** The accounts holding one role. */
 const ROLE_MEMBERS_URL = '/api/v1/roles/7/users';
 
-/**
- * One account's membership of one role.
- */
+/** One account's membership of one role. */
 const ROLE_MEMBER_URL = '/api/v1/roles/7/users/42';
 
-/**
- * The role-group collection. Unpaged, and parameterless.
- */
+/** The role-group collection. */
 const ROLE_GROUPS_URL = '/api/v1/role-groups';
 
-/**
- * One role group, addressed with the identity seed itself.
- */
+/** One role group, addressed with the identity seed itself. */
 const ROLE_GROUP_ZERO_URL = '/api/v1/role-groups/0';
 
-/**
- * One role group, addressed with an ordinary positive key.
- */
+/** One role group, addressed with an ordinary positive key. */
 const ROLE_GROUP_URL = '/api/v1/role-groups/4';
 
-/**
- * The role whose identity is the seed value, used wherever a zero key is under test.
- */
+/** The role whose identity is the seed value, used wherever a zero key is under test. */
 const ROLE_ID_ZERO = 0;
 
-/**
- * An ordinary role key, used wherever the key itself is not the subject of the case.
- */
+/** An ordinary role key, used wherever the key itself is not the subject of the case. */
 const ROLE_ID = 7;
 
-/**
- * An ordinary account key.
- */
+/** An ordinary account key. */
 const USER_ID = 42;
 
-/**
- * An ordinary role-group key.
- */
+/** An ordinary role-group key. */
 const ROLE_GROUP_ID = 4;
 
-/**
- * The roles-held-by-one-account address, for the ordinary account key.
- *
- * Nested under the ACCOUNT rather than under the role, because the answer is one person's
- * memberships rather than one role's members — `RolesController.cs:839` routes it at
- * `users/{userId:int}/roles`.
- */
+/** The roles-held-by-one-account address, for the ordinary account key. */
 const USER_ROLES_URL = '/api/v1/users/42/roles';
 
 /**
- * The same address for the account whose key is nought.
- *
- * `01.00.00.SqlDataProvider` seeds the user key from one, so nought is not an account the
- * seeded schema issues — but the client must not be the thing that decides that. A caller
- * that tested the key for truthiness would send `/api/v1/users//roles`, and this constant is
- * what makes that provable.
+ * The same address for the account whose key is nought. `01.00.00.SqlDataProvider` seeds the user key
+ * from one, so nought is not an account the seeded schema issues — but the client must not be the thing
+ * that decides that.
  */
 const USER_ZERO_ROLES_URL = '/api/v1/users/0/roles';
 
-// ---------------------------------------------------------------------------
 // REQUEST FIXTURES
-//
-//  Written as fresh literals so contextual typing supplies the exact member types the request contracts
-//  declare. The filter and paging shapes are `as const` because their string members are closed unions on the
-//  wire and a widened `string` would neither compile against the contract nor describe what actually travels.
 
 /**
- * A fully populated paging request.
- *
- * The page index is deliberately NOT zero here so that the separate zero-index case proves something this
- * one cannot: that a supplied zero survives. The ordering direction is spelled as the server enumeration
- * names it, because the query-string binder accepts nothing else.
+ * A fully populated paging request. The page index is deliberately NOT zero here so that the separate
+ * zero-index case proves something this one cannot: that a supplied zero survives.
  */
 const PAGED_REQUEST = {
   pageIndex: 2,
@@ -183,13 +93,7 @@ const PAGED_REQUEST = {
   query: 'admin',
 } as const;
 
-/**
- * A creation request carrying one of every awkward value at once.
- *
- * `null`, `0`, `-1`, the empty string and `false` all appear, and every one of them is a value the caller
- * chose rather than an absence. A member dropped for being falsy is the exact failure this fixture exists to
- * catch, and it is silent otherwise: the server would store a default and nobody would see a stack trace.
- */
+/** A creation request carrying one of every awkward value at once. */
 const CREATE_ROLE_REQUEST: CreateRoleRequest = {
   roleName: 'Subscribers',
   // An empty description is a description the caller cleared, and the legacy absent-string marker WAS the
@@ -209,9 +113,7 @@ const CREATE_ROLE_REQUEST: CreateRoleRequest = {
   iconFile: null,
 };
 
-/**
- * A replacement request. Every editable member is declared, because this is not a patch.
- */
+/** A replacement request. */
 const UPDATE_ROLE_REQUEST: UpdateRoleRequest = {
   roleName: 'Subscribers',
   description: null,
@@ -226,19 +128,10 @@ const UPDATE_ROLE_REQUEST: UpdateRoleRequest = {
   trialFrequency: 'D',
   rsvpCode: '',
   iconFile: null,
-  // The marker of the revision this replacement was composed against. Declared because the contract
-  // declares it: an update that omits it asks the server to write unconditionally, and a fixture that
-  // could not express the member could not assert it reaches the wire.
   concurrencyToken: 'token-read-before-edit',
 };
 
-/**
- * An assignment request with BOTH date bounds absent.
- *
- * Absent means absent: `null` says "no bound" and the server derives one from the role's own frequency
- * terms. The case built on this fixture asserts the body arrives with the two members still null, which is
- * how a client-side derivation would be caught.
- */
+/** An assignment request with BOTH date bounds absent. */
 const ASSIGNMENT_REQUEST: RoleAssignmentRequest = {
   userId: USER_ID,
   effectiveDate: null,
@@ -246,39 +139,26 @@ const ASSIGNMENT_REQUEST: RoleAssignmentRequest = {
   notifyUser: false,
 };
 
-/**
- * A role-group creation request.
- */
+/** A role-group creation request. */
 const CREATE_ROLE_GROUP_REQUEST: CreateRoleGroupRequest = {
   roleGroupName: 'Paid Services',
   description: '',
 };
 
-/**
- * A role-group replacement request.
- */
+/** A role-group replacement request. */
 const UPDATE_ROLE_GROUP_REQUEST: UpdateRoleGroupRequest = {
   roleGroupName: 'Paid Services',
   description: null,
 };
 
 /**
- * The six persisted frequency codes, in the order the legacy selection declared them.
- *
- * They are the bytes held in two single-character columns on the role table, so a case fold or a rename
- * would not fail a compilation — it would mis-address live rows.
+ * The six persisted frequency codes, in the order the legacy selection declared them. They are the bytes
+ * held in two single-character columns on the role table, so a case fold or a rename would not fail a
+ * compilation — it would mis-address live rows.
  */
 const BILLING_FREQUENCIES: readonly BillingFrequency[] = ['N', 'O', 'D', 'W', 'M', 'Y'];
 
-// Response fixtures and envelope helpers.
-//
-//  The server publishes three shapes across these thirteen operations and this file reproduces each one
-//  exactly. Flushing a bare payload where the server sends an envelope would test a body that is never sent,
-//  and the failure would be silent rather than loud: a shape-correct blank reads as success.
-
-/**
- * One row of the role listing.
- */
+/** One row of the role listing. */
 const ROLE_LIST_ITEM: RoleListItem = {
   roleId: ROLE_ID_ZERO,
   roleName: 'Administrators',
@@ -293,9 +173,7 @@ const ROLE_LIST_ITEM: RoleListItem = {
   autoAssignment: false,
 };
 
-/**
- * One role in full, including both sets of paid-membership terms.
- */
+/** One role in full, including both sets of paid-membership terms. */
 const ROLE: Role = {
   roleId: ROLE_ID_ZERO,
   roleGroupId: null,
@@ -316,9 +194,7 @@ const ROLE: Role = {
   concurrencyToken: 'role-revision-token',
 };
 
-/**
- * One membership row.
- */
+/** One membership row. */
 const USER_ROLE: UserRole = {
   userRoleId: 11,
   userId: USER_ID,
@@ -331,11 +207,9 @@ const USER_ROLE: UserRole = {
 };
 
 /**
- * Builds a role group whose tenant key is supplied by the caller.
- *
- * Parameterised precisely so the two legitimate tenant keys can be round-tripped: the portal identity is
- * seeded at minus one, so the first tenant carries -1 and the second carries 0, while the legacy
- * absent-integer marker was also -1.
+ * Builds a role group whose tenant key is supplied by the caller. Parameterised precisely so the two
+ * legitimate tenant keys can be round-tripped: the portal identity is seeded at minus one, so the first
+ * tenant carries -1 and the second carries 0, while the legacy absent-integer marker was also -1.
  */
 function roleGroup(portalId: number, roleGroupId = ROLE_GROUP_ID): RoleGroup {
   return {
@@ -346,13 +220,7 @@ function roleGroup(portalId: number, roleGroupId = ROLE_GROUP_ID): RoleGroup {
   };
 }
 
-/**
- * Wraps a payload in the single-payload envelope the server writes.
- *
- * The metadata companion is PRESENT AND NULL rather than missing, because the API serialises with its ignore
- * condition set to never: an operation with no page to describe writes the key with a null value instead of
- * omitting it.
- */
+/** Wraps a payload in the single-payload envelope the server writes. */
 function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
 }
@@ -374,33 +242,16 @@ function pageOf<T>(items: readonly T[], totalCount: number): PagedResponse<T> {
 }
 
 /**
- * An obviously synthetic trace-context value and correlation identifier.
- *
- * Neither is a credential — the server emits the correlation identifier back on a failure precisely so it
- * can be quoted in a bug report — but the trace value is written as all-but-zero so no reader mistakes it
- * for a real one. Both are attached to EVERY problem document by `ValidationProblemDetailsFactory`, so a
- * fixture without them describes a response this API does not send.
+ * An obviously synthetic trace-context value and correlation identifier. Neither is a credential — the
+ * server emits the correlation identifier back on a failure precisely so it can be quoted in a bug report
+ * — but the trace value is written as all-but-zero so no reader mistakes it for a real one.
  */
 const TRACE_ID = '00-00000000000000000000000000000001-0000000000000001-00';
 const CORRELATION_ID = '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d';
 
 /**
- * The refusal a protected membership removal earns, as a COMPLETE and INTERNALLY CONSISTENT document.
- *
- * The body's status and the transport status must agree. A real response cannot disagree with itself —
- * `ApiResults.Problem` writes the body's `status` from the same `MapStatusCode` call that sets the transport
- * status — and a consumer that read the body's member rather than the transport's would have been specified
- * against a contradiction, passing here and misclassifying in production.
- *
- * The status is 403 because the reason token is `protected`. `role_assignment.protected` refuses the removal
- * of the portal administrator or the registered-users membership, and the server's `ForbiddenTokens` table
- * maps `protected` to 403 — so this is NOT a conflict, and nothing the caller does to the request will
- * change the answer. That is the substantive difference from `role_group.in_use`, which IS a conflict at 409
- * because emptying the group makes the identical request succeed.
- *
- * MIGRATION: the wording descends from the legacy resource key `RoleRemoveError`. `RoleController.vb` shows
- * why the removal is refused rather than performed: the legacy member set an expiry of yesterday and UPDATED
- * the assignment for an expired membership, so the two protected memberships were never actually deletable.
+ * The refusal a protected membership removal earns, as a COMPLETE and INTERNALLY CONSISTENT document. The
+ * body's status and the transport status must agree.
  */
 const PROTECTED_ASSIGNMENT_PROBLEM = {
   type: 'urn:dnnmigration:error:role_assignment.protected',
@@ -412,11 +263,10 @@ const PROTECTED_ASSIGNMENT_PROBLEM = {
 } as const;
 
 /**
- * The refusal a still-populated role group's removal earns.
- *
- * `role_group.in_use` carries the `in_use` token, which the server's `ConflictTokens` table maps to 409: a
- * removal refused because the thing is still referenced is a perfectly well formed request that the STATE of
- * the resource declines, and releasing the references makes the identical request succeed.
+ * The refusal a still-populated role group's removal earns. `role_group.in_use` carries the `in_use`
+ * token, which the server's `ConflictTokens` table maps to 409: a removal refused because the thing is
+ * still referenced is a perfectly well formed request that the STATE of the resource declines, and
+ * releasing the references makes the identical request succeed.
  */
 const GROUP_IN_USE_PROBLEM = {
   type: 'urn:dnnmigration:error:role_group.in_use',
@@ -437,31 +287,11 @@ const EXPECTED_METHODS: readonly string[] = [
   'createRoleGroup',
   'deleteRole',
   'deleteRoleGroup',
-  /**
-   * ONE ACCOUNT'S MEMBERSHIP OF ONE ROLE, addressed by both identifiers.
-   *
-   * ⚠ IT EXISTS SO THAT A LOGIN NAME NEVER TRAVELS IN A REQUEST TARGET. The same question was
-   * previously asked by narrowing `listUsers` with the account's login name in the paging
-   * contract's free-text filter, which the server matches against the login name and the display
-   * name - so asking it wrote the name into a query string, and a query string is kept in browser
-   * history and written in full to every proxy and server access log. That is CWE-598, and it stood
-   * beside an account search already moved to a request body to avoid exactly it.
-   */
   'getMembership',
   'getRole',
   'getRoleGroup',
   'listRoleGroups',
   'listRoles',
-  /**
-   * The roles ONE ACCOUNT holds.
-   *
-   * ⚠ THIS NAME WAS ONCE ABSENT ON PURPOSE, and it is present now because the condition its
-   * absence depended on has changed. The endpoints registry withheld the template on the grounds
-   * that "no screen in this application reads it … Declaring it belongs with the screen that needs
-   * it, on the day one does." The account listing's roles command is that screen: it used to
-   * navigate to the bare role listing and DISCARD the row's account, and it now carries the account
-   * so the listing can narrow to that person's memberships.
-   */
   'listRolesHeldByUser',
   'listUsers',
   'removeUser',
@@ -470,16 +300,9 @@ const EXPECTED_METHODS: readonly string[] = [
 ];
 
 /**
- * Names that must NOT appear, each standing for a capability deliberately left out.
- *
- * Enumerated rather than merely implied by the exact-set comparison, because a name says what the exclusion
- * means in a way a count cannot. Permission mutation is absent because the permission resource is a
- * read-only catalogue and grants are enforced server-side on every request. The subscription and
- * member-services family is absent because a subscription WAS a row joining an account to a role between two
- * dates, which is what the assignment and removal methods already write — a parallel resource would have
- * been a second name for one table. Bulk operations and group reordering were never part of the contract.
- * The health endpoint sits outside the versioned API at the host root and belongs to the container probe.
- * Nothing under the authentication family belongs here.
+ * Names that must NOT appear, each standing for a capability deliberately left out. Enumerated rather
+ * than merely implied by the exact-set comparison, because a name says what the exclusion means in a way
+ * a count cannot.
  */
 const ABSENT_METHODS: readonly string[] = [
   'grantPermission',
@@ -509,10 +332,8 @@ describe('RoleService', () => {
 
   beforeEach(() => {
     TestBed.configureTestingModule({
-      // The real client FIRST and the testing backend SECOND: the testing provider overrides the backend the
-      // real one installed, so the order is not cosmetic. No interceptors are registered, because this
-      // specification is about the service's own behaviour and running the chain here would assert two units
-      // at once.
+      // The real client FIRST and the testing backend SECOND: the testing provider overrides the backend
+      // the real one installed, so the order is not cosmetic.
       providers: [provideHttpClient(), provideHttpClientTesting()],
     });
 
@@ -611,9 +432,6 @@ describe('RoleService', () => {
     });
 
     it('transmits a page index of zero as zero, applying no offset arithmetic', async () => {
-      // The legacy screens held a ONE-based page number in the UI and subtracted one on the way to the data
-      // layer. The wire coordinate here is already zero-based, so any adjustment in either direction would
-      // silently serve the neighbouring page.
       const pending = firstValueFrom(service.listRoles({ pageIndex: 0, pageSize: 10 }));
 
       const request = httpMock.expectOne(
@@ -715,10 +533,6 @@ describe('RoleService', () => {
     });
 
     it('transmits the legacy all-roles sentinel of minus two verbatim', async () => {
-      // `Website/admin/Security/Roles.ascx.vb` gave the all-roles choice the value "-2" and defaulted the
-      // selector to it for a portal declaring no groups. then branched on the value being below -1. Whatever
-      // the endpoint chooses to make of a negative key is its own business; what is asserted here is that
-      // this client neither inspects it, coalesces it, nor rewrites it.
       const pending = firstValueFrom(
         service.listRoles({ pageIndex: 0, pageSize: 10 }, { roleGroupId: -2 }),
       );
@@ -769,9 +583,6 @@ describe('RoleService', () => {
     });
 
     it('transmits the named grouping scope as its own parameter', async () => {
-      // The named successor to the legacy selector's negative band. It travels as a name so that the magic
-      // integers do not, and an unrecognised spelling is refused by model binding rather than falling
-      // silently into whichever numeric band contained it.
       const pending = firstValueFrom(
         service.listRoles({ pageIndex: 0, pageSize: 10 }, { scope: 'Ungrouped' }),
       );
@@ -824,8 +635,7 @@ describe('RoleService', () => {
   describe('getRole', () => {
     it('addresses a role whose identifier is zero, proving no truthiness guard', async () => {
       // `01.00.00.SqlDataProvider` declares the role key `IDENTITY (0, 1)`, so a role key of zero is the
-      // tenant's FIRST role rather than a missing one. A guard on the identifier being truthy would suppress
-      // this request entirely, and the failure would read as an empty screen rather than as an error.
+      // tenant's FIRST role rather than a missing one.
       const pending = firstValueFrom(service.getRole(ROLE_ID_ZERO));
 
       const request = httpMock.expectOne(ROLE_ZERO_URL);
@@ -844,9 +654,6 @@ describe('RoleService', () => {
 
       httpMock.expectOne(ROLE_ZERO_URL).flush(body);
 
-      // Including the metadata companion, which is present and null for an operation with no page to
-      // describe. Flattening the envelope to its payload would make every consumer read a member the server
-      // does send.
       await expectAsync(pending).toBeResolvedTo(body);
     });
 
@@ -892,9 +699,6 @@ describe('RoleService', () => {
 
       const request = httpMock.expectOne(ROLES_URL);
 
-      // A deep comparison against the very object handed in. Every awkward value is present in that fixture
-      // on purpose: a null, two zeroes, a minus one, an empty string and two falses. A member stripped for
-      // being falsy would make the server store its own default, and nothing would report it.
       expect(request.request.body).toEqual(CREATE_ROLE_REQUEST);
 
       request.flush(envelope(ROLE), { status: 201, statusText: 'Created' });
@@ -907,9 +711,6 @@ describe('RoleService', () => {
       const request = httpMock.expectOne(ROLES_URL);
       const sent: unknown = request.request.body;
 
-      // `Library/Components/Shared/Null.vb` returns the EMPTY STRING for an absent string, so the two are
-      // indistinguishable in the legacy store and only the server may decide what an empty one means. Read
-      // through the contract's own type rather than by property access, so the comparison is exact.
       expect(sent).toEqual({ ...CREATE_ROLE_REQUEST, description: '' });
 
       request.flush(envelope(ROLE), { status: 201, statusText: 'Created' });
@@ -929,7 +730,6 @@ describe('RoleService', () => {
       await expectAsync(pending).toBeResolved();
     });
   });
-
 
   describe('the six persisted frequency codes', () => {
     // Every one of those decisions is SERVER-SIDE. What travels from here is one upper-case character held
@@ -966,10 +766,6 @@ describe('RoleService', () => {
 
       const request = httpMock.expectOne(ROLES_URL);
 
-      // The exact-equality comparison is what proves the absence: an extra member computed from a frequency
-      // and a period would make this fail. The server is the sole authority for a derived bound, because a
-      // client computing one from its own wall clock would disagree across a clock skew and could not be
-      // tested deterministically.
       expect(request.request.body).toEqual(CREATE_ROLE_REQUEST);
 
       request.flush(envelope(ROLE), { status: 201, statusText: 'Created' });
@@ -996,9 +792,6 @@ describe('RoleService', () => {
 
       const request = httpMock.expectOne(ROLE_URL);
 
-      // A replacement rather than a patch: the contract declares every editable member, so a member the
-      // client dropped would be a member the server CLEARED. The fixture holds a null, a minus one, an empty
-      // string, a zero and a false for that reason.
       expect(request.request.body).toEqual(UPDATE_ROLE_REQUEST);
 
       request.flush(envelope(ROLE));
@@ -1148,12 +941,6 @@ describe('RoleService', () => {
   });
 
   describe('getMembership', () => {
-    // ⚠ THE ADDRESS IS THE POINT. This read replaces asking the same question through `listUsers`
-    // narrowed by the account's LOGIN NAME in the paging contract's free-text filter, which the
-    // server matches against the login name and the display name - so the name had to be in the
-    // query string for the request to work. A query string is kept in browser history and written
-    // in full to every forward and reverse proxy access log and to the server's own, none of which
-    // is on the wire, so transport encryption does not address it: CWE-598.
     it('addresses the pairing itself and emits no query parameter at all', async () => {
       const pending = firstValueFrom(service.getMembership(ROLE_ID, USER_ID));
 
@@ -1184,10 +971,6 @@ describe('RoleService', () => {
     });
 
     it('propagates the refusal that means the account holds no such membership', async () => {
-      // The transport does NOT translate the 404 into a successful absence. Whether "holds nothing"
-      // is an acceptable outcome depends on the question being asked, and only the caller knows
-      // that - `RoleStore.probeAssignment` reads it as the negative answer, and a screen that
-      // required the membership to exist would report it.
       const pending = firstValueFrom(service.getMembership(ROLE_ID, USER_ID));
 
       httpMock
@@ -1245,15 +1028,6 @@ describe('RoleService', () => {
     });
 
     it('emits no response DTO, because a 204 carries no body at all', async () => {
-      // 204 IS THE ONLY SUCCESS STATUS THIS ACTION DECLARES. `POST /api/v1/roles/{roleId}/users` reports
-      // through `ApiResults.Complete(Result)`, whose success arm is `NoContent`, and `RolesController`
-      // declares exactly 204/400/401/403/404 for it. It does not: a 204 is forbidden from carrying a body.
-      //
-      // The property genuinely worth pinning is the one below. `RoleController.vb` branched on the
-      // assignment's own identifier still holding the absent-integer marker it was given, UPDATING an
-      // existing row when it did not and ADDING one when it did. The API deliberately does not publish which
-      // of the two happened, so no representation comes back and a client cannot re-derive the distinction.
-      // That is why the observable is `void`-typed and why nothing is emitted here but the empty body.
       const emitted: unknown[] = [];
       let completed = false;
 
@@ -1297,8 +1071,7 @@ describe('RoleService', () => {
 
       // Absent means absent. `null` says "no bound" and the server derives one from the role's frequency
       // terms; the legacy in-memory spelling of an absent date was a minimum-value instant, which is not
-      // something the column can hold. The exact-equality comparison is again what proves the negative: a
-      // computed bound would add or replace a member and make this fail.
+      // something the column can hold.
       expect(request.request.body).toEqual({
         userId: USER_ID,
         effectiveDate: null,
@@ -1321,8 +1094,6 @@ describe('RoleService', () => {
 
       const request = httpMock.expectOne(ROLE_MEMBERS_URL);
 
-      // The far-future instant is the perpetual bound the legacy selection produced for the O code at
-      // `RoleController.vb`. It is transmitted, never re-derived.
       expect(request.request.body).toEqual(withBounds);
 
       request.flush(null, { status: 204, statusText: 'No Content' });
@@ -1343,8 +1114,8 @@ describe('RoleService', () => {
   describe('removeUser', () => {
     it('addresses the pairing directly at the doubly nested path', async () => {
       // Addressed by role and account rather than through the assignment's own surrogate key, which the
-      // legacy grid could only supply after rendering itself. The operation is therefore reachable without a
-      // prior read, and `httpMock.verify()` is what proves no prior read is taken.
+      // legacy grid could only supply after rendering itself. The operation is therefore reachable without
+      // a prior read, and `httpMock.verify()` is what proves no prior read is taken.
       const pending = firstValueFrom(service.removeUser(ROLE_ID, USER_ID));
 
       const request = httpMock.expectOne(ROLE_MEMBER_URL);
@@ -1353,12 +1124,6 @@ describe('RoleService', () => {
       expect(request.request.url).toBe(ROLE_MEMBER_URL);
       expect(request.request.body).toBeNull();
 
-      // MIGRATION: A 204 HERE DOES NOT PROMISE THE ROW IS GONE.
-      // `Library/Components/Security/Roles/RoleController.vb` tests the cancel branch and then, whether the
-      // membership exists, carries a service fee above zero and has had its trial used. The wire status is
-      // 204 either way and carries no body to tell the two apart, so a consumer must re-read the listing
-      // rather than dropping the row locally: an expired assignment is a retained row a listing may still
-      // return.
       request.flush(null, { status: 204, statusText: 'No Content' });
       await expectAsync(pending).toBeResolved();
     });
@@ -1406,7 +1171,6 @@ describe('RoleService', () => {
     });
   });
 
-
   // ROLE GROUPS
 
   describe('listRoleGroups', () => {
@@ -1428,16 +1192,8 @@ describe('RoleService', () => {
 
       const request = httpMock.expectOne(ROLE_GROUPS_URL);
 
-      // MIGRATION: this listing is deliberately UNPAGED, and the method takes no arguments at all.
-      // `Website/admin/Security/Roles.ascx.vb` read every group in the portal into an untyped list and bound
-      // the whole answer to a drop-down, with no page coordinate, no size and no total anywhere on the
-      // screen; a tenant defines groups in the tens. Introducing paging would add a contract the legacy
-      // application never had.
-      //
       // No portal identifier travels here: the route template is parameterless and the controller binds
       // nothing, because the tenant is resolved server-side from the request host and the caller's claims.
-      // Asserting the whole query string is empty is the strongest statement available and it discharges the
-      // no-paging requirement outright.
       expect(request.request.params.keys()).toEqual([]);
       expect(request.request.urlWithParams).toBe(ROLE_GROUPS_URL);
       expect(request.request.params.has('pageIndex')).toBeFalse();
@@ -1452,10 +1208,6 @@ describe('RoleService', () => {
     });
 
     it('round-trips a tenant key of minus one, which the identity seed makes the first tenant', async () => {
-      // `01.00.00.SqlDataProvider` declares the portal key `IDENTITY (-1, 1)`, so the first tenant ever
-      // created carries -1 — while `Null.vb` simultaneously made -1 the absent-integer marker. On this
-      // operation the tenant key travels on the PAYLOAD rather than the query, so this is where its fidelity
-      // is provable: a consumer that coalesced -1 to null would lose the first tenant entirely.
       const body = envelope([roleGroup(-1)]);
       const pending = firstValueFrom(service.listRoleGroups());
 
@@ -1475,8 +1227,8 @@ describe('RoleService', () => {
 
     it('returns an empty payload as a legitimate answer rather than a failure', async () => {
       // A tenant that defines no groups. The legacy grid hid its group row entirely in that case, and that
-      // presentation choice belongs to a component; here it is simply an empty sequence inside a well-formed
-      // envelope.
+      // presentation choice belongs to a component; here it is simply an empty sequence inside a
+      // well-formed envelope.
       const body = envelope<readonly RoleGroup[]>([]);
       const pending = firstValueFrom(service.listRoleGroups());
 
@@ -1497,15 +1249,7 @@ describe('RoleService', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE ROLES ONE ACCOUNT HOLDS
-  //
-  // MIGRATION: `Website/admin/Security/SecurityRoles.ascx.vb:L253` read one account's role
-  // memberships directly, which is what let the legacy screen open already narrowed to the
-  // person the operator had just been looking at. The account listing's roles command used to
-  // navigate to the bare role listing and discard the row's account, so the operator arrived at
-  // every role in the tenant and had to find the person again.
-  // -------------------------------------------------------------------------
 
   describe('listRolesHeldByUser', () => {
     it('reads the memberships at the exact relative path, nested under the ACCOUNT', async () => {
@@ -1522,10 +1266,6 @@ describe('RoleService', () => {
     });
 
     it('emits NO query parameters, this listing being unpaged like the controller serves it', async () => {
-      // The controller answers `ApiResponse<IReadOnlyList<RoleListItemDto>>` — a plain
-      // collection rather than a page — because one account holds roles in the tens. Sending a
-      // page coordinate would describe a contract the server does not serve, and the empty
-      // query string is the strongest available statement of that.
       const pending = firstValueFrom(service.listRolesHeldByUser(USER_ID));
 
       const request = httpMock.expectOne(USER_ROLES_URL);
@@ -1572,9 +1312,9 @@ describe('RoleService', () => {
 
       const answered = await pending;
 
-      // Decoded through the same contract the tenant-wide listing uses, so a role read this way
-      // is indistinguishable from the same role read the other way — which is what lets one
-      // screen render either answer.
+      // Decoded through the same contract the tenant-wide listing uses, so a role read this way is
+      // indistinguishable from the same role read the other way — which is what lets one screen render
+      // either answer.
       expect(answered.data).toEqual([ROLE_LIST_ITEM]);
       expect(answered.data[0].roleId).toBe(ROLE_ID_ZERO);
       expect(answered.data[0].description).toBeNull();
@@ -1723,18 +1463,7 @@ describe('RoleService', () => {
     });
 
     it('issues exactly one request, taking no pre-emptive read of the group members', async () => {
-      //  MIGRATION: the conflict is surfaced, never pre-empted. The legacy screen hid its delete control
-      //  instead of refusing the operation: `Website/admin/Security/Roles.ascx.vb` sets that control's
-      //  visibility to the negation of the bound role list being non-empty, inside the branch opened that
-      //  also hides the edit link when the selector holds a negative value. Its enclosing read is the unpaged
-      //  bind.
-      //
       // Measured first-hand against the file in this repository.
-      //
-      //  That guard becomes the server's refusal. A client-side pre-check would be business logic in a client
-      //  restricted to API communication, and a client-side count is a race against any other administrator.
-      //  `expectOne` plus the `verify()` in `afterEach` is the whole proof: a preliminary read would leave a
-      //  second request unconsumed and fail the run.
       const pending = firstValueFrom(service.deleteRoleGroup(ROLE_GROUP_ID));
 
       const request = httpMock.expectOne(ROLE_GROUP_URL);
@@ -1770,8 +1499,7 @@ describe('RoleService', () => {
       expect(outcome.status).toBe(409);
       // The WHOLE document, compared as one value. Turning a status into words belongs to the error
       // interceptor and the form-error helper, neither of which this test bed registers, so no individual
-      // member is read and no message is asserted. That also sidesteps the workspace's ban on dotted access
-      // into an index signature: there is no property access to get wrong.
+      // member is read and no message is asserted.
       expect(outcome.error).toEqual(GROUP_IN_USE_PROBLEM);
       expect((outcome.error as { readonly status: number }).status)
         .withContext('the body agrees with the transport, as a real response does')
@@ -1800,9 +1528,7 @@ describe('RoleService', () => {
 
   // Cross-cutting: what the service must not add.
 
-  /**
-   * The five operations of the eleven below whose endpoint answers with a payload.
-   */
+  /** The five operations of the eleven below whose endpoint answers with a payload. */
   const RETURNS_A_PAYLOAD: ReadonlySet<string> = new Set([
     `GET ${ROLE_ZERO_URL}`,
     `POST ${ROLES_URL}`,
@@ -1842,9 +1568,7 @@ describe('RoleService', () => {
   describe('header discipline', () => {
     it('sets neither a bearer token nor a correlation identifier on any operation', async () => {
       // The bearer token and the correlation identifier are applied by two of the three interceptors
-      // `app.config.ts` registers, and this test bed deliberately registers none of them. Their ABSENCE here
-      // is therefore the assertion: a service that had started setting either header itself would be
-      // duplicating an interceptor's work and would keep passing every other case in this file.
+      // `app.config.ts` registers, and this test bed deliberately registers none of them.
       const settled: Promise<unknown>[] = [];
 
       settled.push(firstValueFrom(service.getRole(ROLE_ID_ZERO)));
@@ -1874,11 +1598,6 @@ describe('RoleService', () => {
           .withContext(`${request.request.method} ${request.request.url} must not set a trace id`)
           .toBeFalse();
 
-        // Answered as each endpoint really answers, rather than with one 204 for all eleven. The shortcut of
-        // flushing an empty body everywhere was only viable while nothing inspected it; the transport now
-        // DECODES every payload it declares, so a read answered with `null` is refused at the boundary
-        // exactly as a drifted server response would be — and this case would then fail for a reason that
-        // has nothing to do with the headers it exists to assert.
         request.flush(bodyFor(request.request.method, request.request.url), {
           status: RETURNS_A_PAYLOAD.has(request.request.method + ' ' + request.request.url)
             ? 200
@@ -1907,13 +1626,6 @@ describe('RoleService', () => {
       await expectAsync(members).toBeResolved();
     });
   });
-  // The response contract is checked, not asserted.
-  //
-  //  The most consequential member of this contract is a SINGLE CHARACTER. `"m"`, `"Monthly"` and the number
-  //  `2` would every one of them read as a `BillingFrequency` to the compiler — the interface is erased — and
-  //  then fall through the fee-schedule switch to its default branch, charging a paid role on the wrong cycle
-  //  or on none at all. Nothing downstream could ever reveal it. These cases require the OBSERVABLE TO FAIL
-  //  instead.
   describe('refuses a response that does not match its contract', () => {
     // The shared paged request carries an ordering and a search as well as its two coordinates, so the url
     // the backend receives carries all five. Matching on a partial query string finds nothing.
@@ -1957,15 +1669,9 @@ describe('RoleService', () => {
       }
     }
 
-    // ⚠ MINOR (client/API contract) — THE REVISION MARKER, REFUSED IN BOTH OF ITS MALFORMED SHAPES.
-    //
     // `RoleDetailDto.ConcurrencyToken` is declared `public string ... = string.Empty` and is populated by
     // `RoleMappings.ConcurrencyTokenFor`, so this read cannot legitimately omit the member or serve a null
-    // for it. The decoder widened it to `string | null` anyway, and the consequence was silent: the null
-    // decoded, flowed into the update contract - whose member IS nullable, because the server treats a
-    // marker-less write as an opt-out and applies it - and the optimistic check the marker exists to perform
-    // was skipped with nothing anywhere reporting that it had been. On this contract that overwrites the
-    // WHOLE role from a stale snapshot, so an edit to any of its thirteen members is lost silently.
+    // for it.
 
     it('refuses a role whose revision marker is absent', () => {
       const malformed: Record<string, unknown> = { ...ROLE };
@@ -1981,9 +1687,6 @@ describe('RoleService', () => {
     });
 
     it('refuses a role whose revision marker arrived as null', () => {
-      // Asserted separately from absence, because tolerating THIS shape was the defect itself:
-      // `nullable(decodeString)` admitted exactly it, and nothing downstream could distinguish "no revision
-      // to check against" from "a role at an unknown revision".
       expectViolationAt(
         service.getRole(ROLE_ID_ZERO),
         ROLE_ZERO_URL,
@@ -1993,10 +1696,6 @@ describe('RoleService', () => {
     });
 
     it('accepts the empty string as a revision marker, because that is the server unset spelling', () => {
-      // The counterpart, and it matters: the member is non-nullable on the server and its declared default
-      // IS the empty string, so an installation that has never derived a marker serves one. Refusing it
-      // would make a legitimate response undecodable, and substituting anything for it would fabricate a
-      // marker which, were it ever to match, would defeat the check it appears to satisfy.
       const values: unknown[] = [];
       const failures: unknown[] = [];
 
@@ -2022,18 +1721,6 @@ describe('RoleService', () => {
     });
 
     it('carries a lower-case stored code through verbatim rather than folding its case', () => {
-      // The subtlest case in the file, and it is an admission rather than a refusal.
-      //
-      //    no arm of the fee schedule. That reasoning inverted the server's contract. The API's persistence
-      //    read is deliberately CASE-SENSITIVE and its response converter is lossless, and the converter's
-      //    own note records why: the inbound path up-cases what a CALLER sends, while up-casing a STORED
-      //    `'m'` would change how an existing row reads and would rewrite its byte on the next update of that
-      //    row. So a stored `'m'` really does travel, and the only honest thing a client can do is carry it
-      //    as the character it is — refusing it would make the role unreadable, and up-casing it here would
-      //    silently reinterpret stored data.
-      //
-      //  What a client may NOT do is send it back: the write vocabulary stays closed, which the write cases
-      //  in this file assert separately.
       const values: unknown[] = [];
 
       service.getRole(ROLE_ID_ZERO).subscribe({ next: (value: unknown) => values.push(value) });
@@ -2053,10 +1740,6 @@ describe('RoleService', () => {
     });
 
     it('admits the shipped legacy codes that fall outside the published vocabulary', () => {
-      // The case this whole split exists for, and it is not hypothetical. A decoder closed to the six
-      // published codes therefore refused a perfectly valid response, and one such row made the role
-      // unreadable for good: retrying reproduced the refusal deterministically, because the stored data was
-      // the cause.
       for (const code of ['4', '0']) {
         const values: unknown[] = [];
 
@@ -2076,9 +1759,6 @@ describe('RoleService', () => {
     });
 
     it('does not fail a whole page of roles because one row holds a legacy code', () => {
-      // The consequence at the scale that matters. The listing decodes every row, so a refusal on one row is
-      // a refusal of the page: an administrator could not see ANY role because one legacy row existed. Both
-      // rows must arrive, each carrying its own stored character.
       const values: unknown[] = [];
 
       service.listRoles(PAGED_REQUEST).subscribe({ next: (value: unknown) => values.push(value) });
@@ -2164,9 +1844,6 @@ describe('RoleService', () => {
     });
 
     it('refuses a membership whose expiry is not a date', () => {
-      // An assignment's status is derived from its two bounds. A malformed date would be compared against
-      // `Invalid Date`, whose every comparison is false — so an EXPIRED membership would be presented as
-      // active and the person would keep an entitlement they had lost.
       expectViolationAt(
         service.listUsers(ROLE_ID, PAGED_REQUEST),
         PAGED_MEMBERS_URL,

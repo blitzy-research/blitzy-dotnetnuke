@@ -12,68 +12,18 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Persistence;
 
-/// <summary>
-/// Covers the binding between the entity model and the existing DotNetNuke schema.
-/// </summary>
+/// <summary>Covers the binding between the entity model and the existing DotNetNuke schema.</summary>
 /// <remarks>
 /// <para>
-/// The schema is externally owned. The entity configurations pin every table and column name explicitly
-/// so that the model reads and writes the installation the legacy application already populated, and the
-/// baseline migration deliberately emits no data-definition language at all. A mapping mistake therefore
-/// cannot be caught by a build or by a migration diff: it surfaces only when a query runs. That is what
-/// this suite exists to catch.
+/// The schema is externally owned. The entity configurations pin every table and column name explicitly so
+/// that the model reads and writes the installation the legacy application already populated, and the
+/// baseline migration deliberately emits no data-definition language at all.
 /// </para>
-/// <para>
-/// <strong>Three layers, and each catches what the others cannot.</strong> The mapping is asserted from
-/// three directions, because any one of them alone leaves a real gap open.
-/// </para>
-/// <list type="number">
-///   <item><description>
-///     <strong>Catalogue assertions</strong> read <c>INFORMATION_SCHEMA</c> and <c>sys.identity_columns</c>
-///     on the provisioned database, then round-trip rows through the repositories. This compares the model
-///     against something outside itself, which asserting the model against its own metadata can never do.
-///   </description></item>
-///   <item><description>
-///     <strong>Model-metadata assertions</strong> read the composed <see cref="IModel"/> directly. These
-///     cover the facts that leave no trace in a catalogue at all, and there are three classes of them. A
-///     deliberately UNMAPPED property is invisible to <c>INFORMATION_SCHEMA</c> - an ignored property and a
-///     misspelled one look identical from the database, namely absent - so the eleven externally stored
-///     membership properties can only be asserted here. The COUNT of mapped entity types is likewise a
-///     model fact: the database carries tables this migration deliberately does not map, so counting
-///     catalogue rows would answer a different question. And an entity that OUGHT NOT to exist, such as the
-///     ambient portal-settings composite, cannot be shown absent by querying for a table that was never
-///     going to be there.
-///   </description></item>
-///   <item><description>
-///     <strong>Independent-oracle assertions</strong> compare the model with
-///     <c>Schema/TerminalSchema.manifest</c>, which was derived from the legacy upgrade chain and from
-///     nothing this solution emits. This layer exists because layers one and two were not enough: the
-///     database is provisioned from <c>Schema/DnnSchema.sql</c>, which had been scripted FROM the model, so
-///     the catalogue comparison was model against model with two extra steps and a model that was
-///     internally consistent and uniformly WRONG satisfied all of it. Measuring against the manifest found
-///     two such defects immediately - a nullability and a key topology - both of which had passed here for
-///     as long as this file existed. See <see cref="TerminalSchema"/> and
-///     <c>LegacySchemaFidelityTests</c>.
-///   </description></item>
-/// </list>
 /// <para>
 /// The hand-written inventories in this file - the mapped table list, the pinned legacy column spellings,
 /// the identity seeds, the conceptual-only relationships - are each pinned to the manifest by an assertion
 /// of their own, so a list that drifts from the schema it describes fails rather than quietly narrowing
 /// what the rest of the suite checks.
-/// </para>
-/// <para>
-/// <strong>The context type is never named, and nothing here makes it nameable.</strong> The context is
-/// <c>internal</c> to the infrastructure assembly by design, and this project holds no visibility into it -
-/// no <c>InternalsVisibleTo</c>, no assembly attribute, no request for the type to be made public. The
-/// model is nonetheless reachable through entirely public API, and <see cref="ComposeModel"/> documents
-/// how. That accessibility is the design rather than an obstacle to it.
-/// </para>
-/// <para>
-/// MIGRATION: no schema is created, altered or dropped from this file. <c>EnsureCreated</c>,
-/// <c>EnsureDeleted</c> and <c>Database.Migrate</c> are absent and must stay absent - the terminal
-/// DotNetNuke schema depends on membership objects the eighty-eight legacy upgrade scripts only ever ALTER,
-/// so no model-driven creation can reproduce it even in principle.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -84,9 +34,7 @@ public sealed class DnnDbContextTests
     /// <remarks>
     /// Three of these seeds are load-bearing rather than incidental. A tenant identifier of -1 collides
     /// with the legacy "absent integer" sentinel, and a role, page or module identifier of 0 collides with
-    /// the CLR default for an unassigned integer. Both collisions have already produced real defects in
-    /// this migration, so the seeds are asserted here to make a future schema edit that changes one of
-    /// them fail loudly instead of quietly changing which identifiers are reachable.
+    /// the CLR default for an unassigned integer.
     /// </remarks>
     private static readonly IReadOnlyDictionary<string, int> ExpectedIdentitySeeds = new Dictionary<string, int>(StringComparer.Ordinal)
     {
@@ -100,14 +48,13 @@ public sealed class DnnDbContextTests
     };
 
     /// <summary>
-    /// Model relationships that deliberately have no physical foreign-key constraint in the terminal schema.
+    /// Model relationships that deliberately have no physical foreign-key constraint in the terminal
+    /// schema.
     /// </summary>
     /// <remarks>
     /// The profile-definition relationship is queryable over its nullable <c>ModuleDefID</c> column but the
     /// legacy upgrade chain never constrained it. The two permission-role relationships are likewise
     /// queryable, while their columns must admit the negative pseudo-role identifiers the database uses.
-    /// These relationships therefore stay in the EF model with <c>NoAction</c> but are excluded from the
-    /// physical constraint inventory below.
     /// </remarks>
     private static readonly IReadOnlySet<string> ConceptualOnlyForeignKeys = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -151,7 +98,7 @@ public sealed class DnnDbContextTests
     /// carries the British spelling the original schema used; <c>GUID</c> and the identifier columns carry
     /// casings that no C# naming convention would produce; <c>KeyWords</c> capitalises its second syllable;
     /// <c>RSVPCode</c> is fully upper-cased; and <c>TimezoneOffset</c> lower-cases a word the property
-    /// spells with a capital. Correcting any of them would break every installation in the field.
+    /// spells with a capital.
     /// </remarks>
     private static readonly (string Table, string Column)[] LegacyColumnNames =
     [
@@ -192,22 +139,14 @@ public sealed class DnnDbContextTests
     /// </summary>
     /// <remarks>
     /// Composing a model requires a configured provider but NOT a reachable server: Entity Framework builds
-    /// the model from the entity configurations alone and connects only when a query executes. The host name
-    /// uses the reserved <c>.invalid</c> top-level domain so that a future edit which accidentally opens a
-    /// connection fails immediately and unmistakably instead of reaching some real server. It carries no
-    /// credential of any kind, which is the other reason it is stated here in full rather than borrowed from
-    /// the fixture's live connection string.
+    /// the model from the entity configurations alone and connects only when a query executes. The host
+    /// name uses the reserved <c>.invalid</c> top-level domain so that a future edit which accidentally
+    /// opens a connection fails immediately and unmistakably instead of reaching some real server.
     /// </remarks>
     private const string ModelOnlyConnectionString =
         "Server=model-composition-only.invalid;Database=DnnMigrationModelOnly;Integrated Security=true";
 
     /// <summary>Schema every mapped entity is bound to.</summary>
-    /// <remarks>
-    /// <c>Website/release.config:L355</c> declares <c>databaseOwner="dbo"</c> and <c>L354</c> declares
-    /// <c>objectQualifier=""</c>, so the mapping targets un-prefixed names owned by <c>dbo</c>. The
-    /// qualifier remains configurable for an installation that uses one; this asserts the value this
-    /// migration actually binds.
-    /// </remarks>
     private const string LegacySchema = "dbo";
 
     /// <summary>The composed entity model, read once for the whole class.</summary>
@@ -220,15 +159,8 @@ public sealed class DnnDbContextTests
 
     /// <summary>Every mapped entity paired with the legacy table it binds to.</summary>
     /// <remarks>
-    /// <para>
     /// The single source of truth for the entity-to-table mapping, projected into theory data below so the
     /// count and the individual mappings cannot disagree with one another.
-    /// </para>
-    /// <para>
-    /// SIX OF THESE TABLE NAMES ARE SINGULAR while their sets are plural, and one does not match its entity
-    /// name at all: <c>UserProfileValue</c> binds to <c>UserProfile</c>. Pluralising any of them would read
-    /// a genuine installation as an empty one, and no compiler or migration diff would notice.
-    /// </para>
     /// </remarks>
     private static readonly (Type Entity, string Table)[] MappedEntityTables =
     [
@@ -293,25 +225,12 @@ public sealed class DnnDbContextTests
     /// modernise.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// <strong>The legacy schema is not internally consistent, and that is the point of this table.</strong>
-    /// Most identifier columns end in an upper-cased <c>ID</c> - <c>Users.UserID</c>, <c>Portals.PortalID</c>
-    /// - but a significant minority do not, and the SAME logical column is spelled differently depending on
-    /// which table carries it: <c>Users.UserID</c> is upper-cased while <c>UserPortals.UserId</c> is not, and
-    /// <c>Portals.PortalID</c> is upper-cased while <c>UserPortals.PortalId</c> is not. A configuration
-    /// written by pattern rather than by measurement gets those wrong, and nothing but a query failure
-    /// against a real installation would reveal it.
-    /// </para>
-    /// <para>
-    /// Five pairs do not merely differ in casing but rename outright: <c>PortalGuid</c> is stored as
-    /// <c>GUID</c>, <c>TimeZoneOffset</c> as <c>TimezoneOffset</c>, <c>HttpAlias</c> as <c>HTTPAlias</c>,
-    /// <c>IsAuthorised</c> as <c>Authorised</c> - the original British spelling, with the boolean prefix
-    /// dropped - and <c>ModuleDefinitionId</c> as the abbreviated <c>ModuleDefID</c>.
-    /// </para>
-    /// <para>
-    /// The property side uses <c>nameof</c> throughout so that renaming a property is a compile error here
-    /// rather than a test that keeps passing while asserting nothing.
-    /// </para>
+    /// <strong>The legacy schema is not internally consistent, and that is the point of this
+    /// table.</strong> Most identifier columns end in an upper-cased <c>ID</c> - <c>Users.UserID</c>,
+    /// <c>Portals.PortalID</c> - but a significant minority do not, and the SAME logical column is spelled
+    /// differently depending on which table carries it: <c>Users.UserID</c> is upper-cased while
+    /// <c>UserPortals.UserId</c> is not, and <c>Portals.PortalID</c> is upper-cased while
+    /// <c>UserPortals.PortalId</c> is not.
     /// </remarks>
     public static TheoryData<Type, string, string> LegacyColumnSpellings
     {
@@ -385,14 +304,6 @@ public sealed class DnnDbContextTests
     /// Properties the account aggregate carries but the mapping deliberately leaves to the external
     /// membership store.
     /// </summary>
-    /// <remarks>
-    /// These eleven live in the externally installed <c>aspnet_*</c> tables and are composed by the user
-    /// repository rather than mapped as columns on <c>dbo.Users</c>. MIGRATION: the legacy DDL chain only
-    /// ever ALTERs those objects - searching all eighty-eight scripts case-insensitively and across every
-    /// naming form they use finds exactly one CREATE of an <c>aspnet_</c> object, and it is a DotNetNuke
-    /// helper procedure rather than one of Microsoft's - so the membership store is an external dependency
-    /// the account entity maps alongside, never something this model owns.
-    /// </remarks>
     public static TheoryData<string> ExternallyStoredAccountProperties
     {
         get
@@ -484,15 +395,15 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>
-    /// Every mapped non-primary index has the model's physical name, ordered columns, uniqueness and filter.
+    /// Every mapped non-primary index has the model's physical name, ordered columns, uniqueness and
+    /// filter.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// This is intentionally an inventory comparison rather than a handful of spot checks. The earlier
     /// embedded schema had thirty-seven indexes against the model's thirty-three: eight existed only in the
-    /// test database, four were absent there, fourteen matching structures carried different names, and three
-    /// unique indexes added filters the terminal schema does not have. Comparing complete ordered metadata
-    /// prevents a CRUD test from passing under an access path or uniqueness rule production never receives.
+    /// test database, four were absent there, fourteen matching structures carried different names, and
+    /// three unique indexes added filters the terminal schema does not have.
     /// </remarks>
     [Fact]
     public async Task ProvisionedSchema_IndexesMatchTheMappedTerminalInventory()
@@ -511,10 +422,9 @@ public sealed class DnnDbContextTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The conceptual relationships named by <see cref="ConceptualOnlyForeignKeys"/> are intentionally absent
-    /// from the physical inventory. In particular, neither <c>Permission.ModuleDefID</c> nor
-    /// <c>ProfilePropertyDefinition.ModuleDefID</c> is constrained in the terminal legacy schema. Creating
-    /// either key in tests lets integration CRUD pass under a constraint production does not have.
+    /// The conceptual relationships named by <see cref="ConceptualOnlyForeignKeys"/> are intentionally
+    /// absent from the physical inventory. In particular, neither <c>Permission.ModuleDefID</c> nor
+    /// <c>ProfilePropertyDefinition.ModuleDefID</c> is constrained in the terminal legacy schema.
     /// </remarks>
     [Fact]
     public async Task ProvisionedSchema_ForeignKeysMatchTheTerminalPhysicalInventory()
@@ -537,19 +447,10 @@ public sealed class DnnDbContextTests
     /// The hand-written inventories in this file agree with the independently derived terminal schema.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// Four lists in this file describe the schema in prose and in literals: the mapped tables, the legacy
     /// column spellings worth pinning, the identity seeds and the relationships that are conceptual only.
     /// Each is valuable as documentation and each is a liability as an oracle, because a list that quietly
     /// disagrees with the schema does not fail - it just stops asserting the part it has lost.
-    /// </para>
-    /// <para>
-    /// So each is pinned here to <c>Schema/TerminalSchema.manifest</c>, which was derived from the legacy
-    /// upgrade chain rather than from this model. The conceptual-only relationships are the sharpest case:
-    /// they are EXCLUDED from the physical comparison above, so a mistake there would silently exempt a
-    /// constraint from being checked at all. Asserting that the manifest carries no such foreign key turns
-    /// that exclusion from an assumption into a measured fact.
-    /// </para>
     /// </remarks>
     [Fact]
     public void TheHandWrittenInventories_AgreeWithTheIndependentOracle()
@@ -588,17 +489,12 @@ public sealed class DnnDbContextTests
         }
     }
 
-    /// <summary>
-    /// Each mapped entity binds exactly the columns the terminal schema declares on its table.
-    /// </summary>
+    /// <summary>Each mapped entity binds exactly the columns the terminal schema declares on its table.</summary>
     /// <param name="entity">The entity type.</param>
     /// <param name="table">The legacy table it binds to.</param>
     /// <remarks>
     /// The sibling fidelity suite asserts the same property across the whole model at once, which reports a
-    /// list. This states it per entity so that a failure names the aggregate, and it is a theory rather than
-    /// a loop so that every one of the twenty-one entities is reported independently: a single aggregate
-    /// assertion stops at the first mismatch it renders, and the shape of a mapping defect is usually one
-    /// entity rather than one column.
+    /// list.
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -625,8 +521,7 @@ public sealed class DnnDbContextTests
     /// <remarks>
     /// The inventory comparison above proves the model and the provisioned database agree. On its own that
     /// proved less than it appeared to, because the database was provisioned from a script emitted from the
-    /// model. This compares the same model inventory with the independent oracle, so the two together
-    /// establish agreement with the legacy schema rather than internal consistency.
+    /// model.
     /// </remarks>
     [Fact]
     public void Model_DeclaresExactlyTheTerminalIndexInventory()
@@ -652,11 +547,6 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>The model declares exactly the physical foreign keys the terminal schema declares.</summary>
-    /// <remarks>
-    /// The three conceptual-only relationships are excluded, exactly as they are from the physical
-    /// comparison against the database, and <see cref="TheHandWrittenInventories_AgreeWithTheIndependentOracle"/>
-    /// proves the manifest carries none of them.
-    /// </remarks>
     [Fact]
     public void Model_DeclaresExactlyTheTerminalPhysicalForeignKeys()
     {
@@ -694,10 +584,7 @@ public sealed class DnnDbContextTests
     /// The column began life as <c>nvarchar(10)</c> in the baseline script, but the <c>Tmp_Portals</c>
     /// rebuild retyped it with an explicit <c>CONVERT(money, HostFee)</c>
     /// (<c>01.00.05.SqlDataProvider:L1376,L1412</c>) and <c>03.01.01.SqlDataProvider:L1118</c> re-asserted
-    /// <c>ALTER TABLE Portals ALTER COLUMN HostFee money NOT NULL</c>. No later script revisits it, so
-    /// <c>money</c> is the terminal type. Asserting the store type is what stops a converter from being
-    /// reintroduced: binding this column as text would read a genuine installation incorrectly and would
-    /// make the stored value depend on the writing server's culture.
+    /// <c>ALTER TABLE Portals ALTER COLUMN HostFee money NOT NULL</c>.
     /// </remarks>
     [Fact]
     public async Task HostFee_IsStoredAsMoneyRatherThanText()
@@ -706,9 +593,9 @@ public sealed class DnnDbContextTests
             "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
             + "WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Portals' AND COLUMN_NAME = 'HostFee'");
 
-        // A monetary column has no character length at all, so the catalogue reports null for it. The
-        // count is asked for rather than the length itself because the scalar helper treats a null
-        // result as a failed statement.
+        // A monetary column has no character length at all, so the catalogue reports null for it. The count
+        // is asked for rather than the length itself because the scalar helper treats a null result as a
+        // failed statement.
         int textLengthCount = await _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
             + "WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Portals' AND COLUMN_NAME = 'HostFee' "
@@ -720,11 +607,6 @@ public sealed class DnnDbContextTests
 
     /// <summary>Both billing frequencies are stored as a single non-Unicode character.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The single-character codes are data, not presentation: an installation in the field already holds
-    /// rows containing them. That is why the enumeration carries explicit character values instead of the
-    /// ordinals a fresh design would have used.
-    /// </remarks>
     [Fact]
     public async Task BillingFrequencies_AreStoredAsASingleCharacter()
     {
@@ -746,15 +628,14 @@ public sealed class DnnDbContextTests
     }
 
     /// <summary>
-    /// A tenant written through the repository lands in the legacy columns, reads back unchanged, and can be
-    /// removed again.
+    /// A tenant written through the repository lands in the legacy columns, reads back unchanged, and can
+    /// be removed again.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// This is the write half of the mapping contract. The listing endpoints would still pass if a column
     /// were bound to the wrong name in one direction only, because a read of a column nobody writes simply
-    /// returns its default. Writing, then reading the raw row, then reading it back through the model,
-    /// closes that gap.
+    /// returns its default.
     /// </remarks>
     [Fact]
     public async Task Portal_RoundTripsThroughTheMappedColumnsAndConverters()
@@ -861,12 +742,7 @@ public sealed class DnnDbContextTests
         }
         finally
         {
-            // A SAFETY NET, not the assertion. The removal above is part of what this fact asserts, so it
-            // stays in the body where its outcome is checked; this only covers the case where an assertion
-            // failed BEFORE the removal ran and would otherwise have left an extra tenant in the shared
-            // database for every later fact that counts portals. It is idempotent, so on the ordinary path it
-            // affects nothing, and it asserts nothing, so it can never replace the failure that brought it
-            // here.
+            // A SAFETY NET, not the assertion.
             await EnsurePortalRemovedAsync(portalId);
         }
     }
@@ -934,14 +810,12 @@ public sealed class DnnDbContextTests
                 reread.IsPublic.Should().BeTrue();
                 reread.AutoAssignment.Should().BeFalse();
             }
-
         }
         finally
         {
             // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
-            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
-            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
-            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one
+            // real failure here into several unrelated ones elsewhere.
             await RemoveRoleAsync(roleId);
         }
     }
@@ -999,14 +873,12 @@ public sealed class DnnDbContextTests
                 reread!.BillingFrequency.Should().BeNull();
                 reread.TrialFrequency.Should().BeNull();
             }
-
         }
         finally
         {
             // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
-            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
-            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
-            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one
+            // real failure here into several unrelated ones elsewhere.
             await RemoveRoleAsync(roleId);
         }
     }
@@ -1018,39 +890,7 @@ public sealed class DnnDbContextTests
     /// <returns>A task representing the test.</returns>
     /// <param name="stored">The character to plant in both frequency columns.</param>
     /// <remarks>
-    /// <para>
-    /// The rows this describes are not hypothetical. The shipped upgrade scripts seed the frequency
-    /// vocabulary table with codes outside the six the application understands - <c>'4'</c> at
-    /// <c>01.00.00.SqlDataProvider</c> L7192 and <c>'0'</c> at L7194 - and the one constraint that ever
-    /// policed the columns, <c>FK_Roles_CodeFrequency</c>, is dropped for good at
-    /// <c>03.00.01.SqlDataProvider</c> L1297 with no recreate and no check constraint in its place. The
-    /// trial column was never covered by it at all. An installation in the field can therefore hold any
-    /// character here.
-    /// </para>
-    /// <para>
-    /// THE CONVERSION IS LOSSLESS, AND THIS TEST EXISTS TO PIN THAT RATHER THAN THE NORMALISATION IT
-    /// REPLACED. An earlier revision resolved an unrecognised character to the None member on the reasoning
-    /// that an undefined enumeration value would fail at the wire converter and take a whole result set
-    /// with it. The reasoning was right about the wire and catastrophically wrong about the cost: a role
-    /// update rewrites the column from whatever was materialised, so editing an unrelated field - a
-    /// description - rewrote a stored <c>'4'</c> as <c>'N'</c> and destroyed data AAP Rule T4 makes
-    /// authoritative. The wire half is lossless now too, so the read no longer has to choose between a
-    /// readable response and an intact row, and this test asserts the stored byte after an unrelated write
-    /// rather than merely asserting what the read produced.
-    /// </para>
-    /// <para>
-    /// The lower-case case is included deliberately. SQL Server's default collation is case-insensitive, so
-    /// a legacy installation could hold <c>'m'</c> and the dropped constraint would have accepted it - yet
-    /// the legacy application compared with binary semantics and never read it as a month. Up-casing it here
-    /// would change behaviour rather than preserve it, and would rewrite the byte on the next update.
-    /// </para>
-    /// <para>
-    /// BOTH columns are planted and both are asserted, and that pairing is the point rather than
-    /// thoroughness for its own sake. The two columns are the same store type over the same vocabulary, so a
-    /// guard added to one and not the other compiles, passes any single-column test, and fails only in the
-    /// field - on the trial column first, since that is the one no constraint ever policed. Asserting the
-    /// pair is what makes them unable to drift apart.
-    /// </para>
+    /// The rows this describes are not hypothetical.
     /// </remarks>
     [Theory]
     [InlineData("4")]
@@ -1085,9 +925,6 @@ public sealed class DnnDbContextTests
 
         try
         {
-            // Planted with a direct statement rather than through the model, because the model cannot express
-            // it - which is the point. Only a legacy row can carry this, so only a legacy row can prove the
-            // read handles it.
             await _fixture.Database.ExecuteAsync(
                 "UPDATE [dbo].[Roles] SET [BillingFrequency] = @stored, [TrialFrequency] = @stored "
                 + "WHERE [RoleID] = @roleId",
@@ -1115,9 +952,6 @@ public sealed class DnnDbContextTests
                 Enum.IsDefined(reread.TrialFrequency!.Value).Should().BeFalse();
             }
 
-            // THE ASSERTION THE NORMALISING REVISION COULD NOT HAVE PASSED. A role update rewrites both
-            // frequency columns from whatever was materialised, so an edit to something else entirely is
-            // exactly where a lossy read destroys the stored byte.
             using (IServiceScope editing = _fixture.Services.CreateScope())
             {
                 IRoleRepository roles = editing.ServiceProvider.GetRequiredService<IRoleRepository>();
@@ -1139,25 +973,18 @@ public sealed class DnnDbContextTests
             storedAfter.Should().Be(
                 stored + stored,
                 "an unrelated edit must leave both legacy characters exactly as the installation stored them");
-
         }
         finally
         {
             // The role is a row in the SHARED seeded tenant, so a failing assertion above must not leave it
-            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one real
-            // failure here into several unrelated ones elsewhere. The removal asserts nothing, so it cannot
-            // displace the failure that brought it here, and it is a no-op when the role is already gone.
+            // behind: later facts enumerate that tenant's roles and count them, and an orphan turns one
+            // real failure here into several unrelated ones elsewhere.
             await RemoveRoleAsync(roleId);
         }
     }
 
     /// <summary>Every persistence abstraction resolves from the composed host inside a request scope.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The host validates its container on build, so a missing registration would already have failed the
-    /// fixture. What this adds is proof that each abstraction resolves to something that can actually reach
-    /// the database, which a registration check alone does not establish.
-    /// </remarks>
     [Fact]
     public async Task Repositories_ResolveFromTheCompositionRootWithinAScope()
     {
@@ -1183,11 +1010,6 @@ public sealed class DnnDbContextTests
 
     /// <summary>The unit of work is scoped, so one request commits independently of another.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// A singleton unit of work would share one change tracker across every concurrent request, which would
-    /// let one caller's uncommitted edit be saved by an unrelated caller. Asserting the lifetime here keeps
-    /// that from being reintroduced by a registration change.
-    /// </remarks>
     [Fact]
     public Task UnitOfWork_IsScopedToARequest()
     {
@@ -1243,10 +1065,10 @@ public sealed class DnnDbContextTests
 
     /// <summary>Every mapped entity resolves a non-empty table name and a primary key.</summary>
     /// <remarks>
-    /// A blanket assertion rather than a per-entity one, so an entity added later without a table binding or
-    /// without a key is caught even though nobody remembered to extend the mapping table above. An entity
-    /// with no explicit table name would silently fall back to the set name, which for six of these tables
-    /// is the wrong, pluralised spelling.
+    /// A blanket assertion rather than a per-entity one, so an entity added later without a table binding
+    /// or without a key is caught even though nobody remembered to extend the mapping table above. An
+    /// entity with no explicit table name would silently fall back to the set name, which for six of these
+    /// tables is the wrong, pluralised spelling.
     /// </remarks>
     [Fact]
     public void Model_GivesEveryEntityATableNameAndAPrimaryKey()
@@ -1267,12 +1089,10 @@ public sealed class DnnDbContextTests
 
     /// <summary>The six table names that stayed singular are not pluralised by the mapping.</summary>
     /// <remarks>
-    /// Called out separately from the mapping table because this is the single highest-value assertion in the
-    /// file. The set is plural in every case, so a reader correcting the "inconsistency" would break every
-    /// installation in the field, and <c>UserProfileValue</c> does not share a stem with its table at all.
-    /// Each name was confirmed against the legacy scripts, two of them only under the
-    /// <c>{databaseOwner}{objectQualifier}</c>-templated naming form - which is precisely why a
-    /// single-form search over that chain reports objects as absent when they are present.
+    /// Called out separately from the mapping table because this is the single highest-value assertion in
+    /// the file. The set is plural in every case, so a reader correcting the "inconsistency" would break
+    /// every installation in the field, and <c>UserProfileValue</c> does not share a stem with its table at
+    /// all.
     /// </remarks>
     [Fact]
     public void Model_KeepsTheLegacyTableNamesThatStayedSingular()
@@ -1309,16 +1129,8 @@ public sealed class DnnDbContextTests
 
     /// <summary>The three key-value and join tables declare composite primary keys, in column order.</summary>
     /// <remarks>
-    /// <para>
     /// Order is asserted, not just membership, because a composite key's order determines the clustered
     /// index's leading column and therefore which lookups are cheap.
-    /// </para>
-    /// <para>
-    /// The two settings tables differ in their first member - <c>ModuleSettings</c> keys on the module while
-    /// <c>TabModuleSettings</c> keys on the placement - which is exactly the pair a copy-paste would
-    /// conflate. Both are genuine key-value tables: the legacy chain alters <c>ModuleSettings</c> thirteen
-    /// times and <c>TabModuleSettings</c> eight.
-    /// </para>
     /// </remarks>
     [Fact]
     public void Model_DeclaresTheCompositePrimaryKeys()
@@ -1343,9 +1155,8 @@ public sealed class DnnDbContextTests
     /// <remarks>
     /// This is the trap the composite key above exists to avoid. <c>UserPortal</c> declares an integer
     /// <c>UserPortalId</c>, so Entity Framework's key convention would have chosen it, silently and without
-    /// any build or model-validation complaint - and the resulting model would permit two membership rows for
-    /// the same account in the same tenant. Asserting that the surrogate is mapped but is NOT the key pins
-    /// both halves of that distinction.
+    /// any build or model-validation complaint - and the resulting model would permit two membership rows
+    /// for the same account in the same tenant.
     /// </remarks>
     [Fact]
     public void Model_TreatsTheMembershipSurrogateAsAColumnRatherThanTheKey()
@@ -1382,12 +1193,6 @@ public sealed class DnnDbContextTests
     /// type.
     /// </summary>
     /// <param name="property">The property that must not be mapped.</param>
-    /// <remarks>
-    /// Both halves matter. That the property is unmapped is the mapping contract; that the CLR property still
-    /// exists is what distinguishes a deliberate exclusion from a misspelling, since <c>FindProperty</c>
-    /// answers null for either. No catalogue query can make that distinction, which is why this assertion can
-    /// only live in the model layer.
-    /// </remarks>
     [Theory]
     [MemberData(nameof(ExternallyStoredAccountProperties))]
     public void Model_LeavesTheExternallyStoredAccountPropertyUnmapped(string property)
@@ -1406,11 +1211,9 @@ public sealed class DnnDbContextTests
 
     /// <summary>The module capability flags are computed rather than mapped.</summary>
     /// <remarks>
-    /// MIGRATION: these three restate the legacy <c>IPortable</c>, <c>ISearchable</c> and
-    /// <c>IUpgradeable</c> contracts, which the legacy code discovered by late-bound activation of the
-    /// module's business controller. They are derived from the stored controller class rather than stored
-    /// themselves, so they are read-only computed properties; leaving them mapped would have Entity Framework
-    /// look for three columns the schema has never had.
+    /// These three restate the legacy <c>IPortable</c>, <c>ISearchable</c> and <c>IUpgradeable</c>
+    /// contracts, which the legacy code discovered by late-bound activation of the module's business
+    /// controller.
     /// </remarks>
     [Fact]
     public void Model_LeavesTheModuleCapabilityFlagsUnmapped()
@@ -1440,21 +1243,9 @@ public sealed class DnnDbContextTests
     /// exists.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// A plausible-sounding aggregate that must be shown ABSENT, which is why it is asserted by name: the
     /// type does not exist, so referencing it would not compile, and no catalogue query can demonstrate the
     /// absence of a table that was never going to be there.
-    /// </para>
-    /// <para>
-    /// Four independent findings establish it. The legacy abstract data provider declares no such member
-    /// among its two hundred and sixty-nine; the core SQL provider invokes no such procedure among its two
-    /// hundred and forty-five; searching all eighty-eight upgrade scripts case-insensitively finds no such
-    /// table, only <c>ModuleSettings</c>, <c>HostSettings</c>, <c>TabModuleSettings</c>,
-    /// <c>ScheduleItemSettings</c> and a transient <c>Tmp_ModuleSettings</c>; and positively,
-    /// <c>PortalController.vb:L1209-L1210</c> reads the legacy composite out of the request items
-    /// collection. It was an ambient per-request object, not a persisted aggregate - portal configuration
-    /// lives as columns on <c>Portals</c>, and the legacy class maps to the scoped tenant context.
-    /// </para>
     /// </remarks>
     [Fact]
     public void Model_DeclaresNoAggregateForTheAmbientTenantSettingsComposite()
@@ -1477,9 +1268,8 @@ public sealed class DnnDbContextTests
     /// </summary>
     /// <remarks>
     /// The folder and folder-permission tables genuinely exist in the legacy schema, and the
-    /// <c>aspnet_</c>-prefixed tables genuinely exist in a real installation. Neither belongs to this model:
-    /// file management is out of scope, and the membership store is installed externally. Asserting their
-    /// absence keeps a later "the table is right there" addition from silently widening the mapped surface.
+    /// <c>aspnet_</c>-prefixed tables genuinely exist in a real installation. Neither belongs to this
+    /// model: file management is out of scope, and the membership store is installed externally.
     /// </remarks>
     [Fact]
     public void Model_DeclaresNoAggregateForExcludedOrExternallyOwnedTables()
@@ -1755,47 +1545,11 @@ public sealed class DnnDbContextTests
     /// <summary>Composes the entity model from the production registration, without any database.</summary>
     /// <returns>The composed model.</returns>
     /// <remarks>
-    /// <para>
-    /// <strong>The internal context type is never named, and none of this needs it to be.</strong> The
-    /// production registration is invoked exactly as the host invokes it, which registers the NON-generic
-    /// <c>DbContextOptions</c> alongside its generic self. That non-generic type is public, and its
-    /// <c>ContextType</c> property hands back the context's <see cref="Type"/> - which is all the service
-    /// provider needs to resolve the instance, and which then casts to the public <see cref="DbContext"/>
-    /// base whose metadata surface carries everything asserted above. No reflection over the infrastructure
-    /// assembly, no <c>InternalsVisibleTo</c>, and no type name.
-    /// </para>
-    /// <para>
     /// <strong>Activating the context directly is deliberately avoided, and must stay avoided.</strong> The
-    /// context declares a single constructor taking the GENERIC <c>DbContextOptions&lt;T&gt;</c>, so building
-    /// a non-generic <c>DbContextOptionsBuilder</c> and activating with its <c>Options</c> throws
-    /// <see cref="MissingMethodException"/> at run time: the non-generic options type is the base class, not
-    /// the derived generic the constructor demands. Resolving from the container sidesteps that entirely,
-    /// which is why this is not "simplified" into an activation call.
-    /// </para>
-    /// <para>
-    /// <strong>No database is contacted.</strong> The model is built from the entity configurations, and a
-    /// provider connects only when a query executes. Nothing here executes one, so this composes correctly
-    /// even where no server exists - which is also why it must never gain an <c>EnsureCreated</c> to "make
-    /// the model available".
-    /// </para>
-    /// <para>
-    /// Scope validation is switched on and the context is resolved from a child scope rather than the root
-    /// provider, matching how the host resolves it and how the request pipeline uses it.
-    /// </para>
-    /// <para>
-    /// <strong><c>ValidateOnBuild</c> is deliberately NOT enabled here, and enabling it would break this
-    /// method rather than strengthen it.</strong> That was established by trying it: it fails while
-    /// constructing call sites for <c>ILogger&lt;T&gt;</c> and <c>IConfiguration</c>, which this bare
-    /// collection never registers because it registers the infrastructure layer and nothing else. Those
-    /// services are contributed by the host builder, not by <c>AddInfrastructure</c>, so their absence is a
-    /// property of this deliberately minimal collection and NOT a defect in the registration under test.
-    /// The guarantee itself is not lost: the shared fixture builds the REAL host with both
-    /// <c>ValidateScopes</c> and <c>ValidateOnBuild</c> on, so captive dependencies and missing
-    /// registrations are already caught there, against the complete graph, where the check is meaningful.
-    /// Adding host registrations here purely to satisfy the flag would couple model composition to services
-    /// the model does not use, and would give up the property that makes this method cheap - that it needs
-    /// no host and no database at all.
-    /// </para>
+    /// context declares a single constructor taking the GENERIC <c>DbContextOptions&lt;T&gt;</c>, so
+    /// building a non-generic <c>DbContextOptionsBuilder</c> and activating with its <c>Options</c> throws
+    /// <see cref="MissingMethodException"/> at run time: the non-generic options type is the base class,
+    /// not the derived generic the constructor demands.
     /// </remarks>
     private static IModel ComposeModel()
     {
@@ -1824,11 +1578,6 @@ public sealed class DnnDbContextTests
     /// <param name="entity">The entity type.</param>
     /// <returns>The mapping metadata.</returns>
     /// <exception cref="InvalidOperationException">The entity is not part of the composed model.</exception>
-    /// <remarks>
-    /// Raising here rather than returning a nullable keeps every caller free of null handling, and names the
-    /// entity in the message - a bare null-reference failure inside a theory would report only that something
-    /// was null, for one of twenty-one cases.
-    /// </remarks>
     private static IEntityType MappedTypeOf(Type entity) =>
         Model.FindEntityType(entity)
             ?? throw new InvalidOperationException(
@@ -1864,13 +1613,6 @@ public sealed class DnnDbContextTests
     /// <summary>Ensures a portal created by this suite is gone, whatever else happened.</summary>
     /// <param name="portalId">The portal to remove.</param>
     /// <returns>A task that completes when no such row remains.</returns>
-    /// <remarks>
-    /// A direct statement rather than the repository, and deliberately so: this runs on the failure path, where
-    /// the model or the unit of work may be the very thing that is broken, and a cleanup that depends on the
-    /// component under test cannot be relied upon to clean up. The row has no dependents - it was written bare
-    /// by this suite - so one statement is sufficient, and the statement is unconditional so calling it twice
-    /// costs nothing.
-    /// </remarks>
     private Task EnsurePortalRemovedAsync(int portalId) => _fixture.Database.ExecuteAsync(
         "DELETE FROM [dbo].[Portals] WHERE [PortalID] = @portalId",
         new Dictionary<string, object?> { ["portalId"] = portalId });

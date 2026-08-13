@@ -1,111 +1,13 @@
-// =============================================================================
-//  THE RFC 7807 ERROR SURFACE — component-scoped presentation
-// =============================================================================
-//
-// Styles exactly what `error-banner.component.html` renders and nothing else: the
-// persistent live region, the banded box inside it, the severity word, the problem
-// type, the sentence, the per-field description list, and the support reference.
-// There is no icon element and no focusable control in that template, so none is
-// styled here and none is invented.
-//
-// ZERO HARDCODED VALUES. Every value below is either a design token from
-// `src/styles/_tokens.scss`, a CSS keyword, or one of the six admitted literals
-// (`0`, `none`, `auto`, `inherit`, `currentColor`, `transparent`). No hex colour, no
-// named colour, no `px`/`rem`/`em`/`pt`, no `!important`, no `url(`, no bare
-// `@media`, no `:root`, and no custom-property declaration appears in this file.
-//
-// WHY THE MIXINS PARTNER IS IMPORTED FOUR LEVELS UP AND THE TOKENS PARTNER IS NOT
-// IMPORTED AT ALL — both halves of that are deliberate and both were measured.
-//
-//   The DEPTH is four, and it is four because `styles/` is a sibling of `app/`
-//   inside `src/`, one level further out than `core/` and `shared/` are. Counting
-//   from this directory: `..` is `components`, `../..` is `shared`, `../../..` is
-//   `app`, and only `../../../..` reaches `src`. Three levels resolves to
-//   `src/app/styles/`, which does not exist, and the build fails with "Can't find
-//   stylesheet to import." `angular.json` declares no
-//   `stylePreprocessorOptions.includePaths` on either the build or the test target,
-//   so there is no load-path alias and a relative path is the only mechanism. All
-//   twelve sibling stylesheets at this depth use four; `layout/header` correctly
-//   uses three because it sits one directory shallower.
-//
-//   The TOKENS partner is deliberately NOT imported. It is a single `:root` block
-//   with no Sass-level API — no function, no mixin, no variable — so `@use`-ing it
-//   would not import anything, it would COPY its CSS into this component's
-//   stylesheet. Measured: `@use`-ing it and emitting one rule compiles to 1,890
-//   bytes compressed, of which the duplicated `:root` block is all but a handful —
-//   47% of the 4 kB `anyComponentStyle` warning budget spent on a duplicate, in
-//   every component that did it. `src/styles.scss` already emits that block once
-//   globally, so the custom properties are in scope here by cascade and are
-//   consumed as `var(--token)`. No component stylesheet in this workspace imports
-//   it, and this one does not become the first.
-//
-// Sass module scoping is per-file, so the `@use` below is what makes `mx.*`
-// available here; a `@use` elsewhere would not.
+// THE RFC 7807 ERROR SURFACE — component-scoped presentation
+// ZERO HARDCODED VALUES. Every value below is either a design token from `src/styles/_tokens.scss`, a CSS
+// keyword, or one of the six admitted literals (`0`, `none`, `auto`, `inherit`, `currentColor`,
+// `transparent`).
 @use '../../../../styles/mixins' as mx;
 
-// A custom element has no intrinsic display and would lay out inline, which puts
-// this component's block-level children into an inline formatting context and makes
-// the banner's own block-end margin behave inconsistently against its siblings.
-// Declared explicitly so the component is a block wherever a consumer places it.
 :host {
   display: block;
 }
 
-// `.error-banner-live` — THE PERSISTENT LIVE REGION — IS INTENTIONALLY UNSTYLED.
-//
-// It carries `role="alert"`, `aria-live="assertive"` and `aria-atomic="true"` and is
-// present on every screen whether or not a request has failed, because a region
-// inserted at the same moment as its first message is announced inconsistently. It
-// therefore must paint nothing and occupy nothing while it is empty — and a `div`
-// with no content, no padding, no border and no background already does exactly
-// that at zero cost. A `display: block` rule here would restate the initial value of
-// a `div` and emit dead CSS, so it is omitted rather than written.
-//
-// `display: contents` would additionally remove the empty wrapper's box, so that an
-// empty banner could not contribute a step to a parent flex or grid `gap`. It is
-// REJECTED: it has a documented history of dropping the element from the
-// accessibility tree in shipping browsers, and this element IS the accessibility
-// contract. The one consequence is stated rather than hidden — as a direct child of
-// a gapped flex or grid container an empty banner costs one gap step. Features place
-// it in ordinary block flow, where it costs nothing.
-//
-// All visible treatment therefore belongs to the inner element below, which exists
-// only when there is a problem to show — including its trailing margin, so that an
-// empty banner contributes no spacing either.
-
-// The band-independent box. Declared once; each severity rule below overrides only
-// the two or three values that actually differ, which keeps the emitted CSS flat and
-// well inside the 4 kB per-component budget rather than repeating the whole block
-// three times.
-//
-// `overflow-wrap` is set here and nowhere else: the property inherits, so one
-// declaration protects the title, the sentence, every field message and the support
-// reference from a single unbroken token — an email address, a URL, a long
-// identifier — pushing the banner wider than its container.
-//
-// MIGRATION: the border, the surface, the corner radius and the elevation are a NET
-// ADDITION with no legacy counterpart, and the legacy stylesheets are unambiguous
-// about it. `Website/Portals/_default/default.css` (1,030 lines) and `portal.css`
-// (275 lines) each declare `border-radius` 0 times and `box-shadow` 0 times, and
-// neither declares `@media` even once. The legacy error text — `.NormalRed` at
-// default.css L113-L120, under the comment "text style used for error messages" —
-// was bold red type on the page background with no box of its own at all. The box
-// here groups the severity word, the sentence, the field list and the reference into
-// one recognisable region instead of leaving four loose paragraphs in the page flow.
-//
-// MIGRATION: the spacing, radius and elevation SCALES the box draws on are likewise
-// net-new. The legacy stylesheet has no spacing system — its insets are ad-hoc pixel
-// values — so `--space-1` … `--space-8`, `--radius-sm|md|lg` and `--elevation-1|2|3`
-// are an intentional visual refinement that alters no behaviour.
-//
-// MIGRATION: the type resolves through the tokenised size scale, which consolidates
-// a legacy typography surface that could not be carried across literally. The legacy
-// stylesheet declares TEN distinct font sizes across TWO unit systems (11px x17,
-// 12px x8, 9pt x6, 10px x4, 10pt x4, 8.5pt x3, 20px x3, 8px x1, 8pt x1, 14px x1) and
-// THREE near-identical font stacks (`Tahoma, Arial, Helvetica` x38,
-// `Tahoma, Verdana, Arial, Sans-Serif` x2, `Verdana, sans-serif` x1) which are
-// consolidated into the single `--font-family-base`. The family is inherited from the
-// document body rather than restated here, so the consolidation happens in one place.
 .error-banner {
   display: flex;
   flex-direction: column;
@@ -116,139 +18,37 @@
   padding-block: var(--space-3);
   padding-inline: var(--space-3);
   border: var(--border-width) var(--border-style) var(--color-border-strong);
-  // THE ACCENT EDGE, and it is a load-bearing cue rather than decoration: it gives
-  // each band a distinct edge weight and edge colour, so the three bands remain
-  // distinguishable to a reader who perceives no hue at all. `--space-1` is the
-  // workspace's established way to express a heavier-than-hairline edge — the form
-  // vocabulary's own validation message uses `border-inline-start: var(--space-1)
-  // var(--border-style) var(--color-danger)`, and this box deliberately echoes it so
-  // a banner and an inline field error read as the same family.
+  // THE ACCENT EDGE, and it is a load-bearing cue rather than decoration: it gives each band a distinct
+  // edge weight and edge colour, so the three bands remain distinguishable to a reader who perceives no hue
+  // at all.
   border-inline-start-width: var(--space-1);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
-  // The subtlest of the three elevation steps. Applied rather than declined — unlike
-  // the passive empty-state placeholder, an alert has to be NOTICED, and lifting it
-  // off the page is a salience channel that costs no colour and no layout.
   box-shadow: var(--elevation-1);
   font-size: var(--font-size-md);
   line-height: var(--line-height-base);
   overflow-wrap: break-word;
 
-  // Through the shared breakpoint mixin only, because a component may never write a
-  // media query itself — `_mixins.scss` is the single site where breakpoints are
-  // declared, and an unknown step name fails the build there rather than emitting a
-  // query that can never match. Mobile-first: the narrowest viewports keep the
-  // tighter inline inset and leave the message the most room to reflow.
+  // Through the shared breakpoint mixin only, because a component may never write a media query itself —
+  // `_mixins.scss` is the single site where breakpoints are declared, and an unknown step name fails the
+  // build there rather than emitting a query that can never match.
   @include mx.respond-above('sm') {
     padding-inline: var(--space-4);
   }
 }
 
-// =============================================================================
-//  THE THREE SEVERITY BANDS
-// =============================================================================
-//
-// Carried on `data-severity` rather than on a class list, because the paired template
-// binds a three-way state through one attribute and one binding cannot leave two
-// bands applied at once.
-//
-// SEVERITY IS PERCEIVABLE WITHOUT PERCEIVING COLOUR, through four independent
-// channels rather than one: the severity WORD rendered by `.error-banner__severity`
-// ("Error", "Warning", "Please wait"); the ACCENT EDGE, whose tone differs per band;
-// the SURFACE lightness, which differs per band and survives greyscale; and the
-// EXTENT of the coloured border — danger tints all four sides while the other two
-// tint only the accent edge. Colour is therefore never the sole indicator.
-//
-// MIGRATION: the bands reproduce a distinction the legacy application actually made,
-// measured rather than inferred. The excluded legacy renderer
-// `Library/Components/Skins/ModuleMessage.vb` set its heading class per message type
-// at L115-L158: `RedError` produced `.NormalRed` — the pure red that became
-// `--color-danger` — while `YellowWarning` produced the ordinary `.Normal` class, NOT
-// the red one, alongside a yellow surface. The legacy withheld the red for a refusal
-// and so does this, and it does so by withholding rather than by inventing a hue.
+// THE THREE SEVERITY BANDS
 
-// DANGER — a fault. 5xx and the unclassified cases.
-//
-// ⚠ MIGRATION: ONE TOKEN CARRIES BOTH ROLES, AND THE RESIDUAL RATIO IS RECORDED RATHER
-// THAN REPAIRED WITH A NEW COLOUR. `--color-danger` (#FF0000, the measured legacy error
-// red, 5 legacy occurrences) renders at 4.00:1 on the page background — clear of the 3:1
-// floor that governs a non-text component such as this border, and BELOW the 4.5:1
-// minimum WCAG AA sets for normal text, with bold weight no mitigation at these sizes.
-//
-// An earlier revision split the roles across two tokens, adding a darkened `#B30000` for
-// the text. That has been withdrawn: the colour vocabulary is closed at the nine values
-// the design specification enumerates, and the specification's precedence order puts
-// design-system compliance FIRST and accessibility THIRD, to be achieved "with zero
-// visual change" — so a new hue is precisely what may not be introduced on that ground.
-// The measured legacy value is also what the legacy admin screens actually wired for
-// error text, so the two higher rules agree.
-//
-// WHAT MEETS THE OBLIGATION INSTEAD IS THIS BANNER'S NON-COLOUR CUE, and it is not a
-// consolation: the severity is announced as a WORD inside a live region, so a reader who
-// perceives no red at all is told the state in text. The band's left border and its
-// icon carry the same distinction visually, both of them non-text and both clear of the
-// 3:1 floor. Colour is therefore never the sole indicator here, which is the requirement
-// the specification actually states. The residual text ratio is carried in the migration
-// notes.
 .error-banner[data-severity='danger'] {
   border-color: var(--color-danger);
   color: var(--color-danger);
 }
 
-// WARNING — a refusal. 403 and 404: the system is working as configured.
-//
-// MIGRATION: 403 is presented as a warning rather than as an error, and the legacy
-// application is the authority for it twice over. First,
-// `Website/admin/Security/AccessDenied.ascx.vb` L41-L47 performs no permission check
-// at all — it only presents a denial — and BOTH branches of its `Page_Load` render at
-// `ModuleMessage.ModuleMessageType.YellowWarning`: the message arriving through the
-// query string (L43, itself HTML-encoded) and the localised default (L45). Second,
-// the renderer distinguished the bands itself, as recorded above.
-//
-// ⚠ MIGRATION: THE WARNING SURFACE IS THE VOCABULARY'S SECONDARY SURFACE, NOT THE
-// LEGACY PALE YELLOW, and that is a recorded visible divergence. `.Help` at
-// default.css L423-L439 — "text style used for help text rendered by modules" — is the
-// legacy's only advisory surface: `background-color: #ffff99` (L438) with `color: black`
-// (L434) and a 1px black border on all four sides (L426, L428, L433, L436). NEITHER
-// value is in the design specification's nine-colour table, and neither may be
-// hardcoded, so neither is available to this rule.
-//
-// An earlier revision resolved that by admitting the pale yellow as a tenth token. That
-// has been withdrawn — the vocabulary is closed at nine, and design-system compliance
-// outranks legacy visual continuity — so this rule takes `--color-surface`. What the band
-// loses is the yellow tint; what it keeps is every other distinction the legacy rule
-// carried and one the legacy did not: the left border in the brand colour, the severity
-// word, the icon, and the live region. No amber is invented and no literal is written.
-//
-// The black text is not tokenised and is not reintroduced; text inherits, which is what
-// `.Normal` did, and inherited near-black measures 18.10:1 on this surface against
-// 20.02:1 on the legacy yellow — a difference no reader can perceive and both far clear
-// of any threshold.
 .error-banner[data-severity='warning'] {
   border-inline-start-color: var(--color-primary);
   background-color: var(--color-surface);
 }
 
-// CALM — "you are early". 429, and any informational classification.
-//
-// MIGRATION: this band has NO legacy ancestor and is provably new. The legacy
-// `ModuleMessageType` enum declares exactly three members at
-// `Library/Components/Skins/ModuleMessage.vb` L36-L40 — `GreenSuccess`,
-// `YellowWarning` and `RedError` — with no informational or calm member, so nothing
-// was carried across and nothing could be. It exists because the API's credential
-// window - applied by the global limiter to every request the server classifies as
-// credential-bearing, partitioned by the caller's observable address, thirty requests
-// a minute - is the COMPENSATING CONTROL for the legacy CAPTCHA this migration
-// deliberately removed. A refusal that means the caller is early must not be dressed
-// as a fault, or the interface reports a defect where the system is working exactly
-// as configured.
-//
-// Styled as the quietest thing the vocabulary allows: the secondary surface, the
-// decorative hairline in place of the stronger neutral, and the muted tone on the
-// accent edge only. Text is left INHERITED rather than muted — muting the whole band
-// would put `--color-text-muted` behind the sentence at 4.73:1 where the inherited
-// near-black reads far higher, and de-emphasis is not worth spending legibility on.
-// Only the support reference below is muted, which is where de-emphasis belongs.
 .error-banner[data-severity='calm'] {
   border-color: var(--color-border);
   border-inline-start-color: var(--color-text-muted);
@@ -259,20 +59,8 @@
 //  CONTENT
 // =============================================================================
 
-// The severity as a WORD, and the first thing in the box. This is the cue that makes
-// the band perceivable without perceiving the colour, and inside an atomic alert it
-// is announced together with the message. Bold at the small step so it reads as the
-// label above the type rather than competing with it. It inherits the band's colour
-// rather than setting its own, so it moves with the band by construction.
-//
-// MIGRATION: this replaces the legacy per-severity ICON, a documented non-port. The
-// legacy renderer paired each message type with a raster asset — `~/images/
-// green-ok.gif`, `~/images/yellow-warning.gif` and `~/images/red-error.gif` at
-// `ModuleMessage.vb` L134, L140 and L146 — and all three still exist under
-// `Website/images/`. None is carried across: the design system admits no CSS asset
-// reference at all and ships `favicon.ico` as its only static asset, so the cue is
-// text. Text carries it further than the image did in any case — it cannot fail to
-// load, it is read out, and it needs no alternative text of its own.
+// The severity as a WORD, and the first thing in the box. This is the cue that makes the band perceivable
+// without perceiving the colour, and inside an atomic alert it is announced together with the message.
 .error-banner__severity {
   margin: 0;
   font-size: var(--font-size-sm);
@@ -280,19 +68,6 @@
   line-height: var(--line-height-tight);
 }
 
-// The problem TYPE — the class of failure, shown only when it says something the
-// sentence below does not. The most prominent line in the banner: bold at the large
-// step, which resolves to the same 12px the legacy error text carried at
-// default.css L117-L118, so the emphasis is continuous with what it replaces.
-//
-// `white-space: pre-line` because this text can legitimately contain newlines.
-// `core/utils/form-errors.util.ts` L302 rewrites interior break markup to `\n`
-// (`return withoutTrailing.replace(INTERIOR_BREAK, '\n').trim()`) and applies that to
-// the problem title at L444 and L832. The legacy resource values it is resolving
-// carried `<br>` 73 times, `<br/>` 13 times and `<br />` twice, so author line breaks
-// are real content here, not incidental whitespace. `pre-line` preserves those
-// newlines while still collapsing runs of spaces and tabs, which is exactly the
-// contract that utility hands over — and it is a keyword, so it introduces no value.
 .error-banner__title {
   margin: 0;
   font-size: var(--font-size-lg);
@@ -301,27 +76,12 @@
   white-space: pre-line;
 }
 
-// The sentence describing THIS occurrence. Body text at the band's inherited size and
-// normal weight: it is the longest run of prose in the banner and the one most likely
-// to wrap, so it is the one place emphasis would cost legibility rather than buy it.
-// `pre-line` for the same reason as the title — the same utility normalises the
-// problem `detail` at L438 of `form-errors.util.ts`.
 .error-banner__message {
   margin: 0;
   font-weight: var(--font-weight-normal);
   white-space: pre-line;
 }
 
-// THE FIELD-ERROR LIST. A `<dl>` of terms and their messages, subordinate to the
-// sentence above it: a tighter internal gap than the banner's own, and a block-start
-// inset that separates it from the sentence without a rule or a heading.
-//
-// The reset that a description list actually needs is the removal of its user-agent
-// block margins, which would otherwise fight the flex `gap` that owns the spacing
-// here. `list-style: none` is deliberately NOT written: a `<dl>` generates no list
-// markers for the property to remove, so the declaration would be dead CSS, and
-// applying it to grouping elements is the documented way to strip list semantics from
-// the accessibility tree in some engines — a real cost for no visual gain.
 .error-banner__fields {
   display: flex;
   flex-direction: column;
@@ -330,12 +90,6 @@
   margin-block-start: var(--space-1);
 }
 
-// The field name. `color: inherit` is REQUIRED, not defensive: the global reset
-// styles every `dt` in the workspace with `--color-primary`, so without this the
-// field names inside a danger banner would render in brand navy while everything
-// around them rendered in the danger tone, breaking the band. The size and weight are
-// restated for the same reason — so this banner's type does not silently change if
-// that global `dt` rule ever does.
 .error-banner__field {
   margin: 0;
   color: inherit;
@@ -343,12 +97,9 @@
   font-weight: var(--font-weight-bold);
 }
 
-// Each message for the field above it. A description detail carries a large
-// user-agent inline-start margin, which is the indentation that visually associates it
-// with its term; it is replaced by a token inset so the indentation participates in
-// the shared spacing scale rather than being whatever the user agent chose. Logical,
-// so the indentation follows the writing mode. `pre-line` because the same utility
-// normalises each field message at L624.
+// Each message for the field above it. A description detail carries a large user-agent inline-start margin,
+// which is the indentation that visually associates it with its term; it is replaced by a token inset so
+// the indentation participates in the shared spacing scale rather than being whatever the user agent chose.
 .error-banner__detail {
   margin: 0;
   margin-inline-start: var(--space-3);
@@ -356,19 +107,6 @@
   white-space: pre-line;
 }
 
-// The support reference. Deliberately the quietest thing in the banner: diagnostic
-// small print for a support report rather than an explanation, so it takes the muted
-// tone explicitly instead of inheriting the band's — a reference string in the danger
-// red would compete with the sentence for attention. The smallest step on the scale,
-// which is the same step the global reset gives `<small>`. Contrast is sound on every
-// band: `--color-text-muted` measures 5.49:1 on `--color-background` and 4.73:1 on
-// `--color-surface`, the only two surfaces this banner paints, both clear of 4.5:1.
-//
-// MIGRATION: this line replaces what the legacy error container put in this position
-// for super-users, which was the exception's full string form — the entire stack
-// trace — rendered as the message itself. An opaque correlation identifier is the
-// whole of what remains, and it is shown to every caller rather than to a privileged
-// few.
 .error-banner__trace {
   margin: 0;
   margin-block-start: var(--space-1);

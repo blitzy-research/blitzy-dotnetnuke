@@ -1,27 +1,6 @@
 import { PERMISSION_KEYS, isPermissionKey, toPermissionKeys } from './permission.model';
 
-/**
- * Specification for the permission-vocabulary narrowing guards.
- *
- * No `TestBed`: the module under test is a frozen array and two pure functions over it, with
- * no injector, no transport and no DOM involvement.
- *
- * ## Why these expectations exist
- *
- * `PermissionKey` is a compile-time union and is erased at run time, so before this guard
- * existed there was no way to establish that a value arriving over the wire belonged to the
- * closed vocabulary. Two distinct vocabularies coexist in this system and are easy to
- * confuse — the persisted permission KEYS narrowed here, and the authorisation POLICY names
- * enumerated in `core/guards/permission.guard.ts` — plus a third axis, the permission CODE
- * that scopes a key to folders or module definitions. A value from any of the other two
- * reaching a permission decision must FAIL CLOSED, and the specifications below are what
- * hold that line.
- *
- * The load-bearing cases are the refusals, not the acceptances. A permission check that
- * fails open is worse than one that never runs, so the tests that a lower-case spelling, a
- * padded key, a policy name and a permission code are all refused are the ones that would
- * catch a well-meaning `toUpperCase()` or `trim()` being introduced later.
- */
+/** Specification for the permission-vocabulary narrowing guards. */
 describe('PERMISSION_KEYS', () => {
   it('holds exactly the four keys the schema stores', () => {
     expect(PERMISSION_KEYS).toEqual(['VIEW', 'EDIT', 'READ', 'WRITE']);
@@ -85,9 +64,6 @@ describe('isPermissionKey', () => {
     expect(isPermissionKey('DEPLOY')).toBeFalse();
   });
 
-  // Accepts `unknown` deliberately, so it is usable on a parsed response, on route data, or
-  // on a component input whose declared type a caller may have subverted. None of these may
-  // be coerced into a key.
   it('refuses a non-string without coercing it', () => {
     expect(isPermissionKey(null)).toBeFalse();
     expect(isPermissionKey(undefined)).toBeFalse();
@@ -104,9 +80,6 @@ describe('toPermissionKeys', () => {
     expect(toPermissionKeys(['WRITE', 'VIEW', 'EDIT'])).toEqual(['WRITE', 'VIEW', 'EDIT']);
   });
 
-  // Discarding rather than rejecting: a list carrying one unknown key alongside recognised
-  // ones is a response from an installation that seeded a key this codebase does not
-  // evaluate, not a malformed response. Refusing the whole list would withdraw valid grants.
   it('discards the unrecognised entries while keeping the recognised ones', () => {
     expect(toPermissionKeys(['SOMETHING_ELSE', 'EDIT', 'view', 'READ'])).toEqual([
       'EDIT',

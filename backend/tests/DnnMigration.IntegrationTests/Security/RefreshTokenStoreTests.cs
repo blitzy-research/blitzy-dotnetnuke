@@ -8,18 +8,9 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Security;
 
 /// <summary>
-/// Verifies that refresh-token state is shared by every service scope of one host and that rotation,
-/// replay and revocation remain atomic across independently resolved scopes.
+/// Verifies that refresh-token state is shared by every service scope of one host and that rotation, replay
+/// and revocation remain atomic across independently resolved scopes.
 /// </summary>
-/// <remarks>
-/// The store is a SINGLETON holding its own state, so what these facts assert is exactly what the
-/// registration promises: two scopes resolve one store, and a token issued through either is known to the
-/// other. Two earlier facts read and wrote <c>[DnnMigration].[RefreshTokens]</c> directly; that table was
-/// removed because AAP rule T4 forbids adding an object to the existing DotNetNuke schema, and provisioning
-/// it here was what hid the resulting login failure. Their assertions survive in a form that does not
-/// require one: cross-scope identity is asserted through the contract, and the clock-dependent replay
-/// window is asserted in the unit suite, where the clock can be moved.
-/// </remarks>
 [Trait("Category", "Integration")]
 [Collection(IntegrationTestCollection.Name)]
 public sealed class RefreshTokenStoreTests
@@ -77,9 +68,7 @@ public sealed class RefreshTokenStoreTests
 
         await using (AsyncServiceScope scope = _fixture.Services.CreateAsyncScope())
         {
-            // The two scopes above resolve ONE store, so an unknown token is unknown to all of them. This is
-            // the negative control for cross-scope identity: it fails if each scope were given its own store,
-            // because then the token issued in the first scope would also have been unknown in the second.
+            // The two scopes above resolve ONE store, so an unknown token is unknown to all of them.
             RefreshTokenInspection unknown = await scope.ServiceProvider
                 .GetRequiredService<IRefreshTokenStore>()
                 .InspectAsync("not-a-token-this-store-ever-issued", ClientA);
@@ -89,13 +78,9 @@ public sealed class RefreshTokenStoreTests
     }
 
     /// <summary>
-    /// Every scope of one host resolves the SAME store instance, which is the registration AAP section 0.4.3
-    /// requires.
+    /// Every scope of one host resolves the SAME store instance, which is the registration AAP section
+    /// 0.4.3 requires.
     /// </summary>
-    /// <remarks>
-    /// Asserted on the resolved instances rather than on the service descriptor, because a descriptor can be
-    /// correct while a second registration against the abstraction quietly supplies a different object.
-    /// </remarks>
     [Fact]
     public void Store_IsOneSingletonSharedByEveryScope()
     {
@@ -115,8 +100,8 @@ public sealed class RefreshTokenStoreTests
     }
 
     /// <summary>
-    /// Two same-client exchanges racing on one token produce one successor and one bounded grace
-    /// refusal without revoking the successor.
+    /// Two same-client exchanges racing on one token produce one successor and one bounded grace refusal
+    /// without revoking the successor.
     /// </summary>
     [Fact]
     public async Task Rotate_ConcurrentSameClientUseDoesNotRevokeTheFamily()
@@ -181,8 +166,8 @@ public sealed class RefreshTokenStoreTests
     }
 
     /// <summary>
-    /// A spent fingerprint remains replay-detectable after many rotations and therefore still revokes
-    /// the live successor.
+    /// A spent fingerprint remains replay-detectable after many rotations and therefore still revokes the
+    /// live successor.
     /// </summary>
     [Fact]
     public async Task Rotate_OldSpentFingerprintRemainsDetectableThroughTheFamilyLifetime()
@@ -217,12 +202,9 @@ public sealed class RefreshTokenStoreTests
         inspection.Outcome.Should().Be(RefreshTokenOutcome.Revoked);
     }
 
-    // MIGRATION: the fact that a CONSUMED generation stays a theft signal after its own sliding expiry and
-    // before the family ceiling lived here, and it forced that state by issuing an UPDATE against
-    // [DnnMigration].[RefreshTokens]. With no such table there is nothing to update, so the fact moved to
-    // DnnMigration.IntegrationTests/Security/RefreshTokenStoreBehaviorTests, where a controllable clock reaches the
-    // same state through the contract instead of behind it. Nothing was dropped: the assertion is stronger
-    // there, because it also proves the surviving successor is revoked rather than merely refused.
+    // The fact that a CONSUMED generation stays a theft signal after its own sliding expiry and before the
+    // family ceiling lived here, and it forced that state by issuing an UPDATE against
+    // [DnnMigration].[RefreshTokens].
 
     /// <summary>Family revocation performed in one scope is observed from another scope.</summary>
     /// <returns>A task representing the test.</returns>

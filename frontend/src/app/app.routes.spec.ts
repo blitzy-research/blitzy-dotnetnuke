@@ -213,14 +213,14 @@ describe('APP_ROUTES', () => {
 
     it('admits an administrator to another account\u2019s credential screen, and refuses an unrelated account holder', async () => {
       /*
-       * ⚠ BOTH ARMS OF THE ROUTE'S POLICY, ASSERTED TOGETHER, BECAUSE AN EARLIER REVISION
-       * GOT THIS EXACTLY BACKWARDS. The route declared `AccountOwner` on the reasoning that
-       * the credential CHANGE endpoint has no administrator arm. It does not — but the
-       * screen posts to TWO endpoints, and the second is the administrator-only reset
-       * (`UsersController.cs` `POST {userId}/password-reset`, `PolicyNames.PortalAdministrator`).
-       * Declaring the route ownership-only left that endpoint with no address anywhere in the
-       * application, so an administrator could not perform the reset the API exists to offer
-       * them. The screen, not the route, decides which of the two operations a caller runs.
+       * ⚠ BOTH ARMS OF THE ROUTE'S POLICY, ASSERTED TOGETHER, BECAUSE THE POLICY IS A UNION
+       * AND EITHER ARM ALONE IS WRONG. The credential CHANGE endpoint carries no administrator
+       * arm, which invites an ownership-only route — but the screen posts to TWO endpoints, and
+       * the second is the administrator-only reset (`UsersController.cs`
+       * `POST {userId}/password-reset`, `PolicyNames.PortalAdministrator`). An ownership-only
+       * route leaves that endpoint with no address anywhere in the application, so an
+       * administrator could not perform the reset the API exists to offer them. The screen, not
+       * the route, decides which of the two operations a caller runs.
        *
        * The second half is the part the widening must not cost: an account holder who is
        * neither the subject nor an administrator is still refused, so the gate cancels the
@@ -430,9 +430,9 @@ describe('APP_ROUTES', () => {
       // host, the first rail entry a tenant administrator's authority admits, and the account
       // holder's own profile — whose policy is `AccountOwnerOrPortalAdministrator`, whose first
       // arm is satisfied by construction because the identifier comes from the caller's own
-      // identity. The ordinary landing used to be the account's own SERVICES screen; that address
-      // is withdrawn with the twenty-sixth route it belonged to, and the profile is the remaining
-      // screen a non-administrative account is entitled to operate on its own behalf.
+      // identity. A non-administrative account has no member-services address in this application -
+      // that screen is not among the routes - so the profile is the remaining screen such an account
+      // is entitled to operate on its own behalf.
       expect(await attemptAs({ isSuperUser: true }, '/')).toBe('/portals');
       expect(await attemptAs(TENANT_ADMINISTRATOR, '/')).toBe('/modules');
       expect(await attemptAs(ORDINARY, '/')).toBe(`/users/${String(ORDINARY.userId)}/profile`);
@@ -463,11 +463,10 @@ describe('APP_ROUTES', () => {
        * OF EITHER. `POST {userId}/password` declares `AccountOwner` with no administrator arm,
        * because a change presents the current credential — but the same screen also posts
        * `POST {userId}/password-reset`, which declares `PolicyNames.PortalAdministrator`
-       * (`UsersController.cs:L626-L627`). An earlier revision declared the route
-       * ownership-only on the strength of the first endpoint alone, which locked the
-       * administrator out of the SCREEN and left the reset unreachable from any address in
-       * the application. The route declares the union; the screen refuses the operation the
-       * caller is not entitled to run.
+       * (`UsersController.cs:L626-L627`). Reasoning from the first endpoint alone would make
+       * the route ownership-only, which locks the administrator out of the SCREEN and leaves
+       * the reset unreachable from any address in the application. The route declares the
+       * union; the screen refuses the operation the caller is not entitled to run.
        */
       expect(await attemptAs(TENANT_ADMINISTRATOR, '/users/1/profile')).toBe('/users/1/profile');
       expect(await attemptAs(TENANT_ADMINISTRATOR, '/users/1/password')).toBe(
@@ -636,35 +635,35 @@ describe('APP_ROUTES', () => {
 
     it('declares only policies the client gate has registered', () => {
       // ⚠ ALL NINE THE CLIENT GATE REGISTERS — not a convenient subset. `permission.guard.ts` lists
-      // exactly these nine, and every one of them is a policy some route below declares. The client
-      // set and the server set are now IDENTICAL rather than the client being a proper subset.
+      // exactly these nine, and every one of them is a policy some route below declares, so the client
+      // set and the server set are IDENTICAL rather than the client being a proper subset.
       //
-      // ⚠ THE NINTH NAME WAS PREVIOUSLY WITHHELD HERE, AND THAT WAS THE DEFECT.
-      // `Api/Authorization/PolicyNames.cs:231` declares `PortalContentEditor`, which guards the
-      // SUPPORTING reads of module placement — the definition catalogue and the tenant's page listing,
-      // `ModuleDefinitionsController.cs:168` and `TabsController.cs:187`, each on the whole class.
-      // This assertion used to argue that no route could declare it because the create screen was
-      // ungated, and that adding it would oblige the gate to resolve a scope for a policy no route
-      // could name. Both halves were wrong. The policy resolves NO scope — the operations it supports
-      // name no item because the item does not exist yet — so there is no scope to resolve. And the
-      // screen it supports cannot be FILLED without those two gated reads, so the authority reaching
-      // it demands is exactly the authority they demand.
+      // ⚠ THE NINTH NAME IS `PortalContentEditor`, AND WITHHOLDING IT IS THE TEMPTING MISTAKE.
+      // `Api/Authorization/PolicyNames.cs:231` declares it, and it guards the SUPPORTING reads of module
+      // placement — the definition catalogue and the tenant's page listing,
+      // `ModuleDefinitionsController.cs:168` and `TabsController.cs:187`, each on the whole class. The
+      // argument for withholding it runs that no route can declare it because the create screen is
+      // ungated, and that admitting it would oblige the gate to resolve a scope for a policy no route
+      // names. Both halves fail. The policy resolves NO scope — the operations it supports name no item
+      // because the item does not exist yet — so there is no scope to resolve. And the screen it
+      // supports cannot be FILLED without those two gated reads, so the authority reaching it demands is
+      // exactly the authority they demand.
       //
-      // The cost of withholding it was not inert either. With the name absent from the client
-      // vocabulary, the create route could name no policy, so nothing in the application recorded
-      // which callers may reach the screen — and the only link to it sat inside a listing gated on
-      // tenant administration. A caller holding EDIT on a page, whom the server admits, had to guess
-      // the address. Declaring it narrows nothing (no scope to fail closed on, and the gate cannot
-      // plainly refuse it) and is what lets the navigation rail offer the screen to those callers.
+      // Withholding it is not inert either. With the name absent from the client vocabulary, the create
+      // route can name no policy, so nothing in the application records which callers may reach the
+      // screen — and the only link to it sits inside a listing gated on tenant administration. A caller
+      // holding EDIT on a page, whom the server admits, has to guess the address. Declaring it narrows
+      // nothing (no scope to fail closed on, and the gate cannot plainly refuse it) and is what lets the
+      // navigation rail offer the screen to those callers.
       //
-      // A previous revision of this assertion listed only five, and the omission was not
-      // inert: it made three legitimate policies fail a specification, which in turn
-      // pushed the route tables into declaring approximations of the policies their
-      // endpoints really required. Portal creation declared the tenant policy in place of
-      // the host policy, admitting every portal administrator to a form certain to be
-      // refused; the two self-service account screens declared the tenant policy in place
-      // of the ownership policies, refusing every account holder its own profile and its
-      // own credential change. Widening the list here is what let all three be corrected.
+      // The list must name every policy a route declares, because a name absent from it makes a
+      // legitimate policy fail this specification, which in turn pushes the route tables into
+      // declaring approximations of the policies their endpoints really require. A five-name list
+      // forces three such approximations: portal creation declaring the tenant policy in place of
+      // the host policy, admitting every portal administrator to a form certain to be refused;
+      // and the two self-service account screens declaring the tenant policy in place of the
+      // ownership policies, refusing every account holder its own profile and its own credential
+      // change.
       const registered = [
         'ModuleView',
         'ModuleEdit',
@@ -755,11 +754,11 @@ describe('APP_ROUTES', () => {
         // ⚠ THE CREDENTIAL ADDRESS IS THE UNION BECAUSE THE SCREEN CARRIES TWO ENDPOINTS, and this
         // is the one entry in this table that does NOT mirror a single controller action. The change
         // is `[Authorize(Policy = PolicyNames.AccountOwner)]` with no administrator arm; the reset
-        // beside it is `[Authorize(Policy = PolicyNames.PortalAdministrator)]`. A previous revision
-        // declared ownership alone, reasoning from the change endpoint only, and the consequence was
-        // not a tightening: it left the reset with no address in the application, so an
-        // administrator had no way to intervene on a locked-out account at all. The route declares
-        // the union of the two policies and the screen refuses the operation the caller may not run
+        // beside it is `[Authorize(Policy = PolicyNames.PortalAdministrator)]`. Declaring ownership
+        // alone, reasoning from the change endpoint only, is not a tightening: it leaves the reset
+        // with no address in the application, so an administrator has no way to intervene on a
+        // locked-out account at all. The route declares the union of the two policies and the
+        // screen refuses the operation the caller may not run
         // — which is where a per-operation decision belongs, since one address serves both.
         [USER_ROUTES, '', 'PortalAdministrator'],
         [USER_ROUTES, 'new', 'PortalAdministrator'],

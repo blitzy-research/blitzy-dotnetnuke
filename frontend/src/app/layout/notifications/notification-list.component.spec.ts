@@ -49,9 +49,6 @@ describe('NotificationListComponent', () => {
 
   beforeEach(async () => {
     await TestBed.configureTestingModule({
-      // No provider is substituted. The service holds a signal and nothing else — no
-      // transport, no timer, no storage — so the real one is both simpler and a stronger
-      // subject than a double would be.
       imports: [NotificationListComponent],
     }).compileComponents();
 
@@ -89,10 +86,9 @@ describe('NotificationListComponent', () => {
 
   describe('the live region', () => {
     it('is present before any notification arrives', () => {
-      // The property the whole arrangement rests on. A live region inserted at the same
-      // moment as its first message is announced inconsistently across screen readers, and
-      // the first message is the one that matters — so the region must already exist while
-      // the queue is empty.
+      // The property the whole arrangement rests on. A live region inserted at the same moment as its first
+      // message is announced inconsistently across screen readers, and the first message is the one that
+      // matters — so the region must already exist while the queue is empty.
       expect(region()).not.toBeNull();
       expect(items().length).toBe(0);
     });
@@ -174,12 +170,6 @@ describe('NotificationListComponent', () => {
       notifications.error('The request could not be completed.');
       fixture.detectChanges();
 
-      // ⚠ THIS ROW COUNT IS THE SERVICE'S DECISION, NOT THE TEMPLATE'S. Rows are tracked by the
-      // service's never-reissued identifier rather than by their text - tracking by text would
-      // collapse two rows the application deliberately raised - and the service collapses an
-      // immediate repetition of its newest entry onto a fresh identifier. Runtime testing
-      // measured why: one fault was routinely reported twice at once, and the role membership
-      // screen raised three near-identical warnings for a single fault.
       expect(items().length).toBe(1);
     });
 
@@ -193,9 +183,6 @@ describe('NotificationListComponent', () => {
     });
 
     it('renders markup in a message as inert text rather than as elements', () => {
-      // Structural rather than defensive: a message can originate in a server problem
-      // document whose wording descends from legacy resource files in which raw markup is
-      // commonplace.
       notifications.error('<script>alert(1)</script> was refused.');
       fixture.detectChanges();
 
@@ -282,11 +269,6 @@ describe('NotificationListComponent', () => {
   // ---------------------------------------------------------------------------
 
   describe('how much of the screen it may occupy', () => {
-    // ⚠ MEASURED, NOT PREFERRED. Unbounded and in flow, each entry cost 42 pixels and displaced
-    // everything below it: nine entries came to 442 pixels and moved the page heading from y=83 to
-    // y=515, which is 49 per cent of a 900-pixel viewport spent on notification chrome. The
-    // stylesheet takes the region out of flow, and the component renders only the newest few.
-
     /** Queues `count` warnings, each distinguishable so none is collapsed as a repetition. */
     function queueWarnings(count: number): void {
       for (let index = 1; index <= count; index += 1) {
@@ -368,14 +350,8 @@ describe('NotificationListComponent', () => {
 
   describe('entries that dismiss themselves', () => {
     // ⚠ ONLY THE OUTCOMES THAT REQUIRE NOTHING OF THE READER. A success and an advisory are
-    // acknowledgements of something the operator just caused; leaving them until dismissed is what
-    // stranded a role-creation success on the Portals screen after the operator navigated away
-    // mid-save. A warning or an error reports something that did NOT happen and frequently carries
-    // the support reference an operator must quote, so removing it on a timer would destroy the
-    // only record of a failure.
-    //
-    // The interval is driven with Jasmine's own clock rather than a real wait, so the specification
-    // is deterministic and takes no wall-clock time.
+    // acknowledgements of something the operator just caused; leaving them until dismissed is what stranded
+    // a role-creation success on the Portals screen after the operator navigated away mid-save.
 
     const INTERVAL_MS = 8_000;
 
@@ -421,14 +397,6 @@ describe('NotificationListComponent', () => {
     });
 
     it('retires a warning that ASKS to be retired, because severity is the fallback and not the answer', () => {
-      // ⚠ THE ONE EXCEPTION, AND IT IS THE CALLER'S TO STATE. The exemption above rests on three grounds -
-      // the outcome reports a fault, it carries a reference to quote, and removing it would lose the only
-      // record of a failure - and the route guards' access refusal meets none of them: nothing failed, so
-      // there is no reference, and nothing is being asked of the operator, because the remedy is a
-      // permission they cannot grant themselves. A browser audit measured the blanket exemption applying
-      // anyway: the refusal stood for four minutes and forty-two seconds and was cleared only by
-      // navigating away. The severity is deliberately NOT lowered to reach the timer - it is derived from
-      // the response status in one shared place - so the lifetime is stated as its own fact.
       notifications.notify('warning', 'You do not have access to this content.', null, false, true);
       fixture.detectChanges();
 
@@ -444,9 +412,6 @@ describe('NotificationListComponent', () => {
     });
 
     it('keeps a SUCCESS that asks to be kept, so the opinion overrides in both directions', () => {
-      // Stated as a pair with the case above on purpose. If the caller's opinion only ever shortened a
-      // lifetime it would be a special case for one call site; it is a general rule, so it must also be
-      // able to hold something the severity set would have retired.
       notifications.notify('success', 'The import finished with warnings.', null, false, false);
       fixture.detectChanges();
 
@@ -470,9 +435,6 @@ describe('NotificationListComponent', () => {
       notifications.success('The role was created.');
       fixture.detectChanges();
 
-      // Dispatched on the HOST because `mouseenter` does not bubble - and that is faithful rather
-      // than convenient: a browser fires the enter sequence along the DOM ancestor chain of the
-      // element the pointer reaches, so entering the painted row really does fire it here too.
       host().dispatchEvent(new MouseEvent('mouseenter'));
       fixture.detectChanges();
 
@@ -568,5 +530,4 @@ describe('NotificationListComponent', () => {
       expect(notifications.notifications().length).toBe(1);
     });
   });
-
 });

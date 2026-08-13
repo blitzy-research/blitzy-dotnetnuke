@@ -12,27 +12,16 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
 
-/// <summary>
-/// Covers the role and role-group resources, and the assignment of accounts to roles, end to end.
-/// </summary>
+/// <summary>Covers the role and role-group resources, and the assignment of accounts to roles, end to end.</summary>
 /// <remarks>
 /// <para>
 /// Roles are the migration's authorisation currency: a role name in a token is what the permission gates
-/// resolve against, and the seeded Administrators role is what the tenant-administration policy requires. Two
-/// consequences are asserted here rather than assumed. Every route on both controllers demands that policy, so
-/// an authenticated plain member is refused throughout; and two assignments are protected outright, because
-/// removing them would strand a tenant - the designated administrator's membership of the administrators role,
-/// and any membership of the registered-users role.
+/// resolve against, and the seeded Administrators role is what the tenant-administration policy requires.
+/// Two consequences are asserted here rather than assumed.
 /// </para>
 /// <para>
-/// Paid membership is preserved from the legacy model and is exercised deliberately. A role carrying a billing
-/// or trial frequency derives an expiry date on assignment; a free role does not, and requesting one for a free
-/// role is discarded rather than honoured. Both halves are pinned, because the derivation is easy to
-/// misread as "the caller's dates are stored".
-/// </para>
-/// <para>
-/// Role names are unique per tenant, and role groups likewise, so every created name carries a random suffix.
-/// The suites share one database and xUnit gives no ordering guarantee inside a collection.
+/// Role names are unique per tenant, and role groups likewise, so every created name carries a random
+/// suffix. The suites share one database and xUnit gives no ordering guarantee inside a collection.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -41,10 +30,6 @@ public sealed class RoleApiTests
 {
     /// <summary>An identifier no seeded or created role can hold.</summary>
     /// <summary>The media type every refusal on these resources is served as.</summary>
-    /// <remarks>
-    /// The controllers declare that they produce JSON, but <c>ProblemDetailsContentTypeFilter</c> re-stamps a
-    /// refusal as a problem document, so the media type is the authority a client can identify one by.
-    /// </remarks>
     private const string ProblemMediaType = "application/problem+json";
 
     private const int UnknownRoleId = 987654;
@@ -57,85 +42,27 @@ public sealed class RoleApiTests
 
     /// <summary>
     /// The all-users pseudo-principal, which the legacy source defines as <c>glbRoleAllUsers = "-1"</c> at
-    /// <c>Library/Components/Common/Globals.vb</c>:L95 and stores in the grant tables' role column.
+    /// <c>Library/Components/Shared/Globals.vb</c>:L95 and stores in the grant tables' role column.
     /// </summary>
-    /// <remarks>
-    /// It names NO <c>dbo.Roles</c> row - the column is <c>IDENTITY(0, 1)</c> - which is why neither grant
-    /// table declares a foreign key on it and why the legacy read joins the role table with a left outer
-    /// join. A role removal must therefore leave it alone.
-    /// </remarks>
     private const int AllUsersPseudoRoleId = -1;
 
-    // MIGRATION - WHY NO MEDIA TYPE IS ASSERTED ANYWHERE IN THIS SUITE, stated from a measurement rather
-    // than assumed. RFC 7807 nominates application/problem+json, and it would be natural to pin it here.
-    // The framework answers application/json instead for a CONTROLLER-produced problem document, because
-    // the class-level [Produces("application/json")] declaration constrains content negotiation for every
-    // response the action can produce, the error ones included. Measured directly: every refusal on these
-    // resources carries application/json. Neither value may be asserted. Pinning RFC 7807's value would
-    // fail on a correct build, and pinning the value the framework currently emits would CEMENT the
-    // deviation and make correcting it later look like a regression. The deviation is recorded in the
-    // repository migration notes, and the sibling problem-details and portal suites take the same position
-    // for the same reason. What this suite asserts instead is the substance: the document's own members -
-    // type, title, status and the per-field errors object - because those are what a client reads, and a
-    // response that regressed to a bare status, a raw string or a differently shaped object would fail on
-    // them whatever media type it claimed.
-
     /// <summary>The prefix a failure code is built into as the problem document's <c>type</c>.</summary>
-    /// <remarks>
-    /// The whole value is what a client branches on, so the tests that care about WHICH refusal occurred
-    /// assert the type rather than the status: several distinct reasons share one status code, and a
-    /// bare status cannot tell a duplicate name apart from a group that still classifies a role.
-    /// </remarks>
     private const string ProblemTypePrefix = "urn:dnnmigration:error:";
 
-    // =============================================================================================
-    // THE FIVE VALIDATION MESSAGES, VERBATIM. Every string below is the wording declared by
-    // Website/admin/Security/editroles.ascx, reproduced character for character. They are restated
-    // here rather than referenced because the parity obligation is that the WORDING an operator reads
-    // is unchanged, and a test that read the constant the production code applies would pass however
-    // that constant were reworded. Do not "correct" any of them: two are defective on purpose, and
-    // the defect is preserved deliberately (see the two notes below).
-    //
-    // MIGRATION: the leading markup tag is STRIPPED. Every legacy ErrorMessage began with a literal
-    // "<br>" - for example ErrorMessage="<br>You Must Enter a Valid Name" at editroles.ascx L31 -
-    // because the text was written straight into the page's markup and needed a line break ahead of
-    // it. In a machine-readable problem document an HTML tag is neither markup nor data, so the tag
-    // goes and the wording after it stays. Note also that this screen uses the non-self-closing
-    // "<br>" spelling throughout, in contrast to Website/admin/Users/User.ascx.vb L187 which uses
-    // "<br/>"; neither spelling survives, so the inconsistency is moot rather than reproduced.
-    // =============================================================================================
-
-    /// <summary>valRoleName's wording (<c>editroles.ascx</c> L31), the screen's one presence check.</summary>
+    /// <summary>valRoleName's wording, the screen's one presence check.</summary>
     private const string RoleNameRequiredMessage = "You Must Enter a Valid Name";
 
-    /// <summary>valServiceFee2's wording (<c>editroles.ascx</c> L95), whose operator agrees with it.</summary>
+    /// <summary>valServiceFee2's wording, whose operator agrees with it.</summary>
     private const string ServiceFeeNegativeMessage = "Service Fee Must Be Greater Than or Equal to Zero";
 
-    /// <summary>valBillingPeriod2's wording (<c>editroles.ascx</c> L113).</summary>
-    /// <remarks>
-    /// MIGRATION - DISCOVERED LEGACY DEFECT, PRESERVED RATHER THAN REPAIRED. This message says "or Equal
-    /// to" while the validator beside it declares <c>Operator="GreaterThan" ValueToCompare="0"</c>
-    /// (<c>editroles.ascx</c> L114). The two disagree, and the OPERATOR is the real rule: a submitted zero
-    /// is refused. The migration discipline for a discovered defect is to annotate it, not to fix it -
-    /// rewording the text would change what an operator reads, and relaxing the operator would accept a
-    /// billing cycle of zero units, which could never advance an expiry date. The boundary theory below
-    /// pins the operator; this constant pins the wording.
-    /// </remarks>
+    /// <summary>valBillingPeriod2's wording.</summary>
     private const string BillingPeriodNotPositiveMessage =
         "Billing Period Must Be Greater Than Zero";
 
-    /// <summary>valTrialFee2's wording (<c>editroles.ascx</c> L127).</summary>
-    /// <remarks>
-    /// MIGRATION - THE SAME DEFECT IN THE OPPOSITE DIRECTION, treated identically. This message says
-    /// "Greater Than Zero" while the validator declares <c>Operator="GreaterThanEqual"
-    /// ValueToCompare="0"</c> (<c>editroles.ascx</c> L128), so zero IS accepted - a free trial is a real
-    /// configuration. Tightening the rule to match the text would refuse every free trial the legacy
-    /// screen allowed, which is why the accepted-boundary theory below asserts that a trial fee of zero
-    /// is created rather than refused.
-    /// </remarks>
+    /// <summary>valTrialFee2's wording.</summary>
     private const string TrialFeeNegativeMessage = "Trial Fee Must Be Greater Than or Equal to Zero";
 
-    /// <summary>valTrialPeriod2's wording (<c>editroles.ascx</c> L145), where text and operator agree.</summary>
+    /// <summary>valTrialPeriod2's wording, where text and operator agree.</summary>
     private const string TrialPeriodNotPositiveMessage = "Trial Period Must Be Greater Than Zero";
 
     private readonly ApiTestFixture _fixture;
@@ -189,23 +116,12 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    /// <summary>
-    /// The membership write path is validated at the BOUNDARY on its single canonical address.
-    /// </summary>
+    /// <summary>The membership write path is validated at the BOUNDARY on its single canonical address.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The submitted expiry precedes its own effective date, which <c>valDates</c> - the
     /// <c>CompareValidator</c> at <c>Website/admin/Security/securityroles.ascx:L47</c>, operator
-    /// <c>GreaterThan</c> - refused. Rule-for-rule parity, including the equal-dates boundary, is proved by
-    /// the validator's own unit suite; what this fact proves is different and cannot be proved there: that the
-    /// validator is ATTACHED, by the globally registered filter, to this action.
-    /// </para>
-    /// <para>
-    /// The filter resolves a validator from the bound argument's type rather than from route metadata. The
-    /// legacy wording is asserted in the body, because the message is the part of the contract a caller
-    /// actually reads.
-    /// </para>
+    /// <c>GreaterThan</c> - refused.
     /// </remarks>
     [Fact]
     public async Task Assignment_WithAnExpiryBeforeItsEffectiveDate_ReturnsBadRequest()
@@ -240,14 +156,7 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// <c>/api/v1/roles</c> is the address the contract froze, and every action is reachable through it:
-    /// read the collection, create, read the member, update it and remove it. The returned data and database
-    /// assertions establish that the action used the RESOLVED tenant rather than a default.
-    /// </para>
-    /// <para>
     /// The created role is removed at the end so this fact does not accumulate rows for later facts.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task CanonicalRoleAddress_ServesTheResolvedTenantAcrossItsActionSet()
@@ -310,12 +219,6 @@ public sealed class RoleApiTests
     /// are readable there.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>/api/v1/roles/{roleId}/users</c> is named explicitly by the contract, so it gets a fact of its
-    /// own rather than being covered incidentally. The account-side projection
-    /// <c>/api/v1/users/{userId}/roles</c> is asserted alongside it because the two are the same relation
-    /// read from either end, exactly as the legacy assignment screen offered it.
-    /// </remarks>
     [Fact]
     public async Task FlatRoleMembershipAddress_GrantsReadsAndRemovesAMembership()
     {
@@ -344,9 +247,6 @@ public sealed class RoleApiTests
         RoleMembershipDto membership = page!.Items
             .Should().ContainSingle(item => item.UserId == _fixture.Seed.MemberUserId).Subject;
 
-        // The record is a MEMBERSHIP, so it identifies the assignment and names the role it grants as well
-        // as the account that holds it. The legacy grid rendered the account and the role side by side for
-        // exactly this reason (securityroles.ascx:L71-L76).
         membership.UserRoleId.Should().BeGreaterThan(0);
         membership.RoleId.Should().Be(role.RoleId);
         membership.RoleName.Should().Be(role.RoleName);
@@ -379,24 +279,6 @@ public sealed class RoleApiTests
     /// target.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// ⚠ THIS ADDRESS EXISTS TO KEEP A LOGIN NAME OUT OF A REQUEST TARGET (CWE-598). The single-pairing
-    /// question - does this account hold this role, and on what terms - was previously asked by narrowing
-    /// the membership LISTING with the account's login name in the paging contract's free-text filter,
-    /// which the repository matches against the login name and the display name. So asking it wrote the
-    /// name into the query string: browser history, every forward and reverse proxy access log, and the
-    /// server's own, all of them at an END of the encrypted channel where transport security does not
-    /// reach. The assertion below is over the resolved request URI, so it fails if the name reappears
-    /// there by any route.
-    /// </para>
-    /// <para>
-    /// The <c>404</c> arm is asserted in the same fact rather than separately, because the pair is the
-    /// contract: <c>200</c> with the row when the membership stands and <c>404</c> when it does not, which
-    /// is what lets a client render "holds nothing" without treating it as a fault. The legacy screen
-    /// showed that state by blanking its two date fields (<c>SecurityRoles.ascx.vb:L484</c>).
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task MembershipPairingAddress_AnswersOneMembershipAndNamesNobodyInTheTarget()
     {
@@ -516,9 +398,6 @@ public sealed class RoleApiTests
 
         created.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        // Read through the ENVELOPE, which is what every payload-bearing success in this API publishes.
-        // Deserialising an envelope directly as its payload type yields a non-null object with every
-        // member unset, so a raw read here would compare defaults and pass or fail for the wrong reason.
         RoleGroupDto? group = await created.Content
             .ReadEnvelopeAsync<RoleGroupDto>();
 
@@ -542,10 +421,7 @@ public sealed class RoleApiTests
         all!.Data.Should().NotBeNull();
         all.Data!.Select(item => item.RoleGroupId).Should().Contain(group.RoleGroupId);
 
-        // The UPDATE CONTRACT is submitted, not the response projection that was just read back. The two are
-        // deliberately different shapes - the projection carries the group key and the owning portal, neither
-        // of which dbo.UpdateRoleGroup writes - and the API now refuses a body carrying a member no contract
-        // declares rather than discarding it silently, so echoing the projection back is a 400.
+        // The UPDATE CONTRACT is submitted, not the response projection that was just read back.
         using HttpResponseMessage updated = await client.PutAsJsonAsync(
             itemRoute,
             new UpdateRoleGroupRequest
@@ -591,8 +467,8 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The tenant a request runs under is resolved from its host header. The flat role family therefore has no
-    /// portal segment a caller can use to override that context; a token for one portal sent to another
+    /// The tenant a request runs under is resolved from its host header. The flat role family therefore has
+    /// no portal segment a caller can use to override that context; a token for one portal sent to another
     /// portal's host is refused before the service is reached.
     /// </remarks>
     [Fact]
@@ -610,8 +486,8 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The role-group collection of another tenant is refused as well, because the reconciliation belongs to
-    /// the policy rather than to one controller.
+    /// The role-group collection of another tenant is refused as well, because the reconciliation belongs
+    /// to the policy rather than to one controller.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -642,15 +518,9 @@ public sealed class RoleApiTests
 
     /// <summary>
     /// An administrator of one portal is refused on another portal's host, which proves the class-level
-    /// tenant-administration policy is anchored to the resolved request tenant. An unclaimed host is refused
-    /// identically.
+    /// tenant-administration policy is anchored to the resolved request tenant. An unclaimed host is
+    /// refused identically.
     /// </summary>
-    /// <remarks>
-    /// Both controllers declare the policy once at class level and every route is flat, so the host-resolved
-    /// tenant is the only tenant identity available to the operation. Before the policy enforced that binding,
-    /// an administrator of any portal could read and rewrite another tenant's roles, role groups and role
-    /// memberships - a path to arbitrary privilege in a tenant the caller had nothing to do with.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ListRoles_ByAnAdministratorOfADifferentPortal_ReturnsForbidden()
@@ -671,8 +541,8 @@ public sealed class RoleApiTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The refusal happens in authorisation, and it is deliberately the SAME refusal for a host bound to
-    /// another tenant and a host bound to none: a caller with no reach into a tenant must not be able to use
-    /// the difference between 403 and 404 to enumerate which tenants exist.
+    /// another tenant and a host bound to none: a caller with no reach into a tenant must not be able to
+    /// use the difference between 403 and 404 to enumerate which tenants exist.
     /// </remarks>
     [Fact]
     public async Task ListRoles_ForATenantOtherThanTheResolvedOne_ReturnsForbidden()
@@ -730,12 +600,10 @@ public sealed class RoleApiTests
 
     /// <summary>A read answers <c>200 OK</c> and carries the stored role row.</summary>
     /// <remarks>
-    /// The response does not echo the owning portal, and this test deliberately does not look for it.
-    /// Which tenant owns the role is established by the route that reached it, and that is asserted
-    /// where it belongs - by
-    /// <see cref="GetRole_WhenRoleBelongsToAnotherTenant_ReturnsNotFound"/>, which proves the same role
-    /// identifier is unreachable through a different portal's route. Trusting a self-reported
-    /// identifier in the payload would be the weaker of the two checks.
+    /// The response does not echo the owning portal, and this test deliberately does not look for it. Which
+    /// tenant owns the role is established by the route that reached it, and that is asserted where it
+    /// belongs - by <see cref="GetRole_WhenRoleBelongsToAnotherTenant_ReturnsNotFound"/>, which proves the
+    /// same role identifier is unreachable through a different portal's route.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -767,17 +635,15 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A role that exists in another tenant answers <c>404 Not Found</c> when addressed through this one, so a
-    /// role identifier alone grants no reach across tenants.
+    /// A role that exists in another tenant answers <c>404 Not Found</c> when addressed through this one,
+    /// so a role identifier alone grants no reach across tenants.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The other tenant is addressed as its OWN administrator, which is what makes this test about service-level
-    /// tenant scoping rather than about authorisation. A caller that legitimately administers the other tenant
-    /// still cannot see the seeded tenant's role through it, because the read is anchored to the resolved host.
-    /// The authorisation half - a caller reaching across into a tenant it does not administer - is asserted
-    /// separately by <see cref="ListRoles_ForATenantOtherThanTheResolvedOne_ReturnsForbidden"/>; keeping the two
-    /// apart matters, because a 403 from authorisation would satisfy neither assertion on its own.
+    /// The other tenant is addressed as its OWN administrator, which is what makes this test about
+    /// service-level tenant scoping rather than about authorisation. A caller that legitimately administers
+    /// the other tenant still cannot see the seeded tenant's role through it, because the read is anchored
+    /// to the resolved host.
     /// </remarks>
     [Fact]
     public async Task GetRole_WhenRoleBelongsToAnotherTenant_ReturnsNotFound()
@@ -844,8 +710,8 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A role created with automatic assignment enrols the tenant's existing accounts, which is the behaviour
-    /// that makes the flag meaningful rather than merely stored.
+    /// A role created with automatic assignment enrols the tenant's existing accounts, which is the
+    /// behaviour that makes the flag meaningful rather than merely stored.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -901,15 +767,8 @@ public sealed class RoleApiTests
             duplicate,
             ApiTestFixture.Json);
 
-        // The failure code is asserted, not merely the status. Several distinct refusals answer 409 on
-        // these resources - a duplicate role name, a duplicate group name and a group that still
-        // classifies a role - so a client that branched on the status alone could not tell them apart.
-        // The code travels as the problem document's type, which is what makes the branch possible.
         await ShouldCarryFailureCodeAsync(response, HttpStatusCode.Conflict, "role.name_duplicate");
 
-        // The wording is the legacy resource string verbatim - DuplicateRole.Text in
-        // Website/admin/Security/App_LocalResources/EditRoles.ascx.resx - and it names neither the tenant nor
-        // any row identifier. Both absences are asserted, because an earlier revision published both.
         string body = await response.Content.ReadAsStringAsync();
         body.Should().Contain("A role with the same name already exists. The role was not added.");
         body.Should().NotContain(
@@ -918,34 +777,15 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// Submitting the same new role name from several callers at once creates it exactly once, refuses every
-    /// other caller as a conflict, and answers no caller with a server fault.
+    /// Submitting the same new role name from several callers at once creates it exactly once, refuses
+    /// every other caller as a conflict, and answers no caller with a server fault.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. Measured against a live installation before the fix: ten simultaneous identical
-    /// creations produced one 201, seven 409 and TWO 500s, with exactly one row stored. The store had behaved
-    /// perfectly - <c>IX_RoleName</c> is unique over <c>(PortalID, RoleName)</c> and it kept one row - but the
-    /// two racers whose inserts it refused were told the SERVER had failed. The sequential name check cannot
-    /// close that window, because both racers read "not taken" before either inserts.
-    /// </para>
-    /// <para>
-    /// <strong>What this fact does and does not prove.</strong> It asserts the OUTCOME the finding was about:
-    /// one creation, every other caller refused as a conflict carrying the same code as the sequential
-    /// refusal, no 5xx, and exactly one row left in the column. It deliberately does NOT assert which
-    /// mechanism refused each caller - the pre-check and the unique index produce the identical answer by
-    /// design, and which one wins for a given caller depends on scheduling. Asserting that at least one
-    /// caller reached the index would be asserting a race outcome, which is how a suite acquires an
-    /// intermittent failure. The translation itself is pinned deterministically by
-    /// <c>DuplicateKeyTranslationTests</c> and by the per-path service facts, so nothing here needs to
-    /// depend on timing.
-    /// </para>
-    /// <para>
-    /// The row count is read from the column rather than through the listing, for the reason given on
-    /// <see cref="CountRolesNamedAsync"/>: the question is whether a refused request left anything behind,
-    /// and a listing filtered by the same rules that produced the refusal could not see it if it had.
-    /// </para>
+    /// Measured against a live installation with the fault untranslated: ten simultaneous creations produced
+    /// one 201, seven 409 and TWO 500s, with exactly one row stored. The store had behaved perfectly -
+    /// <c>IX_RoleName</c> is unique over <c>(PortalID, RoleName)</c> and it kept one row - but the two
+    /// racers whose inserts it refused were told the SERVER had failed.
     /// </remarks>
     [Fact]
     public async Task CreateRole_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault()
@@ -1010,14 +850,16 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The same role name is free in a different tenant, which is what makes the uniqueness rule tenant-scoped
-    /// rather than installation-wide. Both halves of that claim are asserted here: the name genuinely collides
-    /// inside the tenant that already holds it, and it is genuinely accepted in a second tenant.
+    /// The same role name is free in a different tenant, which is what makes the uniqueness rule
+    /// tenant-scoped rather than installation-wide. Both halves of that claim are asserted here: the name
+    /// genuinely collides inside the tenant that already holds it, and it is genuinely accepted in a second
+    /// tenant.
     /// </summary>
     /// <remarks>
-    /// The name under test is minted for this test rather than borrowed from the seed. Creating a portal always
-    /// provisions the three default roles — administrators, registered users and subscribers — so any of those
-    /// three names is already taken in a freshly created tenant and would prove nothing about scoping.
+    /// The name under test is minted for this test rather than borrowed from the seed. Creating a portal
+    /// always provisions the three default roles — administrators, registered users and subscribers — so
+    /// any of those three names is already taken in a freshly created tenant and would prove nothing about
+    /// scoping.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -1028,10 +870,7 @@ public sealed class RoleApiTests
         RoleDetailDto held = await CreateRoleAsync(client);
         IsolatedTenant other = await CreateIsolatedPortalAsync(client);
 
-        // Each tenant is addressed by its own caller, because every role route is tenant-scoped. That is not
-        // incidental to this test: the whole claim being made is that the same NAME is free in one tenant and
-        // taken in another, and a single caller able to write to both tenants would be the very cross-tenant
-        // reach the review flagged.
+        // Each tenant is addressed by its own caller, because every role route is tenant-scoped.
         using HttpClient owner = await TenantClientAsync(other);
 
         CreateRoleRequest inTheSameTenant = NewRoleRequest();
@@ -1060,8 +899,7 @@ public sealed class RoleApiTests
 
         // Which tenant now owns the accepted role is proved by the request HOST rather than by a
         // self-reported identifier in the payload: it is readable through the other tenant's host and
-        // unreachable through the seeded host. That is the stronger of the two checks, and it is why the
-        // detail contract does not echo the owning portal back.
+        // unreachable through the seeded host.
         using HttpResponseMessage throughOwner = await owner.GetAsync(
             RoleRoute(other.PortalId, accepted.RoleId));
         throughOwner.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -1104,11 +942,8 @@ public sealed class RoleApiTests
             request,
             ApiTestFixture.Json);
 
-        // The wording is valRoleName's own, from Website/admin/Security/editroles.ascx L31, with only
-        // the leading markup tag removed. Do not reword it: the string is the parity assertion. The
-        // document is read as a document rather than as text, so the member the caller must correct is
-        // named and the wording is compared exactly - a substring match over the raw body could not tell
-        // the migrated text apart from the legacy text with its markup tag still attached.
+        // The wording is valRoleName's own, from Website/admin/Security/editroles.ascx L31, with only the
+        // leading markup tag removed. Do not reword it: the string is the parity assertion.
         await ShouldReportFieldAsync(
             response,
             nameof(CreateRoleRequest.RoleName),
@@ -1155,11 +990,6 @@ public sealed class RoleApiTests
             request,
             ApiTestFixture.Json);
 
-        // valBillingPeriod2 (editroles.ascx L111-L114) declares Operator="GreaterThan" against 0, and the
-        // wording an operator actually read - the resource value behind resourcekey="valBillingPeriod2" -
-        // agrees with it. A cycle of zero units could never advance an expiry date. The pair is what is
-        // judged: zero beside NO cycle is the value the portal template's own roles carry and is accepted,
-        // which CreateRole_WithZeroPeriodsAndNoCycle_IsCreated asserts.
         await ShouldReportFieldAsync(
             response,
             nameof(CreateRoleRequest.BillingPeriod),
@@ -1171,15 +1001,6 @@ public sealed class RoleApiTests
     /// submitted, when the two differ by the stored column's scale.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MEASURED. A role created with a service fee of <c>1.23456789</c> answered <c>201</c> echoing
-    /// <c>1.23456789</c> while the stored value was <c>1.2346</c>: the columns are <c>money</c>
-    /// (<c>03.01.01</c> L1173 and <c>01.00.08</c> L6830), which keeps four fractional digits. A client that
-    /// trusted the created resource - which is the entire purpose of returning it - cached a number the
-    /// installation did not hold, and the difference appeared only on some later read. The response and the
-    /// read-back are asserted against EACH OTHER as well as against the expected value, because agreement
-    /// between the two is the property that was broken.
-    /// </remarks>
     [Fact]
     public async Task CreateRole_WithAFeeFinerThanTheStoredScale_ReportsTheStoredValue()
     {
@@ -1220,11 +1041,7 @@ public sealed class RoleApiTests
     /// <remarks>
     /// MEASURED. A name submitted with two leading and two trailing spaces was stored verbatim at 17
     /// characters, and the 13-character name it appears to be was then refused <c>409</c> - because the
-    /// uniqueness index is evaluated under a collation that gives trailing whitespace no sort weight. The
-    /// listing therefore showed a name that could not be re-created and could not be told apart from a
-    /// visibly identical one. Legacy stored the padding too, so this is a deliberate divergence on the same
-    /// footing as the invisible-character rule the write validators already apply, and it is recorded in
-    /// MIGRATION_NOTES.md. Interior whitespace is untouched, which the asserted value proves.
+    /// uniqueness index is evaluated under a collation that gives trailing whitespace no sort weight.
     /// </remarks>
     [Fact]
     public async Task CreateRole_WithSurroundingWhitespaceInTheName_StoresItTrimmed()
@@ -1264,17 +1081,10 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A role submitted with both periods at zero and no recurring cycle on either is created, so a role the
-    /// portal template produced can be read and written back unchanged.
+    /// A role submitted with both periods at zero and no recurring cycle on either is created, so a role
+    /// the portal template produced can be read and written back unchanged.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// THE ASYMMETRY THIS CLOSES WAS MEASURED THROUGH THE API ITSELF. The template's roles carry
-    /// <c>BillingPeriod</c> and <c>TrialPeriod</c> at zero beside a frequency of <c>N</c>, and the read
-    /// projection reports those columns faithfully as Rule T7 requires - so echoing a role's own response
-    /// back to the API was refused <c>400</c> naming both period members, and no consumer could carry out a
-    /// read-modify-write of any role the template had created.
-    /// </remarks>
     [Fact]
     public async Task CreateRole_WithZeroPeriodsAndNoCycle_IsCreated()
     {
@@ -1297,7 +1107,6 @@ public sealed class RoleApiTests
         created.BillingPeriod.Should().Be(0);
         created.TrialPeriod.Should().Be(0);
 
-        // The round trip the refusal used to break: the created representation is submitted back verbatim.
         using HttpResponseMessage echoed = await client.PutAsJsonAsync(
             RoleRoute(_fixture.Seed.PortalId, created.RoleId),
             new UpdateRoleRequest
@@ -1382,26 +1191,10 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The billing frequency is spelled on the wire with its legacy single-character code, not with
-    /// the name of the enumeration member.
+    /// The billing frequency is spelled on the wire with its legacy single-character code, not with the
+    /// name of the enumeration member.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// Every other assertion about this value reads the response back into a typed object, which
-    /// serialises and deserialises through the same options and therefore passes whatever spelling
-    /// those options happen to produce. This test reads the RAW body instead, because the spelling
-    /// itself is the contract: <c>dbo.Roles.BillingFrequency</c> and <c>dbo.Roles.TrialFrequency</c>
-    /// are <c>char(1)</c> columns holding N, O, D, W, M or Y, and a consumer of this API reads and
-    /// writes those codes.
-    /// </para>
-    /// <para>
-    /// It also pins a start-up ordering that nothing else would catch. The converter that produces
-    /// the code is selected only because it is registered ahead of the general enumeration
-    /// converter; reverse the two registrations and the wire form silently becomes "Month" while
-    /// every typed round trip keeps passing.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task GetRole_SpellsTheBillingFrequencyWithItsLegacyCode()
     {
@@ -1458,29 +1251,10 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This asserts the consequence rather than the conversion, and the consequence is what made the defect
-    /// worth fixing. A character the vocabulary does not declare materialises without complaint, and the
-    /// failure used to surface at the wire, where the serialiser refused to write a code it did not
-    /// recognise. So a single out-of-vocabulary character in a single row did not degrade one field - it
-    /// turned a successful read into a server fault, and took every other role in the same listing down
-    /// with it.
-    /// </para>
-    /// <para>
-    /// THE RESOLUTION IS TO WRITE THE CHARACTER, NOT TO SUBSTITUTE FOR IT. An earlier revision closed the
-    /// wire failure by normalising the stored character to <c>'N'</c> as it was read, which kept responses
-    /// working and destroyed the stored byte on the next update of the row - the read fed the write. Both
-    /// halves are lossless now, so the response reports what the database actually holds. What a CALLER may
-    /// SUBMIT is unchanged and still closed: the role write contracts declare an <c>IsInEnum</c> rule for
-    /// both frequency members, so an undeclared code in a request is refused as a field-level validation
-    /// failure.
-    /// </para>
-    /// <para>
     /// The character planted here is one the product itself ships: the frequency vocabulary table is seeded
     /// with <c>'4'</c> at <c>01.00.00.SqlDataProvider</c> L7192, and the foreign key that once policed the
     /// column is dropped for good at <c>03.00.01.SqlDataProvider</c> L1297 with nothing in its place. The
     /// listing is read as well as the item, because the listing is where the blast radius was.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task GetRole_WithAnUnrecognisedStoredFrequency_IsStillReadable()
@@ -1549,23 +1323,12 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    /// <summary>
-    /// The update route renames a role, and the new name reaches the stored column.
-    /// </summary>
+    /// <summary>The update route renames a role, and the new name reaches the stored column.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// MIGRATION - documented behavioural difference, asserted end to end. The legacy edit screen made the
-    /// name read-only (<c>EditRoles.ascx.vb</c> L131-L134) and the terminal <c>UpdateRole</c> procedure
-    /// omits the column from its assignment list, so the legacy application could not rename a role. The
-    /// library-level member the service replaces carried the name
-    /// (<c>RoleController.vb</c> L254) and the terminal schema constrains <c>(PortalID, RoleName)</c>
-    /// uniquely (<c>03.00.09.SqlDataProvider</c> L304), so the migrated contract carries a writable name.
-    /// </para>
-    /// <para>
-    /// The stored column is read directly rather than trusted from the response, because the round trip
-    /// through the projection would pass whether or not the write reached SQL.
-    /// </para>
+    /// name read-only and the terminal <c>UpdateRole</c> procedure omits the column from its assignment
+    /// list, so the legacy application could not rename a role.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_RenamesTheRoleAndPersistsTheNewName()
@@ -1598,22 +1361,13 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// Renaming a role onto a name another role in the same tenant already holds answers
-    /// <c>409 Conflict</c> and leaves the stored name alone.
+    /// Renaming a role onto a name another role in the same tenant already holds answers <c>409
+    /// Conflict</c> and leaves the stored name alone.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy editor guarded portal-scoped name uniqueness on its INSERT branch alone
-    /// (<c>EditRoles.ascx.vb</c> L251-L257, with no equivalent at L259-L261), which was coherent only
-    /// while the name could not change. With a writable name the guard has to cover this verb too, or a
-    /// rename would be the one way to violate <c>IX_RoleName</c> - and the violation would surface as a
-    /// server fault naming no field rather than as something the caller can correct.
-    /// </para>
-    /// <para>
-    /// The stored column is re-read so the refusal is proved to have prevented the write rather than
-    /// merely to have followed it.
-    /// </para>
+    /// The stored column is re-read so the refusal is proved to have prevented the write rather than merely
+    /// to have followed it.
     /// </remarks>
     [Fact]
     public async Task UpdateRole_RenamingOntoAnExistingName_ReturnsConflict()
@@ -1644,10 +1398,6 @@ public sealed class RoleApiTests
     /// role being updated.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is what makes the guard usable on a replacement contract at all: every caller amending one
-    /// field resubmits the name it read, so comparing on text alone would refuse every ordinary update.
-    /// </remarks>
     [Fact]
     public async Task UpdateRole_ResubmittingItsOwnName_IsNotAConflict()
     {
@@ -1710,36 +1460,14 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// SEC-F8: removing a role removes every module and page grant addressed to it, and leaves every grant
+    /// removing a role removes every module and page grant addressed to it, and leaves every grant
     /// addressed to any other principal exactly where it was.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The terminal legacy procedure swept all three grant families before deleting the role row -
-    /// <c>Website/Providers/DataProviders/SqlDataProvider/03.00.10.SqlDataProvider</c> deletes from
-    /// <c>FolderPermission</c>, <c>ModulePermission</c> and <c>TabPermission</c> by <c>RoleId</c> and only
-    /// then from <c>Roles</c> - and an earlier revision of this contract removed the role alone. The rows
-    /// left behind were not merely untidy. Neither grant table declares a foreign key on <c>RoleID</c> in
-    /// the terminal schema, which is exactly WHY the rows survive their principal instead of being refused
-    /// or carried away, and <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so the vacated identifier is
-    /// reissued to the next role created in the installation - which then holds every grant the removed
-    /// role held, without anyone granting it.
-    /// </para>
-    /// <para>
     /// THE CONTROL PRINCIPALS ARE THE OTHER HALF OF THE ASSERTION, and each is a different way the sweep
     /// could be written too widely. A second role proves the predicate names one role rather than clearing
-    /// the table. An account-addressed grant proves the sweep does not confuse the two principal columns -
-    /// that grant belongs to the account and is removed when the ACCOUNT goes. A grant addressed to the
-    /// all-users pseudo-principal proves the negative identifiers survive: they name no <c>dbo.Roles</c> row
-    /// at all, so no role removal can be the reason to discard one, and discarding one would silently
-    /// un-publish a public page.
-    /// </para>
-    /// <para>
-    /// Exercised through HTTP rather than against the service, because the finding is that the deployed
-    /// endpoint leaves the rows behind. The grants are seeded and read directly against the store, so no
-    /// part of the assertion depends on the same mapping the removal uses.
-    /// </para>
+    /// the table.
     /// </remarks>
     [Fact]
     public async Task DeleteRole_SweepsTheGrantsAddressedToItAndSparesEveryOtherPrincipal()
@@ -1774,10 +1502,7 @@ public sealed class RoleApiTests
             // management is outside the migration's scope - so it is created here for the duration of this
             // one test, in the shape the legacy chain arrives at (02.02.00.SqlDataProvider:L659 creates it,
             // 04.05.00.SqlDataProvider:L750-L790 makes the role column nullable and adds the account
-            // column). Without it this test could assert two of the three families the legacy procedure
-            // swept, and the third would be exercised only where the table happens to exist. The whole
-            // integration suite shares one collection and therefore runs serially, so no concurrent test can
-            // observe the table, and it is dropped again whatever happens below.
+            // column).
             _ = await _fixture.Database.ExecuteAsync(
                 """
                 IF OBJECT_ID(N'[dbo].[FolderPermission]', N'U') IS NULL
@@ -1828,8 +1553,8 @@ public sealed class RoleApiTests
                 });
 
             // Each page grant is inserted on its own so its key can be captured, which is what lets the
-            // survivors be asserted and cleaned up by identity rather than by a predicate that could match a
-            // row this test did not create.
+            // survivors be asserted and cleaned up by identity rather than by a predicate that could match
+            // a row this test did not create.
             foreach ((int? roleId, int? userId) in new (int?, int?)[]
             {
                 (doomed.RoleId, null),
@@ -1931,34 +1656,15 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// SEC-F3: neither role a tenant designates for a system purpose can be removed or amended, the rows
-    /// and their assignments survive untouched, and the tenant remains fully operable afterwards.
+    /// neither role a tenant designates for a system purpose can be removed or amended, the rows and their
+    /// assignments survive untouched, and the tenant remains fully operable afterwards.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The legacy edit screen withheld both verbs outright for a designated role - <c>cmdDelete</c> and
     /// <c>cmdUpdate</c> hidden together with the whole form deactivated, at
-    /// <c>Website/admin/Security/EditRoles.ascx.vb</c> L174-L178 - and this contract accepted the removal and
-    /// answered <c>204</c>. The severity comes from what the removal then did, which is why this test does not
-    /// stop at the status code: the assignment cascade dispossesses every administrator the tenant has, the
-    /// tenant's own <c>AdministratorRoleId</c> is left naming a row that no longer exists, and the tenant
-    /// becomes unresolvable by alias, because the snapshot the resolution composes reads the designated
-    /// role's NAME. One request could take a tenant permanently offline with no principal left able to
-    /// repair it.
-    /// </para>
-    /// <para>
-    /// So the operability of the tenant AFTER the refusals is the substantive assertion: its administrator
-    /// signs in again through its own alias, and an ordinary role of the same tenant still deletes - which is
-    /// also what proves the guard is a comparison against the tenant's own designations rather than a blanket
-    /// refusal of every removal. A tenant of this test's own is used because the attempt is destructive when
-    /// it fails, and the shared seed is read by every other fact in this suite.
-    /// </para>
-    /// <para>
-    /// The two designations are read from the STORE rather than assumed, since each tenant designates its own
-    /// pair and <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> - no identifier is reserved and none can be
-    /// hard-coded.
-    /// </para>
+    /// <c>Website/admin/Security/EditRoles.ascx.vb</c> L174-L178 - and this contract accepted the removal
+    /// and answered <c>204</c>.
     /// </remarks>
     [Fact]
     public async Task DeleteRole_RefusesTheTenantsDesignatedRolesAndLeavesTheTenantOperable()
@@ -2016,9 +1722,7 @@ public sealed class RoleApiTests
 
         designation.Should().Be(administratorRoleId, "the tenant's designation still names a surviving role");
 
-        // The tenant is still operable, which is the property the removal destroyed. A fresh sign-in is
-        // required rather than a reuse of the client above, because tenant resolution happens on the sign-in
-        // request too - a tenant whose designated role had gone could not even be resolved by its alias.
+        // The tenant is still operable, which is the property the removal destroyed.
         using HttpClient afterwards = await _fixture.CreateTenantClientAsync(
             tenant.Alias,
             tenant.PortalId,
@@ -2046,28 +1750,14 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// SEC-F5: assigning a tenant's designated administrator to that tenant's administrators role stores NO
-    /// bounds however the request is filled in, and the administrator still administers the tenant
-    /// afterwards.
+    /// assigning a tenant's designated administrator to that tenant's administrators role stores NO bounds
+    /// however the request is filled in, and the administrator still administers the tenant afterwards.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy screen cleared both date boxes for exactly this pairing before reading them
-    /// (<c>SecurityRoles.ascx.vb</c> L522-L526) and then called the verbatim assignment member, so the row it
-    /// wrote carried absence for both bounds and no derivation ran over it. Reproducing only the first half -
-    /// feeding absence INTO the derivation - is not equivalent, and the difference is not academic: portal
-    /// provisioning creates a tenant's system roles with a month frequency and a period of ZERO, so the
-    /// derivation adds zero months to the present instant and writes an expiry of NOW. The membership is then
-    /// already outside its validity window, and the authorisation handler reads validity windows - so the
-    /// tenant's only administrator is refused on its very next request. One assignment call would lock a
-    /// tenant out of itself.
-    /// </para>
-    /// <para>
-    /// The assertion that matters is therefore the LAST one: the same administrator, signing in again, still
-    /// administers the tenant. Asserting only the two stored nulls would pass for an implementation that
-    /// stored the right values by a route that happened to work for roles carrying no terms.
-    /// </para>
+    /// The assertion that matters is therefore the LAST one: the same administrator, signing in again,
+    /// still administers the tenant. Asserting only the two stored nulls would pass for an implementation
+    /// that stored the right values by a route that happened to work for roles carrying no terms.
     /// </remarks>
     [Fact]
     public async Task Assignment_ForTheTenantsOwnAdministrator_StoresNoBoundsAndPreservesItsAuthority()
@@ -2113,9 +1803,6 @@ public sealed class RoleApiTests
             0,
             "neither a submitted bound nor a derived one may bound the tenant's own administrative membership");
 
-        // The property the stored nulls exist to protect. A fresh sign-in is used because the authority is
-        // re-read from the store on every request, so a membership written outside its validity window would
-        // refuse this call rather than the one that wrote it.
         using HttpClient afterwards = await _fixture.CreateTenantClientAsync(
             tenant.Alias,
             tenant.PortalId,
@@ -2143,8 +1830,8 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// An assignment round-trips: it answers <c>204 No Content</c>, appears on both the role's account list and
-    /// the account's role list, and is removed again with <c>204 No Content</c>.
+    /// An assignment round-trips: it answers <c>204 No Content</c>, appears on both the role's account list
+    /// and the account's role list, and is removed again with <c>204 No Content</c>.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2196,8 +1883,8 @@ public sealed class RoleApiTests
 
     /// <summary>
     /// Assigning an account that already holds the role amends the existing assignment rather than adding a
-    /// second one, so the operation is idempotent in the only sense that matters - the account holds the role
-    /// exactly once.
+    /// second one, so the operation is idempotent in the only sense that matters - the account holds the
+    /// role exactly once.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2220,28 +1907,9 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// SEC-F5: a free role derives no expiry date of its own, and an expiry the caller submits is stored
-    /// EXACTLY AS SUBMITTED rather than discarded.
+    /// a free role derives no expiry date of its own, and an expiry the caller submits is stored EXACTLY AS
+    /// SUBMITTED rather than discarded.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F5 REPLACED A FACT ASSERTING THE OPPOSITE. It had read the legacy rule as "the role's
-    /// period governs the expiry, so a role with no period has nothing to expire and a submitted date has no
-    /// meaning". The rule is real but belongs to a different member: <c>RoleController.vb</c> L489-L556
-    /// (<c>UpdateUserRole</c>) derives an expiry and accepts no dates at all, while the member the legacy
-    /// screen called - <c>AddUserRole</c> at L295-L315, reached from <c>SecurityRoles.ascx.vb</c> L542 by
-    /// way of the seven-argument static at L647 - stores both submitted bounds verbatim on the insert and
-    /// the update branch alike. So the two facts coexisted in the legacy source and neither overrode the
-    /// other; consolidating them into one member made it necessary to say which governs, and a bound the
-    /// caller stated is the caller's.
-    /// </para>
-    /// <para>
-    /// The previous behaviour was SILENT DATA LOSS BEHIND A 204: the request was accepted, the caller was
-    /// told so, and the date it had named was never stored. Both halves are asserted here - the submitted
-    /// bound lands, and a submission without one still derives nothing - so the fact remains about the
-    /// derivation as well as about the submission.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task Assignment_ForAFreeRole_StoresASubmittedExpiryDateVerbatim()
@@ -2415,12 +2083,6 @@ public sealed class RoleApiTests
             _fixture.Seed.AdministratorRoleId,
             _fixture.Seed.AdminUserId));
 
-        // MIGRATION: the legacy screen answered a refusal with
-        // Response.Redirect(NavigateURL("Access Denied"), True) - a redirect to an HTML page no
-        // programmatic caller can interpret, which also conflated "you did not say who you are" with
-        // "you may not do this". The target answers a plain 403 carrying a machine-readable code, and
-        // the code is what separates a protected assignment from a caller who does not administer the
-        // tenant: both answer 403, and only the type tells them apart.
         await ShouldCarryFailureCodeAsync(
             response,
             HttpStatusCode.Forbidden,
@@ -2445,8 +2107,8 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// No account may be removed from the registered-users role, which is the membership that makes an account
-    /// a member of the tenant at all.
+    /// No account may be removed from the registered-users role, which is the membership that makes an
+    /// account a member of the tenant at all.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2492,31 +2154,9 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// Two paged collections on the same controller carry two different sortable vocabularies, and the
-    /// one applied follows the action rather than the controller.
+    /// Two paged collections on the same controller carry two different sortable vocabularies, and the one
+    /// applied follows the action rather than the controller.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// A controller-only selection would get this case wrong, which is why it is asserted separately.
-    /// <c>RolesController</c> serves both the role listing and the role-membership
-    /// listing, and the two project different things: a membership carries the assignment dates, a role
-    /// carries the paid-membership columns, and neither can be ordered by the other's fields. Binding the
-    /// vocabulary to the controller alone would give both listings whichever set was chosen for the pair.
-    /// </para>
-    /// <para>
-    /// <c>Username</c> and <c>Description</c> are the discriminating pair: the two vocabularies are entirely
-    /// disjoint, and each of these is valid on exactly one of the two collections, so a selection that
-    /// confused them cannot pass both halves.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the membership half of the pair used to be <c>EffectiveDate</c>. The assignment dates are
-    /// deliberately NOT orderable - the legacy grid offered no ordering by them, and adding one would be a
-    /// feature rather than a preserved behaviour, so <c>SortableFields</c> withholds them and records why.
-    /// The account fields the membership listing composes are orderable, so the pair is drawn from those
-    /// instead; nothing about what this test proves changes, because the two vocabularies share no name at
-    /// all and any member of either discriminates.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     [Trait("Category", "Integration")]
@@ -2561,30 +2201,16 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// The membership listing accepts the three account fields the ACCOUNT listing cannot order by, which is
-    /// the ordering capability the boundary previously refused.
+    /// The membership listing accepts the three account fields the ACCOUNT listing cannot order by, which
+    /// is the ordering capability the boundary previously refused.
     /// </summary>
     /// <param name="sortBy">The field the caller named.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// MIGRATION: this is the end-to-end proof that the membership listing no longer borrows the account
-    /// collection's request contract. It bound <c>UserPagedRequest</c>, so
-    /// <c>UserPagedRequestValidator</c> resolved for it and applied the account collection's seven sortable
-    /// names - and every one of these three requests answered <c>400</c> naming <c>sortBy</c> as an unknown
-    /// field. The service behind the action enforces the ten-name membership set and
-    /// <c>RoleService.OrderRoleMemberships</c> has an arm for each of the three, so three orderings the
-    /// application could perform were unreachable over HTTP.
-    /// </para>
-    /// <para>
-    /// ⚠ SEC-F11. THIS ASSERTED AN ASYMMETRY THAT DID NOT EXIST. It claimed the membership listing composes
-    /// each assignment with its account and pages IN MEMORY, so that the three values the external
-    /// <c>aspnet_*</c> membership objects supply are present before a page is cut. The repository pages in
-    /// the STORE exactly as the account listing does, and its ordering arm for these three names fell
-    /// through to the assignment key - so the endpoint answered 200 with rows ordered by something else,
-    /// undetectably, since the membership projection publishes none of the three. Both listings now refuse
-    /// them, which is the honest answer for an ordering neither can perform.
-    /// </para>
+    /// collection's request contract. It bound <c>UserPagedRequest</c>, so <c>UserPagedRequestValidator</c>
+    /// resolved for it and applied the account collection's seven sortable names - and every one of these
+    /// three requests answered <c>400</c> naming <c>sortBy</c> as an unknown field.
     /// </remarks>
     [Theory]
     [InlineData("CreatedDate")]
@@ -2654,10 +2280,6 @@ public sealed class RoleApiTests
         all.Should().NotBeNull();
         all!.Select(item => item.RoleGroupId).Should().Contain(created.RoleGroupId);
 
-        // MIGRATION: the update verb binds UpdateRoleGroupRequest, which carries the two members
-        // dbo.UpdateRoleGroup writes and neither the group key nor the owning portal. Echoing the read-back
-        // projection would still succeed - unknown JSON members are ignored - but it would exercise a wider
-        // shape than the boundary advertises, which is the very confusion the split removed.
         UpdateRoleGroupRequest amendment = new()
         {
             RoleGroupName = created.RoleGroupName,
@@ -2702,17 +2324,14 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// Submitting the same new group name from several callers at once creates it exactly once, refuses every
-    /// other caller as a conflict, and answers no caller with a server fault.
+    /// Submitting the same new group name from several callers at once creates it exactly once, refuses
+    /// every other caller as a conflict, and answers no caller with a server fault.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6, the group counterpart of the role contest. <c>IX_RoleGroupName</c> is unique over
-    /// <c>(PortalID, RoleGroupName)</c>, and this path's check is weaker than the role path's - it reads the
-    /// whole group collection and compares in memory - so the window in front of the insert is if anything
-    /// wider. The scope of what this asserts, and why it does not assert which mechanism refused each caller,
-    /// is recorded on
-    /// <see cref="CreateRole_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault"/>.
+    /// The group counterpart of the role contest. <c>IX_RoleGroupName</c> is unique over <c>(PortalID,
+    /// RoleGroupName)</c>, and this path's check is weaker than the role path's - it reads the whole group
+    /// collection and compares in memory - so the window in front of the insert is if anything wider.
     /// </remarks>
     [Fact]
     public async Task CreateRoleGroup_SubmittedConcurrentlyUnderOneName_CreatesItOnceWithoutAnyServerFault()
@@ -2772,16 +2391,14 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A group that still classifies a role is refused deletion, so no role is left pointing at a group that
-    /// no longer exists.
+    /// A group that still classifies a role is refused deletion, so no role is left pointing at a group
+    /// that no longer exists.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The refusal is a <c>409 Conflict</c>, not a <c>400 Bad Request</c>. The request is well formed - it
     /// addresses a group that exists in a portal the caller administers - and it is the STATE of that group
-    /// that declines it, which is exactly what a conflict reports. The assertion at the end of this test
-    /// proves the distinction matters: once the role is removed the identical request succeeds, so nothing
-    /// about the request needed correcting.
+    /// that declines it, which is exactly what a conflict reports.
     /// </remarks>
     [Fact]
     public async Task DeleteRoleGroup_WhileItStillClassifiesARole_ReturnsConflict()
@@ -2861,23 +2478,6 @@ public sealed class RoleApiTests
     /// A membership's effective date reaches the wire, and an unpaid role's expiry is reported as absent.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The two dates are the whole subject of the legacy membership screen
-    /// (<c>securityroles.ascx:L77-L86</c>), so a caller must be able to read back a bound it set. This
-    /// asserts the round trip end to end, through the store, so neither date can regress to a write-only
-    /// field.
-    /// </para>
-    /// <para>
-    /// The effective date must be in the FUTURE for it to survive, and the expiry of an unpaid role is
-    /// absent however it was submitted. Neither is an accident of this test; both are the legacy assignment
-    /// rule at <c>RoleController.vb:L530-L538</c>, which discards an effective date earlier than now
-    /// (<c>If EffectiveDate &lt; Now Then EffectiveDate = Null.NullDate</c>) and then nulls the expiry
-    /// outright when the role declares no billing period
-    /// (<c>If Period = Null.NullInteger Then ExpiryDate = Null.NullDate</c>). The role created here is
-    /// unpaid, so the second rule applies to it. The paid case is asserted by the test that follows.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task RoleMembership_CarriesAFutureEffectiveDateAndLeavesAnUnpaidExpiryAbsent()
     {
@@ -2904,17 +2504,8 @@ public sealed class RoleApiTests
         membership.ExpiryDate.Should().BeNull("an unpaid role declares no billing period, so it never expires");
     }
 
-    /// <summary>
-    /// A paid role's membership carries the expiry the billing terms compute.
-    /// </summary>
+    /// <summary>A paid role's membership carries the expiry the billing terms compute.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is the half of the assignment rule the unpaid case cannot reach. The legacy selection at
-    /// <c>RoleController.vb:L539-L546</c> offsets the expiry by the role's period and frequency - here one
-    /// month - so a monthly paid role assigned today expires about a month from now. Asserting a window
-    /// rather than an exact instant keeps the test honest about clock movement between the write and the read
-    /// while still proving the offset was applied rather than the date being passed through or dropped.
-    /// </remarks>
     [Fact]
     public async Task RoleMembership_ForAPaidRoleCarriesTheComputedExpiry()
     {
@@ -2959,25 +2550,9 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The legacy absence marker for a date was <c>Date.MinValue</c>, and the legacy screen printed the empty
-    /// string for it rather than the value. So the property worth pinning is that the sentinel never reaches
-    /// a caller, which is the boundary half of AAP Rule T7. The raw body is inspected for it precisely
-    /// because a sentinel would deserialise into a non-null property and a typed assertion alone would pass
-    /// while the wire contract was wrong.
-    /// </para>
-    /// <para>
     /// An absent date is written as an explicit null rather than omitted, because this API serialises with
     /// <c>JsonIgnoreCondition.Never</c> throughout - measured on a live response, which returns
-    /// <c>"effectiveDate":null,"expiryDate":null</c> for an open-ended membership. For a nullable date the
-    /// written null and a missing member would read back the same way, and neither can be mistaken for a
-    /// real date, so the assertion is deliberately made on the deserialised value rather than on the
-    /// presence of the member: that keeps this test pinning the property that matters - no sentinel reaches
-    /// the caller - and leaves it insensitive to which of the two absence forms the host is configured for.
-    /// Contrast the
-    /// module definition's cache period, which is a non-nullable integer whose -1 IS meaningful and which is
-    /// therefore asserted to be present in its own suite.
-    /// </para>
+    /// <c>"effectiveDate":null,"expiryDate":null</c> for an open-ended membership.
     /// </remarks>
     [Fact]
     public async Task RoleMembership_ReportsAnOpenEndedMembershipWithoutASentinelDate()
@@ -3073,11 +2648,6 @@ public sealed class RoleApiTests
     /// preferring one of the two.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <c>400</c> rather than <c>409</c> is the point of the assertion. The request conflicts with nothing
-    /// about the stored state - the caller's own two query values disagree - and the caller can correct it by
-    /// dropping either one, which is precisely what a bad request means.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_WithBothAGroupAndTheUngroupedScope_ReturnsBadRequest()
     {
@@ -3091,15 +2661,8 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    /// <summary>
-    /// An unrecognised scope spelling is refused by model binding before the action runs.
-    /// </summary>
+    /// <summary>An unrecognised scope spelling is refused by model binding before the action runs.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The parameter is a closed enumeration rather than free text, which is what makes this a binding
-    /// failure rather than a value the service has to defend itself against. The legacy equivalent was a bare
-    /// integer, where an unrecognised value silently fell into whichever magic band contained it.
-    /// </remarks>
     [Fact]
     public async Task ListRoles_WithAnUnrecognisedScope_ReturnsBadRequest()
     {
@@ -3112,21 +2675,6 @@ public sealed class RoleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
     }
 
-    // =============================================================================================
-    // THE FEE-VERSUS-PERIOD ASYMMETRY. This is the sharpest parity obligation on these resources and
-    // the one a plausible-looking validator gets wrong: the two FEES admit zero and the two PERIODS
-    // do not. Measured verbatim in Website/admin/Security/editroles.ascx:
-    //   valServiceFee2   L96   Operator="GreaterThanEqual" ValueToCompare="0"   -> zero ACCEPTED
-    //   valBillingPeriod2 L114 Operator="GreaterThan"      ValueToCompare="0"   -> zero REFUSED
-    //   valTrialFee2     L128  Operator="GreaterThanEqual" ValueToCompare="0"   -> zero ACCEPTED
-    //   valTrialPeriod2  L146  Operator="GreaterThan"      ValueToCompare="0"   -> zero REFUSED
-    // A validator that applied ">= 0" to all four would pass every negative-value test in this suite
-    // and would still be wrong, because it would accept a billing cycle of zero units. A validator
-    // that applied "> 0" to all four would be wrong in the other direction, because it would refuse
-    // every free role and every free trial the legacy screen allowed. Both boundaries are therefore
-    // asserted for all four members: four accepted cases and eight refused ones.
-    // =============================================================================================
-
     /// <summary>
     /// A fee of exactly zero is accepted on both fee members, which is the <c>GreaterThanEqual</c>
     /// boundary, and the value survives as zero rather than being erased.
@@ -3136,22 +2684,9 @@ public sealed class RoleApiTests
     /// </param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The trial-fee half of this theory admits zero, and the wording now says so. An earlier revision
-    /// of this remark described valTrialFee2 as arguing against its own operator, on the strength of a
-    /// message reading "Trial Fee Must Be Greater Than Zero". That was a mistranscription in this
-    /// solution, not a legacy defect: EditRoles.ascx.resx declares valTrialFee2.Text as "Trial Fee Must
-    /// Be Greater Than or Equal to Zero", which agrees with Operator="GreaterThanEqual". The operator is
-    /// unchanged, a free trial is still created, and the message no longer contradicts it.
-    /// </para>
-    /// <para>
     /// The second assertion is the sentinel half of the same fact. Serialisation is configured with the
     /// <c>Never</c> ignore condition, so a zero is written as a zero and an absent fee is written as an
-    /// explicit null; the two are different states and a caller must be able to tell them apart. A role
-    /// with NO charge is not a role charged NOTHING, which is exactly the distinction the legacy encoding
-    /// could not express - Null.vb declares NullSingle as Single.MinValue (L51), so an unset fee arrived
-    /// as a huge negative magnitude indistinguishable from a real one.
-    /// </para>
+    /// explicit null; the two are different states and a caller must be able to tell them apart.
     /// </remarks>
     [Theory]
     [InlineData(true)]
@@ -3190,27 +2725,13 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A negative fee is refused on both fee members, naming the offending member and carrying the
-    /// legacy wording, and nothing reaches the store.
+    /// A negative fee is refused on both fee members, naming the offending member and carrying the legacy
+    /// wording, and nothing reaches the store.
     /// </summary>
     /// <param name="onServiceFee">
     /// <see langword="true"/> to exercise the service fee, <see langword="false"/> for the trial fee.
     /// </param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION - THE SAME FIELD HAS TWO LEGACY BEHAVIOURS, and this test pins which one this resource
-    /// implements. The role editor REFUSED a negative fee outright (valServiceFee2 at
-    /// <c>editroles.ascx</c> L96, valTrialFee2 at L128), while the portal-creation path SILENTLY CLAMPED
-    /// one up to zero - <c>Library/Components/Portal/PortalController.vb</c> L395 and L398 read
-    /// <c>CType(IIf(serviceFee &lt; 0, 0, serviceFee), Single)</c>. Both survive in the target, on the
-    /// paths that owned them: the write contracts here refuse, and the clamp lives in
-    /// <c>Application/Mapping/RoleMappings.cs</c> where the template-driven path reaches it. The final
-    /// assertion below is what makes the choice observable rather than merely stated - a clamping write
-    /// path would have created a role priced at zero, so proving no row exists proves the refusal was a
-    /// refusal. (The legacy <c>IIf</c> is a FUNCTION and evaluates both arms, so it is not a
-    /// short-circuiting conditional; the arms here are side-effect-free, which is the only reason the
-    /// two are equivalent.)
-    /// </remarks>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -3256,11 +2777,9 @@ public sealed class RoleApiTests
     /// <param name="period">The value submitted: the zero boundary, and one below it.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The zero cases are the load-bearing ones. Zero is precisely where a "greater than or equal to"
-    /// rule and a "greater than" rule disagree, so a validator that had copied the fee rule onto the
-    /// periods would accept these two submissions and every other assertion in this suite would still
-    /// pass. Each case declares a recurring cycle beside the period, because that is the condition under
-    /// which zero is refusable at all.
+    /// The zero cases are the load-bearing ones. Zero is precisely where a "greater than or equal to" rule
+    /// and a "greater than" rule disagree, so a validator that had copied the fee rule onto the periods
+    /// would accept these two submissions and every other assertion in this suite would still pass.
     /// </remarks>
     [Theory]
     [InlineData(true, 0)]
@@ -3271,10 +2790,6 @@ public sealed class RoleApiTests
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
-        // A CYCLE IS DECLARED ALONGSIDE THE PERIOD, which is what makes zero the refusable value. Zero
-        // beside no cycle is the store's own "no recurring term" and is accepted - see
-        // CreateRole_WithZeroPeriodsAndNoCycle_IsCreated - so submitting it here with no frequency would
-        // assert the opposite of the rule.
         CreateRoleRequest request = NewRoleRequest();
         if (onBillingPeriod)
         {
@@ -3308,13 +2823,6 @@ public sealed class RoleApiTests
     /// <see langword="true"/> to exercise the billing term, <see langword="false"/> for the trial term.
     /// </param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The counterpart of the refusal above, and necessary rather than decorative: a rule mistakenly
-    /// written as "greater than one" would refuse this submission while passing every refusal assertion
-    /// in this suite. The measured legacy default for both periods was one
-    /// (<c>EditRoles.ascx.vb</c> L212-L214 and L222-L224 substitute a period of one alongside the never
-    /// code when a block is left blank), so this is the value the legacy screen wrote most often.
-    /// </remarks>
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -3362,31 +2870,14 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A fee far above the baseline column's 999.99 limit is accepted and round-trips exactly, because
-    /// the terminal column is <c>money</c> and no legacy validator bounded either fee above.
+    /// A fee far above the baseline column's 999.99 limit is accepted and round-trips exactly, because the
+    /// terminal column is <c>money</c> and no legacy validator bounded either fee above.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION - A CEILING THAT NO LONGER APPLIES, REFUTED BY MEASUREMENT RATHER THAN ASSUMED AWAY.
-    /// The baseline schema declares <c>[ServiceFee] [decimal](5, 2)</c>
-    /// (<c>01.00.00.SqlDataProvider</c> L119), which caps a fee at 999.99, and it would be easy to carry
-    /// that cap forward as a validation rule. Only the TERMINAL schema state is meaningful, and the
-    /// destructive upgrade chain retypes the column: <c>01.00.04</c> L1326 and <c>01.00.05</c> L2752
-    /// rebuild it as <c>money</c> while converting existing values, and <c>03.01.01</c> L1173 settles it
-    /// with <c>ALTER COLUMN [ServiceFee] [money] NULL</c>, adding a zero default at L1177. TrialFee was
-    /// <c>money</c> from birth (<c>01.00.08</c> L6830). Enforcing 999.99 would refuse a fee an
-    /// installation has been able to charge for many versions.
-    /// </para>
-    /// <para>
-    /// The <c>MaxLength="50"</c> attribute on the fee text boxes (<c>editroles.ascx</c> L89 and L122) is
-    /// likewise not a ceiling: it bounded how many CHARACTERS could be typed into a text box, which is a
-    /// text-entry width and is meaningless for a decimal member.
-    /// </para>
-    /// <para>
-    /// The value is read back out of the column itself as well as off the wire, because a truncating or
-    /// rounding write would leave the response correct and the stored row wrong.
-    /// </para>
+    /// MIGRATION - A CEILING THAT NO LONGER APPLIES, REFUTED BY MEASUREMENT RATHER THAN ASSUMED AWAY. The
+    /// baseline schema declares <c>[ServiceFee] [decimal](5, 2)</c> (<c>01.00.00.SqlDataProvider</c> L119),
+    /// which caps a fee at 999.99, and it would be easy to carry that cap forward as a validation rule.
     /// </remarks>
     [Fact]
     public async Task CreateRole_WithAFeeAboveTheBaselineColumnLimit_IsCreatedAndStoredExactly()
@@ -3446,9 +2937,7 @@ public sealed class RoleApiTests
     /// Representability, not a price ceiling - the distinction matters, because the test above proves no
     /// business maximum exists. What is refused here is an amount the column cannot hold AT ALL, and the
     /// reason to refuse it at the boundary is the shape of the answer: unbounded, the value reached the
-    /// database client and came back as a 500 naming no field, which tells a caller nothing it can act
-    /// on. The bound is taken from the shared storage-range constants rather than restated as a literal,
-    /// so the test cannot drift away from the rule it is asserting.
+    /// database client and came back as a 500 naming no field, which tells a caller nothing it can act on.
     /// </remarks>
     [Theory]
     [InlineData(true)]
@@ -3487,30 +2976,10 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION - THE SENTINEL COLLISION, ASSERTED RATHER THAN DESCRIBED. Rule T7 keeps sentinels at the
-    /// boundary and out of the domain, and the reason it matters here is arithmetic: the legacy
-    /// absent-integer marker is -1 (<c>Library/Components/Shared/Null.vb</c> L41-L45) while
-    /// <c>Roles.RoleID</c> is seeded at zero
-    /// (<c>Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider</c> L115), so the
-    /// FIRST role an installation ever creates is numbered 0 - the shipped Administrators role holds
-    /// exactly that value at L7192, and the shipped portal row points at it through
-    /// <c>AdministratorRoleId = 0</c>, a genuine foreign key to a genuine row.
-    /// </para>
-    /// <para>
-    /// Zero is consequently NOT absence, and the failure this test exists to catch is the one that looks
-    /// harmless: a route constraint with a lower bound, a guard written as
-    /// <c>if (roleId &lt;= 0) return NotFound()</c>, or a client-side falsiness test would each make the
-    /// tenant's own administrators role unreachable while every other assertion in this suite kept
-    /// passing. The identifier is also read off the RAW body, because a typed round trip through the same
-    /// serialiser would pass whether or not the member survived.
-    /// </para>
-    /// <para>
-    /// The identity seed is asserted first rather than taken on trust. Each run provisions a freshly
-    /// named database and seeds three roles into it, so the administrators role genuinely occupies the
-    /// seed value; if that ever stopped being true this test would still be correct but would no longer
-    /// be exercising zero, and the assertion says so.
-    /// </para>
+    /// The identity seed is asserted first rather than taken on trust. Each run provisions a freshly named
+    /// database and seeds three roles into it, so the administrators role genuinely occupies the seed
+    /// value; if that ever stopped being true this test would still be correct but would no longer be
+    /// exercising zero, and the assertion says so.
     /// </remarks>
     [Fact]
     public async Task GetRole_ForTheIdentitySeededRole_ResolvesIdentifierZero()
@@ -3563,29 +3032,11 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy layer had one value standing for three things. The editor's group drop-down
-    /// offered "Global Roles" as -1 and that was a real, selectable choice
-    /// (<c>EditRoles.ascx.vb</c> L75); the portal-creation path assigned the same number as the "no
-    /// group" marker - <c>Library/Components/Portal/PortalController.vb</c> L392 reads
-    /// <c>objRoleInfo.RoleGroupID = Null.NullInteger</c>; and -1 is simultaneously the generic
-    /// absent-integer sentinel. Here absence is <c>null</c> and nothing else.
-    /// </para>
-    /// <para>
     /// The marker never reached the column even in the legacy application, and the schema is what
     /// guarantees it: <c>FK_Roles_RoleGroups</c> constrains the column to a real group row
     /// (<c>03.02.03.SqlDataProvider</c> L37, re-added at <c>04.00.04</c> L70) while
-    /// <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1)</c>, so no group can bear -1 and the marker
-    /// was converted to a database null on the way down. This API converts it to a refusal instead,
-    /// which is strictly more informative and is asserted below - the alternative, quietly treating -1
-    /// as "no group", would let a caller store one meaning and read back another.
-    /// </para>
-    /// <para>
-    /// The absent case is read off the raw body deliberately. Serialisation is configured with the
-    /// <c>Never</c> ignore condition, so an absent group is written as <c>"roleGroupId":null</c> rather
-    /// than being dropped from the document; a client can therefore tell "no group" from "the server did
-    /// not tell me", which an omitted member cannot express.
-    /// </para>
+    /// <c>RoleGroups.RoleGroupID</c> is <c>IDENTITY (0, 1)</c>, so no group can bear -1 and the marker was
+    /// converted to a database null on the way down.
     /// </remarks>
     [Fact]
     public async Task RoleDetail_KeepsAnAbsentGroupExplicitAndRefusesTheLegacyMarker()
@@ -3633,16 +3084,15 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A role really does travel with the group it was created in, whatever that group's identifier, so
-    /// a group key of zero is carried rather than treated as absence.
+    /// A role really does travel with the group it was created in, whatever that group's identifier, so a
+    /// group key of zero is carried rather than treated as absence.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The companion of the assertion above. <c>RoleGroups.RoleGroupID</c> is seeded at zero as well, so
-    /// the group reference has the same collision the role key has and neither the request contract nor
-    /// the validator may bound it - the validator records exactly that, and this test is what would fail
-    /// if a bound were ever added. The identifier is compared to the one the group resource issued rather
-    /// than to a literal, because which number the store assigns is the store's business.
+    /// the group reference has the same collision the role key has and neither the request contract nor the
+    /// validator may bound it - the validator records exactly that, and this test is what would fail if a
+    /// bound were ever added.
     /// </remarks>
     [Fact]
     public async Task CreateRole_InARoleGroup_CarriesTheGroupIdentifierWhateverItsMagnitude()
@@ -3680,18 +3130,9 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The envelope is the contract: <c>items</c> beside <c>meta</c>, with the total across every page in
-    /// the companion rather than as a sibling of the records. The total is asserted to be a real count
-    /// and specifically NOT -1, because the legacy paging idiom passed the total back through a
-    /// by-reference argument and used the absent-integer marker for "not counted"; an envelope that
-    /// published that marker would give a client a page count of minus one page.
-    /// </para>
-    /// <para>
-    /// The page index is read back rather than assumed. The base is zero here - index 0 is the first
-    /// page - and the assertion is written against what the caller sent rather than against a constant,
-    /// so it states that the coordinates are echoed without restating the base in a second place.
-    /// </para>
+    /// The page index is read back rather than assumed. The base is zero here - index 0 is the first page -
+    /// and the assertion is written against what the caller sent rather than against a constant, so it
+    /// states that the coordinates are echoed without restating the base in a second place.
     /// </remarks>
     [Fact]
     public async Task ListRoles_CarriesThePagingCompanionWithARealTotal()
@@ -3739,21 +3180,8 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The total is the point of the second half. A filtered listing that narrowed its records while
-    /// reporting the unfiltered total would drive a client's pager to offer pages that do not exist, and
-    /// an empty result must report zero rather than the absent-integer marker.
-    /// </para>
-    /// <para>
     /// THE MATCH IS A SUBSTRING MATCH, NOT A PREFIX MATCH, and the mid-string case is asserted explicitly
-    /// so that a later change of semantics fails here rather than silently changing the contract. The role
-    /// listing matches a fragment ANYWHERE in the name - <c>Application/Services/RoleService.cs</c> applies
-    /// <c>RoleName.Contains(wanted, StringComparison.OrdinalIgnoreCase)</c> - which differs from the
-    /// account listing, where <c>Infrastructure/Repositories/UserRepository.cs</c> applies
-    /// <c>StartsWith</c>. Neither semantics violates a legacy behaviour, because the legacy role screen
-    /// declared no search control at all (<c>Website/admin/Security/roles.ascx</c> contains no filter
-    /// input); the search is net-new, and this test pins the semantics it actually has.
-    /// </para>
+    /// so that a later change of semantics fails here rather than silently changing the contract.
     /// </remarks>
     [Fact]
     public async Task ListRoles_FiltersByNameAndNarrowsTheReportedTotal()
@@ -3789,32 +3217,15 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A caller-supplied correlation identifier comes back exactly once on a success and is still
-    /// present on a deliberately failed request; one is minted when the caller supplies none; and an
-    /// unusable value is replaced rather than echoed, without becoming a refusal of its own.
+    /// A caller-supplied correlation identifier comes back exactly once on a success and is still present
+    /// on a deliberately failed request; one is minted when the caller supplies none; and an unusable value
+    /// is replaced rather than echoed, without becoming a refusal of its own.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The failure half is the half that matters. A correlation identifier exists so that the one
-    /// exchange a caller wants to report - the one that went wrong - can be found in a log, so a header
-    /// attached only to successful responses would be present exactly when it is not needed. The problem
-    /// document's own detail text points the caller at this header, which would be a dead reference if
-    /// the header were absent.
-    /// </para>
-    /// <para>
     /// The single-value assertion is not pedantry either: a middleware that appended rather than assigned
-    /// would produce two values on a request that already carried one, and a client reading the first
-    /// would silently disagree with a log written from the second.
-    /// </para>
-    /// <para>
-    /// The oversize value exercises the sanitiser. The header is bounded at 128 characters and confined
-    /// to printable ASCII, because a value copied into a log line is a header-injection vector; an
-    /// unusable value is therefore REPLACED with a minted one rather than echoed, and - equally
-    /// important - it does not turn the request into a 400. Rejecting the exchange over a diagnostic
-    /// header would let a caller break its own request with a value that has no bearing on what it asked
-    /// for.
-    /// </para>
+    /// would produce two values on a request that already carried one, and a client reading the first would
+    /// silently disagree with a log written from the second.
     /// </remarks>
     [Fact]
     public async Task RoleRequests_RoundTripTheCorrelationIdentifierIncludingOnFailure()
@@ -3880,43 +3291,13 @@ public sealed class RoleApiTests
         replacement.Should().NotBe(oversize, "a value beyond the bound is replaced rather than echoed");
     }
 
-    /// <summary>
-    /// The role resource publishes no address for the operations that belong elsewhere or nowhere.
-    /// </summary>
+    /// <summary>The role resource publishes no address for the operations that belong elsewhere or nowhere.</summary>
     /// <param name="path">The address that must not resolve to a role operation.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// An absent endpoint is normally invisible to a test suite, which is exactly why it drifts back in.
-    /// Each address below was a candidate this resource deliberately does not serve, and each is refused
-    /// with a status that means "no such thing here" rather than answered.
-    /// </para>
-    /// <para>
-    /// Role GROUP management is the first pair: a group's rules are rules about the roles it classifies,
-    /// so the same application contract serves both, but the ADDRESSES are separate and the group ones
-    /// live under the kebab-cased <c>role-groups</c> collection. The remaining addresses are the
-    /// subscription and housekeeping surfaces: self-service subscription and the redemption of a role's
-    /// invitation code are NOT operations on this resource; there is no billing-transaction action, because no
-    /// billing subsystem is in scope; and there is neither a cache-invalidation action nor a bulk action,
-    /// because invalidation belongs to the service that performs a write and a bulk endpoint would be a
-    /// second, weaker copy of every rule the single-item endpoints enforce.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>/api/v1/users/{userId}/services</c> was once probed here as an address NOTHING serves,
-    /// on the reasoning that the legacy member-services screen "subscribed and unsubscribed an account
-    /// through the very same assignment operation the two membership actions already expose, so it earns no
-    /// address of its own". That probe is WITHDRAWN, because the address now exists on the ACCOUNT resource
-    /// and the reasoning behind it was wrong twice over: the panel operated on the signed-in account and
-    /// never on the account its container was managing, and this controller's class-level policy - which
-    /// combines rather than overrides - could never admit that caller, so the affordance was unreachable
-    /// rather than relocated. The role-side probes below still matter and are unchanged: they prove the
-    /// address did not land HERE. Where it did land is asserted by the account resource's own suite.
-    /// </para>
-    /// <para>
-    /// A credentialled administrator issues these probes on purpose. An anonymous caller would be refused
-    /// by the policy before routing had anything to say, so the refusal would prove nothing about which
-    /// addresses exist.
-    /// </para>
+    /// Role GROUP management is the first pair: a group's rules are rules about the roles it classifies, so
+    /// the same application contract serves both, but the ADDRESSES are separate and the group ones live
+    /// under the kebab-cased <c>role-groups</c> collection.
     /// </remarks>
     [Theory]
     [InlineData("/api/v1/roles/groups")]
@@ -3944,28 +3325,8 @@ public sealed class RoleApiTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the successor of <c>Library/Components/Security/Roles/RoleController.vb</c> L495-L496,
-    /// where cancelling a used paid trial reads
-    /// <c>userRole.ExpiryDate = DateAdd(DateInterval.Day, -1, Date.Today())</c> and updates the row
-    /// instead of deleting it. Two facts are preserved and both are asserted. The row SURVIVES, because
-    /// the trial-used flag lives on it and losing the row would let a cancelled subscriber restart a paid
-    /// trial. And "expire now" is implemented as YESTERDAY rather than as the current instant, with the
-    /// time component truncated away, so the membership reads as already expired for the whole of the
-    /// current day rather than only after the current hour.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy stamp was <c>Date.Today()</c>, which is server-LOCAL, while the injected
-    /// clock is UTC only. For the same real instant the two can name different calendar days either side
-    /// of Greenwich. That is accepted deliberately - a local-zone stamp is not comparable between hosts -
-    /// and it is why the expected day is captured either side of the call rather than computed once: the
-    /// two bounds coincide except across a UTC midnight, where both are correct answers.
-    /// </para>
-    /// <para>
-    /// The trial flag is set with a direct statement because no endpoint writes it: a new membership is
-    /// recorded with the flag clear, and the legacy subscription flow that consumed a trial is out of
-    /// scope. Only a stored row can therefore put the removal path on this branch.
-    /// </para>
+    /// The legacy stamp was <c>Date.Today()</c>, which is server-LOCAL, while the injected clock is UTC
+    /// only. For the same real instant the two can name different calendar days either side of Greenwich.
     /// </remarks>
     [Fact]
     public async Task RemoveAssignment_ForAPaidMembershipWithAUsedTrial_ExpiresItRatherThanDeletingIt()
@@ -4041,25 +3402,12 @@ public sealed class RoleApiTests
             after.AddDays(-1));
     }
 
-    /// <summary>
-    /// A one-time term derives the far-future perpetual expiry rather than an offset from today.
-    /// </summary>
+    /// <summary>A one-time term derives the far-future perpetual expiry rather than an offset from today.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The sixth frequency code, and the one a four-code reading of the legacy switch loses. The
-    /// authority is <c>RoleController.vb</c> L541-L546, whose six arms are <c>N</c> for no expiry,
-    /// <c>O</c> for <c>New System.DateTime(9999, 12, 31)</c>, and <c>D</c>, <c>W</c>, <c>M</c> and
-    /// <c>Y</c> for a period in days, weeks, months and years. A migration that carried only the four
-    /// offset codes would leave <c>O</c> falling through the switch onto the null-date marker set ahead
-    /// of it at L538 - that is, onto <c>DateTime.MinValue</c> - and a perpetual membership would read as
-    /// one that expired at the beginning of time.
-    /// </para>
-    /// <para>
     /// The date also reaches the wire unrounded, which the storage bound makes possible: SQL Server's
     /// <c>datetime</c> tops out at 9999-12-31, so the sentinel is storable exactly rather than being
     /// clamped to something near it.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task Assignment_ForAOneTimeTerm_DerivesThePerpetualExpiry()
@@ -4098,33 +3446,10 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
-    /// A role whose stored frequency is a character the vocabulary never declared can still be updated,
-    /// not merely read.
+    /// A role whose stored frequency is a character the vocabulary never declared can still be updated, not
+    /// merely read.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The write-path companion of the read tolerance asserted elsewhere in this suite, and it is a
-    /// distinct guarantee: an update reads the stored row, applies the submitted state and writes it
-    /// back, so a materialisation that faulted on the stored character would make such a role
-    /// permanently uneditable - the one state from which an operator could not repair it.
-    /// </para>
-    /// <para>
-    /// The characters planted here are the ones the product itself ships:
-    /// <c>01.00.00.SqlDataProvider</c> L7192 seeds the Administrators role with <c>'4'</c> and L7194
-    /// seeds Registered Users with <c>'0'</c>, and neither is among the six the switch at
-    /// <c>RoleController.vb</c> L541-L546 handles. The column is plain <c>char(1) NULL</c> throughout the
-    /// upgrade chain with no check constraint, and the legacy editor deliberately tolerated an unknown
-    /// code by leaving its drop-down unselected (<c>EditRoles.ascx.vb</c> L149-L151 and L157-L159), so
-    /// tolerance on the read and write paths is parity rather than leniency.
-    /// </para>
-    /// <para>
-    /// The submitted frequency is one of the six, because the write CONTRACT is closed over the
-    /// enumeration - an undeclared code cannot be sent, only encountered. What is under test is
-    /// therefore the transition out of the undeclared state, which is exactly the repair an operator
-    /// would attempt.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task UpdateRole_WithAnUnrecognisedStoredFrequency_IsStillWritable()
     {
@@ -4165,9 +3490,7 @@ public sealed class RoleApiTests
         storedCode.Should().Be("Y", "the undeclared character is replaced by the submitted code");
     }
 
-    /// <summary>
-    /// Reads a role's memberships and returns the one held by the seeded member account.
-    /// </summary>
+    /// <summary>Reads a role's memberships and returns the one held by the seeded member account.</summary>
     /// <param name="client">A client holding the administrators role.</param>
     /// <param name="roleId">The role whose memberships are read.</param>
     /// <returns>The single membership found for the seeded member.</returns>
@@ -4230,10 +3553,9 @@ public sealed class RoleApiTests
     /// <param name="client">A client carrying host credentials.</param>
     /// <returns>The new tenant, together with everything needed to address it.</returns>
     /// <remarks>
-    /// The alias and the administrator account are returned rather than discarded because every role route is
-    /// tenant-scoped: the portal-administrator policy requires the route's tenant to be the tenant the request
-    /// resolved to, and resolution is by host name. Reaching this tenant's roles therefore means addressing
-    /// this tenant's alias as this tenant's own administrator, which is exactly how an operator reaches it.
+    /// The alias and the administrator account are returned rather than discarded because every role route
+    /// is tenant-scoped: the portal-administrator policy requires the route's tenant to be the tenant the
+    /// request resolved to, and resolution is by host name.
     /// </remarks>
     private async Task<IsolatedTenant> CreateIsolatedPortalAsync(HttpClient client)
     {
@@ -4263,9 +3585,6 @@ public sealed class RoleApiTests
         using JsonDocument document =
             JsonDocument.Parse(await response.Content.ReadAsStringAsync());
 
-        // The created representation travels inside the shared success envelope, so every member is one
-        // level down under "data". Read as raw JSON rather than through a typed envelope because only two
-        // members are wanted, and naming them here proves the envelope member name as a side effect.
         JsonElement created = document.RootElement.GetProperty("data");
 
         return new IsolatedTenant(
@@ -4305,10 +3624,6 @@ public sealed class RoleApiTests
     /// <param name="moduleId">The module whose grants are counted.</param>
     /// <param name="roleId">The role the grants are addressed to.</param>
     /// <returns>The number of matching grant rows.</returns>
-    /// <remarks>
-    /// Read straight from the store rather than through the API, so the assertion does not depend on the
-    /// same mapping the removal under test uses.
-    /// </remarks>
     private Task<int> CountModuleGrantsForRoleAsync(int moduleId, int roleId) =>
         _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(*) FROM [dbo].[ModulePermission] "
@@ -4350,10 +3665,6 @@ public sealed class RoleApiTests
     /// <summary>Counts how many of exactly four page grants still exist, named by key.</summary>
     /// <param name="tabPermissionIds">The four keys, in insertion order.</param>
     /// <returns>The number of those rows that survive.</returns>
-    /// <remarks>
-    /// Fixed at four so the keys travel as bound parameters. Composing an identifier list into the statement
-    /// text would be the one place in this suite where a value reached the store as text.
-    /// </remarks>
     private Task<int> CountTabGrantsByKeyAsync(IReadOnlyList<int> tabPermissionIds) =>
         _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(*) FROM [dbo].[TabPermission] "
@@ -4396,10 +3707,6 @@ public sealed class RoleApiTests
     /// <param name="client">A client holding the administrators role.</param>
     /// <param name="query">The filter text, sent as supplied and escaped for transport.</param>
     /// <returns>The page, as it travels on the wire.</returns>
-    /// <remarks>
-    /// The page size is stated explicitly so that a filtered assertion is never satisfied merely because
-    /// the default window happened to exclude the rows that would have contradicted it.
-    /// </remarks>
     private async Task<PagedEnvelope<RoleListItemDto>> ListRolesAsync(HttpClient client, string query)
     {
         using HttpResponseMessage response = await client.GetAsync(new Uri(
@@ -4440,22 +3747,6 @@ public sealed class RoleApiTests
     /// <param name="member">The member the document must attribute the failure to.</param>
     /// <param name="message">The message the document must carry for that member.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// Three things are asserted where a weaker test asserts one. The STATUS says the request was refused.
-    /// The DOCUMENT SHAPE says the refusal is an RFC 7807 document rather than a shape of the endpoint's
-    /// own - a 400 carrying a bare status, a raw string or an object of its own devising would satisfy
-    /// every status assertion in this suite while breaking the single error contract every client is
-    /// written against. And the per-member <c>errors</c> entry says WHICH value the caller must correct,
-    /// which is the whole reason the document has that member: an error naming nothing leaves a caller
-    /// guessing.
-    /// </para>
-    /// <para>
-    /// The message is compared as an exact element rather than by substring, because that is the only
-    /// comparison that can tell the migrated wording apart from the legacy wording with its leading
-    /// markup tag still attached - and telling those two apart is precisely the parity obligation.
-    /// </para>
-    /// </remarks>
     private static async Task ShouldReportFieldAsync(
         HttpResponseMessage response,
         string member,
@@ -4475,12 +3766,6 @@ public sealed class RoleApiTests
     /// <param name="response">The response to inspect.</param>
     /// <param name="member">The member the document must attribute the failure to.</param>
     /// <returns>The document, so a caller can assert further on it.</returns>
-    /// <remarks>
-    /// Separate from the wording-bearing form for the one rule whose message is composed at run time from
-    /// the storage bounds rather than carried across from a legacy screen. Restating that text here would
-    /// duplicate a computation rather than pin a legacy contract, and would fail the moment the bounds
-    /// were formatted differently - so the member is asserted and the wording is left to the rule.
-    /// </remarks>
     private static async Task<ValidationProblemDetails> ShouldNameFieldAsync(
         HttpResponseMessage response,
         string member)
@@ -4510,11 +3795,6 @@ public sealed class RoleApiTests
     /// <summary>Renders a response's status and body for an assertion message.</summary>
     /// <param name="response">The response to describe.</param>
     /// <returns>The status and the body, bounded.</returns>
-    /// <remarks>
-    /// A refusal on these resources can arrive on the same status from several different gates, so an
-    /// assertion reporting only "expected 201, found 400" would leave the reader unable to tell which rule
-    /// answered. The body is bounded because a validation problem document lists every offending member.
-    /// </remarks>
     private static async Task<string> Diagnose(HttpResponseMessage response)
     {
         string body = await response.Content.ReadAsStringAsync();
@@ -4531,17 +3811,10 @@ public sealed class RoleApiTests
     /// <param name="code">The failure code, without the shared prefix.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
     /// The code is a stable, named string rather than a number, and it is what a client branches on. The
     /// status alone is not enough on these resources: three different reasons answer <c>409</c> - a role
     /// name already taken, a group name already taken and a group that still classifies a role - and two
-    /// answer <c>403</c>, a protected assignment and a caller who does not administer the tenant. The
-    /// document's <c>type</c> is where the difference is legible.
-    /// </para>
-    /// <para>
-    /// The prefix is applied here rather than written into each call site so that the codes read as the
-    /// codes the application services actually declare.
-    /// </para>
+    /// answer <c>403</c>, a protected assignment and a caller who does not administer the tenant.
     /// </remarks>
     private static async Task ShouldCarryFailureCodeAsync(
         HttpResponseMessage response,

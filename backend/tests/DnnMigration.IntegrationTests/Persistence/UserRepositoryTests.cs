@@ -8,16 +8,12 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Persistence;
 
-/// <summary>
-/// Covers the account repository, including the external membership store that holds credentials.
-/// </summary>
+/// <summary>Covers the account repository, including the external membership store that holds credentials.</summary>
 /// <remarks>
 /// <para>
 /// This repository straddles two stores. Account facts live in the mapped <c>dbo.Users</c> table, while
-/// credentials, approval and lockout live in the <c>aspnet_*</c> membership tables that the original upgrade
-/// scripts only ever altered and never created. Those tables are therefore not mapped entity types and are
-/// reached through explicit statements, which puts them outside anything the model or a migration can
-/// verify. Exercising them here is the only place that binding is proved.
+/// credentials, approval and lockout live in the <c>aspnet_*</c> membership tables that the original
+/// upgrade scripts only ever altered and never created.
 /// </para>
 /// <para>
 /// The listing assertions each work inside a tenant this suite creates and then removes, so the seeded
@@ -28,16 +24,13 @@ namespace DnnMigration.IntegrationTests.Persistence;
 [Collection(IntegrationTestCollection.Name)]
 public sealed class UserRepositoryTests
 {
-    /// <summary>
-    /// The first key <c>dbo.Portals.PortalID</c> issues, which the seeded tenant holds.
-    /// </summary>
+    /// <summary>The first key <c>dbo.Portals.PortalID</c> issues, which the seeded tenant holds.</summary>
     /// <remarks>
-    /// MIGRATION: this is a REAL TENANT and not the host scope. <c>dbo.Portals.PortalID</c> is
-    /// <c>IDENTITY(-1, 1)</c> (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first tenant an
-    /// installation has and is always addressable; the host scope is a SQL <c>NULL</c> portal, which
-    /// <c>03.03.03.SqlDataProvider:L74-L83</c> established when it widened the column and migrated the
-    /// rows with <c>SET PortalId = NULL WHERE PortalId = -1</c>. The constant is named for what it is so
-    /// that no assertion below can be read as treating -1 as an absence.
+    /// This is a REAL TENANT and not the host scope. <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
+    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the first tenant an installation has and is always
+    /// addressable; the host scope is a SQL <c>NULL</c> portal, which
+    /// <c>03.03.03.SqlDataProvider:L74-L83</c> established when it widened the column and migrated the rows
+    /// with <c>SET PortalId = NULL WHERE PortalId = -1</c>.
     /// </remarks>
     private const int SeededTenantPortalId = -1;
 
@@ -49,13 +42,11 @@ public sealed class UserRepositoryTests
 
     private static readonly TimeSpan AttemptWindow = TimeSpan.FromMinutes(10);
 
-    /// <summary>
-    /// Application name the external membership tables are keyed by.
-    /// </summary>
+    /// <summary>Application name the external membership tables are keyed by.</summary>
     /// <remarks>
     /// Restated here rather than read from the store, which declares it privately. The value is the legacy
-    /// installation's own application name and is a fact about the schema, so a disagreement between the two
-    /// would make every membership seed in this suite attach to nothing - which is precisely what the
+    /// installation's own application name and is a fact about the schema, so a disagreement between the
+    /// two would make every membership seed in this suite attach to nothing - which is precisely what the
     /// dependant-row assertions would then report.
     /// </remarks>
     private const string MembershipApplication = "DotNetNuke";
@@ -108,9 +99,9 @@ public sealed class UserRepositoryTests
     /// <summary>Omitting the tenant searches the whole installation.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The installation-wide lookup exists so that a host account, which may hold no membership in the tenant
-    /// being administered, can still be resolved. Callers accept the result only when the account turns out
-    /// to be a host account, which is why the lookup itself is deliberately unscoped.
+    /// The installation-wide lookup exists so that a host account, which may hold no membership in the
+    /// tenant being administered, can still be resolved. Callers accept the result only when the account
+    /// turns out to be a host account, which is why the lookup itself is deliberately unscoped.
     /// </remarks>
     [Fact]
     public async Task GetAsync_WithoutATenant_SearchesTheWholeInstallation()
@@ -145,10 +136,9 @@ public sealed class UserRepositoryTests
     /// <summary>An account whose membership has not been authorised is still resolvable by name.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is deliberate rather than accidental. Sign-in has to be able to find an account that has not yet
-    /// been authorised, because that is precisely the account that may present a verification code to have
-    /// its membership approved. Filtering unauthorised accounts out of the lookup would make the verification
-    /// path unreachable and turn a legitimate first sign-in into an unknown-account denial.
+    /// This is deliberate rather than accidental. Sign-in has to be able to find an account that has not
+    /// yet been authorised, because that is precisely the account that may present a verification code to
+    /// have its membership approved.
     /// </remarks>
     [Fact]
     public async Task GetByUsernameAsync_FindsAnAccountWhoseMembershipIsNotAuthorised()
@@ -184,9 +174,7 @@ public sealed class UserRepositoryTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The asymmetry follows the schema. A unique index on the username makes it an installation-wide
-    /// identifier, so a duplicate must be refused whichever tenant it is offered to. The address carries no
-    /// such index and the legacy uniqueness setting was per tenant, so the same person may hold one address
-    /// across several tenants.
+    /// identifier, so a duplicate must be refused whichever tenant it is offered to.
     /// </remarks>
     [Fact]
     public async Task ExistenceChecks_ScopeTheUsernameInstallationWideAndTheAddressPerTenant()
@@ -238,14 +226,12 @@ public sealed class UserRepositoryTests
         (await users.GetMembershipAsync(_fixture.Seed.PortalId, UnknownUserId)).Should().BeNull();
     }
 
-    /// <summary>
-    /// Role names name only the assignments that are in force at the moment being asked about.
-    /// </summary>
+    /// <summary>Role names name only the assignments that are in force at the moment being asked about.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// An assignment carries an effective date and an expiry date because paid membership of a role begins
-    /// and ends. Reading every assignment regardless of its dates would grant a lapsed subscriber the access
-    /// they have stopped paying for, and would grant a future subscriber access before it starts.
+    /// and ends. Reading every assignment regardless of its dates would grant a lapsed subscriber the
+    /// access they have stopped paying for, and would grant a future subscriber access before it starts.
     /// </remarks>
     [Fact]
     public async Task ListRoleNamesAsync_NamesOnlyTheAssignmentsInForce()
@@ -286,11 +272,6 @@ public sealed class UserRepositoryTests
 
     /// <summary>Host accounts and unauthorised members are each excluded unless asked for.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Both exclusions are defaults rather than filters the caller must remember to apply. A host account is
-    /// not a member of the tenant being administered even when it holds a membership row, and an unauthorised
-    /// member has not yet been admitted, so neither belongs in the ordinary account listing.
-    /// </remarks>
     [Fact]
     public async Task ListAsync_ExcludesHostAccountsAndUnauthorisedMembersByDefault()
     {
@@ -345,10 +326,9 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The difference is measured legacy behaviour, not an inconsistency. The legacy account search appended a
-    /// single trailing wildcard to the username and address it was given, so both were prefix searches, while
-    /// the general search box matched anywhere in the value. Widening the prefix filters to fragments would
-    /// change which accounts an administrator finds and would defeat the index on the username.
+    /// The difference is measured legacy behaviour, not an inconsistency. The legacy account search
+    /// appended a single trailing wildcard to the username and address it was given, so both were prefix
+    /// searches, while the general search box matched anywhere in the value.
     /// </remarks>
     [Fact]
     public async Task ListAsync_MatchesTheNamedFiltersAsPrefixesAndTheSearchAsAFragment()
@@ -397,9 +377,9 @@ public sealed class UserRepositoryTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// Approval is not a column on the mapped account table, so the filter cannot be expressed against it.
-    /// The listing therefore roots itself in a statement over the membership tables and composes the ordinary
-    /// filters on top, which keeps the whole query a single round trip and lets the store apply approval
-    /// before paging rather than after it.
+    /// The listing therefore roots itself in a statement over the membership tables and composes the
+    /// ordinary filters on top, which keeps the whole query a single round trip and lets the store apply
+    /// approval before paging rather than after it.
     /// </remarks>
     [Fact]
     public async Task ListAsync_WithTheApprovalFilter_ReadsTheExternalMembershipStore()
@@ -436,8 +416,8 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// Accounts are ordered by display name, then username, then identifier, so paging cannot repeat or drop
-    /// a row.
+    /// Accounts are ordered by display name, then username, then identifier, so paging cannot repeat or
+    /// drop a row.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -528,9 +508,6 @@ public sealed class UserRepositoryTests
                 userId, ReplacementHash, StoredHash, DateTime.UtcNow);
             replaced.Should().Be(CredentialWriteOutcome.Replaced);
 
-            // And a second write carrying the SUPERSEDED expectation is refused rather than applied, which is
-            // the property the outcome type exists for: the stored value is now ReplacementHash, so a caller
-            // still holding StoredHash has decided against a credential that is no longer in force.
             CredentialWriteOutcome stale = await users.SetPasswordHashAsync(
                 userId, StoredHash, StoredHash, DateTime.UtcNow);
             stale.Should().Be(
@@ -563,22 +540,6 @@ public sealed class UserRepositoryTests
     /// only in letter case is refused even though the database itself is case-insensitive.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-02. THIS IS THE ONE PROPERTY OF THE COMPARE-AND-SWAP THAT ONLY A REAL SERVER CAN SHOW,
-    /// and it is not theoretical: this fixture's server collation is <c>SQL_Latin1_General_CP1_CI_AS</c> - the
-    /// SQL Server installation default, and the collation a DotNetNuke database is overwhelmingly likely to
-    /// carry. Under it, an ordinary equality predicate holds <c>$2a$12$abc…</c> and <c>$2A$12$ABC…</c> to be the
-    /// same string.
-    /// </para>
-    /// <para>
-    /// They are not the same credential. BCrypt's digest alphabet is case-sensitive, so those two values verify
-    /// different secrets, and a swap that accepted the wrong one would do precisely what the expectation exists
-    /// to prevent: overwrite a credential the caller never read. The statement therefore forces
-    /// <c>Latin1_General_BIN2</c> on the comparison, and this test is what stops that qualifier from being
-    /// removed as noise - delete it and every other credential test in this suite still passes.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task CredentialReplacement_ComparesTheExpectationByBytesRatherThanByCollation()
     {
@@ -625,23 +586,6 @@ public sealed class UserRepositoryTests
     /// membership role, a profile and a personalisation entry is removed rather than refused.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// THE DEFECT THIS PINS. The deletion used to remove only <c>aspnet_Membership</c> and
-    /// <c>aspnet_Users</c>. Four tables reference <c>aspnet_Users</c> through NON-cascading foreign keys, and
-    /// the stock <c>aspnet_Users_DeleteUser</c> (<c>InstallCommon.sql</c> lines 421-541, ALTERed at
-    /// <c>04.00.00.SqlDataProvider</c> lines 475-595) clears them in a fixed order before removing the user
-    /// row. Against any real installation the shortened deletion therefore failed with a reference violation
-    /// for every account that had ever held a membership role, stored a profile or personalised a page - and
-    /// this fixture could not observe it, because it provisioned none of those tables. Both halves are fixed:
-    /// the tables are provisioned with their real non-cascading keys, and this test seeds a row in each one.
-    /// </para>
-    /// <para>
-    /// The seeded rows are addressed through the membership user identifier resolved from the account's own
-    /// name, which is how the store itself addresses them, so the test exercises the same join the production
-    /// statement performs rather than a convenient shortcut.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task CredentialRemoval_ClearsEveryDependantMembershipRow()
     {
@@ -703,12 +647,9 @@ public sealed class UserRepositoryTests
         (await users.UnlockAsync(UnknownUserId)).Should().BeFalse();
         (await users.DeleteCredentialAsync(UnknownUserId)).Should().BeFalse();
 
-        // The two bookkeeping members report an OUTCOME rather than a boolean, and the distinction this test
-        // pins is the whole reason for that: an account that cannot be resolved reports "no record", which is
-        // emphatically NOT the same answer as "the store could not be reached". The sign-in path escalates the
-        // second as a server fault and proceeds through the first, so a repository that conflated them - as the
-        // previous boolean contract did - would turn a deleted account into a false alarm and, far worse, an
-        // unreachable store into a silently uncounted credential attempt.
+        // The two bookkeeping members report an OUTCOME rather than a boolean, and the distinction this
+        // test pins is the whole reason for that: an account that cannot be resolved reports "no record",
+        // which is emphatically NOT the same answer as "the store could not be reached".
         (await users.RecordSuccessfulLoginAsync(UnknownUserId, DateTime.UtcNow))
             .Should().Be(MembershipWriteOutcome.NoRecord);
 
@@ -725,20 +666,6 @@ public sealed class UserRepositoryTests
 
     /// <summary>Repeated failures lock the account at the threshold, and unlocking clears the record.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// The threshold is inclusive: the attempt that brings the count up to it is the attempt that locks. The
-    /// bookkeeping lives in the external membership store, where the original upgrade scripts added it by
-    /// altering a procedure Microsoft shipped, so it is reproduced here by explicit statements and is only
-    /// verifiable against a real relational store.
-    /// </para>
-    /// <para>
-    /// The returned outcome distinguishes "recorded, and the account is still usable" from "recorded, and the
-    /// account is now locked", which is why the early attempts below expect the former: each one is counted
-    /// successfully and each one leaves the account usable. Neither is the same fact as whether the write
-    /// happened at all, which is what a third outcome carries.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task RecordFailedLoginAsync_LocksTheAccountAtTheThreshold()
     {
@@ -864,8 +791,8 @@ public sealed class UserRepositoryTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// One account may belong to several tenants, so removing it from one has to leave both the account and
-    /// its other memberships intact. Deleting the account instead would remove a person from every tenant of
-    /// an installation because one administrator asked for them to be removed from a single site.
+    /// its other memberships intact. Deleting the account instead would remove a person from every tenant
+    /// of an installation because one administrator asked for them to be removed from a single site.
     /// </remarks>
     [Fact]
     public async Task RemoveMembership_RevokesOneTenancyAndLeavesTheAccountIntact()
@@ -922,25 +849,10 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// The role-holder reader answers with accounts, matches the name case-insensitively, confines itself to
-    /// the requested tenant and composes the external membership snapshot onto every account it returns.
+    /// The role-holder reader answers with accounts, matches the name case-insensitively, confines itself
+    /// to the requested tenant and composes the external membership snapshot onto every account it returns.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// MIGRATION: replaces <c>GetUsersByRolename(PortalID, Rolename)</c> from the membership provider stack at
-    /// <c>Library/Providers/MembershipProviders/DataProvider/DataProvider.vb</c>. The core provider at
-    /// <c>Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb</c> declares no role procedure at
-    /// all, so reading it alone would have produced no contract to test here - both provider stacks are
-    /// required reading, and this is one of the members that proves it.
-    /// </para>
-    /// <para>
-    /// Assignment dates are deliberately not evaluated, matching the terminal legacy procedure, which took a
-    /// portal identifier and a role name and filtered on nothing else. A holder whose assignment has lapsed is
-    /// therefore still a holder here. The time-aware question is answered by <c>ListRoleNamesAsync</c>, which
-    /// is asserted separately, and the contrast between the two is the point rather than an inconsistency.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListByRoleNameAsync_AnswersWithTheTenantScopedHoldersAndComposesTheirMembership()
     {
@@ -960,9 +872,6 @@ public sealed class UserRepositoryTests
         {
             await AddAssignmentAsync(holderId, roleId, effective: null, expiry: null);
 
-            // An assignment that expired yesterday. The legacy procedure ignored both bounds, so this holder
-            // must still be listed - the assertion pins that deliberately preserved behaviour rather than the
-            // more obvious time-aware answer.
             await AddAssignmentAsync(
                 lapsedHolderId,
                 roleId,
@@ -990,10 +899,6 @@ public sealed class UserRepositoryTests
             byDifferentCase.Select(account => account.UserId).Should().BeEquivalentTo(
                 holders.Select(account => account.UserId), "the name is matched case-insensitively");
 
-            // The membership snapshot is composed by this read path too. DnnDbContextTests asserts the
-            // metadata half - Model_LeavesTheExternallyStoredAccountPropertyUnmapped proves FindProperty
-            // answers null for all eleven properties - and this is the behavioural half: unmapped in the
-            // model, yet populated on the way out. Neither assertion is meaningful without the other.
             foreach (User holder in holders)
             {
                 AssertMembershipSnapshotComposed(holder, nameof(IUserRepository.ListByRoleNameAsync));
@@ -1018,12 +923,6 @@ public sealed class UserRepositoryTests
     /// tenancy at all, and it composes the membership snapshot like every other read path.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// This is the whole reason the member exists separately from the listing. A host account need hold no
-    /// <c>UserPortals</c> row, and the listing's root filter requires one, so a host account is not reliably
-    /// reachable through the listing. The assertion below creates exactly that account - a super-user with no
-    /// tenancy - and proves both halves at once: the listing cannot see it, and this member can.
-    /// </remarks>
     [Fact]
     public async Task ListSuperUsersAsync_ReachesAHostAccountThatHoldsNoTenancy()
     {
@@ -1049,19 +948,13 @@ public sealed class UserRepositoryTests
                 account => account.IsSuperUser,
                 "the flag is the only filter the member applies");
 
-            // The snapshot is asserted on the two accounts whose credential records this suite knows exist. An
-            // account carrying no credential record legitimately reads back with a null approval, so asserting
-            // over the whole installation-wide list would couple this test to whatever else happens to hold the
-            // super-user flag.
+            // The snapshot is asserted on the two accounts whose credential records this suite knows exist.
             foreach (int knownHostId in new[] { untenantedHostId, _fixture.Seed.HostUserId })
             {
                 User host = hosts.Single(candidate => candidate.UserId == knownHostId);
                 AssertMembershipSnapshotComposed(host, nameof(IUserRepository.ListSuperUsersAsync));
             }
 
-            // The complementary half: the listing requires a membership row, so the untenanted host account is
-            // invisible to it even with super-users explicitly included. That is not a defect in either
-            // member - it is precisely why both exist.
             PagedResult<User> listed = await users.ListAsync(
                 portalId, 0, 0, null, null, null, null, null, null,
                 includeUnauthorised: true, includeSuperUsers: true);
@@ -1079,37 +972,11 @@ public sealed class UserRepositoryTests
         }
     }
 
-
     /// <summary>
     /// The reported total is never the legacy minus-one sentinel, under every shape of request the listing
     /// accepts - unpaged, paged, past the end, matching nothing, and reaching the external store.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// <para>
-    /// This is the single most important paging assertion in the suite, and it exists because of a specific
-    /// measured defect rather than as a general sanity check. The legacy unpaged idiom passed the literal
-    /// triple <c>-1, -1, -1</c> into the provider, so the incoming <c>ByRef totalRecords</c> argument arrived
-    /// holding minus one.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>FillUserCollection</c> in
-    /// <c>Library/Providers/MembershipProviders/AspNetMembershipProvider/AspNetMembershipProvider.vb</c>
-    /// wrapped its whole body in a catch-all that logged and returned, so when the second result set could not
-    /// be read the total was never assigned and the caller received that incoming minus one as though it were
-    /// a real count. Two further defects sat in the same method: its opening comment claimed the total arrived
-    /// in the FIRST result set while the code read it from the second, and the boolean captured from
-    /// <c>NextResult()</c> was assigned and then never tested. Three sibling XML comments compounded it by
-    /// documenting the unpaged sentinel on the wrong parameter - they named <c>pageSize</c> while the code
-    /// tested <c>pageIndex</c>.
-    /// </para>
-    /// <para>
-    /// Per the Minimal Change Clause those defects are recorded here and deliberately NOT reproduced: none of
-    /// them is carried forward, and nothing in the target swallows. A failure surfaces as an exception rather
-    /// than as a plausible-looking count. The total is therefore always a genuine non-negative cardinality,
-    /// which is what this test pins.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task ListAsync_NeverReportsTheLegacyMinusOneTotal()
     {
@@ -1166,18 +1033,10 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// A page reports the total across every page rather than its own length, and echoes back the coordinates
-    /// that were actually used.
+    /// A page reports the total across every page rather than its own length, and echoes back the
+    /// coordinates that were actually used.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// MIGRATION: the count that travelled as a <c>ByRef totalRecords</c> argument through eight legacy
-    /// overloads now travels inside the envelope, so it cannot disagree with the rows it accompanies. Paging is
-    /// applied by the database - ordered, then skipped, then taken - which is why the ordering is a request of
-    /// the reader and why a caller cannot reorder a page after the fact without silently reordering only the
-    /// rows that one page happened to contain. Page indexing is zero-based, as declared on
-    /// <c>PagedResult{T}</c>; the legacy minus-one unpaged sentinel is expressed here as a page size of zero.
-    /// </remarks>
     [Fact]
     public async Task ListAsync_ReportsTheCrossPageTotalAndEchoesTheRequestedCoordinates()
     {
@@ -1244,8 +1103,8 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// A pager rendered from this answer has to be able to say "page 40 of 2", so the coordinates asked for are
-    /// echoed rather than clamped, and the total is the real one. Reporting zero here would make an
+    /// A pager rendered from this answer has to be able to say "page 40 of 2", so the coordinates asked for
+    /// are echoed rather than clamped, and the total is the real one. Reporting zero here would make an
     /// over-scrolled grid claim the set was empty.
     /// </remarks>
     [Fact]
@@ -1279,17 +1138,14 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// A page size of zero is the unpaged request, and it answers with the unpaged representation rather than
-    /// with an empty page.
+    /// A page size of zero is the unpaged request, and it answers with the unpaged representation rather
+    /// than with an empty page.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: this is the replacement for the legacy sentinel triple. <c>UserController.GetUsers</c>
-    /// obtained every row by passing <c>-1, -1, -1</c>, and the provider then rewrote <c>pageIndex</c> to zero
-    /// and <c>pageSize</c> to <c>Integer.MaxValue</c>. Minus one is not accepted as a page coordinate here
-    /// under any reading, because it is a real key elsewhere in this very schema: <c>Portals.PortalID</c> is
-    /// <c>IDENTITY(-1, 1)</c>. Zero carries the request instead, and the envelope reports itself as unpaged so
-    /// the distinction survives to the caller.
+    /// This is the replacement for the legacy sentinel triple. <c>UserController.GetUsers</c> obtained
+    /// every row by passing <c>-1, -1, -1</c>, and the provider then rewrote <c>pageIndex</c> to zero and
+    /// <c>pageSize</c> to <c>Integer.MaxValue</c>.
     /// </remarks>
     [Fact]
     public async Task ListAsync_WithAPageSizeOfZero_AnswersWithTheUnpagedRepresentation()
@@ -1331,25 +1187,14 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// Staging a write assigns no key. The generated identifier appears only once the unit of work commits, and
-    /// the commit reports how many rows it wrote.
+    /// Staging a write assigns no key. The generated identifier appears only once the unit of work commits,
+    /// and the commit reports how many rows it wrote.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: every legacy <c>Add*</c> member returned an <c>Integer</c> because each stored procedure
-    /// ended in <c>SCOPE_IDENTITY()</c>, so writing and answering with a key were the same act. Under Entity
-    /// Framework they cannot be: the key is generated by the database during the commit. A staging member that
-    /// answered with an identifier would therefore have to commit on the caller's behalf, which would dissolve
-    /// the unit of work and make a multi-table write non-atomic - exactly the property the legacy portal
-    /// creation lacked.
-    /// </para>
-    /// <para>
-    /// The contract expresses this in the strongest available form: <c>Add</c> is a synchronous <c>void</c>, so
-    /// there is not even a task to await, let alone a key to misread. Asserting the key is still unassigned
-    /// after staging and before committing is the cleanest proof the boundary holds; asserting it is populated
-    /// afterwards proves the commit is what fills it.
-    /// </para>
+    /// Every legacy <c>Add*</c> member returned an <c>Integer</c> because each stored procedure ended in
+    /// <c>SCOPE_IDENTITY()</c>, so writing and answering with a key were the same act. Under Entity
+    /// Framework they cannot be: the key is generated by the database during the commit.
     /// </remarks>
     [Fact]
     public async Task StagedWrites_AssignTheGeneratedKeyOnlyWhenTheUnitOfWorkCommits()
@@ -1414,26 +1259,15 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// The account and its per-portal membership are staged separately and committed by a single call, which is
-    /// what preserves the atomicity the one legacy statement had.
+    /// The account and its per-portal membership are staged separately and committed by a single call,
+    /// which is what preserves the atomicity the one legacy statement had.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy membership <c>AddUser</c> took ten positional arguments and wrote both the
-    /// <c>Users</c> row and the per-portal <c>UserPortals</c> row in one statement. It had to, because
-    /// <c>IsApproved</c> is a per-portal fact while the account itself carries no portal identifier at all -
-    /// the <c>User</c> entity has no <c>PortalId</c> scalar, deliberately. The target decomposes the write
-    /// across two entities, so the atomicity has to be restored by the unit of work rather than by the
-    /// statement.
-    /// </para>
-    /// <para>
     /// The membership is joined to the account through the navigation property rather than by copying an
     /// identifier, because at staging time there is no identifier to copy. That is the point: the change
     /// tracker orders the two inserts and threads the generated key into the dependent row, so one commit
-    /// writes both. Setting the foreign key by hand would have required committing the account first, which is
-    /// precisely the split this test exists to rule out.
-    /// </para>
+    /// writes both.
     /// </remarks>
     [Fact]
     public async Task AddAndAddMembership_CommitAtomicallyUnderASingleSaveChanges()
@@ -1514,17 +1348,13 @@ public sealed class UserRepositoryTests
         }
     }
 
-    /// <summary>
-    /// Deleting the account removes it and cascades into the membership rows that depended on it.
-    /// </summary>
+    /// <summary>Deleting the account removes it and cascades into the membership rows that depended on it.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: the terminal <c>dbo.Users</c> table carries no deletion flag, so there is no soft delete to
-    /// reproduce - a removal is a removal. The legacy administration screens removed a person from one tenant by
-    /// deleting the membership row and only deleted the account once no membership remained, and that ordering
-    /// is preserved as a caller obligation rather than hidden inside the repository. This test takes the second
-    /// step directly and proves the cascade the schema declares actually fires, so an orphaned membership row
-    /// cannot survive its account.
+    /// The terminal <c>dbo.Users</c> table carries no deletion flag, so there is no soft delete to
+    /// reproduce - a removal is a removal. The legacy administration screens removed a person from one
+    /// tenant by deleting the membership row and only deleted the account once no membership remained, and
+    /// that ordering is preserved as a caller obligation rather than hidden inside the repository.
     /// </remarks>
     [Fact]
     public async Task Remove_DeletesTheAccountAndCascadesIntoItsMembership()
@@ -1579,20 +1409,10 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>Website/release.config</c> registers the membership provider with
+    /// <c>Website/release.config</c> registers the membership provider with
     /// <c>requiresUniqueEmail="false"</c>, so a shared address was legal in the original installation and
     /// remains legal here. Tightening it during a migration would lock existing people out of their own
-    /// accounts, which is why it is preserved rather than corrected. The shipped seed data is the strongest
-    /// corroboration available: the Host account was seeded with the address <c>host</c> and the Administrator
-    /// with <c>admin</c>, neither of which is even a well-formed address.
-    /// </para>
-    /// <para>
-    /// <c>EmailExistsAsync</c> exists on the contract and is asserted here, but note carefully what it is: a
-    /// pre-write question the Application layer asks so it can answer with a <c>Result</c> instead of letting an
-    /// exception escape. It is not an enforced constraint, and this test proves that distinction by writing the
-    /// duplicate anyway and finding both rows intact afterwards.
-    /// </para>
+    /// accounts, which is why it is preserved rather than corrected.
     /// </remarks>
     [Fact]
     public async Task TwoAccountsMayShareOneAddress_AndNothingEnforcesOtherwise()
@@ -1646,20 +1466,9 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: RULE T7. <c>Library/Components/Shared/Null.vb</c> defined <c>NullInteger</c> as minus one and
-    /// the legacy data layer used it to mean "absent". That convention is unusable in this schema because the
-    /// identity seeds collide with it head-on: <c>Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>, so minus one
-    /// is the first real tenant, while <c>Roles.RoleID</c>, <c>Tabs.TabID</c>, <c>Modules.ModuleID</c> and
-    /// <c>RoleGroups.RoleGroupID</c> all seed at zero. <c>Users.UserID</c> seeds at one, and it is the odd one
-    /// out - which is exactly why an account identifier of zero or minus one can be recognised as absent while
-    /// a tenant or role identifier of the same value cannot.
-    /// </para>
-    /// <para>
     /// The contrast is the assertion. Testing only that a user identifier of minus one finds nothing would
     /// read as a general rule about identifiers, and generalising it is the mistake this test exists to
     /// prevent: absence is expressed as <see langword="null"/> throughout, never as a sentinel identifier.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task ZeroAndMinusOneAreNeverAccountIdentifiers_UnlikeTenantAndRoleIdentifiers()
@@ -1687,8 +1496,7 @@ public sealed class UserRepositoryTests
         hosts.Should().OnlyContain(account => account.UserId >= 1);
 
         // The contrast. The seeded tenant resolves through its own identifier even though the seed of that
-        // identity column is minus one, and a role identifier of zero is likewise a real key. Neither value
-        // may be read as "absent" for those entities.
+        // identity column is minus one, and a role identifier of zero is likewise a real key.
         _fixture.Seed.PortalId.Should().BeGreaterThanOrEqualTo(
             -1, "Portals.PortalID is IDENTITY(-1, 1), so the first tenant of an installation bears minus one");
         (await users.GetAsync(_fixture.Seed.PortalId, _fixture.Seed.AdminUserId)).Should().NotBeNull(
@@ -1702,27 +1510,13 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// An empty string round-trips as an empty string and a false boolean is stored as false. Neither collapses
-    /// into a database null.
+    /// An empty string round-trips as an empty string and a false boolean is stored as false. Neither
+    /// collapses into a database null.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: RULE T7, and this is the divergence with the largest reach. <c>Null.NullString</c> was the
-    /// EMPTY STRING rather than <see langword="null"/>, and <c>Null.NullBoolean</c> was <c>False</c>. The
-    /// legacy <c>GetNull</c> helper converted a value equal to its type's sentinel into <c>DBNull</c> on the way
-    /// to the database, so <b>every false boolean was persisted as SQL NULL</b> and an empty string was
-    /// indistinguishable from one. Writing <c>false</c> where the legacy layer wrote NULL changes the stored
-    /// row, so the behaviour cannot be left implicit.
-    /// </para>
-    /// <para>
-    /// The chosen behaviour, pinned here, is that the value written is the value supplied: an empty string
-    /// stores as an empty string and <c>false</c> stores as <c>false</c>. The terminal schema is what makes this
-    /// the only coherent option - <c>Users.IsSuperUser</c> and <c>UserPortals.Authorised</c> are both
-    /// <c>NOT NULL</c>, so a NULL could not be written even if fidelity to the sentinel were wanted. Absence is
-    /// carried by nullable types instead, which is why the assertions below read the raw columns as well as the
-    /// entity: only the raw read can tell an empty string apart from a null.
-    /// </para>
+    /// MIGRATION: RULE T7, and this is the divergence with the largest reach. <c>Null.NullString</c> was
+    /// the EMPTY STRING rather than <see langword="null"/>, and <c>Null.NullBoolean</c> was <c>False</c>.
     /// </remarks>
     [Fact]
     public async Task AnEmptyStringAndAFalseBooleanAreStoredAsThemselvesRatherThanAsNull()
@@ -1757,9 +1551,6 @@ public sealed class UserRepositoryTests
                 "an unauthorised membership is recorded as false rather than as null, which is what makes the "
                 + "unauthorised listing filter answerable at all");
 
-            // Only a raw read can distinguish an empty string from a null, because the materialiser presents
-            // both as an absent-looking value on a nullable property. These two scalars are therefore the
-            // actual assertion; the entity assertions above are the caller-visible consequence of them.
             int emailIsNull = await _fixture.Database.ScalarAsync<int>(
                 """
                 SELECT CASE WHEN [Email] IS NULL THEN 1 ELSE 0 END
@@ -1806,26 +1597,9 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy membership <c>AddUser</c> wrapped its entire body in a bare
-    /// <c>Catch ... Return -1</c>, so a duplicate username, a constraint violation and a dead connection were
-    /// indistinguishable to the caller, and every one of them was reported as an ordinary expected outcome.
-    /// That single line is what makes minus one carry a <b>fifth</b> meaning in this codebase, alongside the
-    /// <c>Null.NullInteger</c> sentinel, the real <c>Portals.PortalID</c> key, the "all portals" wildcard in the
-    /// alias reader, and the "All Users" pseudo-principal in the permission tables.
-    /// </para>
-    /// <para>
-    /// Neither half is carried forward: nothing is caught and no sentinel is returned. Per the Minimal Change
-    /// Clause the defect is annotated rather than corrected in place, and the correction lives in the target's
-    /// shape instead - <c>Add</c> returns <c>void</c>, so there is no channel through which a sentinel could be
-    /// smuggled back even if someone wanted to.
-    /// </para>
-    /// <para>
-    /// The honest finding this test records is that the terminal <c>dbo.Users</c> table declares <b>no</b>
-    /// unique index on either <c>Username</c> or <c>Email</c>, so the store itself rejects nothing. The guard is
-    /// therefore <c>UsernameExistsAsync</c>, asked before the write by the Application service, and the
-    /// assertions below pin that division of labour rather than asserting a constraint that does not exist.
-    /// </para>
+    /// The legacy membership <c>AddUser</c> wrapped its entire body in a bare <c>Catch ... Return -1</c>,
+    /// so a duplicate username, a constraint violation and a dead connection were indistinguishable to the
+    /// caller, and every one of them was reported as an ordinary expected outcome.
     /// </remarks>
     [Fact]
     public async Task ExistenceGuardsDecideAClashBeforeTheWrite_AndNoSentinelIsEverReturned()
@@ -1878,24 +1652,10 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: this is the regression guard for a measured data-isolation defect. An earlier revision
-    /// declared <c>private const int HostPortalId = -1</c> in the repository and rewrote a requested
-    /// portal of -1 into a <c>PortalID IS NULL</c> predicate, reproducing the legacy provider's
-    /// <c>GetNull</c> wrapper (<c>SqlDataProvider.vb:L1039</c> and <c>L1042</c> through
-    /// <c>Null.GetNull</c> at <c>L325-L326</c> and <c>Null.vb:L167-L170</c>). That is wrong in this
-    /// schema, because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c>
-    /// (<c>01.00.00.SqlDataProvider:L77</c>), so -1 is the FIRST REAL TENANT of an installation - the
-    /// very tenant this fixture seeds. The consequence was failure in both directions at once: that
-    /// tenant could not read its own declarations, and every one of its requests was served the host
-    /// scope's rows instead.
-    /// </para>
-    /// <para>
     /// The fixture is deliberately DUAL - one declaration stored with a SQL <c>NULL</c> portal and one
     /// stored with the tenant key -1 - because a single-scope fixture cannot tell an exact match from a
-    /// translation. Both directions are asserted on every read member, so neither a reinstated
-    /// translation nor a widening of one scope into both can pass.
-    /// </para>
+    /// translation. Both directions are asserted on every read member, so neither a reinstated translation
+    /// nor a widening of one scope into both can pass.
     /// </remarks>
     [Fact]
     public async Task ProfileDefinitionReads_SeparateTheSqlNullhostScopeFromTheTenantKeyedMinusOne()
@@ -2029,13 +1789,10 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// MIGRATION: the answer members scope themselves through the same one statement of what a scope's
-    /// declarations are, so the same sentinel defect reached them. Read through the defect, a tenant
-    /// numbered -1 was shown the host scope's answers and none of its own; purged through it, the same
-    /// tenant's membership removal deleted the host scope's answers and left its own behind. Both halves
-    /// are asserted here, and the purge half is asserted by cardinality on the surviving row rather than
-    /// only on the deleted one, so a purge that deletes too much fails as loudly as one that deletes too
-    /// little.
+    /// The answer members scope themselves through the same one statement of what a scope's declarations
+    /// are, so the same sentinel defect reached them. Read through the defect, a tenant numbered -1 was
+    /// shown the host scope's answers and none of its own; purged through it, the same tenant's membership
+    /// removal deleted the host scope's answers and left its own behind.
     /// </remarks>
     [Fact]
     public async Task ScopedProfileValueReadAndPurge_AddressExactlyTheScopeTheyAreGiven()
@@ -2191,26 +1948,11 @@ public sealed class UserRepositoryTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The three cases are asserted together because the defect they guard against was a COLLAPSE of two of
-    /// them into one, and a test that exercised any single value could not see it. <c>-1</c> is a real tenant
-    /// - the first one of every installation, because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1, 1)</c> -
-    /// while <c>NULL</c> is the host-level scope that <c>dbo.ProfilePropertyDefinition</c> shares with every
-    /// portal. Conflating the two simultaneously leaked one tenant's declarations to all of them and hid that
-    /// tenant's existing declarations from itself. The second tenant is provisioned here rather than assumed,
-    /// so that "each tenant sees only its own" is measured against a genuine sibling rather than against the
-    /// absence of one.
-    /// </para>
-    /// <para>
-    /// The second tenant's key is whatever the identity column issues; this test deliberately does not depend
-    /// on it being <c>0</c>. The behaviour of a profile-scope key that lands exactly on an identity seed is
-    /// the separate concern proven by <c>IdentitySeedUpdateTests</c>.
-    /// </para>
-    /// <para>
-    /// The stored column is read directly rather than through the repository, because the point at issue is
-    /// what reached the store and a read through the same translated predicate that wrote it would agree with
-    /// itself either way.
-    /// </para>
+    /// them into one, and a test that exercised any single value could not see it. <c>-1</c> is a real
+    /// tenant - the first one of every installation, because <c>dbo.Portals.PortalID</c> is <c>IDENTITY(-1,
+    /// 1)</c> - while <c>NULL</c> is the host-level scope that <c>dbo.ProfilePropertyDefinition</c> shares
+    /// with every portal.
     /// </remarks>
     [Fact]
     public async Task ProfileDefinitionScopes_KeepEachTenantAndTheHostLevelDistinct()
@@ -2315,34 +2057,15 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// Profile declarations and profile values persist through their own repository, and the values they hold
-    /// drive the profile-property filter of the account listing.
+    /// Profile declarations and profile values persist through their own repository, and the values they
+    /// hold drive the profile-property filter of the account listing.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the seam between the two contracts. <c>IUserProfileRepository</c> owns the declaration and the
-    /// value rows, while the only profile-aware member of the account contract is the listing's paired filter -
-    /// a definition identifier and a value prefix. Exercising the filter without writing real values through the
-    /// profile repository would prove nothing, so both are driven here together.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy surface had a single insert-or-update member,
-    /// <c>UpdateProfileProperty(ProfileId, UserId, PropertyDefinitionID, PropertyValue, Visibility,
-    /// LastUpdatedDate)</c>, which the target splits into an explicit add and an explicit update. Its
-    /// <c>LastUpdatedDate</c> argument becomes an entity property rather than a parameter -
-    /// <c>UserProfile</c> is the only in-scope table that carries the column. Note also that
-    /// <c>GetProfileValuesAsync</c> takes only a user identifier and is deliberately <b>not</b> tenant-scoped:
-    /// the surviving legacy row path was keyed by user alone, and only the superseded serialised-blob
-    /// personalisation path was portal-scoped. That structural difference is the evidence they were two
-    /// generations of the same idea, and the blob path is out of scope entirely.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the value filters are matched as PREFIXES rather than as substrings, because each legacy
-    /// search branch appended one trailing percent sign to the search text before handing it to the provider.
-    /// The declaration's own visibility is a plain integer rather than an enumeration, deliberately - the legacy
-    /// visibility mode is not among the domain enumerations.
-    /// </para>
+    /// The value filters are matched as PREFIXES rather than as substrings, because each legacy search
+    /// branch appended one trailing percent sign to the search text before handing it to the provider. The
+    /// declaration's own visibility is a plain integer rather than an enumeration, deliberately - the
+    /// legacy visibility mode is not among the domain enumerations.
     /// </remarks>
     [Fact]
     public async Task ProfileValues_PersistThroughTheirOwnRepositoryAndDriveTheListingFilter()
@@ -2417,11 +2140,9 @@ public sealed class UserRepositoryTests
                 forPortal.Select(candidate => candidate.PropertyDefinitionId).Should().Contain(definitionId);
             }
 
-            // ---- the declaration is amended in place ---------------------------------------------------
-            // MIGRATION: the legacy UpdatePropertyDefinition took ten positional arguments - data type,
-            //            default value, category, name, required, validation expression, view order, visible
-            //            and length among them. All ten collapse into the single entity parameter amended here,
-            //            so no member of this contract exceeds two arguments plus the cancellation token.
+            // the declaration is amended in place
+            // The legacy UpdatePropertyDefinition took ten positional arguments - data type, default value,
+            // category, name, required, validation expression, view order, visible and length among them.
             using (IServiceScope scope = _fixture.Services.CreateScope())
             {
                 IUserProfileRepository profiles = scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
@@ -2816,9 +2537,9 @@ public sealed class UserRepositoryTests
     /// <param name="userId">The account to remove.</param>
     /// <returns>A task that completes when the account is gone.</returns>
     /// <remarks>
-    /// The credential is deleted first and explicitly. The external membership tables carry no foreign key to
-    /// the mapped account table, so removing the account cannot cascade into them and a credential left behind
-    /// would keep the username reserved in the store.
+    /// The credential is deleted first and explicitly. The external membership tables carry no foreign key
+    /// to the mapped account table, so removing the account cannot cascade into them and a credential left
+    /// behind would keep the username reserved in the store.
     /// </remarks>
     private async Task RemoveAccountAsync(int userId)
     {
@@ -2844,10 +2565,9 @@ public sealed class UserRepositoryTests
     /// <param name="userName">The account whose membership user row the rows hang off.</param>
     /// <returns>A task that completes when all three rows exist.</returns>
     /// <remarks>
-    /// The membership user identifier is resolved through the same application-name join the store performs,
-    /// rather than being captured when the credential was created, so the seed cannot silently attach itself
-    /// to the wrong row. The personalisation row needs a path row, which the stock schema also requires, and
-    /// the path is created for this account alone so concurrent suites cannot collide on it.
+    /// The membership user identifier is resolved through the same application-name join the store
+    /// performs, rather than being captured when the credential was created, so the seed cannot silently
+    /// attach itself to the wrong row.
     /// </remarks>
     private Task SeedMembershipDependantsAsync(string userName) =>
         _fixture.Database.ExecuteAsync(
@@ -2973,19 +2693,14 @@ public sealed class UserRepositoryTests
     private static string Suffix() => Guid.NewGuid().ToString("N")[..12];
 
     /// <summary>
-    /// Reads one page of a tenant's membership with every optional filter left open, so that only the paging
-    /// coordinates vary between calls.
+    /// Reads one page of a tenant's membership with every optional filter left open, so that only the
+    /// paging coordinates vary between calls.
     /// </summary>
     /// <param name="users">The repository.</param>
     /// <param name="portalId">The tenant to page through.</param>
     /// <param name="pageIndex">The zero-based page index, as declared by the envelope.</param>
     /// <param name="pageSize">The page size; zero requests the unpaged representation.</param>
     /// <returns>The page the store answered with.</returns>
-    /// <remarks>
-    /// Unauthorised members and host accounts are both included deliberately. The paging assertions are about
-    /// the envelope rather than about the filters, so leaving a filter engaged would let a defect in paging hide
-    /// behind a smaller result set.
-    /// </remarks>
     private static Task<PagedResult<User>> ListPageAsync(
         IUserRepository users,
         int portalId,
@@ -2998,47 +2713,14 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
-    /// Asserts that an account carries the membership snapshot the repository composes rather than the defaults
-    /// an unpopulated instance would show.
+    /// Asserts that an account carries the membership snapshot the repository composes rather than the
+    /// defaults an unpopulated instance would show.
     /// </summary>
     /// <param name="account">The account a read path answered with.</param>
     /// <param name="readPath">The member that produced the account, named for the failure message.</param>
     /// <remarks>
-    /// <para>
-    /// This is the behavioural half of a two-part contract. <c>UserConfiguration</c> calls <c>Ignore</c> on
-    /// eleven properties because they live in the externally installed <c>aspnet_*</c> tables, which the
-    /// original upgrade scripts only ever ALTERed and never CREATEd, so they cannot be mapped as columns on
-    /// <c>dbo.Users</c>. <c>DnnDbContextTests.Model_LeavesTheExternallyStoredAccountPropertyUnmapped</c> asserts
-    /// the metadata half - that <c>FindProperty</c> answers null for each of them while the CLR property still
-    /// exists. This helper asserts the consequence: unmapped in the model, yet populated on the way out of every
-    /// read path.
-    /// </para>
-    /// <para>
-    /// MIGRATION: <c>UserController.GetUserMembership(ByRef objUser)</c> grafted these facts onto an account
-    /// through a separate call that a caller could simply forget, leaving an unapproved account
-    /// indistinguishable from an approved one. There is deliberately no equivalent member to call here, which is
-    /// what allows the <c>ByRef</c> argument to disappear rather than merely change shape - and it is why this
-    /// assertion is applied to every read path rather than to one of them.
-    /// </para>
-    /// <para>
-    /// SEVEN of the eleven ignored properties are composed, not all eleven, and the split is deliberate on both
-    /// sides. Composed: approval, lockout, the creation instant and the four recorded timestamps. Deliberately
-    /// left null: <c>IsOnline</c>, because the legacy presence records were kept current by a scheduled purge
-    /// job that is out of scope, so deriving presence from a store nothing updates would invent an answer that
-    /// looks authoritative and decays silently; and the three credential properties, because the snapshot type
-    /// the read paths can obtain has no field capable of carrying a hash at all.
-    /// </para>
-    /// <para>
-    /// That second half is asserted here as a POSITIVE requirement rather than merely left untested. A password
-    /// hash reaching a listing would be a credential leak, and the assertion below is what makes its absence a
-    /// tested property of every read path instead of an implementation detail that a later change could quietly
-    /// undo. Only the credential reader may serve a hash, and only so that verification can compare one.
-    /// </para>
-    /// <para>
-    /// Of the composed properties only approval, lockout and the creation instant are asserted as present. The
-    /// four remaining timestamps are legitimately null for an account that has never signed in, been locked out
-    /// or changed its password, so requiring them would be asserting a fiction.
-    /// </para>
+    /// SEVEN of the eleven ignored properties are composed, not all eleven, and the split is deliberate on
+    /// both sides. Composed: approval, lockout, the creation instant and the four recorded timestamps.
     /// </remarks>
     private static void AssertMembershipSnapshotComposed(User account, string readPath)
     {
@@ -3072,9 +2754,9 @@ public sealed class UserRepositoryTests
     /// <param name="roleName">The role name, which is unique within a tenant.</param>
     /// <returns>The identifier the store assigned.</returns>
     /// <remarks>
-    /// The role is staged and committed through its own repository, which keeps this suite's set-up on the same
-    /// abstractions it is testing. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so the returned identifier may
-    /// legitimately be zero - it must never be tested for truthiness.
+    /// The role is staged and committed through its own repository, which keeps this suite's set-up on the
+    /// same abstractions it is testing. <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c>, so the returned
+    /// identifier may legitimately be zero - it must never be tested for truthiness.
     /// </remarks>
     private async Task<int> CreateRoleAsync(int portalId, string roleName)
     {

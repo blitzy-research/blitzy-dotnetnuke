@@ -4,10 +4,9 @@ import { Component, TemplateRef, ViewChild } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
-// The two shared contracts this spec asserts against. `SortDirection` is the wire sort
-// vocabulary the component reports; `ProfilePropertyDefinition` is a REAL transfer contract
-// used as a row shape, so that a mistyped column `field` is a compile error rather than a
-// blank column found in a browser. Both live in the same contract directory.
+// The two shared contracts this spec asserts against. `SortDirection` is the wire sort vocabulary the
+// component reports; `ProfilePropertyDefinition` is a REAL transfer contract used as a row shape, so that a
+// mistyped column `field` is a compile error rather than a blank column found in a browser.
 import { SortDirection } from '../../../core/models/paged-result.model';
 import { ProfilePropertyDefinition } from '../../../core/models/profile.model';
 import {
@@ -19,13 +18,6 @@ import {
 
 /**
  * Narrows a `querySelector` result to a present element, throwing when it is absent.
- *
- * The point is that a MISSING element must fail the test rather than silently satisfy it.
- * Optional chaining on a query - `root.querySelector('button')?.click()` - is the classic
- * false green in a spec of this kind: when the selector stops matching, the call becomes a
- * no-op, the expectation that follows sees the unchanged state it was already going to see,
- * and the suite stays green while the assertion has quietly stopped testing anything. A
- * non-null assertion would be worse still, being forbidden outright here.
  *
  * @param root The element to search within.
  * @param selector The CSS selector to find.
@@ -41,25 +33,19 @@ function requireElement(root: Element, selector: string): Element {
 }
 
 /**
- * The direction spellings this spec asserts against, taken from the WIRE CONTRACT rather
- * than restated as literals.
- *
- * Declared as typed constants so that a casing drift in the shared contract - `asc` for
- * `Ascending`, say - becomes a compile error here instead of a run-time `400` discovered in
- * a browser. The server's binder rejects an abbreviated spelling outright, so the casing is
- * load-bearing data and not a style choice.
+ * The direction spellings this spec asserts against, taken from the WIRE CONTRACT rather than restated as
+ * literals. Declared as typed constants so that a casing drift in the shared contract - `asc` for
+ * `Ascending`, say - becomes a compile error here instead of a run-time `400` discovered in a browser.
  */
 const ASCENDING: SortDirection = 'Ascending';
 
-/** The descending member of the wire sort vocabulary. @see ASCENDING */
+/** The descending member of the wire sort vocabulary. @see ASCENDING. */
 const DESCENDING: SortDirection = 'Descending';
 
 /**
- * A row shape carrying one of each value kind the text conversion covers, plus an
- * identifier so the sentinel cases can be exercised.
- *
- * Typed as a real interface rather than an index signature on purpose: that is what makes
- * a mistyped `field` a compile error, which an index-signature row could never deliver
+ * A row shape carrying one of each value kind the text conversion covers, plus an identifier so the
+ * sentinel cases can be exercised. Typed as a real interface rather than an index signature on purpose:
+ * that is what makes a mistyped `field` a compile error, which an index-signature row could never deliver
  * under `noPropertyAccessFromIndexSignature`.
  */
 interface Row {
@@ -71,12 +57,8 @@ interface Row {
   readonly nested?: { readonly inner: string };
 
   /**
-   * A large integer, present so the text conversion's `bigint` clause is reachable
-   * through a real bound member rather than through a cast formatter.
-   *
-   * Optional and unset on the shared rows, following the same arrangement as
-   * {@link Row.nested}: the shape is declared here so that a `field` naming it type
-   * checks, and supplied per test by spreading a base row.
+   * A large integer, present so the text conversion's `bigint` clause is reachable through a real bound
+   * member rather than through a cast formatter.
    */
   readonly big?: bigint;
 }
@@ -107,22 +89,9 @@ describe('DataTableComponent', () => {
       // anywhere in this workspace.
       imports: [DataTableComponent],
 
-      // ORDER IS LOAD-BEARING: the real client is provided FIRST and the testing backend
-      // second, so the testing backend overrides the live one. Reversed, the real
-      // `HttpBackend` survives and a spec that made a request would attempt a live call.
-      //
-      // These two are NOT boilerplate here. This component injects nothing and reaches no
-      // data source, and the pair exists so that the zero-request expectation below, backed
-      // by the mandatory `verify()` in `afterEach`, is a real assertion rather than an
-      // article of faith. Were this component or either of its two real children to issue a
-      // request, it would be captured here and would fail the suite.
-      //
-      // NO ROUTER PROVIDER IS REGISTERED, DELIBERATELY. The component renders no link, no
-      // outlet and no directive that injects `Router` or `ActivatedRoute`, and it never
-      // navigates - row activation is reported through `rowSelect` and routing is the
-      // consuming feature's business. Registering `provideRouter([])` would add a
-      // dependency the component does not have and would weaken this spec's claim that its
-      // surface is closed. The legacy router testing module is forbidden outright.
+      // ORDER IS LOAD-BEARING: the real client is provided FIRST and the testing backend second, so the
+      // testing backend overrides the live one. Reversed, the real `HttpBackend` survives and a spec that
+      // made a request would attempt a live call.
       providers: [provideHttpClient(), provideHttpClientTesting()],
     }).compileComponents();
 
@@ -139,12 +108,7 @@ describe('DataTableComponent', () => {
     fixture.detectChanges();
   });
 
-  // MANDATORY, and it applies to EVERY test in this describe rather than to the HTTP test
-  // alone. `verify()` fails the spec when any request was issued and left unanswered, so it
-  // turns "this component performs no I/O" into a claim checked after every single
-  // interaction below - every sort activation, every selection, every keyboard press - not
-  // just in the one test that names it. A spec that registers the testing backend and never
-  // calls `verify()` is the commonest false green in a suite of this kind.
+  // MANDATORY, and it applies to EVERY test in this describe rather than to the HTTP test alone.
   afterEach(() => {
     httpMock.verify();
   });
@@ -191,41 +155,20 @@ describe('DataTableComponent', () => {
       set('loading', false);
       fixture.detectChanges();
 
-      // ⚠ STATED AS A COUNTED EXPECTATION, NOT AS `expectNone`, AND THE DIFFERENCE IS
-      // REPORTED RATHER THAN COSMETIC. `expectNone` asserts by throwing, so Jasmine records
-      // no expectation for it and the runner reports this spec as having none - which reads
-      // in a log exactly like a spec that forgot to assert anything. `match` returns what it
-      // matched, so the emptiness of that list is the assertion, and it fails just as loudly
-      // on an unexpected request. Nothing is weakened: `match` removes only what it matched,
-      // and it matched nothing, so the `verify()` in `afterEach` still guards this spec
-      // independently.
       expect(httpMock.match(() => true))
         .withContext('no request of any kind, through any interaction')
         .toEqual([]);
     });
 
     it('injects no service, so it can be created with no provider but the HTTP pair', () => {
-      // The component was constructed in `beforeEach` from a testing module registering
-      // nothing except the HTTP backend - no store, no service, no router. Reaching a
-      // rendered table at all is therefore the proof: an unmet dependency would have thrown
-      // during `createComponent`.
+      // The component was constructed in `beforeEach` from a testing module registering nothing except the
+      // HTTP backend - no store, no service, no router. Reaching a rendered table at all is therefore the
+      // proof: an unmet dependency would have thrown during `createComponent`.
       expect(fixture.debugElement.query(By.css('table.data-table'))).not.toBeNull();
     });
   });
 
   describe('the surface is closed: no paging, no dialogue, no foot row', () => {
-    // PROVENANCE. The pager was always a SIBLING of the legacy grid, never a row inside it:
-    // `Website/admin/Portal/portals.ascx` closes its grid at L56, emits `<br><br>` at L57 and
-    // only THEN declares `<dnn:pagingcontrol>` at L58, and `Website/admin/Users/users.ascx`
-    // does the identical thing at L81-L83. Only two of the eight legacy grids were paged at
-    // all, so paging is emphatically not a property of the grid itself.
-    //
-    // These assertions cannot fail loudly on their own: a component that grew an internal
-    // pager or a confirmation dialogue would still render, still pass every other test here,
-    // and would simply have taken over a responsibility that belongs to the feature - which
-    // is exactly how a "shared" component acquires a second source of truth for the page
-    // index.
-
     it('renders no pagination component, because the pager is a sibling of the table', () => {
       expect(host().querySelector('app-pagination')).toBeNull();
     });
@@ -253,18 +196,10 @@ describe('DataTableComponent', () => {
     });
 
     it('renders no confirmation dialogue, because the feature owns the delete flow', () => {
-      // The component exposes no row-command output, so it cannot know that a command was
-      // destructive; the confirmation therefore belongs to the feature that projected the
-      // command. A dialogue rendered here would confirm an action this component never sees.
       expect(host().querySelector('app-confirm-dialog')).toBeNull();
     });
 
     it('borrows no legacy grid class name, so the token vocabulary is the only source', () => {
-      // Asserting ABSENCE is the useful direction here. The legacy vocabulary
-      // - `.DataGrid_Header`, `.DataGrid_Item`, `.DataGrid_AlternatingItem`,
-      // `.DataGrid_SelectedItem`, `.DataGrid_Footer`, `.DataGrid_Container` - is deliberately
-      // not carried across; row state is published through announced attributes and the
-      // component's own block-scoped classes instead.
       const legacy = [
         '.DataGrid_Header',
         '.DataGrid_Item',
@@ -290,10 +225,8 @@ describe('DataTableComponent', () => {
     });
 
     it('names the table generically when the consumer projects no caption', () => {
-      // The omission case, which is the one that matters: this fixture is built with no
-      // projected content at all, so the caption falls back. An empty caption is worse
-      // than no caption - it occupies the slot that would have named the table and says
-      // nothing - so the assertion is on the caption having TEXT, not merely existing.
+      // The omission case, which is the one that matters: this fixture is built with no projected content
+      // at all, so the caption falls back.
       const caption = fixture.debugElement.query(By.css('table > caption'))
         .nativeElement as HTMLElement;
 
@@ -301,21 +234,7 @@ describe('DataTableComponent', () => {
     });
 
     it('keeps the fallback name out of the painted output but in the accessibility tree', () => {
-      // The fallback must not become visible text, yet must still NAME the table. The
-      // component discharges that by declaring the shared stylesheet's documented clipping
-      // hook and by declaring nothing that would remove the element from the accessibility
-      // tree - which is precisely where its responsibility ends.
-      //
-      // ASSERTED AT THE MARKUP LEVEL, DELIBERATELY, AND NOT THROUGH COMPUTED STYLE. Two
-      // reasons, and the second is the stronger. First, the resolved values of the clipping
-      // technique belong to the shared stylesheet, which is a different contract owned
-      // elsewhere; a spec for THIS component asserting them would fail whenever that
-      // stylesheet legitimately changed technique, and would be asserting appearance rather
-      // than behaviour. Second, the hiding mechanisms that would actually break the
-      // accessible name - the `hidden` attribute, `aria-hidden`, or an inline `display: none`
-      // or `visibility: hidden` - are all things this component would have to WRITE INTO ITS
-      // OWN MARKUP to introduce. Proving they are absent from the markup therefore closes the
-      // real regression path directly, without reading a single resolved value.
+      // The fallback must not become visible text, yet must still NAME the table.
       const caption = fixture.debugElement.query(By.css('table > caption'))
         .nativeElement as HTMLElement;
 
@@ -364,9 +283,6 @@ describe('DataTableComponent', () => {
     });
 
     it('applies each intrinsic and token width form the descriptor admits', () => {
-      // All four are valid CSS for inline-size on a col element, which is the whole
-      // point of closing the type: a grid track keyword such as `1fr` or `minmax()` is
-      // NOT, and the browser would drop it in silence.
       for (const width of ['min-content', 'max-content', 'var(--space-8)', '12.5%'] as const) {
         set('columns', [{ key: 'name', label: 'Name', field: 'name', width }]);
 
@@ -379,11 +295,8 @@ describe('DataTableComponent', () => {
   });
 
   describe('column-set validation', () => {
-    // Each invariant below is rejected when the SET IS BOUND rather than absorbed
-    // during rendering, so the defect is reported at the call site that caused it. A
-    // width or a key is written through a cast in these tests because the descriptor
-    // already rejects the literal at compile time; the cast is what a JavaScript
-    // caller does implicitly, and it is the only way to prove the run-time guard.
+    // Each invariant below is rejected when the SET IS BOUND rather than absorbed during rendering, so the
+    // defect is reported at the call site that caused it.
     function bind(column: unknown): () => void {
       return () => set('columns', [column as DataTableColumn<Row>]);
     }
@@ -418,9 +331,6 @@ describe('DataTableComponent', () => {
     });
 
     it('rejects a sortable heading that also hides its label', () => {
-      // This pair is unrepresentable in the descriptor as well; the run-time guard
-      // exists for the caller a type cannot reach, because the combination renders a
-      // focusable control with nothing visible inside it.
       expect(
         bind({ key: 'name', label: 'Name', field: 'name', sortable: true, headerHidden: true }),
       ).toThrowError(/nothing visible in it/);
@@ -452,11 +362,9 @@ describe('DataTableComponent', () => {
     });
 
     it('counts the waiting row when it is shown, so the announced size matches what is rendered', () => {
-      // THE PLACEHOLDER ONLY REPLACES THE ROWS WHEN THERE ARE NO ROWS. A read that arrives
-      // while rows are on screen keeps them and reports itself through `aria-busy`, so the
-      // waiting row has to be provoked with an empty set. Showing it on every read tore the
-      // body down and rebuilt it, which measured as a zero-data row, a pager jumping several
-      // hundred pixels and the application's largest layout shift.
+      // THE PLACEHOLDER ONLY REPLACES THE ROWS WHEN THERE ARE NO ROWS. A read that arrives while rows are
+      // on screen keeps them and reports itself through `aria-busy`, so the waiting row has to be provoked
+      // with an empty set.
       set('rows', []);
       set('loading', true);
       const table = fixture.debugElement.query(By.css('table')).nativeElement as HTMLElement;
@@ -487,12 +395,11 @@ describe('DataTableComponent', () => {
     });
 
     it('still counts the RETAINED rows while a read is in flight over them', () => {
-      // ⚠ THE REGRESSION THIS PINS DOWN, MEASURED IN A BROWSER. Once a subsequent read began keeping
-      // the previous rows, this count still assumed the placeholder had replaced them - so for the
-      // whole two seconds of a page turn the table announced `aria-rowcount="2"` while eleven rows
-      // were rendered, and announced it at exactly the moment `aria-busy="true"` invites assistive
-      // technology to re-read the grid. The count and the placeholder are now derived from the SAME
-      // predicate, which is what makes the two incapable of disagreeing.
+      // ⚠ THE REGRESSION THIS PINS DOWN, MEASURED IN A BROWSER. Once a subsequent read began keeping the
+      // previous rows, this count still assumed the placeholder had replaced them - so for the whole two
+      // seconds of a page turn the table announced `aria-rowcount="2"` while eleven rows were rendered, and
+      // announced it at exactly the moment `aria-busy="true"` invites assistive technology to re-read the
+      // grid.
       const table = fixture.debugElement.query(By.css('table')).nativeElement as HTMLElement;
 
       expect(table.getAttribute('aria-rowcount')).toBe('3');
@@ -538,10 +445,6 @@ describe('DataTableComponent', () => {
     });
 
     it('renders a large integer in full, without exponent or precision loss', () => {
-      // The value is deliberately past Number.MAX_SAFE_INTEGER. Every other numeric
-      // path in this component goes through the `number` clause, which would render
-      // this magnitude only approximately, so a cell that reproduces all nineteen
-      // digits is evidence the `bigint` clause ran rather than the `number` one.
       const beyondSafeInteger = 9007199254740993n;
       set('columns', [{ key: 'big', label: 'Big', field: 'big' }]);
       set('rows', [{ ...ROWS[0], big: beyondSafeInteger }]);
@@ -571,10 +474,9 @@ describe('DataTableComponent', () => {
     });
 
     it('admits exactly one text source per column, so no precedence rule is needed', () => {
-      // A column declaring BOTH a bound member and a formatter no longer compiles: the
-      // descriptor's text arms exclude one another, which is why the earlier
-      // "formatter wins" precedence rule has no test any more — the ambiguity it
-      // resolved is unrepresentable. Both sources still work on their own.
+      // A column declaring BOTH a bound member and a formatter no longer compiles: the descriptor's text
+      // arms exclude one another, which is why the earlier "formatter wins" precedence rule has no test any
+      // more — the ambiguity it resolved is unrepresentable. Both sources still work on their own.
       set('columns', [{ key: 'name', label: 'Name', field: 'name' }]);
       expect(cellTexts(0)[0]).toBe('Alpha');
 
@@ -619,36 +521,14 @@ describe('DataTableComponent', () => {
   });
 
   describe('markup in data is rendered as text, never as markup', () => {
-    // WHY THIS BLOCK EXISTS. Every string this component renders reaches it from a
-    // caller and ultimately from the database, and the legacy corpus proves that is
-    // not a hypothetical concern: a substantial minority of the legacy resource values
-    // hold HTML tags and at least one carries a live advertising script sourced from a
-    // remote third-party host, stored HTML-escaped so a naive search misses it. Port
-    // that corpus into a grid and script-bearing text is ordinary input, not an attack.
-    //
-    // Interpolation escapes, so these are REGRESSION GUARDS rather than assertions
-    // about a defect: they fail as soon as any of these three values stops being
-    // interpolated - the changes that would do it being a raw-HTML property binding, a
-    // sanitiser bypass, a trusted-HTML wrapper or markup smuggled through an attribute
-    // binding. Column headings are covered as well as cell values, because a heading is
-    // just as caller-supplied as a cell and is rendered by a different template branch.
-    //
-    // Each case asserts BOTH halves: that no element was created from the payload, and
-    // that the text survives verbatim. The second half matters on its own - a fix that
-    // stripped the tags instead of escaping them would satisfy the first assertion
-    // while silently corrupting a value that was never markup to begin with.
+    // Interpolation escapes, so these are REGRESSION GUARDS rather than assertions about a defect: they
+    // fail as soon as any of these three values stops being interpolated - the changes that would do it
+    // being a raw-HTML property binding, a sanitiser bypass, a trusted-HTML wrapper or markup smuggled
+    // through an attribute binding.
     const SCRIPT_PAYLOAD = '<script>window.__dataTableXss = true;</script>';
     const IMAGE_PAYLOAD = '<img src="x" onerror="window.__dataTableXss = true">';
 
-    /**
-     * Benign-looking markup, and the most instructive of the three payloads.
-     *
-     * A bold tag carries no attack at all, which is exactly why it is here: it is what a
-     * resx value realistically contains, and a reader glancing at the rendered grid cannot
-     * tell escaped-and-shown from parsed-and-applied without looking for the element. The
-     * assertions below therefore check the ELEMENT's absence inside the specific cell, not
-     * merely that the document gained no script.
-     */
+    /** Benign-looking markup, and the most instructive of the three payloads. */
     const MARKUP_PAYLOAD = '<b>x</b>';
 
     function scriptCount(): number {
@@ -696,9 +576,6 @@ describe('DataTableComponent', () => {
     });
 
     it('renders a script-bearing formatter result as text', () => {
-      // The formatter path normalises its result independently of the bound-member
-      // path, so escaping has to hold on both. A caller-supplied function is also the
-      // likelier route in practice, since it is where wording gets assembled.
       set('columns', [{ key: 'summary', label: 'Summary', value: () => SCRIPT_PAYLOAD }]);
 
       expect(scriptCount()).toBe(0);
@@ -706,10 +583,9 @@ describe('DataTableComponent', () => {
     });
 
     it('creates no element from an event-handler payload either', () => {
-      // A script element injected after load does not execute in every browser, so an
-      // assertion resting on scripts alone could pass for the wrong reason. An image
-      // with a failing source and an error handler needs no such caveat: were the
-      // markup live, the element would exist and its handler would run.
+      // A script element injected after load does not execute in every browser, so an assertion resting on
+      // scripts alone could pass for the wrong reason. An image with a failing source and an error handler
+      // needs no such caveat: were the markup live, the element would exist and its handler would run.
       set('columns', [{ key: 'name', label: IMAGE_PAYLOAD, field: 'name' }]);
       set('rows', [{ ...ROWS[0], name: IMAGE_PAYLOAD }]);
 
@@ -719,9 +595,9 @@ describe('DataTableComponent', () => {
     });
 
     it('leaves no trace of any payload having executed', () => {
-      // The guard behind the guards: if any case above had rendered live markup, the
-      // handler it carries would have set this member. Read through an index signature
-      // because it is deliberately not a declared global.
+      // The guard behind the guards: if any case above had rendered live markup, the handler it carries
+      // would have set this member. Read through an index signature because it is deliberately not a
+      // declared global.
       expect((window as unknown as Record<string, unknown>)['__dataTableXss']).toBeUndefined();
     });
   });
@@ -772,17 +648,9 @@ describe('DataTableComponent', () => {
 
     /**
      * THE THIRD STEP CLEARS THE ORDERING, AND THIS SPEC USED TO PIN A TWO-STEP CYCLE THAT MADE THE
-     * ARRIVAL STATE UNREACHABLE.
-     *
-     * Every listing in this application starts with no ordering at all - each store initialises its
-     * sort coordinate to null and the request omits both parameters - so "no ordering" is a state the
-     * reader is already in when they arrive. With ascending and descending as the only two steps, the
-     * moment a reader touched any heading the server's own order became unreachable: the only route
-     * back was to reload the page. The direction is reported as `null` so a consumer clears its own
-     * coordinate, which every store here already supports, rather than substituting a default.
-     *
-     * The key is still reported, because it names the heading that was pressed rather than the ordering
-     * that results - so no consumer has to reason about a null key.
+     * ARRIVAL STATE UNREACHABLE. Every listing in this application starts with no ordering at all - each
+     * store initialises its sort coordinate to null and the request omits both parameters - so "no
+     * ordering" is a state the reader is already in when they arrive.
      */
     it('clears the ordering on the column already sorted descending', () => {
       set('sortBy', 'name');
@@ -794,9 +662,9 @@ describe('DataTableComponent', () => {
     });
 
     it('re-enters the cycle at ascending once the ordering has been cleared', () => {
-      // A cleared column is no longer the active one, so the full round trip is
-      // ascending -> descending -> cleared -> ascending, and the reader can reach all three states
-      // from the keyboard with repeated presses of one heading.
+      // A cleared column is no longer the active one, so the full round trip is ascending -> descending ->
+      // cleared -> ascending, and the reader can reach all three states from the keyboard with repeated
+      // presses of one heading.
       set('sortBy', 'name');
       set('sortDir', 'Ascending');
       headers()[0].querySelector('button')?.click();
@@ -856,11 +724,6 @@ describe('DataTableComponent', () => {
      * disabled, so pressing a heading reordered the table and then dropped focus to the document body,
      * leaving a keyboard reader with no position in the table they had just reordered - and nothing to
      * restore, because the focus was already gone by the time anything could observe it.
-     *
-     * `aria-disabled` announces the same state to assistive technology while leaving the control in the
-     * tab order, which is the documented remedy for a control that must survive its own unavailability.
-     * The refusal itself is asserted separately, below and above, through the ABSENCE OF AN EMISSION -
-     * which is now the only mechanism enforcing it.
      */
     it('marks the control unavailable while a request is in flight, without disabling it', () => {
       set('loading', true);
@@ -892,13 +755,9 @@ describe('DataTableComponent', () => {
     });
 
     /**
-     * The geometry half of the same family of defect.
-     *
-     * Measured before the fix: activating a heading grew its button under the pointer — Title
-     * 44.000 -> 46.469 px and Start Date 70.859 -> 86.750 px — because the direction indicator was
-     * rendered only once the column became sorted. A control that changes size at the instant it is
-     * pressed can move out from under the finger that pressed it. The element is therefore always
-     * present and only its CONTENT is conditional, so this spec pins presence in both states.
+     * The geometry half of the same family of defect. Measured with the direction indicator rendered only
+     * once a column becomes sorted: activating a heading grew its button under the pointer — Title
+     * 44.000 -> 46.469 px and Start Date 70.859 -> 86.750 px.
      */
     it('keeps the indicator element present when unsorted, so the control cannot change size', () => {
       const indicatorOf = (index: number): Element | null =>
@@ -921,9 +780,7 @@ describe('DataTableComponent', () => {
         .toBe('true');
     });
 
-    /**
-     * The whole point of the change above: focus SURVIVES the request that a sort press starts.
-     */
+    /** The whole point of the change above: focus SURVIVES the request that a sort press starts. */
     it('keeps focus on the heading the reader pressed while the reorder is in flight', () => {
       const control = headers()[0].querySelector('button');
 
@@ -947,17 +804,8 @@ describe('DataTableComponent', () => {
     });
 
     describe('keyboard operability of the sort control', () => {
-      // WHY THIS IS ASSERTED SEPARATELY FROM THE CLICK TESTS ABOVE. Those prove the sort
-      // CONTRACT - which key, which direction, which column. This block proves the control is
-      // reachable and operable WITHOUT A POINTER AT ALL, which is a different claim and the
-      // one the legacy grids could not make: measured across the legacy stylesheets, ':focus'
-      // appears in zero files, 'outline' in zero files and 'aria-' in zero files, so the
-      // legacy heading was a plain image-free label with no focus behaviour whatsoever.
-      //
-      // The activation is delivered by a REAL `<button>` rather than by a heading carrying a
-      // click handler, and that choice is what supplies keyboard operability from the
-      // platform instead of from hand-written key handling. The assertions below verify each
-      // link in that chain rather than assuming it.
+      // WHY THIS IS ASSERTED SEPARATELY FROM THE CLICK TESTS ABOVE. Those prove the sort CONTRACT - which
+      // key, which direction, which column.
 
       /** The sortable heading control for a column index. */
       function sortControl(columnIndex: number): HTMLButtonElement {
@@ -971,16 +819,9 @@ describe('DataTableComponent', () => {
       }
 
       /**
-       * Activates a native button the way a keyboard user does.
-       *
-       * A synthetic `KeyboardEvent` dispatched from script is untrusted, so the user agent
-       * performs NO default action for it - the Enter-to-click translation a real key press
-       * gets is simply not applied. This helper therefore does exactly what the platform
-       * does, in the platform's order, and nothing more: it focuses the control, dispatches
-       * the real key event, and performs the activation ONLY IF the element did not cancel
-       * the key. That conditional is the load-bearing part - a component that called
-       * `preventDefault()` on the key would suppress a real browser's activation too, and
-       * this helper would then correctly emit nothing.
+       * Activates a native button the way a keyboard user does. A synthetic `KeyboardEvent` dispatched
+       * from script is untrusted, so the user agent performs NO default action for it - the
+       * Enter-to-click translation a real key press gets is simply not applied.
        *
        * @param button The control to activate.
        * @param key The activation key to press.
@@ -1004,9 +845,9 @@ describe('DataTableComponent', () => {
       it('exposes the sort affordance as a real button, which the platform makes operable', () => {
         const control = sortControl(0);
 
-        // A native button is focusable and answers both Enter and Space with no key handler
-        // written anywhere. An activatable `th` would need a tab index AND a hand-rolled key
-        // handler to reach the same place, and would still not be announced as a control.
+        // A native button is focusable and answers both Enter and Space with no key handler written
+        // anywhere. An activatable `th` would need a tab index AND a hand-rolled key handler to reach the
+        // same place, and would still not be announced as a control.
         expect(control.tagName).toBe('BUTTON');
         expect(control.type).toBe('button');
       });
@@ -1014,9 +855,6 @@ describe('DataTableComponent', () => {
       it('places the sort control in the tab order without an author-supplied tab index', () => {
         const control = sortControl(0);
 
-        // The absence of the attribute is the point: focusability is inherited from the
-        // element, so it cannot be lost by someone tidying up an attribute they thought was
-        // redundant.
         expect(control.hasAttribute('tabindex')).toBeFalse();
 
         control.focus();
@@ -1061,9 +899,9 @@ describe('DataTableComponent', () => {
       });
 
       it('does not update aria-sort optimistically after a keyboard activation', () => {
-        // The two sort inputs are the SOLE source of truth for the announcement. With them
-        // unchanged, the heading must still announce what it was told, not what was asked
-        // for - otherwise a heading would announce an order whose request had failed.
+        // The two sort inputs are the SOLE source of truth for the announcement. With them unchanged, the
+        // heading must still announce what it was told, not what was asked for - otherwise a heading would
+        // announce an order whose request had failed.
         set('sortBy', 'name');
         set('sortDir', ASCENDING);
 
@@ -1075,22 +913,12 @@ describe('DataTableComponent', () => {
 
       /**
        * ⚠ REWRITTEN alongside its sibling above. The control no longer takes the native `disabled`
-       * property, because setting it on the focused heading destroyed keyboard focus. That makes the
-       * refusal MORE important to assert here, not less: with the native property gone, the code
-       * guard in `activateSort` is the only thing preventing a second ordering being queued behind
-       * the first, so this spec is now the guard's only proof.
-       *
-       * It also pins the property the whole change exists for — that the heading STILL HOLDS FOCUS
-       * after an activation that was refused. Before the fix `document.activeElement` became `BODY`.
+       * property, because setting it on the focused heading destroyed keyboard focus.
        */
       it('refuses keyboard activation while a request is in flight, and keeps focus', () => {
         set('loading', true);
 
-        // ⚠ THE GUARD IS NOW ENTIRELY IN THE COMPONENT, and the assertion had to move with it. The
-        // control is no longer natively disabled - the platform blurs a disabled element, which dropped
-        // focus to the document body on every press - so the browser no longer suppresses the key
-        // activation for us and `activateSort` is the only thing refusing. That makes the emission the
-        // ONLY proof of the refusal, and it is asserted below.
+        // ⚠ THE GUARD IS NOW ENTIRELY IN THE COMPONENT, and the assertion had to move with it.
         const control = sortControl(0);
 
         expect(control.getAttribute('aria-disabled'))
@@ -1113,9 +941,9 @@ describe('DataTableComponent', () => {
       });
 
       /**
-       * The successful path's focus behaviour, which is where the reported defect actually bit: a
-       * reader pressed Enter, the sort succeeded, and focus was gone. Asserted through the component
-       * rather than through a live request, by driving the busy state the way the feature does.
+       * The successful path's focus behaviour, which is where the reported defect actually bit: a reader
+       * pressed Enter, the sort succeeded, and focus was gone. Asserted through the component rather than
+       * through a live request, by driving the busy state the way the feature does.
        */
       it('keeps focus on the heading across a completed ordering', () => {
         const control = sortControl(0);
@@ -1123,8 +951,6 @@ describe('DataTableComponent', () => {
         control.focus();
         pressKey(control, 'Enter');
 
-        // The feature answers by marking the table busy and then settling it, which is exactly the
-        // window in which the native property used to be applied and withdrawn.
         set('loading', true);
         set('loading', false);
 
@@ -1135,12 +961,9 @@ describe('DataTableComponent', () => {
       });
 
       /**
-       * The accessible name states the ACTION and CONTAINS the visible label verbatim.
-       *
-       * WCAG 2.5.3 Label in Name: a voice-control user says the words they can see, so a name that
-       * replaced the visible heading text rather than extending it would break them. The direction is
-       * deliberately absent from the name - `aria-sort` on the enclosing heading announces it, and
-       * repeating it here would both state one fact twice and re-announce the control on every reorder.
+       * The accessible name states the ACTION and CONTAINS the visible label verbatim. WCAG 2.5.3 Label
+       * in Name: a voice-control user says the words they can see, so a name that replaced the visible
+       * heading text rather than extending it would break them.
        */
       it('names the control by its action while still containing the visible column label', () => {
         set('sortBy', 'name');
@@ -1175,10 +998,6 @@ describe('DataTableComponent', () => {
 
   describe('waiting and empty states', () => {
     it('shows the shared indicator on the FIRST read, when there is no previous page', () => {
-      // Renamed with the behaviour. It used to show the indicator INSTEAD of the previous
-      // page on every read; it now replaces nothing, because tearing the body down and
-      // rebuilding it was measured as the mechanical cause of the zero-data row, the pager
-      // jumping 258-588 px and the largest layout shift in the application.
       set('rows', []);
       set('loading', true);
 
@@ -1202,13 +1021,10 @@ describe('DataTableComponent', () => {
       expect(fixture.debugElement.query(By.css('app-empty-state'))).not.toBeNull();
     });
 
-    // THE ASSERTIONS BELOW PROVE THE CHILDREN ARE THE REAL SHARED COMPONENTS, not merely that
-    // an element with the right tag name is in the DOM. That distinction is worth asserting:
-    // a fake declared in a spec, or an unrecognised element admitted by a permissive schema,
-    // satisfies a tag-name query perfectly while rendering nothing at all. Neither is used
-    // here - this suite declares no stub and relaxes no schema - and each real component is
-    // rendered with NO BINDINGS by the table, so its OWN defaults are what appear. Reading
-    // those defaults back is therefore end-to-end evidence that the genuine component ran.
+    // THE ASSERTIONS BELOW PROVE THE CHILDREN ARE THE REAL SHARED COMPONENTS, not merely that an element
+    // with the right tag name is in the DOM. That distinction is worth asserting: a fake declared in a
+    // spec, or an unrecognised element admitted by a permissive schema, satisfies a tag-name query
+    // perfectly while rendering nothing at all.
 
     it('renders the REAL shared indicator, with its own default wording and status role', () => {
       set('rows', []);
@@ -1228,7 +1044,7 @@ describe('DataTableComponent', () => {
       const empty = requireElement(host(), 'app-empty-state');
 
       // The real component's documented fallback wording, which it supplies itself because
-      // the table binds no message - its input surface is closed at five.
+      // the table binds no message: it declares no message input.
       expect(empty.textContent ?? '').toContain('No records found.');
     });
 
@@ -1295,28 +1111,14 @@ describe('DataTableComponent', () => {
     });
 
     it('publishes selection ONLY as aria-selected, never also as aria-current', () => {
-      // The current-item state marks a reader's position within a set of related items,
-      // which this component does not model separately from selection. Publishing both
-      // announced one state twice in two vocabularies, one of them a claim the component
-      // could not substantiate.
+      // The current-item state marks a reader's position within a set of related items, which this
+      // component does not model separately from selection. Publishing both announced one state twice in
+      // two vocabularies, one of them a claim the component could not substantiate.
       bodyRows()[1].click();
       fixture.detectChanges();
 
       expect(bodyRows().some((row) => row.hasAttribute('aria-current'))).toBeFalse();
     });
-
-    // THE SELECTED STATE IS ANNOUNCED ON EVERY SELECTABLE ROW - false on the others rather
-    // than absent - because the shared stylesheet keys both the selected tint and the
-    // selectable pointer affordance to that attribute, precisely so that no state can be
-    // painted without also being announced. Asserting the announcement alone left the
-    // stylesheet's hook free to be removed with the suite still green and the rows
-    // silently losing both their tint and their pointer, so the class is asserted beside
-    // it: one template comparison drives both, and neither may change without the other.
-    //
-    // The distinction between "present and false" and "absent" is the assertion that
-    // matters here: an attribute-selector rule cannot match an absent attribute, so
-    // collapsing the unselected rows to no attribute at all would compile, look correct
-    // in the announcement, and break the styling.
 
     it('marks every selectable row with a selection state, not just the selected one', () => {
       expect(bodyRows().every((row) => row.hasAttribute('aria-selected'))).toBeTrue();
@@ -1339,14 +1141,10 @@ describe('DataTableComponent', () => {
       bodyRows()[1].click();
       fixture.detectChanges();
 
-      // Both hooks are driven by the same comparison in the template, so asserting them
-      // together is what stops one being changed without the other.
-      //
-      // The current-item state is deliberately NOT among them: it marks a reader's
-      // position within a set of related items, which this component does not model
-      // separately from selection, so emitting it alongside the selection state announced
-      // one state twice in two vocabularies - one of them a claim the component could not
-      // substantiate. Its absence is asserted by the sibling above rather than here.
+      // The current-item state is deliberately NOT among them: it marks a reader's position within a set of
+      // related items, which this component does not model separately from selection, so emitting it
+      // alongside the selection state announced one state twice in two vocabularies - one of them a claim
+      // the component could not substantiate.
       const chosen = bodyRows()[1];
       expect(chosen.getAttribute('aria-selected')).toBe('true');
       expect(chosen.classList.contains('data-table__row--selected')).toBeTrue();
@@ -1438,19 +1236,8 @@ describe('DataTableComponent', () => {
   // ---------------------------------------------------------------------------
 
   describe('keyed reuse across a re-read', () => {
-    // ⚠ THE PROPERTY UNDER TEST IS DOM-NODE IDENTITY, NOT RENDERED TEXT, and that is the whole point:
-    // the rendered text was always right. `@for` keys the body on whatever `track` names, and the only
-    // key a generic table can invent for an arbitrary row contract is the row OBJECT. Object identity is
-    // correct while the same objects stay in play - it is what makes a windowed table reuse the rows it
-    // keeps while scrolling - but every listing re-reads from the server and decodes FRESH objects, so a
-    // re-read of the page already shown presented ten brand-new keys and the whole body was rebuilt.
-    // Runtime measurement recorded exactly that: 0 of 10 rows and 0 of 410 elements beneath `<tbody>`
-    // survived a redraw, with only the `<tbody>` element itself retained.
-    //
-    // Three of the five interactions a listing offers cannot reuse anything by construction - a page
-    // change, a re-order and a new filter each replace the page with a disjoint set of records - so these
-    // cases deliberately model the two that can: a resubmitted search, and the refetch after a removal
-    // where all but one record is the same record.
+    // ⚠ THE PROPERTY UNDER TEST IS DOM-NODE IDENTITY, NOT RENDERED TEXT, and that is the whole point: the
+    // rendered text was always right.
 
     /** A fresh object per row, decoded as an HTTP response would be, carrying the same identities. */
     function reDecoded(rows: readonly Row[]): readonly Row[] {
@@ -1508,8 +1295,8 @@ describe('DataTableComponent', () => {
 
     it('tolerates the sentinel identities as keys', () => {
       // Zero seeds the role, page and module identities and minus one seeds the portal identity, so both
-      // are legitimate keys. A key implementation that treated either as absent would collapse the two
-      // rows onto one key, which `@for` reports as a duplicate.
+      // are legitimate keys. A key implementation that treated either as absent would collapse the two rows
+      // onto one key, which `@for` reports as a duplicate.
       set('rowKey', identify);
 
       const before = bodyRows();
@@ -1523,8 +1310,8 @@ describe('DataTableComponent', () => {
 
     it('THE NEGATIVE CONTROL: rebuilds when no identity is supplied', () => {
       // Without this case the four above would pass against a table that reused rows for some unrelated
-      // reason. The fallback is deliberately the previous behaviour, so a consumer that supplies nothing
-      // is unaffected by the new input - and that is a property worth pinning, not an accident.
+      // reason. The fallback is deliberately the previous behaviour, so a consumer that supplies nothing is
+      // unaffected by the new input - and that is a property worth pinning, not an accident.
       const before = bodyRows();
 
       set('rows', reDecoded(ROWS));
@@ -1605,15 +1392,10 @@ describe('DataTableComponent', () => {
     });
 
     it('sorts each duplicated label by its OWN key, not by the label they share', () => {
-      // THE DEFECT THIS CATCHES, restated because it is the whole reason the descriptor
-      // separates key from label: `Website/admin/Security/roles.ascx` carries HeaderText
-      // "Every" at BOTH L45 (over BillingPeriod) and L58 (over TrialPeriod), and HeaderText
-      // "Period" at BOTH L50 (over BillingFrequency) and L63 (over TrialFrequency) - four
-      // columns, two labels, inside ONE grid. A label-keyed model, or a heading loop tracked
-      // by label, would collapse each pair to a single column and drop the other WITH NO
-      // ERROR ANYWHERE. Rendering four headings proves they survive; emitting four DISTINCT
-      // keys proves they are addressable independently, which is what actually makes the
-      // fourth column usable.
+      // THE DEFECT THIS CATCHES, restated because it is the whole reason the descriptor separates key from
+      // label: `Website/admin/Security/roles.ascx` carries HeaderText "Every" at BOTH L45 (over
+      // BillingPeriod) and L58 (over TrialPeriod), and HeaderText "Period" at BOTH L50 (over
+      // BillingFrequency) and L63 (over TrialFrequency) - four columns, two labels, inside ONE grid.
       set('columns', [
         { key: 'billingPeriod', label: 'Every', field: 'count', sortable: true },
         { key: 'billingFrequency', label: 'Period', field: 'name', sortable: true },
@@ -1642,9 +1424,9 @@ describe('DataTableComponent', () => {
     });
 
     it('announces the active sort on only one of two columns sharing a label', () => {
-      // With the label ambiguous, `sortBy` can only be resolved through the key. If the
-      // active-sort test consulted the label, BOTH "Every" columns would announce themselves
-      // as sorted and a screen reader would be told the table is ordered two ways at once.
+      // With the label ambiguous, `sortBy` can only be resolved through the key. If the active-sort test
+      // consulted the label, BOTH "Every" columns would announce themselves as sorted and a screen reader
+      // would be told the table is ordered two ways at once.
       set('columns', [
         { key: 'billingPeriod', label: 'Every', field: 'count', sortable: true },
         { key: 'trialPeriod', label: 'Every', field: 'count', sortable: true },
@@ -1679,31 +1461,10 @@ describe('DataTableComponent', () => {
   });
 });
 
-// =====================================================================================================
 // THE NON-SELECTING GRID — SIX OF THE SEVEN CONSUMERS
-// =====================================================================================================
-//
-// ⚠⚠ THIS WHOLE BLOCK IS THE CORRECTION OF A DEFECT THAT REACHED EVERY GRID IN THE APPLICATION.
-// The component used to give every row `tabindex="0"`, an `aria-selected` attribute and both
-// activation handlers unconditionally, and the two stylesheets keyed a pointer cursor, a focus
-// ring, hover feedback and press feedback to that attribute's presence. Measured across the
-// application, exactly ONE of seven consumers binds `(rowSelect)` — the portal-alias listing,
-// which uses a row press to open an alias for editing. On the other six the affordance was
-// entirely inert, and it cost:
-//
-//   * A TAB STOP PER ROW that did nothing when activated. On a page of twenty accounts, reaching
-//     the first row command by keyboard meant pressing Tab past twenty rows.
-//   * AN ANNOUNCED SELECTION STATE the grid could not enter. `aria-selected="false"` tells a
-//     screen-reader user there is a selection model and they are outside it.
-//   * A POINTER CURSOR AND HOVER FEEDBACK promising an action that never happened.
-//
-// The affordance is now derived from whether anything is listening — the emitter's own
-// subscription state, which cannot disagree with itself — so this block asserts the withdrawal
-// and the sibling block above asserts that a listening consumer is unaffected.
-//
-// THE FIXTURE MUST NOT SUBSCRIBE. That is the entire difference from the first block in this
-// file, whose `beforeEach` subscribes both outputs before the first render, and it is why this
-// needs its own testing module rather than another case inside that one.
+// * A TAB STOP PER ROW that did nothing when activated. On a page of twenty accounts, reaching the first
+// row command by keyboard meant pressing Tab past twenty rows. * AN ANNOUNCED SELECTION STATE the grid
+// could not enter.
 describe('DataTableComponent when nothing listens for a row selection', () => {
   let fixture: ComponentFixture<DataTableComponent<Row>>;
   let httpMock: HttpTestingController;
@@ -1718,10 +1479,7 @@ describe('DataTableComponent when nothing listens for a row selection', () => {
 
     fixture = TestBed.createComponent<DataTableComponent<Row>>(DataTableComponent);
 
-    // ⚠ NOTHING IS SUBSCRIBED HERE, DELIBERATELY, AND NOT EVEN `sortChange`. Sorting is a
-    // separate affordance driven by the column descriptor, so leaving it unsubscribed too keeps
-    // this fixture describing a consumer that binds neither output — which is what four of the
-    // six non-selecting grids actually do.
+    // ⚠ NOTHING IS SUBSCRIBED HERE, DELIBERATELY, AND NOT EVEN `sortChange`.
     fixture.componentRef.setInput('columns', baseColumns());
     fixture.componentRef.setInput('rows', ROWS);
     fixture.detectChanges();
@@ -1742,21 +1500,19 @@ describe('DataTableComponent when nothing listens for a row selection', () => {
   });
 
   it('puts no row in the tab order', () => {
-    // The headline cost of the defect. Asserted as the ABSENCE of the attribute rather than as
-    // a negative value: `tabindex="-1"` would keep the row focusable programmatically and would
-    // still match the global reset's focus rule, so only removing it entirely is correct.
+    // The headline cost of the defect. Asserted as the ABSENCE of the attribute rather than as a negative
+    // value: `tabindex="-1"` would keep the row focusable programmatically and would still match the global
+    // reset's focus rule, so only removing it entirely is correct.
     for (const row of bodyRows()) {
       expect(row.getAttribute('tabindex')).toBeNull();
     }
   });
 
   it('announces no selection state on any row', () => {
-    // ⚠ ABSENT, NOT FALSE, AND THE DIFFERENCE IS THE WHOLE MECHANISM. Both stylesheets key the
-    // cursor, the focus ring, the hover ink, the press fill and the selected tint to
-    // `[aria-selected]` being PRESENT — an attribute selector cannot match an absent attribute —
-    // so removing it withdraws the entire visual affordance with the announcement, in one move.
-    // Setting it to `false` here would compile, read correctly to a reader of the template, and
-    // leave every one of those treatments in place.
+    // ⚠ ABSENT, NOT FALSE, AND THE DIFFERENCE IS THE WHOLE MECHANISM. Both stylesheets key the cursor, the
+    // focus ring, the hover ink, the press fill and the selected tint to `[aria-selected]` being PRESENT —
+    // an attribute selector cannot match an absent attribute — so removing it withdraws the entire visual
+    // affordance with the announcement, in one move.
     for (const row of bodyRows()) {
       expect(row.hasAttribute('aria-selected')).toBeFalse();
     }
@@ -1771,9 +1527,9 @@ describe('DataTableComponent when nothing listens for a row selection', () => {
   });
 
   it('moves no state when a row is pressed', () => {
-    // The handlers are still declared — a template cannot register a listener conditionally
-    // without duplicating the whole row — so the component refuses inside them. Observable as
-    // the absence of any announced or painted selection after a press.
+    // The handlers are still declared — a template cannot register a listener conditionally without
+    // duplicating the whole row — so the component refuses inside them. Observable as the absence of any
+    // announced or painted selection after a press.
     bodyRows()[1].click();
     fixture.detectChanges();
 
@@ -1782,9 +1538,6 @@ describe('DataTableComponent when nothing listens for a row selection', () => {
   });
 
   it('moves no state on Enter or Space, and suppresses neither key', () => {
-    // ⚠ NOT SUPPRESSING THE SPACE BAR MATTERS. On a selectable grid the space bar's default page
-    // scroll is cancelled because the press selects the row instead; on a grid where it selects
-    // nothing, cancelling it would take the reader's page scroll away and give nothing back.
     const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
     const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
 
@@ -1807,21 +1560,11 @@ describe('DataTableComponent when nothing listens for a row selection', () => {
 });
 
 describe('DataTableComponent with a real wire contract as its row', () => {
-  // WHY A REAL MODEL AND NOT THE LOCAL FIXTURE SHAPE. `ProfilePropertyDefinition` is the
-  // actual transfer contract this application receives, and it is the row of the grid that
-  // `Website/admin/Users/ProfileDefinitions.ascx` renders - the same screen whose four
-  // command columns at L17-L20 (Edit, Delete, MoveDown, MoveUp, all keyed
-  // `PropertyDefinitionID`) set the upper bound on projected row actions. Typing the columns
-  // against it is what makes a mistyped `field` a COMPILE error rather than a blank column
-  // discovered in a browser, which is the entire reason the component is generic.
-  //
-  // The identifiers below are the sentinel cases taken from the shipped schema, not invented:
-  // `Portals.PortalID` is `IDENTITY(-1, 1)`
-  // (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider` L77) while
-  // `Roles.RoleID` L115, `Tabs.TabID` L140 and `Modules.ModuleID` L221 are each
-  // `IDENTITY(0, 1)`. So minus one and zero are both legitimate live identifiers, and minus
-  // one is SIMULTANEOUSLY the integer null sentinel `Library/Components/Shared/Null.vb`
-  // defines as -1.
+  // WHY A REAL MODEL AND NOT THE LOCAL FIXTURE SHAPE. `ProfilePropertyDefinition` is the actual transfer
+  // contract this application receives, and it is the row of the grid that
+  // `Website/admin/Users/ProfileDefinitions.ascx` renders - the same screen whose four command columns at
+  // L17-L20 (Edit, Delete, MoveDown, MoveUp, all keyed `PropertyDefinitionID`) set the upper bound on
+  // projected row actions.
 
   /** A definition seeded at the zero identity, as the role, page and module tables are. */
   const ZERO_SEEDED: ProfilePropertyDefinition = {
@@ -1919,9 +1662,9 @@ describe('DataTableComponent with a real wire contract as its row', () => {
     rows()[0].click();
     fixture.detectChanges();
 
-    // Identity is the object reference, so the row arrives whole and its zero identifier is
-    // simply carried along. A `track` or comparison written as `if (id)` would have mis-keyed
-    // this row against the sentinel row and selected the wrong one, with no error anywhere.
+    // Identity is the object reference, so the row arrives whole and its zero identifier is simply carried
+    // along. A `track` or comparison written as `if (id)` would have mis-keyed this row against the
+    // sentinel row and selected the wrong one, with no error anywhere.
     expect(chosen).toEqual([ZERO_SEEDED]);
     expect(chosen[0].propertyDefinitionId).toBe(0);
   });
@@ -1943,9 +1686,6 @@ describe('DataTableComponent with a real wire contract as its row', () => {
   });
 
   it('renders the legacy empty-string null as an empty cell, matching the sentinel', () => {
-    // `Null.vb` defines its null string as the EMPTY STRING rather than as a null reference,
-    // so an absent string and a blank one were already indistinguishable upstream. Both must
-    // therefore render as an empty cell, and neither may render the word null.
     const columns: readonly DataTableColumn<ProfilePropertyDefinition>[] = [
       { key: 'DefaultValue', label: 'Default', field: 'defaultValue' },
     ];
@@ -2007,11 +1747,9 @@ describe('DataTableComponent with a real wire contract as its row', () => {
 })
 class HostComponent {
   /**
-   * The command template, read from the host's own view.
-   *
-   * Declared inside the grid's tag but reachable as a view child, because an
-   * `ng-template` a host writes is part of the host's view whether or not the component
-   * projects it. This is exactly how a feature hands cell content to a column.
+   * The command template, read from the host's own view. Declared inside the grid's tag but reachable as
+   * a view child, because an `ng-template` a host writes is part of the host's view whether or not the
+   * component projects it.
    */
   @ViewChild('commands', { static: true })
   public commandsTemplate?: TemplateRef<DataTableCellContext<Row>>;
@@ -2028,12 +1766,7 @@ class HostComponent {
 
   public columns: readonly DataTableColumn<Row>[] = [];
 
-  /**
-   * The projected caption wording.
-   *
-   * Defaults to a realistic screen name so the caption tests read naturally, and is
-   * reassignable so the escaping test can hand it a markup-bearing value.
-   */
+  /** The projected caption wording. */
   public captionText = 'Portals';
 
   public readonly selectedRows: Row[] = [];
@@ -2049,9 +1782,9 @@ describe('DataTableComponent projection', () => {
     await TestBed.configureTestingModule({
       imports: [HostComponent],
 
-      // Real client FIRST, testing backend second - see the note on the main suite. The pair
-      // is registered here too so that the projection surface, which is where a feature's own
-      // templates and controls enter the component, is held to the same zero-request standard.
+      // Real client FIRST, testing backend second - see the note on the main suite. The pair is registered
+      // here too so that the projection surface, which is where a feature's own templates and controls
+      // enter the component, is held to the same zero-request standard.
       providers: [provideHttpClient(), provideHttpClientTesting()],
     }).compileComponents();
 
@@ -2061,22 +1794,14 @@ describe('DataTableComponent projection', () => {
     fixture.detectChanges();
   });
 
-  // MANDATORY here as well: projected content is the one place a caller could smuggle in a
-  // dependency, so every projection test below is also an assertion that nothing was
-  // requested.
   afterEach(() => {
     httpMock.verify();
   });
 
   /**
-   * Narrows a view child from its declared optional type to the template a column
-   * requires.
-   *
-   * The descriptor now REQUIRES a template on both non-text kinds, which is the whole
-   * point of the change, and a view child is declared optional because it is not
-   * populated until the view exists. Failing loudly here rather than passing an absent
-   * value through keeps the assertion honest: a test that silently rendered no template
-   * would still report a pass.
+   * Narrows a view child from its declared optional type to the template a column requires. The
+   * descriptor now REQUIRES a template on both non-text kinds, which is the whole point of the change,
+   * and a view child is declared optional because it is not populated until the view exists.
    *
    * @param template The view child to narrow.
    * @returns The template.
@@ -2099,17 +1824,8 @@ describe('DataTableComponent projection', () => {
   });
 
   describe('markup in the projected caption is rendered as text, never as markup', () => {
-    // WHY THE CAPTION NEEDS THIS AS MUCH AS A CELL DOES. Caption wording arrives from the
-    // legacy resource files in this migration, and that corpus is not clean text: across the
-    // in-scope resx files 76 data values carry an HTML tag, and
-    // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` holds, under
-    // `Advertising.Text`, a LIVE third-party advertising script with a remote source. A
-    // literal search for an opening script tag does not find it, because the resx stores the
-    // tags HTML-escaped - which is precisely how such a value passes review unnoticed and
-    // then arrives at a template looking like ordinary wording.
-    //
-    // So this is parity, not paranoia: the legacy application escaped too, wrapping an
-    // externally supplied message in an HTML encoder before display.
+    // So this is parity, not paranoia: the legacy application escaped too, wrapping an externally supplied
+    // message in an HTML encoder before display.
 
     const SCRIPT_PAYLOAD = '<script>window.__dataTableCaptionXss = true;</script>';
     const MARKUP_PAYLOAD = '<b>x</b>';
@@ -2142,10 +1858,8 @@ describe('DataTableComponent projection', () => {
     });
 
     it('creates no element from an event-handler payload in the caption either', () => {
-      // A script element inserted after load does not execute in every browser, so an
-      // assertion resting on scripts alone could pass for the wrong reason. An image with an
-      // error handler executes immediately and unconditionally once the element exists, so
-      // proving the element was never created is the stronger claim.
+      // A script element inserted after load does not execute in every browser, so an assertion resting on
+      // scripts alone could pass for the wrong reason.
       projectCaption(IMAGE_PAYLOAD);
 
       expect((caption().textContent ?? '').trim()).toBe(IMAGE_PAYLOAD);
@@ -2153,9 +1867,6 @@ describe('DataTableComponent projection', () => {
     });
 
     it('leaves no trace of any caption payload having executed', () => {
-      // The escaping tests above prove no element was created. This proves the consequence
-      // that actually matters, and it is asserted through a widened view of the global rather
-      // than through a cast to a permissive type.
       const globals: Record<string, unknown> = window as unknown as Record<string, unknown>;
 
       expect(globals['__dataTableCaptionXss']).toBeUndefined();
@@ -2163,10 +1874,8 @@ describe('DataTableComponent projection', () => {
   });
 
   it('lets a projected caption replace the generic fallback entirely', () => {
-    // The other half of the fallback contract, and the half that keeps it a floor rather
-    // than a change of behaviour. A consumer that does its job must see no trace of the
-    // default: if the two ever appeared together a reader would hear the generic name
-    // alongside the real one on every table in the application.
+    // The other half of the fallback contract, and the half that keeps it a floor rather than a change of
+    // behaviour.
     const caption = fixture.debugElement.query(By.css('table > caption'))
       .nativeElement as HTMLElement;
 
@@ -2230,18 +1939,10 @@ describe('DataTableComponent projection', () => {
     expect(host.selectedRows).toEqual([]);
   });
 
-  // KEYBOARD ACTIVATION OF A COMMAND MUST NOT SELECT THE ROW EITHER. The click case
-  // above was specified; the key case was not, even though the component stops BOTH
-  // event families on the actions cell and its own comment says why - a command
-  // activated from the keyboard raises a key event that bubbles exactly as a click
-  // does. Without these two, the `(keydown)` binding on that cell could be deleted and
-  // the suite would still pass, leaving every keyboard-driven Delete to also select the
-  // row it deleted.
-  //
-  // Enter and Space are covered separately because the row handler treats them
-  // separately: it acts on both, and additionally suppresses the default action for
-  // Space to stop the page scrolling. Each is dispatched with `bubbles: true`, which is
-  // what gives the suppression something real to prevent.
+  // KEYBOARD ACTIVATION OF A COMMAND MUST NOT SELECT THE ROW EITHER. The click case above was specified;
+  // the key case was not, even though the component stops BOTH event families on the actions cell and its
+  // own comment says why - a command activated from the keyboard raises a key event that bubbles exactly as
+  // a click does.
 
   it('does not select the row when a projected command is activated with Enter', () => {
     const host = fixture.componentInstance;
@@ -2277,17 +1978,9 @@ describe('DataTableComponent projection', () => {
   });
 
   it('offers the row affordance because the HOST TEMPLATE binds the output', () => {
-    // ⚠⚠ THE TIMING CLAIM, ASSERTED RATHER THAN ASSUMED, and this is the case that makes the
-    // whole conditional affordance trustworthy. The component decides selectability ONCE, in its
-    // initialisation hook, by reading whether anything is subscribed to its row-selection
-    // emitter. That is only correct if a template output binding is registered BEFORE the child's
-    // initialisation hook runs — which it is, output listeners being registered while the parent
-    // view is created — but "which it is" is exactly the kind of framework-ordering assumption
-    // that deserves an executable check rather than a comment.
-    //
-    // This fixture binds the output the way every real consumer does: from markup, with no manual
-    // subscription anywhere. So a regression in the reading, or a move of it into the constructor,
-    // withdraws the affordance from every grid in the application and fails here by name.
+    // ⚠⚠ THE TIMING CLAIM, ASSERTED RATHER THAN ASSUMED, and this is the case that makes the whole
+    // conditional affordance trustworthy. The component decides selectability ONCE, in its initialisation
+    // hook, by reading whether anything is subscribed to its row-selection emitter.
     const rows: readonly HTMLTableRowElement[] = fixture.debugElement
       .queryAll(By.css('tbody tr'))
       .map((node) => node.nativeElement as HTMLTableRowElement);
@@ -2319,10 +2012,9 @@ describe('DataTableComponent projection', () => {
   });
 
   it('renders a column that declares no kind as a text column', () => {
-    // The cell kind is no longer inferred from the presence of a template: every non-text
-    // arm of the column union declares `kind` explicitly and a template column with no
-    // template is unrepresentable, so the only column shape that can omit `kind` is a text
-    // column bound to a field. This pins that surviving half of the branch.
+    // The cell kind is no longer inferred from the presence of a template: every non-text arm of the column
+    // union declares `kind` explicitly and a template column with no template is unrepresentable, so the
+    // only column shape that can omit `kind` is a text column bound to a field.
     const host = fixture.componentInstance;
     host.columns = [{ key: 'name', label: 'Name', field: 'name' }];
     fixture.detectChanges();
@@ -2347,11 +2039,6 @@ describe('DataTableComponent projection', () => {
   });
 
   describe('an interactive control inside an ORDINARY template cell', () => {
-    // The commands cell is fenced off wholesale, but an ordinary template cell is not,
-    // and it is precisely the cell that legitimately mixes controls with row content -
-    // the two legacy inline-editable checkbox columns posted back on change. These are
-    // the cases that were previously broken: the row stole the press and, on the space
-    // bar, cancelled the control's own default.
     function useEditableColumn(): HostComponent {
       const host = fixture.componentInstance;
       host.columns = [
@@ -2392,9 +2079,8 @@ describe('DataTableComponent projection', () => {
     });
 
     it('does not cancel the default of a Space pressed on the control', () => {
-      // The row suppresses the space bar's page scroll when a row is activated. Applied
-      // to a checkbox, that same suppression stops it toggling, so the row must stand
-      // aside before it prevents anything.
+      // The row suppresses the space bar's page scroll when a row is activated. Applied to a checkbox, that
+      // same suppression stops it toggling, so the row must stand aside before it prevents anything.
       const host = useEditableColumn();
       const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
 
@@ -2428,9 +2114,9 @@ describe('DataTableComponent projection', () => {
     });
 
     it('still activates the row from the keyboard when the row itself has focus', () => {
-      // The row is excluded from the control test on purpose: it carries a tab index, so
-      // without that exclusion every event would look as though it came from a control
-      // and no row could ever be selected.
+      // The row is excluded from the control test on purpose: it carries a tab index, so without that
+      // exclusion every event would look as though it came from a control and no row could ever be
+      // selected.
       const host = useEditableColumn();
       const row = fixture.debugElement.query(By.css('tbody tr')).nativeElement as HTMLElement;
       const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });

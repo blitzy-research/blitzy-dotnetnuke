@@ -7,95 +7,25 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DnnMigration.Infrastructure.Repositories;
 
-// MIGRATION: THE EXTERNAL STORE IS QUERIED, NEVER OWNED. The aspnet_* tables this type reads are
-//            installed by Microsoft's ASP.NET SQL registration payload, not by DotNetNuke: no
-//            "CREATE TABLE aspnet_*" appears anywhere in the eighty-eight numbered upgrade scripts, and
-//            the chain only ever ALTERs those objects - 04.00.00.SqlDataProvider grafts DotNetNuke's own
-//            bookkeeping onto procedures it did not write at lines 31, 119, 271, 305, 333, 475, 619, 648,
-//            703 and 828. Nothing here creates, alters, seeds, migrates or drops them, and no entity type,
-//            configuration or migration models them (Rule T4). They are a pre-existing dependency that
-//            this repository maps alongside, which is exactly why they are reached through explicit
-//            statements rather than through the model.
-//
-// MIGRATION: NO CREDENTIAL IS EVER DECRYPTED, VERIFIED, COMPARED, RE-HASHED OR LOGGED HERE. The legacy
-//            store was reversible by design - registered with passwordFormat="Encrypted" and
-//            enablePasswordRetrieval="true" at Website/release.config lines 245 and 239, over a 3DES key
-//            committed to source control at lines 89 to 93 - and neither the reversible storage nor the
-//            retrieval it enabled is reproduced. This repository transports the stored value, legacy
-//            format discriminator and salt to AuthService without interpreting them. The isolated
-//            ILegacyCredentialVerifier owns the bounded comparison, and an accepted value is immediately
-//            replaced through SetPasswordHashAsync; administrative reset remains the fallback.
-//
-// MIGRATION: APPROVAL AND AUTHORISATION ARE TWO DIFFERENT FACTS AND ARE NEVER CONFLATED. Approval lives
-//            in the external membership store and is installation-wide, so it is composed onto
-//            User.IsApproved by the read path and set through SetApprovalAsync. Authorisation is
-//            per-portal, lives on UserPortals.Authorised, and is reached through the listing's
-//            authorisation filter and through GetMembershipAsync. The legacy AddUser and UpdateUser
-//            members took both as arguments on one call, which is what made them look like one fact; they
-//            are separately addressable here precisely so that approving an account cannot silently grant
-//            it a tenancy, nor the reverse.
-//
-// MIGRATION: the legacy hydration and collection machinery produces nothing here. The reflection-based
-//            row hydrator at Library/Components/Shared/CBO.vb and the hand-rolled Null.SetNull reader
-//            blocks are both replaced by the Entity Framework materialiser, so no Fill method, no CBO
-//            equivalent and no manual reader survives. The untyped ArrayList returns become typed
-//            materialised collections, the Hashtable settings return becomes a typed Application object,
-//            and the isHydrated toggle that doubled every legacy paged overload is gone because a
-//            materialised entity is not partially built. Caching is not performed here either: the legacy
-//            controllers called a static DataCache directly, whereas caching is now a coordinated concern
-//            outside this type, so a read here is always a read.
-//
-// MIGRATION: User.IsOnline is reported but never maintained, and the omission is deliberate rather than
-//            incomplete. The legacy window was real - Website/release.config line 219 sets
-//            userIsOnlineTimeWindow="15" - but the presence records it was evaluated against were kept
-//            current by a scheduled purge job coupling to DotNetNuke.Services.Scheduling, which is out of
-//            scope. Deriving presence from a store nothing updates would invent an answer that looks
-//            authoritative and decays silently, so the property is left null, which is what its nullable
-//            type exists to express. No member here reads an ambient clock: every instant this type needs
-//            is supplied by its caller as an argument, so nothing it returns depends on the server's
-//            local time.
+// THE EXTERNAL STORE IS QUERIED, NEVER OWNED. The aspnet_* tables this type reads are installed by
+// Microsoft's ASP.NET SQL registration payload, not by DotNetNuke: no "CREATE TABLE aspnet_*" appears
+// anywhere in the eighty-eight numbered upgrade scripts, and the chain only ever ALTERs those objects -
+// 04.00.00.SqlDataProvider grafts DotNetNuke's own bookkeeping onto procedures it did not write at lines
+// 31, 119, 271, 305, 333, 475, 619, 648, 703 and 828.
 
-/// <summary>
-/// Reads and writes <see cref="User"/> accounts, their portal memberships and their credentials.
-/// </summary>
+/// <summary>Reads and writes <see cref="User"/> accounts, their portal memberships and their credentials.</summary>
 /// <remarks>
-/// MIGRATION: reconstructed from two provider stacks, because neither is sufficient alone. The legacy
-/// core data provider exposes only four user procedures - <c>AddUserAuthentication</c> and three
-/// permission-cleanup procedures keyed by user identifier - while the remaining thirty-one live under
-/// <c>Library/Providers/MembershipProviders/</c> alongside the data-access half of
-/// <c>Library/Components/Users/UserController.vb</c>. Every member of that legacy controller is
-/// <c>Shared</c>; here they are instance members reached through an injected interface so they can be
-/// substituted in a test.
 /// <para>
-/// <strong>Two stores, one contract.</strong> The account columns live in <c>dbo.Users</c> and are
-/// mapped. The credentials do not: the original <c>[Password] nvarchar(20) NOT NULL</c> column was
-/// dropped by the 02.02.01 upgrade script and credentials moved into the externally installed
-/// <c>aspnet_Membership</c> store. The eight credential members therefore delegate to
-/// <see cref="MembershipStore"/>, which reaches that store through explicit parameterised statements.
-/// Because the two stores share no key - <c>aspnet_Users.UserId</c> is a <c>uniqueidentifier</c> while
-/// <c>dbo.Users.UserID</c> is an <c>int</c> - each credential member first resolves its integer
-/// identifier to a user name, which is exactly how
-/// <c>AspNetMembershipProvider.GetMembershipUser</c> linked the two at line 432.
+/// <strong>Two stores, one contract.</strong> The account columns live in <c>dbo.Users</c> and are mapped.
+/// The credentials do not: the original <c>[Password] nvarchar(20) NOT NULL</c> column was dropped by the
+/// 02.02.01 upgrade script and credentials moved into the externally installed <c>aspnet_Membership</c>
+/// store.
 /// </para>
 /// <para>
-/// <strong>The projection guarantee.</strong> <see cref="ListAsync"/>, <see cref="GetAsync"/> and
-/// <see cref="GetByUsernameAsync"/> all populate the membership-derived properties of the accounts they
-/// return - approval, lock-out, creation, last login, last activity, last lock-out and last password
-/// change - so that a caller never has to make a second request to describe an account. That is part of
-/// the contract rather than a convenience: the legacy administration grid presented those columns
-/// alongside the account columns in one result set. A listing costs a bounded number of batched reads
-/// against the external store, never one read per row. Those properties are excluded from the entity
-/// configuration, so assigning them cannot mark the entity modified and cannot provoke an update.
-/// </para>
-/// <para>
-/// <strong>What is deliberately not populated.</strong> The stored hash, the password question and the
-/// password answer are never read into a returned entity - only
-/// <see cref="GetCredentialStateAsync"/> obtains a hash, and only so that authentication can compare
-/// one. <see cref="User.IsOnline"/> is likewise left null: the legacy users-online subsystem depended on
-/// a scheduled purge job that is out of scope, so claiming to know the answer would be a fabrication.
-/// </para>
-/// <para>
-/// No read member applies <c>AsNoTracking</c>, for the reason given on <see cref="PortalRepository"/>.
+/// <strong>The projection guarantee.</strong> <see cref="ListAsync"/>, <see cref="GetAsync"/> and <see
+/// cref="GetByUsernameAsync"/> all populate the membership-derived properties of the accounts they return -
+/// approval, lock-out, creation, last login, last activity, last lock-out and last password change - so
+/// that a caller never has to make a second request to describe an account.
 /// </para>
 /// </remarks>
 internal sealed class UserRepository : IUserRepository
@@ -110,12 +40,6 @@ internal sealed class UserRepository : IUserRepository
     /// Character that removes the special meaning of a <c>LIKE</c> metacharacter in the profile-value
     /// patterns this repository builds.
     /// </summary>
-    /// <remarks>
-    /// Declared once and passed explicitly to every <c>LIKE</c> this repository emits, because
-    /// SQL Server has no default escape character: without an <c>ESCAPE</c> clause a backslash in a
-    /// pattern is an ordinary literal, so the escaping performed by
-    /// <see cref="LikePrefixPattern(string)"/> would silently do nothing.
-    /// </remarks>
     private const string LikeEscapeCharacter = "\\";
 
     private readonly DnnDbContext _context;
@@ -133,48 +57,13 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// Every filter is applied by the database before the page is taken. The three prefix arguments are
-    /// prefix matches rather than substring matches because each legacy search branch appended a single
-    /// trailing wildcard - <c>SearchText + "%"</c> at <c>Website/admin/Users/Users.ascx.vb</c> lines 269,
-    /// 271 and 274 - whereas <paramref name="query"/> is the free-text branch and matches anywhere within
-    /// the user name, the display name or the address. They are separate arguments so that which filter
-    /// applies is the caller's decision and not a guess made from the shape of one string.
-    /// <para>
     /// The authorisation filter reads <c>UserPortals.Authorised</c> - the British spelling the 03.02.03
     /// script introduced - and the approval filter reaches the external membership store through a
-    /// composable query root, which is what keeps it a single statement. When approval is requested but
-    /// that store cannot be reached, an empty page is returned rather than an unfiltered one: presenting
-    /// unfiltered rows as though they had been filtered would be the one failure mode a caller could not
-    /// detect.
-    /// </para>
-    /// <para>
-    /// The ordering is applied here rather than by the caller, because skip-and-take over an unordered
-    /// query has no defined row assignment - and, more importantly, because paging is applied by the
-    /// database: a caller that re-ordered the returned page would only be re-ordering the rows that one
-    /// arbitrary page happened to contain. When no field is named it leads on the display name, which is
-    /// the column the legacy grid presented, and every ordering ends on the primary key so the order is
-    /// total.
-    /// </para>
+    /// composable query root, which is what keeps it a single statement.
     /// </remarks>
-    // MIGRATION: this one member absorbs EIGHT legacy overloads, and the consolidation is what keeps a
-    //            page and its total in agreement. Library/Components/Users/UserController.vb declared
-    //            GetUsers at L725 and L746, GetUsersByEmail at L769 and L793, GetUsersByUserName at L816
-    //            and L840 and GetUsersByProfileProperty at L864 and L889 - four searches, each doubled by
-    //            an isHydrated toggle the materialiser renders meaningless. Every one of them reported its
-    //            grand total through a "ByRef totalRecords As Integer" argument, and the legacy surface
-    //            needed a separate count member beside them as well. Here the total travels inside
-    //            PagedResult, and NO out or ref parameter appears in this member or anywhere else in this
-    //            type. Splitting this back into one member per legacy search would reintroduce the defect
-    //            the consolidation removes: a filter applied after the count is taken produces a pager
-    //            that disagrees with the rows beside it.
-    //
-    // MIGRATION: the unpaged case is requested with a page size of ZERO, not with the legacy sentinel
-    //            triple. UserController.vb L687 and L706 both read "GetUsers(portalId, False, -1, -1, -1)",
-    //            passing the -1 defined at Library/Components/Shared/Null.vb:L41 as page index, page size
-    //            and total alike. That convention is not reproduced, and could not safely be: Portals
-    //            .PortalID is IDENTITY(-1, 1), so -1 is a legitimate portal identifier and must never
-    //            double as an absence marker. A zero page size is answered by PagedResult.Unpaged, which
-    //            names the intent instead of encoding it, and negative coordinates are rejected outright.
+    // The unpaged case is requested with a page size of ZERO, not with the legacy sentinel triple.
+    // UserController.vb L687 and L706 both read "GetUsers(portalId, False, -1, -1, -1)", passing the -1
+    // defined at Library/Components/Shared/Null.vb:L41 as page index, page size and total alike.
     public async Task<PagedResult<User>> ListAsync(
         int portalId,
         int pageIndex,
@@ -266,43 +155,11 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
     /// ⚠ THE PROJECTION IS THE WHOLE POINT OF THIS MEMBER. <c>Select</c> is applied to the query, so the
     /// three columns are the three columns the provider is asked for: the generated statement names
     /// <c>UserID</c>, <c>Username</c> and <c>DisplayName</c> and no others, nothing is materialised as an
     /// entity, nothing is tracked, and none of the composition <see cref="ListAsync"/> performs after
-    /// taking a page runs here. Projecting AFTER materialising a page of accounts would leave the cost
-    /// and the exposure exactly where the review found them and only hide it from the caller.
-    /// </para>
-    /// <para>
-    /// <c>AsNoTracking</c> is stated even though a projection to a non-entity type is untracked anyway,
-    /// because the guarantee is worth being explicit about on a read this wide: a picker may enumerate a
-    /// whole tenant, and a change tracker holding a thousand accounts would outlive the request scope's
-    /// usefulness.
-    /// </para>
-    /// <para>
-    /// The prefix is matched with an ESCAPED <c>LIKE</c> rather than a case-folded <c>StartsWith</c>. The
-    /// legacy searches ran <c>LIKE @SearchText</c> against the column under the installation's own
-    /// collation, so collation-driven case handling IS the reproduced behaviour, and leaving the column
-    /// unwrapped is what lets the provider seek rather than normalise every candidate row. Every wildcard
-    /// in the caller's text is escaped by <see cref="LikePrefixPattern"/>, so a per-cent sign typed by an
-    /// operator matches a per-cent sign.
-    /// </para>
-    /// <para>
-    /// THE LOGIN NAME IS THE ONE VALUE MATCHED, and the narrowness is a preserved behaviour rather than an
-    /// economy. The legacy name box looked an account up by its login name
-    /// (<c>SecurityRoles.ascx.vb:L476-L488</c>), and the caller that walks this member for a typed name
-    /// depends on ordering by that same login name to put an exact match first - a filter that also matched
-    /// display names would admit rows whose login name sorts before the exact match, so the ordinary answer
-    /// would stop arriving in one request. The electronic-mail address is not matched either, and for a
-    /// different reason: it is the identifier this projection refuses to RETURN, and matching on a value it
-    /// will not show would let a caller confirm an address by observing which rows came back.
-    /// </para>
-    /// <para>
-    /// An unpaged request is served without a second round trip, exactly as <see cref="ListAsync"/> serves
-    /// one: the total of an unpaged read is the row count itself, so counting separately would ask the
-    /// same question twice.
-    /// </para>
+    /// taking a page runs here.
     /// </remarks>
     public async Task<PagedResult<AccountChoice>> ListAccountChoicesAsync(
         int portalId,
@@ -314,8 +171,8 @@ internal sealed class UserRepository : IUserRepository
         CancellationToken cancellationToken = default)
     {
         // Host accounts are excluded and unauthorised memberships are included, which is the pair the
-        // legacy picker applied (UserModuleBase.vb:L178-L186): every account holding a membership row for
-        // the tenant was offered, authorised or not, and a host account never was.
+        // legacy picker applied: every account holding a membership row for the tenant was offered,
+        // authorised or not, and a host account never was.
         IQueryable<User> filtered = _context.Users
             .AsNoTracking()
             .Where(u => !u.IsSuperUser
@@ -328,8 +185,8 @@ internal sealed class UserRepository : IUserRepository
         }
 
         // Ordered by what the option shows, and always ending on the key so the sequence is total and a
-        // page boundary cannot repeat or drop a row. Ordering happens BEFORE the projection and before
-        // Skip and Take, so it orders the collection rather than one arbitrary page.
+        // page boundary cannot repeat or drop a row. Ordering happens BEFORE the projection and before Skip
+        // and Take, so it orders the collection rather than one arbitrary page.
         IQueryable<AccountChoice> choices = ApplyChoiceOrder(filtered, sortBy, descending)
             .Select(u => new AccountChoice(u.UserId, u.Username, u.DisplayName));
 
@@ -352,16 +209,9 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// <see cref="User.UserPortals"/> is populated with every membership the account holds, not only the
-    /// one that was asked about. A caller deleting an account has to know whether the account still
-    /// belongs to another portal before it may remove the account itself, and a caller resolving a
-    /// superuser has to see that the account exists without a membership at all - neither question can be
-    /// answered from a collection that was filtered down to one portal.
-    /// <para>
     /// A null portal identifier ignores membership entirely, which is how a host account is resolved:
-    /// <c>PortalID</c> is <c>IDENTITY(-1, 1)</c>, so minus one is a real portal and could never have
-    /// served as an "any portal" marker.
-    /// </para>
+    /// <c>PortalID</c> is <c>IDENTITY(-1, 1)</c>, so minus one is a real portal and could never have served
+    /// as an "any portal" marker.
     /// </remarks>
     public async Task<User?> GetAsync(int? portalId, int userId, CancellationToken cancellationToken = default)
     {
@@ -386,11 +236,6 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// The name is matched case-insensitively and exactly. Memberships are loaded for the same reasons
-    /// given on <see cref="GetAsync"/>, and additionally because a sign-in has to establish that the
-    /// account belongs to the portal it is signing in to.
-    /// </remarks>
     public async Task<User?> GetByUsernameAsync(int? portalId, string username, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(username);
@@ -419,9 +264,9 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// The test is installation-wide, not per portal. <c>IX_Users</c> is unique over <c>Username</c>
-    /// alone, so the same name cannot describe two accounts even when they belong to different tenants -
-    /// which is also why the external membership store can be keyed on the name at all.
+    /// The test is installation-wide, not per portal. <c>IX_Users</c> is unique over <c>Username</c> alone,
+    /// so the same name cannot describe two accounts even when they belong to different tenants - which is
+    /// also why the external membership store can be keyed on the name at all.
     /// </remarks>
     public Task<bool> UsernameExistsAsync(string username, int? excludingUserId = null, CancellationToken cancellationToken = default)
     {
@@ -447,14 +292,7 @@ internal sealed class UserRepository : IUserRepository
     /// address genuinely may repeat. This member therefore reports a collision and leaves enforcement to
     /// whichever caller's policy asks for it; enforcing it here would reject accounts that already exist.
     /// </remarks>
-    // MIGRATION: an address is a PLAIN STRING here, not a validated value object, and it is deliberately
-    //            not unique. Duplicate addresses are legitimate existing data because the legacy provider
-    //            was registered with requiresUniqueEmail="false" (Website/release.config line 244), and the
-    //            shipped Host account's value would not satisfy an address expression at all - so requiring
-    //            a validated type on this boundary would make real rows unreachable and turn a search term
-    //            into something that has to be a well-formed address before it may be searched for. The
-    //            legacy null-string sentinel was the empty string rather than null, so an empty value was
-    //            legally representable too and is not silently coerced into an absent one.
+    // An address is a PLAIN STRING here, not a validated value object, and it is deliberately not unique.
     public Task<bool> EmailExistsAsync(int portalId, string email, int? excludingUserId = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(email);
@@ -484,18 +322,11 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// An assignment applies at the requested instant when it has started and has not expired; a null
-    /// effective date means it has always applied and a null expiry date means it never lapses. Both
-    /// bounds are evaluated by the database against the instant the caller supplies rather than against
-    /// the server clock, so the answer is reproducible and testable.
-    /// <para>
     /// Only roles belonging to the requested portal are considered. <c>UserRoles</c> carries no portal
     /// column, so the scope is applied through the role, and a row whose <c>PortalID</c> were null would
     /// never equal a portal identifier and so would be excluded by construction - a case the terminal
     /// <c>Roles.PortalID int NOT NULL</c> forbids outright, which makes the exclusion belt and braces
-    /// rather than a live path. The names are ordered so that the claim set an access token carries is
-    /// stable between issues.
-    /// </para>
+    /// rather than a live path.
     /// </remarks>
     public async Task<IReadOnlyList<string>> ListRoleNamesAsync(
         int portalId,
@@ -517,17 +348,8 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// The scope is applied through the role, because <c>UserRoles</c> carries no portal column: a row
-    /// whose portal identifier were null would never equal a portal identifier and so would be excluded
-    /// by construction, and the terminal <c>Roles.PortalID int NOT NULL</c> forbids such a row anyway.
-    /// <para>
     /// Assignment dates are deliberately not evaluated, reproducing the terminal legacy procedure at
-    /// <c>04.03.06.SqlDataProvider</c> lines 15 to 41, which filtered on the role's name and portal
-    /// alone. The ordering follows its <c>ORDER BY U.FirstName + ' ' + U.LastName</c>; ordering by the
-    /// two names in sequence is equivalent to ordering by that concatenation, because the separating
-    /// space sorts before every character a name can begin with, and the identifier is appended as a
-    /// tie-break so the sequence is stable.
-    /// </para>
+    /// <c>04.03.06.SqlDataProvider</c> lines 15 to 41, which filtered on the role's name and portal alone.
     /// </remarks>
     public async Task<IReadOnlyList<User>> ListByRoleNameAsync(
         int portalId,
@@ -558,11 +380,9 @@ internal sealed class UserRepository : IUserRepository
     /// <inheritdoc />
     /// <remarks>
     /// No portal join is applied, reproducing the terminal legacy procedure at
-    /// <c>03.00.08.SqlDataProvider</c> lines 797 to 805, which selected on the super-user flag alone.
-    /// That is the whole point of the member: a host account need hold no membership row, so it is
-    /// not reliably reachable from <see cref="ListAsync"/>, whose root filter requires one. The
-    /// synthetic portal identifier of minus one that the legacy procedure projected is not
-    /// reproduced, and a deterministic order is applied because the legacy procedure declared none.
+    /// <c>03.00.08.SqlDataProvider</c> lines 797 to 805, which selected on the super-user flag alone. That
+    /// is the whole point of the member: a host account need hold no membership row, so it is not reliably
+    /// reachable from <see cref="ListAsync"/>, whose root filter requires one.
     /// </remarks>
     public async Task<IReadOnlyList<User>> ListSuperUsersAsync(CancellationToken cancellationToken = default)
     {
@@ -582,10 +402,10 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     /// <remarks>
-    /// Unlike the ordinary listing paths, this query intentionally performs no membership-store
-    /// population. Portal removal needs the relational account and membership graph only, and the
-    /// returned entities must remain tracked so that membership or account removal can be staged in the
-    /// same unit of work that removes the portal.
+    /// Unlike the ordinary listing paths, this query intentionally performs no membership-store population.
+    /// Portal removal needs the relational account and membership graph only, and the returned entities
+    /// must remain tracked so that membership or account removal can be staged in the same unit of work
+    /// that removes the portal.
     /// </remarks>
     public async Task<IReadOnlyList<User>> ListPortalMembersForRemovalAsync(
         int portalId,
@@ -601,26 +421,10 @@ internal sealed class UserRepository : IUserRepository
 
     /// <inheritdoc />
     // MIGRATION: THE SWALLOWED DUPLICATE PATH IS NOT REPRODUCED, AND THAT IS A CONTRACT BOUNDARY RATHER
-    //            THAN AN OMISSION. The legacy membership provider wrapped its whole AddUser body in a
-    //            catch-all and answered a failure of ANY kind by returning the -1 null-integer sentinel, so
-    //            a duplicate username, a constraint violation and a dead connection were indistinguishable
-    //            to the caller - and every one of them was reported as though it were an ordinary,
-    //            expected outcome. Neither half of that is carried forward: this member catches nothing and
-    //            returns no sentinel. An EXPECTED failure - the username is taken - is decided before the
-    //            write by the Application UserService, which asks UsernameExistsAsync and answers with a
-    //            Result carrying the reason; an UNEXPECTED failure stays an exception and surfaces as
-    //            ProblemDetails. That division is why no Result-returning member is added to this
-    //            repository and why a duplicate does not raise a domain exception from here: staging a
-    //            write is all this member does.
-    //
-    // MIGRATION: staging replaces the legacy positional call and its generated identifier. AddUser took
-    //            ten positional arguments and ended in SCOPE_IDENTITY(), so it both wrote and answered
-    //            with a key. Here the entity carries its own values, nothing is written until
-    //            IUnitOfWork.SaveChangesAsync runs, and User.UserId is populated BY that commit - so this
-    //            member has no identifier to return and deliberately returns nothing to await. The legacy
-    //            call also wrote the per-portal row in the same statement; AddMembership is the other half,
-    //            and committing both in one unit of work is what preserves the atomicity that single
-    //            statement had.
+    // THAN AN OMISSION. The legacy membership provider wrapped its whole AddUser body in a catch-all and
+    // answered a failure of ANY kind by returning the -1 null-integer sentinel, so a duplicate username, a
+    // constraint violation and a dead connection were indistinguishable to the caller - and every one of
+    // them was reported as though it were an ordinary, expected outcome.
     public void Add(User user)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -705,12 +509,6 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// An account row that cannot be resolved to a membership user name is reported as an absent RECORD
-    /// rather than as an unreachable store, for the same reason the bookkeeping members below do it: the store
-    /// was never consulted, so its availability is not what failed. It is reported as absent rather than as a
-    /// supersession because nothing was refused - there was nothing to refuse against.
-    /// </remarks>
     public async Task<CredentialWriteOutcome> SetPasswordHashAsync(
         int userId,
         string passwordHash,
@@ -742,9 +540,6 @@ internal sealed class UserRepository : IUserRepository
     {
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        // The store is addressed by account NAME, so an account row that cannot be resolved to one means there
-        // is nothing to write against - reported as an absent record rather than as an unreachable store,
-        // because the store was never consulted and its availability is not what failed.
         return userName is null
             ? MembershipWriteOutcome.NoRecord
             : await _membership
@@ -762,9 +557,9 @@ internal sealed class UserRepository : IUserRepository
     {
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        // As above: an unresolvable name is an absent record, never an unreachable store. Collapsing the two
-        // would make a deleted account look like a failed security control, and the caller escalates the
-        // latter.
+        // As above: an unresolvable name is an absent record, never an unreachable store. Collapsing the
+        // two would make a deleted account look like a failed security control, and the caller escalates
+        // the latter.
         return userName is null
             ? MembershipWriteOutcome.NoRecord
             : await _membership
@@ -799,38 +594,17 @@ internal sealed class UserRepository : IUserRepository
             && await _membership.DeleteAsync(userName, cancellationToken).ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Applies a deterministic ordering to a member listing.
-    /// </summary>
+    /// <summary>Applies a deterministic ordering to a member listing.</summary>
     /// <param name="query">The listing so far.</param>
     /// <param name="sortBy">The sortable property the caller named, or <see langword="null"/>.</param>
     /// <param name="descending">Whether the named property is applied in descending order.</param>
     /// <returns>The ordered listing.</returns>
     /// <remarks>
-    /// An ordering is applied unconditionally, including when the caller names nothing and when the
-    /// caller names something this repository does not recognise, because skip-and-take over an
-    /// unordered relational query has no defined row assignment. Every ordering ends on the primary key
-    /// so that rows sharing a sort value still have a stable relative order.
+    /// An ordering is applied unconditionally, including when the caller names nothing and when the caller
+    /// names something this repository does not recognise, because skip-and-take over an unordered
+    /// relational query has no defined row assignment. Every ordering ends on the primary key so that rows
+    /// sharing a sort value still have a stable relative order.
     /// </remarks>
-    // MIGRATION: the arms below are exactly the seven names the boundary admits for this collection,
-    // declared as Users in Application/Validation/SortableFields.cs and enforced by the sealed
-    // UserPagedRequestValidator. The correspondence is deliberate and has to be maintained in both
-    // directions: a name the boundary admits must have an arm here, or the listing accepts a field it
-    // then ignores; and an arm here without a permitted name is unreachable, which misleads the next
-    // reader about what the collection offers.
-    //
-    // Three plausible-looking names are deliberately NOT permitted and therefore have no arm:
-    // CreatedDate, LastLoginDate and IsApproved. Each is a real, projected member of
-    // UserListItemDto, so their exclusion looks like an oversight and is not. They cannot be ordered by
-    // the database at all, for two distinct reasons. The first two have no column on dbo.Users in this
-    // model - UserConfiguration ignores them - and the third lives in the external aspnet_Membership
-    // store rather than on the entity, so all three are filled by PopulateAsync AFTER Skip and Take
-    // have run. Ordering by any of them could therefore only ever re-order the rows one arbitrary page
-    // happened to contain, which is exactly the silently-ignored sort this method was changed to
-    // eliminate. Offering them would require moving the values into the query, not adding an arm here.
-    //
-    // The default arm reproduces the legacy grid's own order. Website/admin/Users/users.ascx presented
-    // the member list led by the display name, so an unsorted request answers as the legacy screen did.
     private static IQueryable<User> ApplyOrder(IQueryable<User> query, string? sortBy, bool descending)
     {
         string property = string.IsNullOrWhiteSpace(sortBy) ? DefaultSortProperty : sortBy.Trim();
@@ -865,33 +639,15 @@ internal sealed class UserRepository : IUserRepository
         };
     }
 
-    /// <summary>
-    /// Orders an account query by one of the two captions an account picker shows.
-    /// </summary>
+    /// <summary>Orders an account query by one of the two captions an account picker shows.</summary>
     /// <param name="query">The filtered accounts.</param>
     /// <param name="sortBy">The caption to order by, or <see langword="null"/> for the default.</param>
     /// <param name="descending">Whether to order descending.</param>
     /// <returns>The ordered query.</returns>
     /// <remarks>
-    /// <para>
-    /// Separate from <see cref="ApplyOrder"/> because the admissible set is different, and it is
-    /// different because the PROJECTION is different: a picker returns a key and two captions, so those
-    /// captions are the only values it can meaningfully be ordered by. Reusing the listing's arms would
-    /// let a caller order a drop-down by an electronic-mail address or a super-user flag that no option
-    /// displays - the same silently-discarded ordering the listing's own set was narrowed to eliminate.
-    /// </para>
-    /// <para>
-    /// The two arms correspond exactly to <c>SortableFields.UserChoices</c>, and the correspondence has
-    /// to be maintained in both directions: a name the boundary admits without an arm here is a field the
-    /// endpoint accepts and then ignores, and an arm without a permitted name is unreachable and misleads
-    /// the next reader about what the endpoint offers.
-    /// </para>
-    /// <para>
-    /// The default arm reproduces the legacy drop-down's own order. <c>UserModuleBase.vb:L178-L186</c>
-    /// filled <c>cboUsers</c> from the account read whose default order led with the display name, which
-    /// is also the value each option is captioned by, so an unsorted request answers as the legacy
-    /// control did. Every ordering ends on the primary key so the sequence is total.
-    /// </para>
+    /// Separate from <see cref="ApplyOrder"/> because the admissible set is different, and it is different
+    /// because the PROJECTION is different: a picker returns a key and two captions, so those captions are
+    /// the only values it can meaningfully be ordered by.
     /// </remarks>
     private static IQueryable<User> ApplyChoiceOrder(IQueryable<User> query, string? sortBy, bool descending)
     {
@@ -910,32 +666,17 @@ internal sealed class UserRepository : IUserRepository
         };
     }
 
-    /// <summary>
-    /// Turns literal search text into a <c>LIKE</c> pattern that matches it as a prefix.
-    /// </summary>
+    /// <summary>Turns literal search text into a <c>LIKE</c> pattern that matches it as a prefix.</summary>
     /// <param name="text">The literal text to match at the start of a value.</param>
     /// <returns>
-    /// A pattern for use with <see cref="LikeEscapeCharacter"/> as the escape character, matching any
-    /// value that begins with <paramref name="text"/>.
+    /// A pattern for use with <see cref="LikeEscapeCharacter"/> as the escape character, matching any value
+    /// that begins with <paramref name="text"/>.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Every metacharacter in the caller's text is escaped, so the match is a literal prefix rather than
-    /// a pattern the caller can influence. Only the appended trailing wildcard is left live, which is
-    /// exactly the shape the legacy search had: <c>Website/admin/Users/Users.ascx.vb</c> line 274 passes
-    /// <c>SearchText + "%"</c>, a single trailing wildcard and nothing more.
-    /// </para>
-    /// <para>
-    /// The escape character is replaced FIRST, and the order matters rather than being incidental. Were
-    /// it replaced after the others, the backslash this method had just introduced in front of a
-    /// metacharacter would itself be escaped, leaving a literal backslash followed by a still-live
-    /// metacharacter - so escaping would produce precisely the pattern it was meant to prevent.
-    /// </para>
-    /// <para>
-    /// Three metacharacters are escaped and a fourth deliberately is not. <c>%</c> and <c>_</c> are the
-    /// SQL wildcards; <c>[</c> opens a character-class range. A closing <c>]</c> needs no escape because
-    /// it has no meaning unless a range was opened, and escaping the opener is what guarantees none was.
-    /// </para>
+    /// The escape character is replaced FIRST, and the order matters rather than being incidental. Were it
+    /// replaced after the others, the backslash this method had just introduced in front of a metacharacter
+    /// would itself be escaped, leaving a literal backslash followed by a still-live metacharacter - so
+    /// escaping would produce precisely the pattern it was meant to prevent.
     /// </remarks>
     private static string LikePrefixPattern(string text)
     {
@@ -954,53 +695,11 @@ internal sealed class UserRepository : IUserRepository
     /// <param name="valuePrefix">The value prefix to match, or <see langword="null"/>.</param>
     /// <returns>The filtered listing.</returns>
     /// <remarks>
-    /// <para>
-    /// The two arguments are independent, so three shapes are meaningful: both together select accounts
-    /// whose answer to one property starts with the prefix, which is the legacy
-    /// <c>GetUsersByProfileProperty</c> search; a property alone selects accounts that answered it at
-    /// all; and a prefix alone searches every property.
-    /// </para>
-    /// <para>
     /// The property is addressed by definition identifier rather than by name, which scopes it to one
-    /// portal more precisely than the legacy procedure's
-    /// <c>P.PortalId = @PortalId OR (P.PortalId IS NULL AND @PortalId IS NULL)</c> did: a definition
-    /// identifier belongs to exactly one definition row, and that row carries its own portal. The
-    /// Application layer resolves the caller's property name against the definitions of the portal being
-    /// listed before it reaches this method, so a name belonging to another portal is refused at the
-    /// boundary rather than silently matching here.
-    /// </para>
+    /// portal more precisely than the legacy procedure's <c>P.PortalId = @PortalId OR (P.PortalId IS NULL
+    /// AND @PortalId IS NULL)</c> did: a definition identifier belongs to exactly one definition row, and
+    /// that row carries its own portal.
     /// </remarks>
-    // MIGRATION: BOTH storage columns are searched, which corrects a real behavioural divergence rather
-    //            than adding a refinement. A profile answer is stored in ONE of two columns:
-    //            UserProfile.PropertyValue is nvarchar(3750) and UserProfile.PropertyText is ntext, the
-    //            overflow column used when an answer exceeds the shorter one - so an account whose answer
-    //            overflowed has PropertyValue null and is invisible to a search that reads only the short
-    //            column. The terminal legacy procedure searched both:
-    //            Website/Providers/DataProviders/SqlDataProvider/04.03.03.SqlDataProvider line 266 reads
-    //            "(PropertyValue LIKE @PropertyValue OR PropertyText LIKE @PropertyValue)".
-    //
-    //            Searching PropertyValue alone would reproduce a transient legacy defect rather than the
-    //            terminal behaviour: the procedure was redefined across five upgrade scripts and the
-    //            two-column form appears in four of them - 03.02.03 line 901, 03.03.03 line 266,
-    //            04.00.04 line 946 and terminally 04.03.03 line 266. Only 03.02.06 line 148 narrowed it
-    //            to the single column, and DotNetNuke reverted that in the very next release. Rule T4
-    //            makes the terminal state authoritative.
-    //
-    // MIGRATION: the match is expressed with LIKE rather than with a StartsWith translation, and that is
-    //            forced by the store rather than chosen. SQL Server rejects an ntext argument to LEN, to
-    //            LEFT, to LOWER and to the equality operator - measured against the live schema as
-    //            "Msg 8116 ... invalid for argument 1 of len function" and "Msg 402 ... incompatible in
-    //            the equal to operator" - and LEN with LEFT is precisely how a StartsWith over a
-    //            parameter is translated. LIKE is the one comparison the type admits, which is why the
-    //            legacy procedure used it too.
-    //
-    // MIGRATION: consequently the case-insensitivity of this filter comes from the column collation
-    //            rather than from folding the case in the query, because LOWER cannot be applied to
-    //            ntext at all. Both columns are SQL_Latin1_General_CP1_CI_AS, and that is the same
-    //            mechanism the legacy procedure relied on - its LIKE was likewise unfolded. A deployment
-    //            onto a case-sensitive collation would make this one filter case-sensitive, exactly as it
-    //            would have made the legacy search case-sensitive; preserving that is behaviour
-    //            preservation and not an oversight.
     private IQueryable<User> ApplyProfileFilter(IQueryable<User> query, int? propertyDefinitionId, string? valuePrefix)
     {
         bool hasProperty = propertyDefinitionId.HasValue;
@@ -1042,28 +741,6 @@ internal sealed class UserRepository : IUserRepository
     /// <param name="users">The accounts to describe.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A task that completes when the accounts have been described.</returns>
-    /// <remarks>
-    /// One batched read serves the whole set, so a page costs a bounded number of round trips rather than
-    /// one per row. When the external store cannot be reached the properties are left null, which reads
-    /// as "not known" - every one of them is a nullable type precisely so that this case has an honest
-    /// representation and no value has to be invented. None of these properties is mapped, so assigning
-    /// them cannot mark an entity modified.
-    /// </remarks>
-    // MIGRATION: this helper absorbs UserController.GetUserMembership(ByRef objUser), declared at
-    //            Library/Components/Users/UserController.vb:L638, which mutated the account it was handed
-    //            in order to graft the external membership facts onto it. There is deliberately no
-    //            equivalent public member: a caller could forget to call one, and an account described only
-    //            half-way is indistinguishable from an account whose approval and lockout genuinely are
-    //            false. Composition therefore happens inside every read on the way out, which is what lets
-    //            the ByRef argument disappear rather than merely change shape.
-    //
-    // MIGRATION: the read is BATCHED and SEQUENTIAL, and both properties are required rather than
-    //            incidental. Batched, because the legacy screen issued one membership read per displayed
-    //            row, so a page cost a round trip per account; here one statement serves up to a bounded
-    //            number of names and a page costs a bounded number of round trips regardless of its size.
-    //            Sequential, because a DbContext and its connection are not thread-safe - fanning the
-    //            batches out with Task.WhenAll over this one context would be a concurrency defect that
-    //            happens to pass under light load, so the batches are awaited in turn.
     private async Task PopulateAsync(IReadOnlyList<User> users, CancellationToken cancellationToken)
     {
         if (users.Count == 0)
@@ -1107,8 +784,8 @@ internal sealed class UserRepository : IUserRepository
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>The user name, or <see langword="null"/> when no such account exists.</returns>
     /// <remarks>
-    /// The two stores share no key, so this resolution is unavoidable rather than incidental - see the
-    /// type remarks. An account that does not exist has no credential record either, which is why every
+    /// The two stores share no key, so this resolution is unavoidable rather than incidental - see the type
+    /// remarks. An account that does not exist has no credential record either, which is why every
     /// credential member answers with its "no record" result instead of throwing.
     /// </remarks>
     private Task<string?> ResolveUserNameAsync(int userId, CancellationToken cancellationToken)

@@ -17,16 +17,7 @@ import {
 
 import type { ParamMap, Params } from '@angular/router';
 
-/**
- * The shared address vocabulary for paged listings.
- *
- * WHY THESE CASES. Four listings depend on these readers, so a wrong answer here is wrong on four screens
- * at once. The cases pinned below are the ones that were reasoned about rather than the ones that are
- * obvious: the one-based/nought-based conversion in both directions, the refusal of a zero page size, the
- * case-insensitive key match that answers in the KEY'S spelling rather than the address's, the direction
- * abbreviation an operator is likely to hand-type, and the rule that reconciliation examines only the keys
- * a writer produces.
- */
+/** The shared address vocabulary for paged listings. */
 describe('list-query.util', () => {
   /**
    * Builds a route parameter map from plain parameters.
@@ -40,10 +31,6 @@ describe('list-query.util', () => {
 
   describe('the shared vocabulary', () => {
     it('spells the five parameters the way the legacy addresses did', () => {
-      // ⚠ ASSERTED AS LITERALS ON PURPOSE. These names are the operator's vocabulary and they appear in
-      // bookmarks, so a rename is a breaking change that must fail a test rather than pass silently.
-      // `filter` and `currentpage` are the legacy spellings carried over verbatim from
-      // `Portals.ascx.vb:L215-L222`; the other three have no legacy counterpart.
       expect(FILTER_PARAM).toBe('filter');
       expect(PAGE_PARAM).toBe('currentpage');
       expect(PAGE_SIZE_PARAM).toBe('pagesize');
@@ -158,9 +145,6 @@ describe('list-query.util', () => {
 
   describe('firstPageParameter', () => {
     it('omits the first page rather than writing it', () => {
-      // So that the address of an unpaged listing is the bare route. Writing `currentpage=1` would leave a
-      // redundant parameter that reconciliation then corrects away, costing a history replacement for
-      // nothing.
       expect(firstPageParameter(FIRST_PAGE_INDEX)).toBeNull();
     });
 
@@ -205,9 +189,6 @@ describe('list-query.util', () => {
     });
 
     it('examines only the keys the writer produces, leaving foreign parameters alone', () => {
-      // ⚠ THE CASE THAT PROTECTS UNRELATED PARAMETERS. The account listing carries a row's account to a
-      // sibling screen and the sign-in bounce carries a returnUrl; neither belongs to any listing writer.
-      // Were they examined they would read as discrepancies and be cleared on the next reconciliation.
       const canonical: Params = { [PAGE_PARAM]: null };
 
       expect(

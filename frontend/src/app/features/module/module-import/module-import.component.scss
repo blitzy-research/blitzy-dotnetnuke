@@ -1,74 +1,12 @@
-// =============================================================================
-//  MODULE CONTENT IMPORT — component stylesheet
-// =============================================================================
-//  Host `app-module-import`, served by the route `/modules/import`. Replaces the
-//  seventeen content lines of `Website/admin/Modules/import.ascx`.
-//
-//  MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below
-//  with this component's own content attribute, so a class name that drifts does
-//  not error — it silently matches nothing and the screen renders unstyled. The
-//  template emits exactly this vocabulary and no fourth name:
-//
-//      .module-import
-//      .module-import__form
-//      .module-import__actions
-//
-//  WHAT THIS FILE OWNS, AND WHY IT IS SO SMALL. Three regions and their rhythm.
-//  Every other visual decision this screen needs is already owned one layer down,
-//  and the whole value of naming the owners here is that a future reader can see
-//  the absence is deliberate rather than an omission:
-//
-//    label, help panel and validation message ....... shared/components/form-field
-//    the label-beside-control arrangement .......... shared/components/form-field
-//    control chrome, type step, invalid state ....... styles/_forms.scss
-//    the two command buttons ........................ styles/_forms.scss
-//    focus indication on every control .............. styles/_reset.scss
-//    family, base size and line height .............. styles/_reset.scss, on body
-//
-//  Duplicating any of them here would not add fidelity; it would fight the layer
-//  that owns it on specificity and let the two drift.
-// =============================================================================
+// MODULE CONTENT IMPORT — component stylesheet
 
-// FOUR levels, not three. `core/`, `shared/`, `layout/` and `features/` are
-// siblings inside `src/app/`, but `styles/` is a sibling of `app/` one level
-// higher, inside `src/` — so a Sass target is always exactly one level further
-// out than the TypeScript target beside it. From this folder `../../../` reaches
-// `src/app`, which holds no `styles/` directory, and the build fails with
-// "Can't find stylesheet to import." `angular.json` declares no
-// `stylePreprocessorOptions.includePaths`, so the relative depth is the only
-// mechanism available. Component stylesheets one level shallower, under
-// `src/app/layout/`, correctly use three; this one is a level deeper.
-//
-// Only the mixins partial is taken. The token partial is deliberately NOT
-// `@use`d: it exposes no Sass member at all — no variable, no function, no mixin
-// — and is purely one document-root custom-property block, so `@use`ing it from
-// a component would emit that whole block a second time inside this component's
-// own stylesheet. That would both breach the rule making the token partial the
-// workspace's single document-root block and, on its own, exceed the
-// four-kilobyte component-style budget. Custom properties need no import: they
-// cascade from the single block the global entry point emits. No component
-// stylesheet in the workspace does otherwise.
+// Only the mixins partial is taken.
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  THE SCREEN
-// -----------------------------------------------------------------------------
-//  A custom element has no intrinsic display and would lay out inline, so a
-//  box-generating display is stated explicitly rather than assumed. Both
-//  selectors carry the same flow so the rhythm holds whether the regions sit
-//  directly on the host or inside the one wrapper the template renders — a flow
-//  container with a single child simply has no gap to apply.
-//
-//  Family, size and line height are deliberately absent. The reset partial sets
-//  the consolidated stack, the base step and the base line height on `body`, and
-//  all three inherit; restating them here would duplicate the global layer, and
-//  narrowing the line height would silently give this one screen a different
-//  vertical rhythm from every other screen with nothing measured to justify it.
-//
-//  Focus indication is deliberately absent and must stay absent: the reset
-//  partial applies the shared focus-ring mixin to a superset of the controls
-//  this screen can render, so the design system owns focus and a feature screen
-//  consumes it rather than redeclaring it.
+// THE SCREEN
+// Focus indication is deliberately absent and must stay absent: the reset partial applies the shared
+// focus-ring mixin to a superset of the controls this screen can render, so the design system owns focus
+// and a feature screen consumes it rather than redeclaring it.
 :host,
 .module-import {
   display: flex;
@@ -76,211 +14,39 @@
   gap: var(--space-4);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FORM
-// -----------------------------------------------------------------------------
-//  One column of fields with their own rhythm, capped to a comfortable measure.
-//  Reading `breakpoint()` for a raw width is the sanctioned use of that function
-//  — what is barred is writing a media feature query by hand in a component. A
-//  maximum rather than a fixed measure keeps the form fluid below the step and
-//  capped above it, which is why this screen needs no breakpoint mixin at all.
-//
-//  The step inside the form is deliberately one below the step between the
-//  regions above it, so a field reads as belonging to the form rather than as
-//  another region of the screen.
+// THE FORM
+// One column of fields with their own rhythm, capped to a comfortable measure. Reading `breakpoint()` for a
+// raw width is the sanctioned use of that function — what is barred is writing a media feature query by
+// hand in a component.
 .module-import__form {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   max-inline-size: mx.breakpoint('sm');
 
-  // The shared field carries its own trailing margin so that it stacks correctly
-  // wherever it is placed unaided. Inside this flow that margin is ADDED to the
-  // gap above — flex item margins never collapse — so every field would sit at
-  // two spacings at once and the rhythm this file declares would not be the
-  // rhythm on the screen. Measured in the browser before this rule existed: the
-  // separation between adjacent children came out at 28 rather than the intended
-  // 12, and an `app-empty-state` sibling, which carries no such margin, sat at
-  // exactly 12 in the same layout — which is what isolates the excess to the
-  // field's own margin rather than to the gap.
-  //
-  // Clearing it here is the arrangement the shared field asks for: it puts that
-  // margin on its HOST precisely so the screen placing the field can override
-  // it, which a margin on its inner block could never be. Reached with a plain
-  // element selector and NO piercing — the child's host element sits in this
-  // template, so it already carries this component's scoping attribute and is
-  // addressable directly. No descendant piercing and no disabled encapsulation
-  // is involved, neither of which would be acceptable. Nothing inside the field
-  // is touched; only its own outer box, which is the parent's business.
-  //
-  // The same clearing, for the same reason, is already applied by the profile
-  // screen's field stack, so this is the workspace's established resolution
-  // rather than a local invention.
+  // The shared field carries its own trailing margin so that it stacks correctly wherever it is placed
+  // unaided.
   app-form-field {
     margin-block-end: 0;
   }
 }
 
-// -----------------------------------------------------------------------------
-//  THE PICKER'S SIZE, STATED
-// -----------------------------------------------------------------------------
-//  Standing context about the control above it, not a message and not a
-//  failure, so it takes the muted text colour and the smaller step of the type
-//  scale rather than anything that reads as an alert. Every value is a token;
-//  nothing here is a literal.
-//
-//  Pulled UP against the field it describes by cancelling the form's gap on its
-//  own block-start, which is what visually attaches it to that control instead
-//  of leaving it floating between two fields at the same spacing as a sibling
-//  field. The block-end restores the form's own rhythm below it, because a flex
-//  gap and a margin do not collapse — the same arithmetic the field-margin note
-//  above records.
+// THE PICKER'S SIZE, STATED
+// Standing context about the control above it, not a message and not a failure, so it takes the muted text
+// colour and the smaller step of the type scale rather than anything that reads as an alert. Every value is
+// a token; nothing here is a literal.
 .module-import__choice-summary {
   margin-block: calc(var(--space-1) - var(--space-3)) 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-sm);
 }
 
-// -----------------------------------------------------------------------------
-//  THE COMMAND ROW
-// -----------------------------------------------------------------------------
-//  A real gap rather than spacing characters, so the separation survives the
-//  collapsing of runs of blank text and does not depend on a text node at all.
-//  Wrapping is
-//  intrinsic and deliberate: on a narrow viewport the second command drops to
-//  its own line instead of overflowing, and the gap then supplies the row
-//  spacing as well as the column spacing. Centred on the cross axis so two
-//  commands whose labels wrap to different heights still align.
+// THE COMMAND ROW
+// A real gap rather than spacing characters, so the separation survives the collapsing of runs of blank
+// text and does not depend on a text node at all.
 .module-import__actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
-
-// =============================================================================
-//  DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//  Every difference between the legacy screen and this one is stated here. None
-//  is silently absorbed, and none of the measured values cited below enters this
-//  file as a literal — each resolves to a token or to a named step.
-//
-//  MIGRATION: THE LEGACY POSITIONING CONTAINER IS REPLACED BY FLOW LAYOUT, AND
-//    NO TABULAR SELECTOR APPEARS IN THIS FILE. `import.ascx:L4` opened a
-//    fixed-width container carrying the summary "Edit Links Design Table" — a
-//    description of an entirely different screen, because the markup was copied
-//    from one. The census was re-run first-hand across the five in-scope admin
-//    trees and CORRECTS a figure that had circulated as 68: there are 65
-//    summary-bearing positioning containers, against 8 genuine record grids. The
-//    68 conflates two different things — it is those 65 plus the 3 record grids
-//    that legitimately carry a summary of their own, which are the one place the
-//    attribute is correct rather than decorative, and counting them as
-//    positioning containers also double-counts them against the 8. Either way
-//    positioning was the ordinary use, so this is the ordinary case rather than
-//    an exception. The template
-//    emits no tabular markup, so this file declares no tabular selector and no
-//    tabular display value. The leading break element at `L3` and the paragraph
-//    wrapper at `L14` go with it: both were vertical spacing expressed as
-//    content, and spacing here is the shared scale.
-//
-//  MIGRATION: THE MEASURED CELL WIDTHS BECOME TRACKS, AND THEY LIVE IN THE FIELD
-//    COMPONENT RATHER THAN HERE. `import.ascx` carried its sizing inline — the
-//    container at `L4`, the label cells at `L6` and `L10`, the control cells at
-//    `L7` and `L11`. The label-to-control relationship those express is a
-//    property of a field, not of this screen, so it is owned by
-//    shared/components/form-field: that component composes the label track from
-//    the shared label-width token and pairs it with the fluid track, and applies
-//    the pairing at and above the shared medium step while stacking below it. The
-//    result is that this screen inherits the measured arrangement, and its
-//    responsive stacking, without restating either. What remains here is the
-//    outer measure, expressed as a named breakpoint step rather than the legacy
-//    container width, so it scales with the reader's type size instead of being
-//    pinned to one device-pixel count. No length from the legacy markup enters
-//    this file.
-//
-//  MIGRATION: THE SPACING CHARACTER BECOMES A GAP. `import.ascx:L15` separated
-//    the two commands with a literal non-breaking space, one of 70 counted
-//    across the in-scope markup. Every one of them becomes CSS spacing; the
-//    command row above takes its separation from the shared scale.
-//
-//  MIGRATION: THE CONTROL CHROME IS NOT REPRODUCED, AND NOTHING IS OWED. The
-//    legacy text-box rule at `default.css:L123-128` declares a family, a size and
-//    a weight and nothing else — no border, no padding, no background and no
-//    width — so the legacy control was drawn entirely by browser default chrome.
-//    The forms partial paints text controls in its place and deliberately
-//    EXCLUDES the file input from that treatment, on the stated grounds that
-//    bordered text padding is wrong for it, while still giving it the focus ring.
-//    Native chrome on the file picker is therefore both the design system's
-//    decision and the faithful outcome at once, so this file adds none. The
-//    measured type relationship survives in the same place: a control renders one
-//    step ABOVE the label and help text, never below, which is how the legacy
-//    screens read.
-//
-//  MIGRATION: THE SPACING SCALE AND THE RESPONSIVE BEHAVIOUR ARE NET ADDITIONS.
-//    The legacy stylesheets declare no media feature query, no corner radius and
-//    no shadow anywhere, and have no spacing system to draw a step from — the
-//    help rule's uniform inset is the smallest interval in the whole file. Every
-//    interval above therefore resolves to a scale that did not previously exist.
-//    No radius and no elevation is introduced by this screen: the legacy design
-//    is square-cornered and flat, and nothing here needs to read as raised.
-//
-//  MIGRATION: THE FONT STACKS AND THE SIZE RAMP ARE CONSOLIDATED. The legacy
-//    stylesheet declares three overlapping stacks — one used 38 times, a second
-//    twice and a third once — across ten distinct sizes expressed in two
-//    different unit systems. They collapse to one family token and one ramp, and
-//    this file restates neither: the reset partial sets both on `body` and they
-//    inherit. The visual difference between the three stacks is imperceptible.
-//
-//  MIGRATION: NO LEGACY PRESENTATIONAL CLASS NAME IS PORTED. `import.ascx` named
-//    three of them — the label style at `L6` and `L10`, the text-box style at
-//    `L7` and `L11`, and the command style at `L15` and `L16`. Their measured
-//    values informed the token vocabulary and are cited throughout these notes,
-//    but the vocabulary itself is replaced: every selector in this file is a
-//    scoped name of this component's own.
-//
-//  MIGRATION: THE LEGACY COMMAND WAS A TEXT LINK, AND THE REPLACEMENT IS NOT.
-//    `default.css:L442-447` sizes the command style at the body step, and its
-//    four anchor states at `L450`, `L456`, `L462` and `L468` are all underlined
-//    — the brand colour at rest, visited and pressed, and the danger hue on
-//    hover. Both commands at `import.ascx:L15` and `L16` additionally suppressed
-//    their border, so the legacy affordance was an underlined link rather than a
-//    filled button. The replacement is a real button element, because an action
-//    that does not navigate must be one: a link is announced as a link and is
-//    activated by Enter but not Space. Its appearance and its hover colour are
-//    owned by the forms partial, which resolves hover to the brand hover token
-//    and deliberately NOT to the measured danger hue — spending the error signal
-//    on a benign hover would dilute the one colour that has to stay unambiguous.
-//    That is a visible difference from the legacy rendering, it is that file's to
-//    record, and this file neither restates nor overrides it. The unused legacy
-//    standard-button rule at `L475-484` is referenced nowhere in scope and is not
-//    reproduced.
-//
-//  MIGRATION: ONE SPACING MECHANISM PER REGION, PROVEN IN THE BROWSER. The
-//    legacy screen expressed vertical spacing three different ways at once — a
-//    leading break element, a paragraph wrapper, and table cell padding. None of
-//    the three survives, and the replacement is deliberately a single mechanism
-//    per region: the gap declared on the region itself. Runtime measurement
-//    showed the shared field's own trailing margin adding to the form's gap and
-//    producing 28 where 12 was declared, so that margin is cleared inside the
-//    form and the gap is left as the only source of the rhythm. Recorded because
-//    the divergence was between the authored intent and the rendered result, not
-//    between the legacy screen and this one — the kind that never appears in a
-//    diff and only a rendered measurement catches.
-//
-//  MIGRATION: NO TOKEN GAP WAS REACHED AND NOTHING IS HARDCODED. Every value
-//    this screen needs already exists in the vocabulary: three steps of the
-//    spacing scale and one named breakpoint step. Two candidates flagged in
-//    advance as likely gaps turned out to be present — the pale surface behind
-//    the legacy help panel, and a darkened danger colour safe as text — and
-//    neither is consumed here, because the field component owns the help panel
-//    and the validation message. The legacy help rule's own measurement is
-//    recorded where it is implemented rather than here, including the two details
-//    that circulated wrongly: it declares four borders, not three, and it does
-//    carry a pale surface.
-//
-//  MIGRATION: THE SECOND LEGACY STYLESHEET IS NOT A SOURCE OF MEASUREMENTS.
-//    `Website/Portals/_default/portal.css` was read first-hand: 275 lines of
-//    rule blocks with no non-empty body, no declaration and no colour value
-//    anywhere in it. Nothing in this file derives from it, and any claim of a
-//    measurement taken from it is false.
-// =============================================================================

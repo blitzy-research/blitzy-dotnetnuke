@@ -6,18 +6,10 @@ using Xunit;
 namespace DnnMigration.IntegrationTests.Security;
 
 /// <summary>
-/// Pins the boundary between the credential upgrade this solution really performs and the legacy
-/// credential migration it cannot perform.
+/// Pins the boundary between the credential upgrade this solution really performs and the legacy credential
+/// migration it cannot perform.
 /// </summary>
 /// <remarks>
-/// <para>
-/// This suite exists because the distinction was, for a time, described the wrong way round in eight
-/// separate contracts and comments: they said a legacy credential is re-hashed on the owner's first
-/// successful sign-in, with an administrative reset as a mere fallback. The claim is unimplementable, and
-/// its cost was borne by whoever read it - an operator who believed pre-existing accounts would migrate
-/// themselves would skip the resets that every one of them actually requires, and would discover the gap
-/// only when their users could not sign in.
-/// </para>
 /// <para>
 /// Prose alone cannot keep that claim from returning, because the next author to write it will be
 /// describing an intention that sounds reasonable. These tests make the two operations distinguishable in
@@ -27,7 +19,7 @@ namespace DnnMigration.IntegrationTests.Security;
 /// <para>
 /// The real registered hasher is exercised rather than a double. The implementation is internal to the
 /// infrastructure assembly, but the contract is public domain, so it is resolved from the composed
-/// container exactly as the application resolves it. No database and no HTTP request is involved.
+/// container exactly as the application resolves it.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -58,7 +50,8 @@ public sealed class PasswordHasherMigrationTests
     public PasswordHasherMigrationTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// A value held under the legacy reversible scheme cannot be verified, whatever is submitted against it.
+    /// A value held under the legacy reversible scheme cannot be verified, whatever is submitted against
+    /// it.
     /// </summary>
     /// <remarks>
     /// This is the fact the whole finding turns on. Every lazy-upgrade description begins with a successful
@@ -98,8 +91,8 @@ public sealed class PasswordHasherMigrationTests
     /// </summary>
     /// <remarks>
     /// The other side of the boundary. Both halves are asserted in one test on purpose: an upgrade is only
-    /// meaningful if the value can also be verified, because the plaintext needed to re-hash it arrives only
-    /// with a successful verification.
+    /// meaningful if the value can also be verified, because the plaintext needed to re-hash it arrives
+    /// only with a successful verification.
     /// </remarks>
     [Fact]
     public void ASupersededCostValue_VerifiesAndIsReportedAsUpgradable()
@@ -117,9 +110,7 @@ public sealed class PasswordHasherMigrationTests
         hasher.NeedsRehash(superseded).Should().BeTrue();
     }
 
-    /// <summary>
-    /// A value written at the current cost verifies and is reported as needing nothing.
-    /// </summary>
+    /// <summary>A value written at the current cost verifies and is reported as needing nothing.</summary>
     /// <remarks>
     /// Without this, the previous test would be satisfied by a member that answered <c>true</c> for every
     /// input, which would re-hash a current credential on every single sign-in.
@@ -138,11 +129,6 @@ public sealed class PasswordHasherMigrationTests
     /// The decoy the timing defence publishes is a current-cost value that nothing matches, and it is never
     /// reported as upgradable.
     /// </summary>
-    /// <remarks>
-    /// It stands in for a stored value when there is none to compare against, so it must cost what a genuine
-    /// comparison costs - which is what being at the current cost means - and it must not draw the sign-in
-    /// path into attempting an upgrade of a value that belongs to no account.
-    /// </remarks>
     [Fact]
     public void TheDecoy_IsACurrentCostValueThatMatchesNothing()
     {

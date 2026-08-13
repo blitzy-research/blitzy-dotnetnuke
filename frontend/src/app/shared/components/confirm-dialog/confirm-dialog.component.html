@@ -1,37 +1,7 @@
 <!--
-  Destructive-action confirmation dialog. The paired class calls `showModal()` on
-  this element, which promotes it to the browser top layer, paints the backdrop and
-  makes the document inert - so neither this template nor the paired stylesheet
-  needs a `z-index` or fixed positioning. There is no `open` attribute and no
-  control-flow wrapper: either would render the dialog visible but non-modal, and
-  `showModal()` throws on an already-open dialog. Presence in the DOM is "open".
-  Native `<dialog>`, `<h2>`, `<p>` and `<button>` are correct inside this component
-  because this component IS the shared wrapper feature templates use instead of
-  bare controls. The long reasoning lives in `confirm-dialog.component.ts`.
-
-  MIGRATION: an added affordance. Legacy was a blocking `window.confirm()` injected
-  as an inline click attribute by `ClientAPI.vb` L331-333, taking ONE argument -
-  the message - so the title, the confirm label, the severity channel and the
-  accessible name and description are all additions rather than translations.
-  `portals.ascx` proves a modal belongs here: its Edit column carries
-  `EditMode="URL"` (L21) and its Delete column carries none (L22), so Delete was a
-  postback COMMAND, not navigation.
-
-  MIGRATION: added accessibility - legacy declared no ARIA and no focus styling.
-  `roles.ascx` L13's delete image button had no alternate text, resource key or
-  text at all, two lines below an edit button carrying both; that defect is fixed
-  here by giving both affordances real, visible, keyboard-operable text labels,
-  honouring the `Text="Delete"` precedent at `ProfileDefinitions.ascx` L18.
-
-  MIGRATION: `delete.gif` is not ported - the only asset shipped is the favicon -
-  so the severity glyph is a text character; the legacy no-break-space separators
-  between action links become a stylesheet spacing token; and the legacy underlined
-  text link (`default.css` L442-472) is promoted to real `<button>` elements.
-
-  MIGRATION: `title`, `message` and `confirmLabel` are interpolated as plain text
-  and never bound as markup, because legacy resource values are untrusted and one
-  in-scope entry holds live remote script blocks. Localisation is not ported, so
-  `Cancel` is authored here and no localisation attribute is emitted.
+  Destructive-action confirmation dialog. The paired class calls `showModal()` on this element, which
+  promotes it to the browser top layer, paints the backdrop and makes the document inert - so neither
+  this template nor the paired stylesheet needs a `z-index` or fixed positioning.
 -->
 <dialog
   #dialogElement
@@ -44,39 +14,17 @@
   (click)="onBackdropClick($event)"
 >
   <!--
-    `alertdialog` deliberately overrides the implicit dialog role so the name and
-    description are announced at once; both ids are published by the class, so two
-    dialogs mounted together cannot collide. `aria-modal` is declared because the
-    class's published template contract requires it. The message renders
-    unconditionally, so `aria-describedby` can never dangle.
-  -->
-  <!--
-    MIGRATION: the panel below carries the dialog's visible inset, and the `<dialog>`
-    keeps only its frame. This wrapper exists for a functional reason, not a
-    stylistic one. A modal `<dialog>` paints its `::backdrop` as its own
-    pseudo-element, and the platform attributes a click there to the `<dialog>`
-    itself - identically to a click on any part of the dialog's own box that no child
-    covers. Padding left on the `<dialog>` is therefore a strip that no target
-    comparison can tell apart from the backdrop, so clicking the empty space beside
-    the title would dismiss a destructive confirmation the user never meant to
-    dismiss. Moving the inset onto a child leaves the dialog's box covered by
-    content, and the class's pointer-geometry test closes the remaining frame. The
-    legacy confirmation had no equivalent construct - `editroles.ascx` confirmed
-    through a full page postback with no dismissible overlay at all - so this
-    structure diverges from no measured legacy behaviour.
+    `alertdialog` deliberately overrides the implicit dialog role so the name and description are
+    announced at once; both ids are published by the class, so two dialogs mounted together cannot
+    collide. `aria-modal` is declared because the class's published template contract requires it.
   -->
   <div class="confirm-dialog__panel">
     <h2 [id]="titleId" class="confirm-dialog__title">{{ title }}</h2>
     <p [id]="messageId" class="confirm-dialog__message">{{ message }}</p>
 
     <!--
-      Cancel comes FIRST for two independent reasons: the class focuses it on open so
-      a stray Enter cannot delete anything, and `editroles.ascx` L179-189 already
-      ordered Cancel (L182-183) before Delete (L185-186). Both are `type="button"` so
-      neither can submit an ancestor form, mirroring the legacy
-      `CausesValidation="False"`, and each click calls a class handler so the
-      emit-once guard cannot be bypassed - `[disabled]="settled"` restates that guard
-      natively, closing the pointer, Enter and Space paths together.
+      Cancel comes FIRST for two independent reasons: the class focuses it on open so a stray Enter
+      cannot delete anything, and `editroles.ascx` L179-189 already ordered Cancel before Delete.
     -->
     <div class="confirm-dialog__actions">
       <button
@@ -96,13 +44,9 @@
         (click)="onConfirmClick()"
       >
         <!--
-          Severity never rests on colour alone: this glyph, the bold weight the danger
-          modifier applies, and the affordance's own outcome-naming label. The glyph
-          is hidden from assistive technology so it cannot compete with that label as
-          a naming source nor announce the severity twice. Its separating space sits
-          inside the hidden span, and the label follows the block with no whitespace,
-          so the gap is explicit rather than an artefact of whitespace collapsing and
-          the computed accessible name is the caller's label exactly.
+          Severity never rests on colour alone: this glyph, the bold weight the danger modifier applies,
+          and the affordance's own outcome-naming label. The glyph is hidden from assistive technology
+          so it cannot compete with that label as a naming source nor announce the severity twice.
         -->
         @if (danger) {
           <span aria-hidden="true">⚠ </span>

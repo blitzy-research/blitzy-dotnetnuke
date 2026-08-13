@@ -26,19 +26,16 @@
     below. Domain arrives transitively, so the domain, service, validator, mapper and serialisation
     suites placed here by AAP 0.4.1.1 compile against everything they need.
 
-    WHY THERE IS NO EDGE TO DnnMigration.Infrastructure ANY MORE. There used to be one, kept on the
-    reading that AAP 0.5.1.5 names Infrastructure/Security/*.cs as the subject of suites it places
-    here, and that dropping the edge would delete coverage. Both halves of that argument were wrong.
-    The AAP is frozen and 0.5.2.2 is unambiguous about this project's graph, so an implementation
-    that reinterprets it is a divergence rather than a reconciliation; and no coverage had to be
-    deleted, because the thirteen suites that named an Infrastructure type were RELOCATED to
+    NO EDGE TO DnnMigration.Infrastructure, BY DESIGN. AAP 0.5.2.2 is unambiguous about this
+    project's graph, so an edge to Infrastructure is a divergence rather than a reconciliation - and
+    no coverage depends on one, because the thirteen suites that name an Infrastructure type live in
     DnnMigration.IntegrationTests - Security/{LoggingAuditSink,AuditLogRendering,
     LegacyCredentialVerifier,JwtTokenServiceBehavior,DatabaseHealthCheck,RefreshTokenStoreBehavior},
     Infrastructure/{StoreFailureClassification,ConnectionStringValidation,DuplicateKeyTranslation,
     DatabaseHealthCheck}, Services/{LoggingAuditSink,ModuleBusinessControllerFactory} and
     Validation/LegacyCredentialOptions - where the Infrastructure assembly is reachable through that
-    project's own single edge to the API. Every one of them kept its assertions unchanged and gained
-    the [Trait("Category", "Integration")] that project requires.
+    project's own single edge to the API, and every one of them carries the
+    [Trait("Category", "Integration")] that project requires.
 
     WHAT STAYS HERE. Public-contract and shape suites, which is what a project with this graph can
     honestly assert: the Domain entities and their sentinel boundaries, the Application services

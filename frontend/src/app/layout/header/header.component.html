@@ -1,109 +1,30 @@
 <!--
-  The application's single banner landmark.
-
-  ELEMENT ORDER AND CLASS NAMES ARE A CONTRACT, NOT A PREFERENCE
-  Three sibling files pin the structure below and were authored against it: the paired component
-  documents it on its class, the paired stylesheet publishes it as an explicit "SELECTOR CONTRACT",
-  and the paired specification asserts it — the banner's first element child must be
-  `.app-header__brand` and its last must be `.app-header__actions`. The banner element is the
-  Flexbox container, `.app-header__brand` is the leading identity affordance, and
-  `.app-header__actions` is the trailing session cluster. That adjacency is legacy parity rather
-  than a new arrangement: `MinimalExtropy/index.ascx` L69-L72 — the only real skin in the checkout —
-  placed the user object and the login object together on one row inside a single container,
-  separated by a purely decorative pipe that carried no meaning and is therefore not reproduced.
-
-  NO WRAPPER, NO EXPLICIT ROLE, NO SECOND LANDMARK
-  The shell assigns this component's host to a named CSS Grid area, so no element encloses the
-  banner: an interposed wrapper would change the parent-child relationship that the grid region
-  rule depends on. No `role` attribute is written either, because a native banner element already
-  carries the banner role while it is not nested inside a sectioning element, and the shell mounts
-  it as a direct grid child — a redundant role is one more attribute free to drift from the element
-  it annotates. This file emits exactly ONE landmark: primary navigation, the main region and the
-  contentinfo band belong to the shell's other members, and emitting any of them here would put two
-  banners or two main regions in the accessibility tree, which is a defect rather than a duplicate.
-
-  THE SESSION CLUSTER IS UNCONDITIONAL; ONLY ITS CHILDREN ARE GUARDED
-  The stylesheet collapses the cluster with `.app-header__actions:empty`, and a built-in
-  control-flow block leaves only anchors behind when its condition is false — which `:empty`
-  tolerates. Guarding the container itself would state one condition in two places and make the
-  stylesheet's rule unreachable dead code.
-
-  PRESENCE IS TESTED EXPLICITLY, NEVER BY TRUTHINESS
-  `hasSignedInUser` compares against `undefined` and then measures a trimmed DISPLAY NAME, never an
-  identifier. The legacy null module encoded an absent integer as minus one, while tenant keys seed
-  from minus one and role keys from zero, so `0` and `-1` are both real keys as well as sentinels
-  and a truthy test on an id would be a defect. `User.ascx.vb` L111 guards the legacy band on the
-  user key not being minus one for exactly that reason. No identifier is read anywhere below.
-
-  EVERY DYNAMIC VALUE IS PLAIN TEXT
-  Both bindings render through interpolation, which escapes its content. Legacy resource text is
-  untrusted as markup — measured across the in-scope resource files, dozens of values carry
-  XML-escaped HTML and one carries a live advertising script — so nothing here writes markup, and
-  nothing here ever may.
+  ELEMENT ORDER AND CLASS NAMES ARE A CONTRACT, NOT A PREFERENCE Three sibling files pin the structure
+  below and were authored against it: the paired component documents it on its class, the paired
+  stylesheet publishes it as an explicit "SELECTOR CONTRACT", and the paired specification asserts it —
+  the banner's first element child must be `.app-header__brand` and its last must be
+  `.app-header__actions`.
 -->
 
-<!-- MIGRATION: the excluded legacy banner chrome is deliberately not ported, and no placeholder
-     stands in for any of it. The measured skin registered thirteen skin-object controls and
-     `Website/admin/Skins/` ships 24 of them; only the two session objects are carried forward. Not
-     built: the language selector (`index.ascx` L19-L21), the search box with its image submit, the
-     breadcrumb and its "You are here" caption, the per-tenant logo image, the horizontal navigation
-     menu together with its fly-out and tree variants, the host name, the current date, the
-     advertising banner, the skin editor, the module message, the legacy tab strip — which the
-     legacy stylesheet itself annotated as superseded — and the administrative control-panel slot at
-     `index.ascx` L17. Each belongs to a feature this migration places out of scope. Navigation in
-     particular is NOT re-homed here: it belongs to the shell's own navigation region. -->
-
-<!-- MIGRATION: view state, the multipart server form and the hidden round-trip inputs are
-     eliminated outright. `Website/Default.aspx` L23 wrapped the whole document in a server form
-     declared `ENCTYPE="multipart/form-data" autocomplete="off"`, L24 carried an administrator-only
-     error label, and L26-L27 declared the hidden `ScrollTop` and `__dnnVariable` inputs that
-     shuttled scroll position and client state through every postback. This band posts nothing and
-     stores nothing: it receives a caption and a display name and reports one gesture, so there is
-     no round trip to preserve anything across. Scroll restoration is now a router concern,
-     configured once where the router is provided. -->
+<!--
+  MIGRATION: view state, the multipart server form and the hidden round-trip inputs are eliminated
+  outright.
+-->
 <header>
-  <!-- MIGRATION: the identity affordance is kept as legacy parity but resolves to the application
-       root rather than to a profile screen, and the legacy tooltip is not reproduced. In the legacy
-       band the identity WAS the profile link: `User.ascx.vb` L110-L112 captioned the control with
-       `objUserInfo.DisplayName` and attached the tooltip "Click Here To Edit Your Account Profile"
-       (`User.ascx.resx` L45-L46), and L150-L155 navigated to a per-user profile address built from
-       `objUserInfo.UserID`. The paired component publishes a display name and NO identifier, so
-       that address cannot be composed here even though the target route table does declare one, and
-       the cluster's shape is fixed at two children, so the tooltip has no element left to name. The
-       affordance therefore carries the application's own name and returns the operator to the root,
-       which redirects to the tenant list. -->
-  <!-- MIGRATION: the legacy REGISTER affordance is deliberately not carried forward. `User.ascx.vb`
-       gated it twice — on the tenant's registration mode and on its user quota — with the caption
-       "Register" from `User.ascx.resx` L42-L43. Public self-registration is an end-user affordance
-       rather than an administrative one and this console declares no registration route, so neither
-       gate has anything left to govern. -->
+  <!--
+    MIGRATION: the identity affordance is kept as legacy parity but resolves to the application root
+    rather than to a profile screen, and the legacy tooltip is not reproduced.
+  -->
+  <!--
+    MIGRATION: the legacy REGISTER affordance is deliberately not carried forward. `User.ascx.vb` gated
+    it twice — on the tenant's registration mode and on its user quota — with the caption "Register"
+    from `User.ascx.resx` L42-L43.
+  -->
   <a class="app-header__brand" [routerLink]="brandLink">{{ applicationName }}</a>
 
   <div class="app-header__actions">
     @if (hasSignedInUser) {
       <span class="app-header__user">{{ userName }}</span>
-      <!-- MIGRATION: TWO account-scoped destinations, and two is the whole set the console's route
-           table can offer. The legacy account command bar declared five commands
-           (`ManageUsers.ascx.resx`) and this band had ported none of them, which left a signed-in
-           member with no link to either screen they are entitled to operate on their own behalf -
-           the navigation rail is administrator-only, so their own profile and their own password
-           were reachable only by typing a URL containing their numeric account key.
-           `ManageUsers.ascx.vb:L439-L456` shows the legacy offered both to an account viewing
-           itself: `cmdPassword` is hidden only when the viewer is neither an administrator nor the
-           holder, and `cmdProfile` is never hidden at all. Order follows that command bar: profile,
-           then password.
-
-           A third link, to the legacy `cmdServices` panel, was briefly rendered here and is
-           WITHDRAWN with the address it pointed at: the migration plan freezes the console at
-           twenty-five screens and declares no member-services route, so the band had a link to an
-           address the route table does not publish. The five self-service endpoints and their typed
-           client wrappers remain, so restoring the link is a route declaration away.
-
-           LINKS where the sign-out beside them is a button, because these are destinations and that
-           is a command. Each is rendered only when its address was supplied AND a session is
-           present, so neither can navigate to the current page or name an account that is not
-           signed in, and the addresses are supplied whole by the container: this band holds a
-           caption rather than an account, so it could not compose one. -->
       @if (hasAccountProfileLink) {
         <a class="app-header__account-link" [routerLink]="accountProfileLink">{{
           accountProfileLabel
@@ -114,18 +35,6 @@
           accountPasswordLabel
         }}</a>
       }
-      <!-- MIGRATION: signing out is a COMMAND rather than a destination, so this is a button where
-           the legacy affordance was a link. `Login.ascx.vb` L119 issued a full server redirect to a
-           "Logoff" address on the active page, resolving to the single tree-wide forms
-           authentication sign-out; the target route table declares no sign-out path at all, and a
-           link to a route that does not exist would be announced as a link and then navigate
-           nowhere. The caption is the measured legacy wording `Logout`, taken from
-           `Login.ascx.resx` L45-L46 and reached through `Localization.GetString("Logout", ...)` at
-           `Login.ascx.vb` L99, because the migration plan makes the legacy resource files the
-           authoritative source of wording so that labels stay recognisable to existing operators.
-           The control is genuinely disabled while a sign-out is in flight rather than merely
-           announced as unavailable, which is what stops an impatient second activation issuing a
-           second request. -->
       <button
         type="button"
         class="app-header__logout"

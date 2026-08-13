@@ -1,160 +1,32 @@
-// =============================================================================
-//  THE NOTIFICATION SURFACE — component-scoped presentation
-// =============================================================================
-//
-//  ROLE
-//  ----
-//  Styles exactly what `notification-list.component.html` renders and nothing else:
-//  the persistent live region, one banded row per queued entry, the severity word,
-//  the sentence, and the dismissal control.
-//
-//  PROJECT STANDARDS — NO USER-SPECIFIED RULES EXIST
-//  ------------------------------------------------
-//  The rules document reports that no user rules were provided, which is not
-//  treated as licence to lower the bar. What governs instead is the migration
-//  plan's own normative sections and its enterprise baseline, in the plan's
-//  precedence order: design-system compliance, then visual continuity with the
-//  legacy portal, then accessibility, then responsive behaviour, then code
-//  quality.
-//
-//  ZERO HARDCODED VALUES
-//  ---------------------
-//  Every property value resolves to a design token declared in
-//  `src/styles/_tokens.scss` or to one of the six literals the plan permits — 0,
-//  none, auto, inherit, currentColor, transparent. There is no colour literal, no
-//  length literal, no bare numeric transparency, no importance flag and no asset
-//  reference anywhere in this file. `flex`, `grid`, `start`, `center` and
-//  `space-between` name layout mechanisms rather than measured design decisions and
-//  have no token to resolve to.
-//
-//  ⚠ NO RAW `@media` — the workspace permits one only in `_mixins.scss`, and
-//  responsive behaviour is obtained by `@include`-ing a mixin from there. This
-//  surface needs none: it is a single column at every width, which is what a
-//  message region should be, so no breakpoint is consulted and none is restated.
-//
-//  THE FOUR BANDS, AND WHERE EACH VALUE COMES FROM
-//  ----------------------------------------------
-//  The bands deliberately reuse the shared error banner's own band vocabulary, so
-//  that one application does not paint the same condition two ways:
-//
-//    error    danger accent and danger ink, both `--color-danger` (#FF0000, the
-//             measured legacy error red). It renders at 4.00:1 on the background —
-//             clear of the 3:1 floor for a non-text component such as the border, and
-//             BELOW the 4.5:1 minimum for normal text. That ratio is RECORDED rather
-//             than repaired with a new colour: the vocabulary is closed at nine and
-//             admits no hue on accessibility grounds. What carries the obligation is
-//             the severity NAMED IN TEXT in a live region, so the state never depends
-//             on the hue. Same position, same reason, as `error-banner.component.scss`.
-//
-//    warning  brand accent + the vocabulary's secondary surface. Measured: the legacy
-//             `YellowWarning` styled its message with the ordinary `.Normal` class
-//             rather than the red one, so a refusal was deliberately NOT painted as a
-//             fault. The legacy hint colour was pale yellow and is NOT tokenised — it
-//             is absent from the specification's nine — so this band is grey, which is
-//             a recorded visible divergence. The brand accent and the severity word
-//             carry the distinction.
-//
-//    info     the quiet band: the neutral border and the secondary surface, with
-//             inherited ink. It has no legacy counterpart — the legacy
-//             `ModuleMessageType` enumeration declares exactly three members and no
-//             informational one — and exists because the credential rate limiter
-//             refuses with "you are early", which must not be dressed as a failure.
-//
-//    success  the brand accent on the SELECTION TINT (`--color-selected`), with inherited
-//             ink. The surface is what separates it from the refusal band; see the note
-//             below. MIGRATION:
-//             the legacy success band carried its colour ENTIRELY IN A RASTER ICON —
-//             `~/images/green-ok.gif` at `ModuleMessage.vb:L134` — while its text used
-//             the ordinary `.Normal` class. Measured, there is no green anywhere in
-//             `Website/Portals/_default/default.css`, so no green token exists to
-//             resolve to and inventing one would be a design-system change with no
-//             measured source. The icon is not carried across either: the design system
-//             permits no CSS asset reference. The band is therefore stated by the accent
-//             plus the severity WORD, which is how it stays perceivable without colour.
-//
-//  ⚠ SUCCESS AND WARNING SHARE THE ACCENT HUE, AND THE SURFACE IS WHAT SEPARATES THEM.
-//  Runtime measurement confirms both accents compute to #003366. That shared hue was
-//  reported as making a confirmation and a refusal look alike, and the report was fair
-//  when success sat on the plain page background: the two bands then differed only in
-//  surface-versus-no-surface and in the severity word. Success now takes the SELECTION
-//  TINT (`--color-selected`, #C1D2EE), so the four bands differ on two axes each and no
-//  two share both:
-//
-//        error    danger accent  + danger ink   + plain background
-//        success  brand accent   + inherited ink + selection tint
-//        warning  brand accent   + inherited ink + secondary surface
-//        info     neutral accent + inherited ink + secondary surface
-//
-//  ⚠ NO TENTH COLOUR WAS ADDED, and that constraint is the reason the accent hue is still
-//  shared rather than made unique. The vocabulary this workspace may draw on is fixed at
-//  the nine measured legacy colours and none of them is a success or a warning hue — the
-//  legacy success band held its colour in a raster image rather than in CSS, and the
-//  legacy warning hint was a pale yellow that appears nowhere in
-//  `Website/Portals/_default/default.css` and so was never tokenised. Both bands are
-//  therefore stated with tokens that exist, and the pale yellow's absence remains a
-//  recorded visible divergence from the legacy screens.
-//
-//  In every band the severity WORD is the cue that carries the state, so no severity on
-//  this surface is distinguished by colour alone — the property that actually matters.
-//
-//  SELECTOR CONTRACT — shared verbatim with notification-list.component.html
-//  -----------------------------------------------------------------------
-//  `.notification-list` is the persistent live region; `.notification-list__item`
-//  one entry, carrying `data-severity`; `.notification-list__severity` the word;
-//  `.notification-list__message` the sentence; `.notification-list__dismiss` the
-//  control. Emulated view encapsulation rewrites every selector with this
-//  component's own content attribute, so none of these rules can reach a feature
-//  screen's markup.
-
 // Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
 // here; a `@use` elsewhere does not.
 @use '../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  THE LIVE REGION
-// -----------------------------------------------------------------------------
-//  It is in the document at all times — a region inserted with its first message is
-//  announced inconsistently — so while the queue is empty it must paint NOTHING.
-//  That is why it carries no padding, no border, no background and no minimum
-//  size: an empty element with no content resolves to zero height, and `gap`
-//  contributes nothing with fewer than two children.
+// THE LIVE REGION
+// It is in the document at all times — a region inserted with its first message is announced inconsistently
+// — so while the queue is empty it must paint NOTHING. That is why it carries no padding, no border, no
+// background and no minimum size: an empty element with no content resolves to zero height, and `gap`
+// contributes nothing with fewer than two children.
 .notification-list {
-  // ⚠ FIXED, AND THIS IS THE FIX RATHER THAN A STYLE CHOICE. In flow, each entry cost 42px and
-  //  displaced everything below it: nine entries measured 442px and moved the page heading from
-  //  y=83 to y=515, which is 49 per cent of a 900px viewport spent on notification chrome and
-  //  every position on the screen underneath it invalidated. Taking the region out of flow means
-  //  an announcement can never move the thing a person is reading or about to click.
-  //
-  //  The element stays exactly where it is in the MARKUP - first inside the main region - so its
-  //  place in the accessibility tree and in the tab order is unchanged. Only its painting moves.
+  // The element stays exactly where it is in the MARKUP - first inside the main region - so its place in
+  // the accessibility tree and in the tab order is unchanged. Only its painting moves.
   position: fixed;
   z-index: var(--z-index-overlay);
   display: flex;
 
-  //  Anchored to the BLOCK-END, INLINE-END corner and stacked so the newest entry is nearest that
-  //  corner. Logical properties throughout, so a right-to-left document mirrors the anchor without
-  //  a second rule - the shell already switches the document direction, and a physical `right`
-  //  here would leave the stack over the content in that direction.
-  //
-  //  `column-reverse` rather than reordering the entries in the template: the DOM order stays
-  //  oldest-first, which is the order they are announced in and the order the tab sequence follows,
-  //  while the newest is painted closest to the corner where a person's attention already is.
+  // `column-reverse` rather than reordering the entries in the template: the DOM order stays oldest-first,
+  // which is the order they are announced in and the order the tab sequence follows, while the newest is
+  // painted closest to the corner where a person's attention already is.
   inset-block-end: var(--space-4);
   inset-inline-end: var(--space-4);
   flex-direction: column-reverse;
   gap: var(--space-2);
 
-  //  Bounded on both axes. The inline bound keeps a long remote sentence from spanning a wide
-  //  screen, and the block bound with scrolling keeps the stack inside the viewport however many
-  //  entries the display ceiling admits.
-  //
-  //  ⚠ EVERY VALUE HERE RESOLVES TO A TOKEN, AND TWO OF THEM DID NOT. The inline bound repeated
-  //  `28rem` as a literal while `--notification-max-inline-size` already carried exactly that value
-  //  and the sibling rule below already consumed it, so one measurement had two spellings and only
-  //  one of them was in the vocabulary; and both viewport extents were spelled inline, where the
-  //  block extent already had `--size-viewport-block`. The inline counterpart is now declared beside
-  //  it. This region is positioned against the VIEWPORT rather than laid out in flow, which is why
-  //  it bounds itself against the window instead of against a parent's percentage.
+  // ⚠ EVERY VALUE HERE RESOLVES TO A TOKEN, AND TWO OF THEM DID NOT. The inline bound repeated `28rem` as a
+  // literal while `--notification-max-inline-size` already carried exactly that value and the sibling rule
+  // below already consumed it, so one measurement had two spellings and only one of them was in the
+  // vocabulary; and both viewport extents were spelled inline, where the block extent already had
+  // `--size-viewport-block`.
   inline-size: min(
     var(--notification-max-inline-size),
     calc(var(--size-viewport-inline) - var(--space-8))
@@ -162,10 +34,9 @@
   max-block-size: calc(var(--size-viewport-block) - var(--space-8));
   overflow-y: auto;
 
-  //  ⚠ THE REGION IS PRESENT AT ALL TIMES, so it must not intercept the pointer while it is empty
-  //  - a fixed, transparent element over the bottom corner of every screen would swallow clicks on
-  //  whatever is underneath it. Interaction is re-enabled on the entries themselves, which are the
-  //  only things in here a person can act on.
+  // ⚠ THE REGION IS PRESENT AT ALL TIMES, so it must not intercept the pointer while it is empty - a fixed,
+  // transparent element over the bottom corner of every screen would swallow clicks on whatever is
+  // underneath it.
   pointer-events: none;
 }
 
@@ -176,13 +47,7 @@
   pointer-events: auto;
 }
 
-// -----------------------------------------------------------------------------
-//  ONE ENTRY
-// -----------------------------------------------------------------------------
-//  Three columns: the severity word, the sentence taking the remainder, and the
-//  dismissal at the trailing edge. Flexbox rather than Grid, per the plan's
-//  division — Grid places the shell's regions in two dimensions, components lay
-//  their own contents out with Flexbox.
+// ONE ENTRY
 .notification-list__item {
   display: flex;
   align-items: start;
@@ -190,10 +55,9 @@
   padding-block: var(--space-2);
   padding-inline: var(--space-3);
   border: var(--border-width) var(--border-style) var(--color-border);
-  // The accent is the leading edge only, which is the same emphasis the shared
-  // error banner uses and the same one the legacy validation-message vocabulary
-  // used. Widened to the first spacing step so it reads as an accent rather than
-  // as a hairline.
+  // The accent is the leading edge only, which is the same emphasis the shared error banner uses and the
+  // same one the legacy validation-message vocabulary used. Widened to the first spacing step so it reads
+  // as an accent rather than as a hairline.
   border-inline-start-width: var(--space-1);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
@@ -202,9 +66,8 @@
   line-height: var(--line-height-base);
 }
 
-// The danger band. Accent and ink are the same token, for the reason recorded in the band
-// table above; the severity word in the live region is what a reader who perceives no red
-// receives instead.
+// The danger band. Accent and ink are the same token, for the reason recorded in the band table above; the
+// severity word in the live region is what a reader who perceives no red receives instead.
 .notification-list__item[data-severity='error'] {
   border-color: var(--color-danger);
   color: var(--color-danger);
@@ -222,91 +85,37 @@
   background-color: var(--color-surface);
 }
 
-// The confirmation band.
-//
-// ⚠ THE SURFACE IS WHAT SEPARATES THIS BAND FROM THE REFUSAL BAND, and it was added because
-// the two were reported as looking alike. Measured before this line: success was the brand
-// accent on the plain background and warning was the brand accent on the secondary surface,
-// so the ACCENT HUE was identical for a confirmation and a refusal and only the surface and
-// the severity word told them apart. That is a real weakness at a glance, and it is closed
-// here — but closed WITHOUT ADDING A HUE.
-//
-// `--color-selected` is already one of the specification's nine colours (#C1D2EE, the measured
-// legacy selected-row tint), so this introduces no tenth colour and no hardcoded value. It is
-// also the right one semantically: it is the tint this application already uses to say "this is
-// the affirmed entry", which is precisely what a confirmation says. The four bands are now
-// separated on two axes each — error red accent with red ink on the plain background, success
-// brand accent on the selection tint, warning brand accent on the secondary surface, info
-// neutral accent on the secondary surface — so no two share both.
-//
-// The severity WORD remains the cue that carries the state, exactly as the band table above
-// records, so nothing here makes the distinction depend on colour perception. A green would
-// have been the conventional choice and is deliberately not taken: the vocabulary is closed at
-// nine and the specification's own token table admits no success hue, so inventing one would
-// widen the design system rather than use it.
+// ⚠ THE SURFACE IS WHAT SEPARATES THIS BAND FROM THE REFUSAL BAND, and it was added because the two were
+// reported as looking alike.
 .notification-list__item[data-severity='success'] {
   border-inline-start-color: var(--color-primary);
   background-color: var(--color-selected);
 }
 
-// -----------------------------------------------------------------------------
-//  THE SEVERITY WORD
-// -----------------------------------------------------------------------------
-//  Bold and non-shrinking, so a long sentence cannot squeeze the cue that carries
-//  the band without colour. `flex-shrink: 0` is expressed through the shared
-//  flex token vocabulary's absence of a "fill" role here: the word takes its
-//  intrinsic width and nothing more.
+// THE SEVERITY WORD
+// Bold and non-shrinking, so a long sentence cannot squeeze the cue that carries the band without colour.
+// `flex-shrink: 0` is expressed through the shared flex token vocabulary's absence of a "fill" role here:
+// the word takes its intrinsic width and nothing more.
 .notification-list__severity {
   flex: none;
   margin: 0;
   font-weight: var(--font-weight-bold);
 }
 
-// -----------------------------------------------------------------------------
-//  THE SENTENCE
-// -----------------------------------------------------------------------------
-//  Takes the remaining inline space from zero, so a single long unbroken token
-//  cannot force the row wider than its container. `overflow-wrap` is what lets
-//  such a token break rather than overflow — a message can be remote text and its
-//  shape is not this application's to choose.
+// THE SENTENCE
+// Takes the remaining inline space from zero, so a single long unbroken token cannot force the row wider
+// than its container. `overflow-wrap` is what lets such a token break rather than overflow — a message can
+// be remote text and its shape is not this application's to choose.
 .notification-list__message {
   flex: var(--flex-fill-from-zero);
   margin: 0;
   overflow-wrap: break-word;
 }
 
-// -----------------------------------------------------------------------------
-//  THE DISMISSAL
-// -----------------------------------------------------------------------------
-//  A real button, so it is styled down to a glyph rather than up from a span. The
-//  focus ring is the shared one, applied on `:focus-visible` only, so a pointer
-//  activation does not leave a ring behind while a keyboard activation always
-//  shows one.
-//
-//  ⚠ THE TARGET IS SIZED, NOT LEFT TO THE GLYPH. Measured at runtime, the glyph alone
-//  gave this control a hit area of roughly seven by twelve pixels — the multiplication
-//  sign is a narrow character and the base type scale is small — which is far below the
-//  twenty-four-pixel minimum target size. A minimum box on both axes raises it to
-//  exactly that minimum WITHOUT enlarging the glyph, so nothing about the appearance of
-//  the row changes except that the control becomes reliably hittable with a finger or an
-//  imprecise pointer. `--space-6` is the token that measures twenty-four pixels at the
-//  root size, so the floor is expressed in the scale rather than as a literal.
-//
-//  The box is centred with `inline-flex` rather than by line-height arithmetic, because a
-//  glyph centred by line height drifts the moment the type scale is retuned, whereas a
-//  centred flex box does not. The declared `inline-flex` computes to `flex` at runtime
-//  because a flex item's display type is blockified by the specification; the formatting
-//  context and the centring are unaffected, and the longhand is written as the author
-//  intends it rather than as the cascade reports it.
-//
-//  A CONSEQUENCE, MEASURED AND ACCEPTED: this box is now the tallest item in the row, so
-//  the row grew from 34.5px to 42px — exactly the difference between the 24px floor and
-//  the 16.5px text line. Because the row stays top-aligned, the whole increase lands below
-//  the text and the glyph settles a few pixels under the sentence's optical centre.
-//  Centring the ROW instead would close that gap and open a worse one: a message running
-//  to several lines would then centre its severity word against the whole block, when the
-//  word belongs beside the first line. Top alignment is kept for that reason, and the
-//  residual offset is consistent on every row.
+// THE DISMISSAL
+// A real button, so it is styled down to a glyph rather than up from a span. The focus ring is the shared
+// one, applied on `:focus-visible` only, so a pointer activation does not leave a ring behind while a
+// keyboard activation always shows one.
 .notification-list__dismiss {
   display: inline-flex;
   flex: none;
@@ -326,114 +135,33 @@
 
   @include mx.focus-ring;
 
-  // Hover is a REINFORCEMENT and never the only signal: the control has an
-  // accessible name, a pointer cursor and a focus ring, so an operator who cannot
-  // perceive the hover tint loses nothing. Applied through the shared mixin, which
-  // confines it to devices that genuinely hover — on a touch device a `:hover`
-  // rule sticks after a tap and leaves the control looking permanently active.
+  // Hover is a REINFORCEMENT and never the only signal: the control has an accessible name, a pointer
+  // cursor and a focus ring, so an operator who cannot perceive the hover tint loses nothing.
   @include mx.hover {
     color: var(--color-primary-hover);
   }
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE.
-  // `background-color: transparent` above weighs (0,1,0) against the global
-  // `button:active` rule's (0,1,1), so the shared press tint was losing before a pointer
-  // arrived and this control was BYTE-IDENTICAL pressed and at rest. Dismiss is the one
-  // control on a notification, and a toast that does not acknowledge the press invites a
-  // second press at a card that is already leaving.
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE. `background-color:
+  // transparent` above weighs (0,1,0) against the global `button:active` rule's (0,1,1), so the shared
+  // press tint was losing before a pointer arrived and this control was BYTE-IDENTICAL pressed and at rest.
   &:active {
     background-color: var(--color-selected);
   }
-
 }
 
-// -----------------------------------------------------------------------------
-//  OUT OF FLOW, SO AN ANNOUNCEMENT NEVER MOVES THE PAGE
-// -----------------------------------------------------------------------------
-//  ⚠ THE DEFECT: a notification appearing pushed the page heading DOWN 42px and its
-//  dismissal snapped the heading back up 42px. The design vocabulary declares no
-//  motion at all - the legacy stylesheet has zero `transition`, `animation` and
-//  `@keyframes` declarations - so both movements were INSTANTANEOUS, which is the
-//  worst form for a reader to absorb: the line being read leaves the eye's position
-//  with no travel to follow it. Now that transient entries expire on their own, that
-//  jump also happened without the reader doing anything at all.
-//
-//  ⚠ WHY OUT OF FLOW RATHER THAN RESERVING THE SPACE. Reserving a notification's
-//  height permanently would remove the jump too, and it would contradict the reason
-//  this surface is mounted where it is: `shell.component.html` records that it "must
-//  contribute NOTHING while it is empty, which a grid region with its own track could
-//  not promise". A permanent 42px of blank page on every screen is exactly the track
-//  that note refuses. Leaving the flow keeps both properties - nothing when empty,
-//  and no displacement when full.
-//
-//  ⚠ DOM ORDER IS UNCHANGED, WHICH IS WHAT PRESERVES THE ACCESSIBILITY CONTRACT. The
-//  same note records that the surface sits above the outlet and inside the main region
-//  so an announcement is the first thing in that region and is part of what the skip
-//  link moves focus to. Positioning changes where it PAINTS, not where it sits in the
-//  document, so a screen reader and the skip link both still meet it first.
-//
-//  ⚠ ANCHORED TO THE BLOCK-END INLINE-END CORNER, AND THIS CORRECTS A DEFECT THIS BLOCK
-//  ITSELF INTRODUCED. It used to anchor to the TOP inline-end corner, on the reasoning
-//  that "the page heading is inline-start aligned, so a capped-width panel in the
-//  opposite corner overlays the heading's whitespace rather than its words". The premise
-//  was measured against the heading alone and it is FALSE for the page header as a
-//  whole: `page-header.component.scss` lays the header out as a `space-between` row, so
-//  every screen that projects actions puts them at the top INLINE-END - exactly where
-//  this panel was painting, above them at the overlay step of the z-index scale. The
-//  rendered evidence is `/modules/new` after a failed submission: the warning panel
-//  occupied the band holding `Update` and `Cancel` and neither label was visible at all,
-//  so for the twenty seconds a warning lives the operator could not see the control they
-//  had just pressed and were being asked to press again. An invisible primary action is a
-//  workflow blocker rather than a cosmetic overlap.
-//
-//  THE TRADE-OFF IS NAMED RATHER THAN AVOIDED, because both corners are occupied on some
-//  screen. The block-end corner can overlap the last field of a long form - measured on
-//  `/modules/new`, where the End Date control reaches the inline-end gutter - and that is
-//  accepted over the alternative for three reasons. The primary action bar is at the top
-//  of EVERY screen and is what the operator is reaching for at the moment a notification
-//  appears, whereas the bottom-end content varies and is usually whitespace or a pager.
-//  A partly covered input still accepts focus and typing, while a hidden button cannot be
-//  found at all. And `fixed` means the reader can scroll the covered content clear of the
-//  panel, which an absolutely positioned panel scrolling with the document could not
-//  offer.
-//
-//  FIXED RATHER THAN ABSOLUTE, and that is required rather than incidental: a bottom
-//  anchor measured against the document would sit at the bottom of the PAGE, which on a
-//  long form is off-screen entirely and would silence the surface. Nothing between this
-//  host and the root establishes a containing block for it - the main region deliberately
-//  sets no `overflow` value and the shell sets no transform, both recorded in
-//  `shell.component.scss` - so this resolves against the viewport as intended.
-//
-//  `inset-inline-end` and `inset-block-end` are logical, so a right-to-left locale
-//  anchors to the mirrored corner without a second rule.
-//
-//  Z-INDEX COMES FROM THE SCALE. The token vocabulary states that nothing outside its
-//  scale may set a z-index. `--z-index-overlay` is the right step: above the sticky and
-//  dropdown steps so a notification is not buried, and BELOW `--z-index-modal` so the
-//  confirmation dialogue covers it rather than competing with it.
+// OUT OF FLOW, SO AN ANNOUNCEMENT NEVER MOVES THE PAGE
 :host {
   position: fixed;
   inset-block-end: var(--space-4);
   inset-inline-end: var(--space-4);
   z-index: var(--z-index-overlay);
 
-  // Capped, and the cap now carries MORE weight than it did under the old block-start anchor:
-  // at the block-END corner an uncapped panel would span the full measure and so cover the
-  // ENTIRE last row of a form rather than one corner of it. Measured on `/modules/new` with the
-  // cap in place, the panel (321.72px wide) clips 7.87% of the Footer textarea — its
-  // bottom-inline-end corner — and `document.elementFromPoint` at that textarea's centre and at
-  // its bottom-inline-start still returns the textarea, so it stays focusable and typeable.
-  // Uncapped it would have spanned x 388-1424 and taken the control's whole bottom edge.
-  // `max-inline-size` rather than `inline-size` so a short message still stays compact.
+  // Capped, and the cap now carries MORE weight than it did under the old block-start anchor: at the
+  // block-END corner an uncapped panel would span the full measure and so cover the ENTIRE last row of a
+  // form rather than one corner of it.
   max-inline-size: min(var(--notification-max-inline-size), calc(100% - var(--space-8)));
 }
 
-// -----------------------------------------------------------------------------
-//  THE OVERFLOW COUNT
-// -----------------------------------------------------------------------------
-//  A statement, not a control: it is the count of entries the display ceiling is holding back, so
-//  it carries no border, no background and no pointer interaction. Rendered at the smallest step
-//  on the ramp - which is the 12px floor, never smaller - and in the muted tone, so it reads as a
-//  footnote to the stack rather than as another message.
+// THE OVERFLOW COUNT
 .notification-list__overflow {
   margin: 0;
   color: var(--color-text-muted);
@@ -441,13 +169,9 @@
   text-align: end;
 }
 
-// -----------------------------------------------------------------------------
-//  CLEARING EVERYTHING
-// -----------------------------------------------------------------------------
-//  Styled as a text affordance rather than as a filled button: it sits beside messages that each
-//  carry their own accent, and a second filled control there would compete with the message the
-//  person is meant to read. It is nonetheless a real button, so the shared application-wide
-//  `button` floor already gives it a hittable target and the focus ring is the shared one.
+// CLEARING EVERYTHING
+// Styled as a text affordance rather than as a filled button: it sits beside messages that each carry their
+// own accent, and a second filled control there would compete with the message the person is meant to read.
 .notification-list__clear-all {
   align-self: end;
   border: none;

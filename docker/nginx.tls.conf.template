@@ -12,16 +12,12 @@
 #   docker compose -f docker/docker-compose.yml -f docker/docker-compose.tls.yml \
 #       --env-file docker/.env up -d
 #
-# WHY IT IS A TEMPLATE, AND WHY THAT IS THE CORRECTION. This file previously
-# hard-coded `server_name dnn.example.com` in both blocks, and the API's own
-# AllowedHosts hard-coded the same example in the compose overlay, while only the
-# cross-origin allow-list was parameterised. A deployment that followed the
-# documented environment workflow and set its origin therefore got: a port-80
-# redirect scoped to a name no browser would send, so its own callers never reached
-# the redirect and could be served the application over cleartext; a TLS server
-# whose name did not match the certificate it was given; and an API that refused
-# its traffic by host filtering. Every one of those failures required editing a
-# TRACKED file to avoid, which is not a deployment contract - it is a fork.
+# WHY IT IS A TEMPLATE. Both server names come from one environment variable, so a
+# deployment names itself once and edits no tracked file. A hard-coded server name
+# would give a deployment a port-80 redirect scoped to a name no browser sends - so
+# its own callers could be served the application over cleartext - a TLS server whose
+# name did not match its certificate, and an API that refused its traffic by host
+# filtering, with a source edit as the only way out.
 #
 #   ${DNN_PUBLIC_HOST} below is substituted by the nginx image's OWN entrypoint.
 #   /docker-entrypoint.d/20-envsubst-on-templates.sh renders every
@@ -56,13 +52,12 @@
 # HOW IT SERVES THE APPLICATION: BY INCLUDING THE SAME THREE SNIPPETS THE
 # PLAIN-HTTP SERVER INCLUDES. An nginx server block inherits from http but not from
 # a sibling server, so this block has to declare the application's locations
-# itself. It previously declared COPIES, and that is exactly how the public
-# listener came to be the one that lacked per-request upstream resolution, the raw
-# request target, the import-sized body allowance, the RFC 7807 gateway answer and
-# three response security headers. It now includes
-# /etc/nginx/snippets/{security-headers,api-proxy,spa-static}.conf, so "identical to
-# the plain-HTTP server" is a property of the configuration rather than a claim in a
-# comment.
+# itself. It includes /etc/nginx/snippets/{security-headers,api-proxy,spa-static}.conf
+# rather than restating them, so "identical to the plain-HTTP server" is a property of
+# the configuration rather than a claim in a comment - which is what keeps
+# per-request upstream resolution, the raw request target, the import-sized body
+# allowance, the RFC 7807 gateway answer and every response security header on this
+# listener too.
 #
 # WHAT IT DOES TO PLAIN HTTP. The default server in docker/nginx.conf keeps
 # listening on 80 and keeps serving, because the container health probe and any
@@ -143,14 +138,13 @@ server {
     # `listen 443 ssl` server, so strict transport security is emitted here and
     # omitted on the plain-HTTP default server with no second knob anywhere.
     #
-    # MIGRATION: this block used to write its own header values, and they had drifted
-    #   from the plain-HTTP server's: its Permissions-Policy had lost `usb=()`, its
-    #   strict-transport-security value carried `preload` where nginx.conf deliberately
-    #   does not - a browser preload entry is irreversible on any useful timescale and
-    #   binds every subdomain - and an earlier revision named a `$csp` variable that no
-    #   longer existed, which made nginx REFUSE TO START and restart in a loop the
-    #   moment TLS was activated. One definition with several include sites is what
-    #   makes that class of failure impossible.
+    # ⚠ THE HEADER VALUES ARE DEFINED ONCE AND INCLUDED HERE, never written again in
+    #   this block. Two hand-maintained copies drift - a lost `usb=()` in
+    #   Permissions-Policy, a `preload` token that nginx.conf deliberately omits
+    #   because a browser preload entry is irreversible on any useful timescale and
+    #   binds every subdomain, or a `$csp` variable that does not exist and makes nginx
+    #   REFUSE TO START and restart in a loop the moment TLS is activated. One
+    #   definition with several include sites makes that class of failure impossible.
     include /etc/nginx/snippets/security-headers.conf;
 
     # The API reverse proxy and its gateway answer, byte-identical to the

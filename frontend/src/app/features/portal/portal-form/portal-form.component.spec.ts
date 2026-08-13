@@ -1,41 +1,3 @@
-/**
- * @fileoverview Proofs for the portal creation and edit screen.
- *
- * The screen replaces two legacy Web Forms pages at once - one for creation and one for editing - and the
- * migration discipline requires that validation rules MATCH and that error messages be EQUIVALENT rather than
- * merely similar. Every sentence asserted below was read out of the legacy resource files in this checkout.
- *
- * Four of the tests exist because the mistake they catch COMPILES CLEANLY and looks plausible in review. They
- * are called out here so nobody deletes one as redundant:
- *
- * 1. `portalId = 0` selects the EDIT contract. `Portals.PortalID` is `IDENTITY(-1,1)`, so the FIRST REAL
- *    PORTAL HAS THE ID `0`, and a truthiness test (`if (portalId)`) reads that portal as absent and offers a
- *    creation form for a record that already exists.
- * 2. `portalId = -1` also selects the EDIT contract. `-1` is simultaneously a legitimate identifier AND the
- *    legacy absent-integer sentinel, so a lower-bound test (`portalId > 0`) makes the baseline portal
- *    uneditable.
- * 3. The invalid-alias sentence is emitted EXACTLY ONCE however many characters offend. The legacy loop
- *    appended it once PER offending character, so an alias of `a b c!` produced four copies. That is a defect,
- *    it is deliberately not reproduced, and only a count assertion keeps it from creeping back.
- * 4. The alias and the title reach the OPPOSITE request members from the ones their names suggest: the legacy
- *    `txtPortalName` box collected the ALIAS and the legacy `txtTitle` box collected the NAME, as the legacy
- *    creation code-behind, its markup and its resource file all independently confirm. A swap compiles,
- *    submits, and writes every new portal's alias into its title column with no diagnostic anywhere, so the
- *    test fills the two boxes with values that cannot be confused and pins each to its correct member.
- *
- * This screen reports a refused write through the injected notification service rather than by printing a
- * sentence of its own into the form, so the message assertions read the recorded notification. The per-field
- * messages the server returns in an RFC 7807 document DO land in the document, beside the control the server
- * named, and are read from there.
- *
- * The store and the API service are real and every request is intercepted at the HTTP boundary, which is what
- * lets these tests prove the METHOD, the URL and the BODY of each call rather than merely that some
- * collaborator was invoked - a service double would have happily accepted the inverted payload above. The
- * addresses asserted are RELATIVE (`/api/v1/...`) because the test target declares no configuration-file
- * replacement and so compiles against the deployed configuration, whose base address is relative so that the
- * reverse proxy can serve the browser from a single origin.
- */
-
 import { DOCUMENT } from '@angular/common';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -56,57 +18,27 @@ import type { ProblemDetails, ProblemDetailsErrors } from '../../../core/models/
 
 // ADDRESSES
 
-/**
- * The portal collection, addressed exactly as the deployed application addresses it.
- *
- * Relative by requirement, not by convenience. The test target in `angular.json` declares no
- * `fileReplacements`, so a spec compiles against the deployed configuration file under `src/environments/`
- * rather than the development one. Its base address is the relative `/api/v1`, because the reverse proxy
- * forwards `/api/` to the API container and the browser must therefore reach the API through the same origin
- * that served the application. An absolute address asserted here would pass while describing a configuration
- * the deployed system does not use.
- */
+/** The portal collection, addressed exactly as the deployed application addresses it. */
 const PORTALS_URL = '/api/v1/portals';
 
-/**
- * One portal, addressed by identifier. Interpolated so a sentinel identifier survives.
- */
+/** One portal, addressed by identifier. Interpolated so a sentinel identifier survives. */
 function portalUrl(portalId: number): string {
   return `${PORTALS_URL}/${portalId}`;
 }
 
-/**
- * Where both a completed write and an abandoned one lead.
- */
+/** Where both a completed write and an abandoned one lead. */
 const PORTAL_LIST_ROUTE = '/portals';
 
 // The host name this screen seeds a child alias from
 
-/**
- * The host name the stubbed document reports.
- *
- * Deliberately NOT the real browsing context. Karma serves the suite from an arbitrary port, so an assertion
- * against the real host would be checking a value the runner chose rather than the value the component
- * derived, and it would read differently on the next run. Substituting the document lets the prefill be
- * asserted exactly — see the note on {@link documentReporting}.
- */
+/** The host name the stubbed document reports. */
 const STUBBED_HOST = 'portals.example.test';
 
 /**
- * A document that reports {@link STUBBED_HOST} and behaves like the real one otherwise.
- *
- * The component reads `inject(DOCUMENT).location.host`, so only `location` needs substituting — but the test
- * harness renders the fixture into that SAME document, so a bare object carrying nothing but a host name
- * would break rendering outright. The proxy therefore intercepts `location` alone and forwards every other
- * member to the genuine document.
- *
- * Two details make the forwarding correct rather than merely plausible, and both were confirmed by running
- * the suite rather than reasoned about in the abstract:
- *
- * * members are read with the real document as the RECEIVER, so native accessors such as `body` and
- *   `documentElement` resolve against real internal state instead of against the proxy;
- * * methods are bound to the real document before being handed back, because a native method invoked with
- *   the proxy as its `this` throws an illegal-invocation error.
+ * A document that reports {@link STUBBED_HOST} and behaves like the real one otherwise. The component
+ * reads `inject(DOCUMENT).location.host`, so only `location` needs substituting — but the test harness
+ * renders the fixture into that SAME document, so a bare object carrying nothing but a host name would
+ * break rendering outright.
  */
 function documentReporting(hostName: string, real: Document): Document {
   return new Proxy(real, {
@@ -123,51 +55,25 @@ function documentReporting(hostName: string, real: Document): Document {
 }
 
 // MEASURED WORDING
-//
-//  Restated here rather than imported from the component on purpose. A test that imports the sentence it
-//  asserts proves only that a constant equals itself; these copies were transcribed from the legacy resource
-//  files, so if the component's wording drifts the assertion fails and a human decides whether the drift was
-//  intended.
 
-/**
- * `Signup.ascx.resx` : `PortalSetup.Text` and the two command labels for creation.
- */
+/** `Signup.ascx.resx`: `PortalSetup.Text` and the two command labels for creation. */
 const CREATE_HEADING = 'Add New Portal';
 const CREATE_SUBMIT_LABEL = 'Create Portal';
 
-/**
- * `SiteSettings.ascx.resx` : the edit screen's own heading and command label.
- */
+/** `SiteSettings.ascx.resx`: the edit screen's own heading and command label. */
 const EDIT_HEADING = 'Edit Portals';
 const EDIT_SUBMIT_LABEL = 'Update';
 
-/**
- * Shared by both contracts.
- */
+/** Shared by both contracts. */
 const CANCEL_LABEL = 'Cancel';
 
 /**
- * The seven required-field sentences, measured from `Signup.ascx.resx`.
- *
- * All eight stored values open with break markup — `<br>Portal Name Is Required.` and so on — because a Web
- * Forms validator rendered inline after a postback and its author expressed vertical spacing as content. The
- * markup is stripped on the way across: spacing is the stylesheet's concern. The tests below assert both
- * halves of that decision, the wording AND the absence of the markup.
- *
- * The first sentence says "Portal Name" although the box it guards is the ALIAS. That is the measured legacy
- * wording, it is what the operator read, and functional parity means carrying it verbatim rather than
- * correcting it.
+ * The seven required-field sentences, measured from `Signup.ascx.resx`. All eight stored values open with
+ * break markup — `<br>Portal Name Is Required.` and so on — because a Web Forms validator rendered inline
+ * after a postback and its author expressed vertical spacing as content.
  */
 const ALIAS_REQUIRED_MESSAGE = 'Portal Name Is Required.';
 
-/**
- * The bare legacy scheme, which tidying reduces to NOTHING.
- *
- * Written as the literal the screen actually strips — `Signup.ascx.vb:L184` reads
- * `Replace(txtPortalName.Text, "http://", "")` — rather than derived from the component's own
- * constant, so a change to that constant is caught here instead of silently making this
- * fixture agree with whatever the code now does.
- */
 const SCHEME_ONLY_ALIAS = 'http://';
 const FIRST_NAME_REQUIRED_MESSAGE = 'First Name Is Required.';
 const LAST_NAME_REQUIRED_MESSAGE = 'Last Name Is Required.';
@@ -176,9 +82,7 @@ const PASSWORD_REQUIRED_MESSAGE = 'Password Is Required.';
 const CONFIRM_REQUIRED_MESSAGE = 'Password Confirmation Is Required.';
 const EMAIL_REQUIRED_MESSAGE = 'Email Is Required.';
 
-/**
- * Every required sentence, in the order the controls appear.
- */
+/** Every required sentence, in the order the controls appear. */
 const ALL_REQUIRED_MESSAGES: readonly string[] = [
   ALIAS_REQUIRED_MESSAGE,
   FIRST_NAME_REQUIRED_MESSAGE,
@@ -189,24 +93,15 @@ const ALL_REQUIRED_MESSAGES: readonly string[] = [
   EMAIL_REQUIRED_MESSAGE,
 ];
 
-/**
- * `Signup.ascx.resx` : `InvalidName.Text`.
- */
+/** `Signup.ascx.resx`: `InvalidName.Text`. */
 const INVALID_ALIAS_MESSAGE = 'The Portal Name Must Not Contain Spaces Or Punctuation.';
 
-/**
- * `Signup.ascx.resx` : `InvalidPassword.Text`.
- */
+/** `Signup.ascx.resx`: `InvalidPassword.Text`. */
 const PASSWORD_MISMATCH_MESSAGE = 'The Password Values Entered Do Not Match.';
 
 /**
- * `Signup.ascx.resx` : `CreateError.Text`, carried across verbatim.
- *
- * The legacy handler did NOT show this sentence for a failed creation. It caught the exception and assigned
- * `strMessage = ex.Message`, putting whatever the server threw — a stack-bearing database message included —
- * in front of whoever was signing up. This sentence was already sitting in the resource file for the
- * purpose, so showing it instead is both closer to the screen's evident intent and a refusal to leak
- * internals.
+ * `Signup.ascx.resx`: `CreateError.Text`, carried across verbatim. The legacy handler did NOT show this
+ * sentence for a failed creation.
  */
 const CREATE_ERROR_MESSAGE =
   'An Error Was Encountered During The Creation Of Your Portal. This May Have Been ' +
@@ -214,51 +109,29 @@ const CREATE_ERROR_MESSAGE =
   'Verify Your Details Before You Try Again.';
 
 /**
- * The sentence shown when the server refuses a change to a host-administered term.
- *
- * Net-new wording for a measured refusal. `SiteSettings.ascx.vb` compares the six host-administered fields -
- * host fee, host space, page quota, user quota, site-log history and expiry date - against the stored record
- * when the operator is not a host account, and on any difference throws a bare exception carrying no message
- * at all, so there is no legacy sentence to carry across and the target must supply its own.
+ * The sentence shown when the server refuses a change to a host-administered term. Net-new wording for a
+ * measured refusal.
  */
 const HOST_FIELD_REFUSED_MESSAGE =
   'Only a host account may change this portal\u2019s host-administered terms, so the save ' +
   'was refused. Nothing was changed.';
 
-/**
- * The sentence shown when the record being edited has gone.
- */
+/** The sentence shown when the record being edited has gone. */
 const PORTAL_NOT_FOUND_MESSAGE = 'That portal no longer exists, so nothing could be loaded.';
 
-/**
- * `CONFLICT_MESSAGE['portal.alias_duplicate']`, measured from the legacy alias screen.
- */
+/** `CONFLICT_MESSAGE['portal.alias_duplicate']`, measured from the legacy alias screen. */
 const DUPLICATE_ALIAS_MESSAGE =
   'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.';
 
-/**
- * Confirmations for a completed write.
- */
+/** Confirmations for a completed write. */
 const CREATE_SUCCEEDED_MESSAGE = 'The portal was created.';
 const UPDATE_SUCCEEDED_MESSAGE = 'The portal was updated.';
 
 // Measured limits and codes
 
 /**
- * The length limit rendered on each control.
- *
- * Seven of the ten are the figures declared in `signup.ascx` verbatim. THREE DIVERGE, and each divergence is
- * the component's own documented decision rather than a transcription slip, so the measured markup figure is
- * recorded beside it:
- *
- * * `firstName` and `lastName` are 50 where the markup declares 100. The terminal column is `nvarchar(50)`,
- *   so the markup's figure admitted a value the database could never store and the write would have refused
- *   it anyway.
- * * `password` and `confirm` are 256 where the markup declares 20. That 20 mirrored the legacy STORAGE width
- *   `Users.Password nvarchar(20)`, not any rule applied to a credential — the measured legacy password
- *   policy declares a minimum of seven and NO maximum. The successor stores a one-way hash, so the column
- *   that produced the 20 no longer exists, and reproducing it would cap the entropy of every administrator
- *   credential this screen creates at twenty characters.
+ * The length limit rendered on each control. Seven of the ten are the figures declared in `signup.ascx`
+ * verbatim.
  */
 const RENDERED_LIMITS: readonly (readonly [string, string])[] = [
   ['portal-form-alias', '128'],
@@ -273,32 +146,22 @@ const RENDERED_LIMITS: readonly (readonly [string, string])[] = [
   ['portal-form-email', '100'],
 ];
 
-/**
- * The two legacy list-item values, `signup.ascx`.
- */
+/** The two legacy list-item values, `signup.ascx`. */
 const PARENT_TYPE = 'P';
 const CHILD_TYPE = 'C';
 
-/**
- * The template the component supplies for the contract member it cannot ask about.
- */
+/** The template the component supplies for the contract member it cannot ask about. */
 const DEFAULT_TEMPLATE_FILE = 'Default Website.template';
 
-/**
- * `Null.NullDate`, the legacy sentinel for an unset date.
- */
+/** `Null.NullDate`, the legacy sentinel for an unset date. */
 const NULL_DATE = '0001-01-01T00:00:00';
 
 // FAILURE DOCUMENTS
 
-/**
- * The namespace every machine-readable failure code sits under.
- */
+/** The namespace every machine-readable failure code sits under. */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
-/**
- * Reason phrases, so a flushed document is shaped like one the API would really send.
- */
+/** Reason phrases, so a flushed document is shaped like one the API would really send. */
 const STATUS_TITLE: Readonly<Record<number, string>> = {
   400: 'Bad Request',
   403: 'Forbidden',
@@ -307,14 +170,10 @@ const STATUS_TITLE: Readonly<Record<number, string>> = {
   500: 'Internal Server Error',
 };
 
-/**
- * A trace identifier of the shape the API emits.
- */
+/** A trace identifier of the shape the API emits. */
 const TRACE_ID = '00-1d5c9f2b7a934dd6bb18eb211c80319c-77bd6b7169203331-01';
 
-/**
- * A correlation identifier of the shape the API emits.
- */
+/** A correlation identifier of the shape the API emits. */
 const CORRELATION_ID = 'a6e4b912-5c3d-4a71-8b02-9d1f4e7c6a35';
 
 /**
@@ -345,18 +204,7 @@ function problem(
 
 // RECORD FIXTURES
 
-/**
- * A portal record, complete.
- *
- * Every member is present, and that is the contract rather than fixture pedantry. The client's decoder
- * requires each declared member to be present — an absent one is not the same as a null one and is refused —
- * which mirrors the API serialising with its ignore-condition set to never. So a fixture that omitted the
- * members this screen does not edit would not merely be untidy, it would fail to decode.
- *
- * The default values are the ones a real baseline installation holds, sentinels included: the site-log
- * history and the four tab references sit at `-1`, and the quotas at `0`. Those are meaningful values and
- * not padding — see the tests that carry them through a replacement unchanged.
- */
+/** A portal record, complete. */
 function portalDetail(portalId: number, overrides: Partial<PortalDetail> = {}): PortalDetail {
   return {
     portalId,
@@ -396,40 +244,27 @@ function portalDetail(portalId: number, overrides: Partial<PortalDetail> = {}): 
     timeZoneOffset: -480,
     homeDirectory: 'Portals/0',
     aliases: [{ portalAliasId: 7, portalId, httpAlias: 'localhost', isCurrent: false }],
-    // The opaque revision marker every portal read publishes. The screen round-trips it on the
-    // replacement so a save composed against a superseded revision is refused rather than applied.
     concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
 
-/**
- * The single-record envelope every read and write reply arrives in.
- */
+/** The single-record envelope every read and write reply arrives in. */
 function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
 }
 
-/**
- * An empty listing page.
- *
- * Needed because a completed write asks the store to re-read the listing, so a test that flushed only the
- * write itself would leave that second request outstanding and the end-of-test verification would report it.
- */
+/** An empty listing page. */
 function emptyPage(): PagedResponse<PortalListItem> {
   return { items: [], meta: { totalCount: 0, pageIndex: 0, pageSize: 10, totalPages: 0 } };
 }
 
-/**
- * The body a server returns when it faults without producing a failure document.
- */
+/** The body a server returns when it faults without producing a failure document. */
 interface RawFault {
   readonly message: string;
 }
 
-/**
- * A recorded notification, reduced to the two members these tests assert on.
- */
+/** A recorded notification, reduced to the two members these tests assert on. */
 interface RecordedNotification {
   readonly severity: string;
   readonly message: string;
@@ -452,9 +287,6 @@ describe('PortalFormComponent', () => {
         // The screen navigates on both a completed write and an abandoned one, so the router has to be real
         // enough to be spied on.
         provideRouter([]),
-        // Provided explicitly so each test gets its own store rather than sharing one across the suite. The
-        // component's own baseline reading of the failure signal is taken at construction, so a store
-        // carrying a stale failure would make one test's refusal visible to the next.
         PortalStore,
         {
           provide: DOCUMENT,
@@ -482,20 +314,15 @@ describe('PortalFormComponent', () => {
 
   // Arriving at the screen
 
-  /**
-   * Arrive with no portal named, which is the creation contract.
-   */
+  /** Arrive with no portal named, which is the creation contract. */
   function createMode(): void {
     fixture = TestBed.createComponent(PortalFormComponent);
     fixture.detectChanges();
   }
 
   /**
-   * Arrive with a portal named.
-   *
-   * The identifier is passed as the STRING a router would supply, so the component's own parsing is
-   * exercised rather than bypassed. That matters for the two sentinel identifiers: `'0'` and `'-1'` have to
-   * survive parsing before mode selection can even be tested.
+   * Arrive with a portal named. The identifier is passed as the STRING a router would supply, so the
+   * component's own parsing is exercised rather than bypassed.
    */
   function editMode(portalId: string): void {
     fixture = TestBed.createComponent(PortalFormComponent);
@@ -505,9 +332,7 @@ describe('PortalFormComponent', () => {
 
   // REQUESTS
 
-  /**
-   * Expect exactly one request with this method and address.
-   */
+  /** Expect exactly one request with this method and address. */
   function expectRequest(method: string, url: string, description?: string): TestRequest {
     return httpMock.expectOne(
       (candidate) => candidate.method === method && candidate.url === url,
@@ -515,9 +340,7 @@ describe('PortalFormComponent', () => {
     );
   }
 
-  /**
-   * Answer the detail read with a record, then render.
-   */
+  /** Answer the detail read with a record, then render. */
   function answerDetail(detail: PortalDetail): TestRequest {
     const call = expectRequest('GET', portalUrl(detail.portalId), 'the detail read');
 
@@ -527,9 +350,7 @@ describe('PortalFormComponent', () => {
     return call;
   }
 
-  /**
-   * Arrive editing a portal and hydrate it in one step.
-   */
+  /** Arrive editing a portal and hydrate it in one step. */
   function arriveEditing(portalId: number, overrides: Partial<PortalDetail> = {}): PortalDetail {
     const detail: PortalDetail = portalDetail(portalId, overrides);
 
@@ -539,21 +360,6 @@ describe('PortalFormComponent', () => {
     return detail;
   }
 
-  /**
-   * Asserts that a COMPLETED write triggered NO listing re-read.
-   *
-   * ⚠ THE INVERSION OF WHAT THIS HELPER USED TO DO, AND THE NAME IS KEPT SO EVERY CALL SITE STILL READS
-   * AS "settle the listing question here". It used to answer a re-read the store performed on every
-   * successful create and replacement. That read was removed: this screen redirects to the listing on
-   * success, and the listing reads itself from its own address on entry, so the store's read was a second
-   * read of the same page - and because the store serialises its listing reads, the two raced and the
-   * loser was cancelled. A browser audit found the aborted-then-repeated pair on the portal list after a
-   * save. The store's own specification carries the full reasoning and the sibling precedent.
-   *
-   * Counted with `match` rather than asserted with `expectNone`: the latter raises on a match but
-   * registers no expectation, so a case using it would pass vacuously the moment its subject stopped
-   * being reachable. The size IS the assertion.
-   */
   function answerListingReread(): void {
     expect(httpMock.match((candidate) => candidate.url === PORTALS_URL))
       .withContext('a write asks for no listing read; the listing reads itself on entry')
@@ -575,13 +381,7 @@ describe('PortalFormComponent', () => {
     return Array.from(host().querySelectorAll<E>(selector));
   }
 
-  /**
-   * The element at this selector, or a thrown failure naming what was missing.
-   *
-   * Throwing rather than asserting-and-continuing keeps the type honest without a non-null assertion, and a
-   * missing control produces one legible failure instead of a cascade of null-property errors further down
-   * the test.
-   */
+  /** The element at this selector, or a thrown failure naming what was missing. */
   function required<E extends Element>(selector: string): E {
     const found: E | null = query<E>(selector);
 
@@ -592,23 +392,17 @@ describe('PortalFormComponent', () => {
     return found;
   }
 
-  /**
-   * Trimmed text of every element matching the selector. Never raw markup.
-   */
+  /** Trimmed text of every element matching the selector. */
   function textOf(selector: string): readonly string[] {
     return queryAll<Element>(selector).map((node) => (node.textContent ?? '').trim());
   }
 
-  /**
-   * A form control, by the identifier the template gives it.
-   */
+  /** A form control, by the identifier the template gives it. */
   function field<E extends HTMLElement>(controlId: string): E {
     return required<E>(`#${controlId}`);
   }
 
-  /**
-   * Enter a value the way a person does, so the control is marked touched and dirty.
-   */
+  /** Enter a value the way a person does, so the control is marked touched and dirty. */
   function type(controlId: string, value: string): void {
     const control = field<HTMLInputElement | HTMLTextAreaElement>(controlId);
 
@@ -618,26 +412,20 @@ describe('PortalFormComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * Choose a portal kind, which the screen reacts to immediately.
-   */
+  /** Choose a portal kind, which the screen reacts to immediately. */
   function choosePortalType(kind: string): void {
     field<HTMLInputElement>(`portal-form-portal-type-${kind}`).click();
     fixture.detectChanges();
   }
 
-  /**
-   * A command button, found by the words on it.
-   */
+  /** A command button, found by the words on it. */
   function button(label: string): HTMLButtonElement | undefined {
     return queryAll<HTMLButtonElement>('button').find(
       (candidate) => (candidate.textContent ?? '').trim() === label,
     );
   }
 
-  /**
-   * Press a command button, or fail naming the one that was not offered.
-   */
+  /** Press a command button, or fail naming the one that was not offered. */
   function press(label: string): void {
     const control: HTMLButtonElement | undefined = button(label);
 
@@ -649,16 +437,12 @@ describe('PortalFormComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * The value currently shown in the alias box.
-   */
+  /** The value currently shown in the alias box. */
   function aliasValue(): string {
     return field<HTMLInputElement>('portal-form-alias').value;
   }
 
-  /**
-   * Fill the administrator block with values that satisfy every rule.
-   */
+  /** Fill the administrator block with values that satisfy every rule. */
   function fillAdministrator(): void {
     type('portal-form-first-name', 'Ada');
     type('portal-form-last-name', 'Lovelace');
@@ -668,24 +452,18 @@ describe('PortalFormComponent', () => {
     type('portal-form-email', 'ada@example.test');
   }
 
-  /**
-   * Fill everything a creation needs, alias included, and nothing optional.
-   */
+  /** Fill everything a creation needs, alias included, and nothing optional. */
   function fillMinimalCreation(alias: string): void {
     type('portal-form-alias', alias);
     fillAdministrator();
   }
 
-  /**
-   * Every field-level message currently shown, as plain text.
-   */
+  /** Every field-level message currently shown, as plain text. */
   function fieldMessages(): readonly string[] {
     return textOf('.form-field__error');
   }
 
-  /**
-   * Every notification recorded so far, oldest first.
-   */
+  /** Every notification recorded so far, oldest first. */
   function notifications(): readonly RecordedNotification[] {
     return notifySpy.calls.allArgs().map((args: readonly unknown[]) => ({
       severity: String(args[0]),
@@ -693,9 +471,7 @@ describe('PortalFormComponent', () => {
     }));
   }
 
-  /**
-   * Every route the screen has navigated to, flattened to a comparable string.
-   */
+  /** Every route the screen has navigated to, flattened to a comparable string. */
   function navigations(): readonly string[] {
     return navigateSpy.calls.allArgs().map((args: readonly unknown[]) => JSON.stringify(args[0]));
   }
@@ -727,9 +503,8 @@ describe('PortalFormComponent', () => {
       expect(field<HTMLInputElement>('portal-form-title').value).toBe('Baseline Portal');
     });
 
-    // MIGRATION: `Portals.PortalID` is `IDENTITY(-1,1)`, so 0 is the FIRST ORDINARY PORTAL and not an
-    // absence. A truthiness test on the identifier would offer a creation form for a record that already
-    // exists.
+    // `Portals.PortalID` is `IDENTITY(-1,1)`, so 0 is the FIRST ORDINARY PORTAL and not an absence. A
+    // truthiness test on the identifier would offer a creation form for a record that already exists.
     it('reads the record for portal 0, which is an ordinary portal and not an absence', () => {
       editMode('0');
 
@@ -810,9 +585,7 @@ describe('PortalFormComponent', () => {
       expect(query('#portal-form-title')).withContext('now editable').not.toBeNull();
     });
 
-    /**
-     * The single heading this screen contributes.
-     */
+    /** The single heading this screen contributes. */
     function expectHeading(): string {
       return (required<HTMLElement>('.page-header__title').textContent ?? '').trim();
     }
@@ -842,9 +615,9 @@ describe('PortalFormComponent', () => {
       expect(navigateSpy).withContext('nobody is taken anywhere').not.toHaveBeenCalled();
     });
 
-    // MIGRATION: all eight measured values in `Signup.ascx.resx` open with break markup — `<br>Portal Name
-    // Is Required.` and so on — because a Web Forms validator rendered inline after a postback. The markup
-    // is stripped and the wording carried as text.
+    // All eight measured values in `Signup.ascx.resx` open with break markup — `<br>Portal Name Is
+    // Required.` and so on — because a Web Forms validator rendered inline after a postback. The markup is
+    // stripped and the wording carried as text.
     it('carries the measured sentences as text, without the break markup they were stored with', () => {
       createMode();
 
@@ -860,9 +633,6 @@ describe('PortalFormComponent', () => {
       expect(queryAll('.form-field__errors br')).withContext('no break elements').toHaveSize(0);
     });
 
-    // MIGRATION: the alias box is labelled "Portal Alias:" but its measured message says "Portal Name Is
-    // Required." (`signup.ascx`, `Signup.ascx.resx`). That mismatch is the legacy wording the operator read;
-    // parity means keeping it, not correcting it.
     it('keeps the legacy wording of the alias requirement even though it names the wrong field', () => {
       createMode();
 
@@ -886,9 +656,6 @@ describe('PortalFormComponent', () => {
 
       const call = expectRequest('POST', PORTALS_URL, 'the creation');
 
-      // The three blank members travel as the empty strings they are. A nullable control would have sent
-      // null here, so this doubles as the proof that every control in the group is declared non-nullable and
-      // therefore reads back as its declared type.
       const body = call.request.body as {
         readonly portalName: string;
         readonly description: string;
@@ -921,9 +688,6 @@ describe('PortalFormComponent', () => {
   // The password confirmation
 
   describe('the password confirmation', () => {
-    // MIGRATION: the legacy screen compared the two boxes IMPERATIVELY inside its click handler and declared
-    // no `asp:CompareValidator` at all — there are zero in the whole file. The rule is now declarative, on
-    // the group.
     it('refuses a confirmation that does not match, in the measured wording', () => {
       createMode();
 
@@ -933,7 +697,7 @@ describe('PortalFormComponent', () => {
       type('portal-form-username', 'ada');
       // SEVEN characters, differing only in the last one. The length matters: the measured legacy policy
       // sets a minimum of seven, so a shorter pair would be refused for being short and the mismatch — the
-      // rule under test here — would never be reached. Isolating one rule means satisfying every other.
+      // rule under test here — would never be reached.
       type('portal-form-password', 'abc123d');
       type('portal-form-confirm', 'abc123e');
       type('portal-form-email', 'ada@example.test');
@@ -1022,16 +786,6 @@ describe('PortalFormComponent', () => {
   // Tidying the alias before judging it
 
   // ⚠ MAJOR (CWE-316 cleartext storage) — WHAT HAPPENS TO THE CREDENTIAL AFTER THE WRITE SUCCEEDS.
-  //
-  // The administrator password and its confirmation are the only secrets this screen ever holds. On a
-  // successful creation the write has stored them server-side and this copy has no further purpose, yet
-  // settling the form does not remove it: the controls keep their values and the two password inputs keep
-  // those values in the live document.
-  //
-  // Leaving the navigation to take them away was the defect, because the navigation CAN NOT COMPLETE - a
-  // guard may refuse it, it may resolve `false`, a lazy chunk may fail - and in every one of those cases the
-  // screen stays mounted with a stored credential still readable in the DOM. The cases below pin the clearing
-  // in the outcome where it matters, which is precisely the outcome the previous coverage never exercised.
 
   describe('discarding the credential after a successful creation', () => {
     it('empties both credential controls and both boxes before navigating away', () => {
@@ -1116,8 +870,8 @@ describe('PortalFormComponent', () => {
 
     it('leaves the entry an operator can re-read alone, so a refused trip is not a lost draft', () => {
       // The counterpart, and the reason the whole form is not wiped. Only the two credential controls are
-      // secrets; clearing the alias, the name or the mail address would turn a refused navigation into
-      // lost work for no security gain, since every one of those values is on the screen to be read.
+      // secrets; clearing the alias, the name or the mail address would turn a refused navigation into lost
+      // work for no security gain, since every one of those values is on the screen to be read.
       navigateSpy.and.resolveTo(false);
 
       createMode();
@@ -1138,9 +892,7 @@ describe('PortalFormComponent', () => {
 
     it('shows no complaint about the credential it has just discarded', () => {
       // Cleared with `reset`, not with a value assignment, so the control goes back to pristine and
-      // untouched along with its value. Otherwise the required rule would fire against the very
-      // credential the screen deliberately removed and the operator would be told to supply a password
-      // for a portal that already exists.
+      // untouched along with its value.
       navigateSpy.and.resolveTo(false);
 
       createMode();
@@ -1161,9 +913,7 @@ describe('PortalFormComponent', () => {
   });
 
   describe('tidying the alias before judging it', () => {
-    /**
-     * Submit a creation whose only interesting member is the alias, and read the body.
-     */
+    /** Submit a creation whose only interesting member is the alias, and read the body. */
     function aliasSentFor(entered: string): string {
       fillMinimalCreation(entered);
       press(CREATE_SUBMIT_LABEL);
@@ -1179,7 +929,6 @@ describe('PortalFormComponent', () => {
       return sent;
     }
 
-    // MIGRATION: `Signup.ascx.vb` reads `txtPortalName.Text = LCase(txtPortalName.Text)`.
     it('lowercases what was entered', () => {
       createMode();
 
@@ -1187,17 +936,11 @@ describe('PortalFormComponent', () => {
     });
 
     /**
-     * ⚠ R-M20: THE TITLE IS TIDIED TOO, AND THIS SCREEN WAS THE ONE THAT DID NOT DO IT.
-     *
-     * Runtime testing measured three screens against one another: the role editor trims its name into
-     * the control before judging it, the site-settings screen trims its title into the control before
-     * judging it, and this screen sent whatever was typed — twenty-three characters typed, twenty-three
-     * sent, against seventeen on the sibling resource for the same class of field. An operator could not
-     * learn one rule from three behaviours.
-     *
-     * Asserted on the CONTROL as well as on the wire, because trimming into the control is the whole
-     * point: it makes the correction visible in the field, and it means the value that was VALIDATED is
-     * the value that was SENT.
+     * ⚠ R-M20: THE TITLE IS TIDIED TOO, AND THIS SCREEN WAS THE ONE THAT DID NOT DO IT. Runtime testing
+     * measured three screens against one another: the role editor trims its name into the control before
+     * judging it, the site-settings screen trims its title into the control before judging it, and this
+     * screen sent whatever was typed — twenty-three characters typed, twenty-three sent, against
+     * seventeen on the sibling resource for the same class of field.
      */
     it('trims the site title into its control and sends the trimmed value', () => {
       createMode();
@@ -1218,21 +961,7 @@ describe('PortalFormComponent', () => {
       answerListingReread();
     });
 
-    /**
-     * ⚠ A WHITESPACE-ONLY TITLE IS ACCEPTED ON THE CREATION PATH, AND THAT IS THE SERVER'S RULE
-     * RATHER THAN AN OVERSIGHT.
-     *
-     * `CreatePortalRequestValidator:L473-L474` declares only `MaximumLength` on `PortalName`, whereas
-     * the UPDATE validator declares `NotEmpty()` — because the legacy `valPortalName` validator at
-     * `signup.ascx:L40-L41` guarded the ALIAS despite its message naming the portal name, so a
-     * creation genuinely accepted a blank title. Adding requiredness here would refuse a submission
-     * both the legacy screen and the current API accept.
-     *
-     * What the trim DOES change is what travels: the empty string rather than five spaces, so the
-     * stored value matches the legacy null contract's own spelling of absence
-     * (`Null.vb` declares `NullString` as literally `""`). This case pins the asymmetry so neither
-     * half can be "tidied" into the other.
-     */
+    /** ⚠ A WHITESPACE-ONLY TITLE IS ACCEPTED ON THE CREATION PATH, AND THAT IS THE SERVER'S RULE */
     it('sends a whitespace-only title as the empty string, and still creates', () => {
       createMode();
       type('portal-form-title', '     ');
@@ -1250,8 +979,6 @@ describe('PortalFormComponent', () => {
       answerListingReread();
     });
 
-    // MIGRATION: `Signup.ascx.vb` reads `Replace(txtPortalName.Text, "http://", "")`. VB's `Replace` removes
-    // EVERY occurrence, not merely a leading one, so the successor must do the same.
     it('strips a legacy scheme wherever it appears, not merely at the front', () => {
       createMode();
 
@@ -1289,23 +1016,6 @@ describe('PortalFormComponent', () => {
       fixture.detectChanges();
       answerListingReread();
     });
-
-    // -----------------------------------------------------------------------
-    //  AND THE FORM IS RE-JUDGED AFTER TIDYING, BECAUSE TIDYING CAN EMPTY IT
-    //
-    // Tidying before judging is right, and it is what the four cases above assert. What it
-    // cannot be allowed to mean is that the tidied value is never judged AT ALL, which is
-    // what the screen used to do: it validated the raw entry, tidied it, and dispatched
-    // whatever tidying produced.
-    //
-    // The reachable input is the bare scheme. Every gate passes it — `Validators.required`
-    // sees seven characters, the length rule is satisfied for the same reason, and the
-    // character rule tidies internally, gets the empty string and deliberately declines to
-    // report because requiredness "is reported once, by the rule that owns it". So the rule
-    // that owns requiredness judged the RAW value and the rule that saw the TIDIED value does
-    // not own requiredness, and nothing inspects the empty result. A portal reachable at no
-    // host name was then created and reported as a success.
-    // -----------------------------------------------------------------------
 
     it('REFUSES a bare scheme rather than creating a portal with no host name', () => {
       createMode();
@@ -1348,9 +1058,6 @@ describe('PortalFormComponent', () => {
     });
 
     it('still ACCEPTS an entry that tidying merely shortens, which is the case that must not regress', () => {
-      // ⚠ THE OTHER HALF OF THE PROPERTY. A guard that refused everything tidying touched
-      // would break the four cases above, so this pins the boundary: tidying to a NON-EMPTY
-      // value is still accepted, and the re-judgement changes nothing about it.
       createMode();
 
       fillMinimalCreation(`${SCHEME_ONLY_ALIAS}contoso.example.test`);
@@ -1412,12 +1119,6 @@ describe('PortalFormComponent', () => {
   // Which characters an alias may carry
 
   describe('which characters an alias may carry', () => {
-    // MIGRATION: `Signup.ascx.vb` builds the permitted set as `abcdefghijklmnopqrstuvwxyz0123456789-` and
-    // then executes `If Not blnChild Then strValidChars += "./:"`.
-    //
-    // NOTE THE POLARITY. The PARENT case is the PERMISSIVE one, because a parent alias carries a host name,
-    // optionally a port and optionally a path. Reading the condition the other way round rejects every
-    // legitimate parent alias.
     it('lets a parent alias carry the dot, slash and colon a host name needs', () => {
       createMode();
 
@@ -1445,9 +1146,6 @@ describe('PortalFormComponent', () => {
       answerListingReread();
     });
 
-    // MIGRATION: for a child, `Signup.ascx.vb` takes `Mid(txtPortalName.Text, InStrRev(txtPortalName.Text,
-    // "/") + 1)` — the segment after the LAST slash — and judges only that. The preceding host name is not
-    // the child's name and is not its to validate.
     it('judges only the last segment of a child alias, so its host name may carry punctuation', () => {
       createMode();
 
@@ -1507,11 +1205,7 @@ describe('PortalFormComponent', () => {
       expect(fieldMessages()).withContext('as a child').toContain(INVALID_ALIAS_MESSAGE);
     });
 
-    // MIGRATION: this is a defect deliberately not reproduced. The legacy loop at `Signup.ascx.vb` sits
-    // inside `For intCounter = 1 To strPortalAlias.Length` and executes `strMessage &= "<br>" &
-    // Localization.GetString("InvalidName",...)` on EVERY offending character, so an alias of `a b c!`
-    // produced FOUR copies of the same sentence stacked on the page. The rule is now reported once, as one
-    // fact about one control.
+    // MIGRATION: this is a defect deliberately not reproduced.
     it('reports the character rule exactly once however many characters offend it', () => {
       createMode();
 
@@ -1532,10 +1226,6 @@ describe('PortalFormComponent', () => {
       type('portal-form-alias', 'example.com/my.child');
       expect(fieldMessages()).withContext('refused as a child').toContain(INVALID_ALIAS_MESSAGE);
 
-      // Changing the kind also clears the box, exactly as the legacy screen did, so the pair "same text, new
-      // verdict" is not reachable through this screen and the polarity is proven by the two tests above
-      // instead. What IS proven here is that the rule was re-applied rather than left stale: the verdict
-      // changed from a character offence to an unmet requirement with no typing at all.
       choosePortalType(PARENT_TYPE);
 
       expect(fieldMessages()).withContext('the stale verdict is gone').not.toContain(
@@ -1550,8 +1240,6 @@ describe('PortalFormComponent', () => {
   // Seeding the alias from the browsed host
 
   describe('seeding the alias from the browsed host', () => {
-    // MIGRATION: `Signup.ascx.vb` reads `txtPortalName.Text = GetDomainName(Request) & "/"`. The successor
-    // takes the host from the injected document rather than from a request object.
     it('seeds a child alias with the browsed host and a separator', () => {
       createMode();
 
@@ -1560,7 +1248,6 @@ describe('PortalFormComponent', () => {
       expect(aliasValue()).toBe(`${STUBBED_HOST}/`);
     });
 
-    // MIGRATION: `Signup.ascx.vb` reads `txtPortalName.Text = ""`.
     it('clears the alias when the kind returns to parent', () => {
       createMode();
 
@@ -1598,9 +1285,6 @@ describe('PortalFormComponent', () => {
     it('leaves an edited portal alone, because the kind is not its to change', () => {
       arriveEditing(5, { portalName: 'Contoso' });
 
-      // The edit contract offers no kind and no alias at all — an existing portal's alias is the alias
-      // screen's business — so there is nothing here for the seeding to damage, and the hydrated record is
-      // untouched.
       expect(queryAll('[name="portalType"]')).withContext('no kind to choose').toHaveSize(0);
       expect(query('#portal-form-alias')).withContext('no alias to seed').toBeNull();
       expect(field<HTMLInputElement>('portal-form-title').value).toBe('Contoso');
@@ -1628,9 +1312,6 @@ describe('PortalFormComponent', () => {
       expect(field<HTMLElement>('portal-form-keywords').getAttribute('maxlength')).toBe('500');
     });
 
-    // The rendered attribute stops a person typing past the limit but does nothing about a value arriving
-    // any other way, so the rule has to exist on the control too. Assigning the value directly is exactly
-    // the case the attribute does not cover.
     it('refuses an over-long alias and sends nothing', () => {
       createMode();
 
@@ -1665,11 +1346,7 @@ describe('PortalFormComponent', () => {
     });
 
     // MIGRATION: `signup.ascx` declares `maxlength="20"` on the two credential boxes, and that figure is
-    // deliberately not reproduced. It mirrored the legacy storage width `Users.Password nvarchar(20)` rather
-    // than any rule the legacy applied to a credential — the measured policy in `Website/release.config`
-    // sets a minimum of seven and declares no maximum. The successor stores a one-way hash, so the column
-    // that produced the 20 no longer exists, and keeping it would cap the entropy of every administrator
-    // credential this screen creates at twenty characters.
+    // deliberately not reproduced.
     it('permits a credential far longer than the legacy storage width allowed', () => {
       createMode();
 
@@ -1720,16 +1397,9 @@ describe('PortalFormComponent', () => {
   // The semantic inversion
 
   describe('which box fills which member', () => {
-    // MIGRATION: the single most consequential mapping on this screen. The legacy `txtPortalName` box
-    // collected the ALIAS and `txtTitle` collected the NAME: `PortalController.vb` declares
-    // `CreatePortal(PortalName,...)` with `PortalAlias` twelfth, and `Signup.ascx.vb` passes `txtTitle.Text`
-    // into that FIRST position while the value taken from `txtPortalName` goes into the `PortalAlias`
-    // position. `signup.ascx` confirms it from the other side, binding the label "Portal Alias:" to
-    // `controlname="txtPortalName"`.
-    //
-    // A swap compiles, submits, and writes every new portal's alias into its title column with no diagnostic
-    // anywhere, which is why the two values below are chosen so that neither could be mistaken for the
-    // other.
+    // A swap compiles, submits, and writes every new portal's alias into its title column with no
+    // diagnostic anywhere, which is why the two values below are chosen so that neither could be mistaken
+    // for the other.
     it('sends the alias box as the alias and the title box as the name, not the reverse', () => {
       createMode();
 
@@ -1765,28 +1435,15 @@ describe('PortalFormComponent', () => {
     it('labels the two boxes the way the legacy screen labelled them', () => {
       createMode();
 
-      // "Portal Alias:" names the box that fills the ALIAS and "Title:" names the box that fills the NAME,
-      // so reading the label tells you which member the box feeds. Asserted per control rather than over the
-      // joined text, because the point is the PAIRING and a substring search over everything would pass even
-      // if the two were swapped.
-      //
-      // The rendered text carries no trailing colon: the shared field wrapper strips one, deliberately, on
-      // the grounds that the punctuation is presentation. So the measured wording is matched at its start
-      // and the marker suffix is allowed to follow.
       expect(labelNaming('portal-form-alias')).toMatch(/^Portal Alias\b/);
       expect(labelNaming('portal-form-title')).toMatch(/^Title\b/);
 
-      // The resource file also carries `plPortalName.Text` = "Portal Name:", but `signup.ascx` declares no
-      // `plPortalName` control at all, so that entry is ORPHANED and labelling anything with it here would
-      // name a field the legacy screen never named that way.
       expect(textOf('label[for]').join(' '))
         .withContext('the orphaned label is not used')
         .not.toContain('Portal Name');
     });
 
-    /**
-     * The text of the label that names one control.
-     */
+    /** The text of the label that names one control. */
     function labelNaming(controlId: string): string {
       const label: HTMLLabelElement | undefined = queryAll<HTMLLabelElement>('label[for]').find(
         (candidate: HTMLLabelElement) => candidate.getAttribute('for') === controlId,
@@ -1816,9 +1473,8 @@ describe('PortalFormComponent', () => {
     });
 
     /**
-     * ⚠ R-M20 ON THE REPLACEMENT PATH: THE TITLE IS TIDIED HERE TOO, so one resource does not trim
-     * where another does. Runtime testing measured twenty-three characters typed becoming seventeen
-     * sent on one screen and twenty-three on this one, for the same class of field.
+     * ⚠ R-M20 ON THE REPLACEMENT PATH: THE TITLE IS TIDIED HERE TOO, so one resource does not trim where
+     * another does.
      */
     it('trims the title into its control on a replacement as well', () => {
       const detail: PortalDetail = arriveEditing(5, { portalName: 'Before' });
@@ -1840,23 +1496,10 @@ describe('PortalFormComponent', () => {
     });
 
     /**
-     * ⚠ AND A BLANK TITLE IS ACCEPTED ON THIS PATH TOO, WHICH IS THE LEGACY BEHAVIOUR RESTORED.
-     *
-     * This case used to require the opposite. It refused a whitespace-only title locally, mirroring a
-     * `NotEmpty()` the update contract carried on `PortalName` — and BOTH the rule and this case were
-     * wrong, so the server rule is withdrawn with them.
-     *
-     * `Website/admin/Portal/sitesettings.ascx` declares two validators on 568 lines, both
-     * `CompareValidator`s, with no `RequiredFieldValidator` anywhere and `MaxLength="128"` the only
-     * attribute on `txtPortalName`. And the write path stored the blank rather than refusing it:
-     * `SqlDataProvider.vb:L632` passes `PortalName` RAW while wrapping fourteen of its twenty-seven
-     * sibling arguments in `GetNull`, `PortalController.vb:L1568-L1570` forwards the parameter
-     * untouched, and `SiteSettings.ascx.vb:L772` passes `txtPortalName.Text` as typed — so the empty
-     * string reached `[PortalName] [nvarchar] (128) NOT NULL`, which accepts it.
-     *
-     * Both write paths therefore accept a blank title, the two forms agree with each other again, and
-     * the request is ISSUED rather than withheld. The trimming above still applies, so what reaches the
-     * wire is the empty string and not three spaces.
+     * ⚠ AND A BLANK TITLE IS ACCEPTED ON THIS PATH TOO, WHICH IS THE LEGACY BEHAVIOUR RESTORED. This case
+     * used to require the opposite. It refused a whitespace-only title locally, mirroring a `NotEmpty()`
+     * the update contract carried on `PortalName` — and BOTH the rule and this case were wrong, so the
+     * server rule is withdrawn with them.
      */
     it('accepts a whitespace-only title on a replacement and sends the empty string', () => {
       const detail: PortalDetail = arriveEditing(5, { portalName: 'Before' });
@@ -1880,13 +1523,11 @@ describe('PortalFormComponent', () => {
     });
 
     /**
-     * ⚠ THE REVISION MARKER, WHICH IS THE ONLY THING STANDING BETWEEN THIS PAYLOAD AND A LOST UPDATE.
-     *
-     * The replacement carries the portal's WHOLE editable state - the three boxes this screen shows plus
+     * ⚠ THE REVISION MARKER, WHICH IS THE ONLY THING STANDING BETWEEN THIS PAYLOAD AND A LOST UPDATE. The
+     * replacement carries the portal's WHOLE editable state - the three boxes this screen shows plus
      * roughly twenty values carried forward from the read that it never displays - so before the token
      * existed a second administrator saving an older read silently destroyed the first administrator's
-     * committed edits to fields neither of them had opened, and the API answered `200` to both. Runtime
-     * testing measured exactly that.
+     * committed edits to fields neither of them had opened, and the API answered `200` to both.
      */
     describe('the revision marker', () => {
       it('carries the token from the read into the replacement', () => {
@@ -1909,19 +1550,6 @@ describe('PortalFormComponent', () => {
         answerListingReread();
       });
 
-      // ⚠ MINOR (client/API contract) — THIS SPECIFICATION WAS REWRITTEN, AND THE REWRITE IS THE FIX.
-      //
-      // It asserted that a read serving NO token produced a token-less replacement, and called that a
-      // last-writer-wins update. The premise was false: `PortalDetailDto.ConcurrencyToken` is declared
-      // `public string ... = string.Empty` and is always populated, so a read serving no token is a
-      // MALFORMED response rather than a supported mode. Tolerating it was the defect - the null decoded
-      // silently, reached a write the server does treat as last-writer-wins, and the optimistic check was
-      // skipped with nothing anywhere reporting it, so a lost update presented as a successful save.
-      //
-      // The decoder now refuses it, and this case pins the consequence at the screen: no record arrives,
-      // so no form is offered and no replacement can be composed against a revision nobody knows. The
-      // decoder-level refusal itself, in all four of its shapes, is asserted in the service's own
-      // specification.
       it('offers no form and composes no replacement when the read served no token', () => {
         editMode('5');
 
@@ -1989,8 +1617,7 @@ describe('PortalFormComponent', () => {
 
       /**
        * The refusal is reported and the operator's entry is still on screen, so re-reading and
-       * re-applying is possible without leaving the application. A guard that cannot be satisfied is a
-       * defect rather than a protection.
+       * re-applying is possible without leaving the application.
        */
       it('reports a refused stale replacement and keeps the entry on screen', () => {
         arriveEditing(5, { concurrencyToken: 'stale' });
@@ -2045,9 +1672,6 @@ describe('PortalFormComponent', () => {
         portalAlias: 'contoso.example.test',
         description: 'The Contoso tenant.',
         keyWords: 'contoso,tenant',
-        // Declared by the contract, so it is sent. There is no directory to browse and no filesystem to
-        // create one in, so the screen states that it has nothing to say rather than omitting a member the
-        // contract requires.
         homeDirectory: null,
         // Likewise declared and likewise unaskable: the legacy list was built by enumerating the filesystem
         // for `*.template` and no endpoint replaces it.
@@ -2072,12 +1696,9 @@ describe('PortalFormComponent', () => {
     });
 
     it('holds no unsaved entry while a creation is in flight', () => {
-      // ⚠ THIS CASE EXISTS FOR AN OPERATOR-PRECEDENCE DEFECT, WHICH IS WHY IT ASKS THE TRACKER RATHER
-      // THAN THE FORM. This screen holds two forms, and its unsaved-entry probe is meant to read
-      // `(either is dirty) AND (no save is in flight)`. Written without brackets it parsed as
-      // `createForm.dirty || (editForm.dirty && notSaving)`, so a dirty CREATE form was sufficient on
-      // its own - and the route guard therefore offered to discard the portal that was at that moment
-      // being created. Reading the tracker asks precisely the question the guard asks.
+      // ⚠ THIS CASE EXISTS FOR AN OPERATOR-PRECEDENCE DEFECT, WHICH IS WHY IT ASKS THE TRACKER RATHER THAN
+      // THE FORM. This screen holds two forms, and its unsaved-entry probe is meant to read `(either is
+      // dirty) AND (no save is in flight)`.
       createMode();
 
       fillMinimalCreation('contoso.example.test');
@@ -2100,9 +1721,6 @@ describe('PortalFormComponent', () => {
     });
 
     it('settles the form and keeps its confirmation once the creation succeeds', () => {
-      // Two claims that share one flow, because they are two halves of the same departure: the screen
-      // must stop claiming unsaved entry, and the confirmation it raises must reach the listing it is
-      // about to move to.
       createMode();
 
       fillMinimalCreation('contoso.example.test');
@@ -2119,18 +1737,15 @@ describe('PortalFormComponent', () => {
 
       // ⚠ CLEARING `saveRequested` IS WHAT MAKES THIS NECESSARY. The success handler clears it before
       // navigating, so from that moment the probe sees a dirty form with no save in flight - and the
-      // navigation it is about to request is the save's own. A sibling screen showed exactly this in a
-      // real browser: the record was created, the confirmation painted, and the operator was then asked
-      // whether to discard the work that had just been stored.
+      // navigation it is about to request is the save's own.
       expect(TestBed.inject(UnsavedChangesTracker).isDirty())
         .withContext('the entry is stored, so there is nothing to ask about')
         .toBeFalse();
 
-      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires
-      // notifications on a completed navigation, so a confirmation announced in the same task as the
-      // departure was swept before it could be painted - the portal was created and the operator was
-      // returned to a listing that said nothing. The queue is real here, so running the sweep proves
-      // the retention rather than asserting that a method was called.
+      // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications
+      // on a completed navigation, so a confirmation announced in the same task as the departure was swept
+      // before it could be painted - the portal was created and the operator was returned to a listing that
+      // said nothing.
       const service = TestBed.inject(NotificationService);
       service.clearOnNavigation();
 
@@ -2159,10 +1774,6 @@ describe('PortalFormComponent', () => {
       expect(call.request.method).toBe('PUT');
       expect(call.request.url).toBe('/api/v1/portals/5');
 
-      // A FULL REPLACEMENT, so every member the contract declares is present. The three edited here carry
-      // the new values and EVERY OTHER MEMBER CARRIES THE STORED VALUE UNCHANGED — which is the property
-      // that matters: a replacement that omitted them would silently blank the host-administered terms, the
-      // tab references and the payment configuration that this screen deliberately does not offer.
       expect(call.request.body).toEqual({
         portalId: 5,
         portalName: 'Renamed',
@@ -2193,11 +1804,6 @@ describe('PortalFormComponent', () => {
         defaultLanguage: detail.defaultLanguage,
         timeZoneOffset: detail.timeZoneOffset,
         homeDirectory: detail.homeDirectory,
-        // The one member of this body that is not a portal attribute: the revision the replacement was
-        // composed against, carried from the record that was READ. It is what makes the whole-record
-        // property asserted above safe rather than merely necessary - every value above comes from a
-        // snapshot, and this is what lets the server tell "returning what I read" from "restoring what
-        // somebody has since changed".
         concurrencyToken: detail.concurrencyToken,
       });
 
@@ -2226,11 +1832,6 @@ describe('PortalFormComponent', () => {
       answerListingReread();
     });
 
-    // MIGRATION: `Signup.ascx.vb` reads `If intPortalId <> -1 Then`, treating the identifier in the RESULT
-    // as the success signal because the legacy call reported failure by returning `Null.NullInteger`. The
-    // successor reports failure with a status code, so the identifier is data and nothing more — and since
-    // -1 and 0 are both real identifiers, a resurrected check on either would report a completed creation as
-    // a failure.
     it('treats a created portal whose identifier is a sentinel as the success it is', () => {
       createMode();
 
@@ -2283,24 +1884,14 @@ describe('PortalFormComponent', () => {
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(aliasValue()).toBe('contoso.example.test');
 
-      // ⚠ Pf-M8 — THE REFUSAL IS BOUND TO THE FIELD THAT CAUSED IT.
-      //
       // Runtime testing found the recovery path itself sound - the entry survives, every control stays
       // editable and the submit stays enabled - but the refusal reached only the banner and the toast.
-      // The alias input reported `aria-invalid="false"` while being the sole reason the write failed,
-      // so an operator had to infer from a sentence which of eleven fields to change.
-      //
-      // A duplicate host name is answered 409 with a published code and a `detail` sentence and NO
-      // `errors` member, which is why the per-field lookup alone could not surface it.
       expect(fieldMessages()).toEqual([DUPLICATE_ALIAS_MESSAGE]);
 
       const alias = field<HTMLInputElement>('portal-form-alias');
 
       expect(alias.getAttribute('aria-invalid')).toBe('true');
 
-      // ⚠ Pf-M8 — AND FOCUS MOVES THERE. The shared focus-to-first-invalid directive cannot cover this:
-      // it acts on the CLIENT form's validity, and the client form is entirely valid after this refusal.
-      // Measured before the fix: `document.activeElement` was `<body>`.
       expect(document.activeElement).toBe(alias);
     });
 
@@ -2317,20 +1908,14 @@ describe('PortalFormComponent', () => {
       );
       fixture.detectChanges();
 
-      // The banner is an assertive live region and is announced regardless, so taking focus for a
-      // failure with no field to correct would move an operator away from what they were reading and
-      // tell them nothing. Nothing is marked invalid either - no field is at fault.
+      // The banner is an assertive live region and is announced regardless, so taking focus for a failure
+      // with no field to correct would move an operator away from what they were reading and tell them
+      // nothing. Nothing is marked invalid either - no field is at fault.
       expect(document.activeElement).toBe(before);
       expect(fieldMessages()).toEqual([]);
       expect(held.portalId).toBe(5);
     });
 
-    // MIGRATION: measured at `SiteSettings.ascx.vb`. When the operator is not a host account the legacy
-    // screen compared the six host-administered fields — host fee, host space, page quota, user quota,
-    // site-log history and expiry date — against the stored record and, on any difference, executed a BARE
-    // `Throw New System.Exception` WITH NO MESSAGE. There is no legacy sentence to carry across, so the
-    // target supplies its own, and a refusal of authority is a WARNING rather than an error: nothing is
-    // broken and nothing was changed.
     it('reports a refused host-administered change as a warning, and does not mistake it for a lapsed session', () => {
       const detail: PortalDetail = arriveEditing(5);
 
@@ -2371,9 +1956,6 @@ describe('PortalFormComponent', () => {
       fillMinimalCreation('contoso.example.test');
       press(CREATE_SUBMIT_LABEL);
 
-      // Keyed the way a .NET model-state document keys them — the member name in its own casing, not the
-      // casing the client happens to use. The client compares them case-insensitively for exactly this
-      // reason.
       expectRequest('POST', PORTALS_URL, 'the creation').flush(
         problem('validation.failed', 400, 'One or more fields are invalid.', {
           PortalAlias: ['That alias is not permitted here.'],
@@ -2418,10 +2000,6 @@ describe('PortalFormComponent', () => {
       expect(query('app-loading-spinner')).withContext('not left waiting forever').toBeNull();
     });
 
-    // MIGRATION: the legacy handler caught the exception and assigned `strMessage = ex.Message`, putting
-    // whatever the server threw in front of whoever was signing up. `CreateError.Text` was already in the
-    // resource file for this purpose, so showing it instead is both closer to the screen's evident intent
-    // and a refusal to leak internals.
     it('reports a server fault in the measured wording, and never repeats what the server said', () => {
       createMode();
 
@@ -2494,9 +2072,7 @@ describe('PortalFormComponent', () => {
       expect(button(EDIT_SUBMIT_LABEL)?.disabled).toBeFalse();
     });
 
-    /**
-     * The messages rendered beside one control, found through its own error region.
-     */
+    /** The messages rendered beside one control, found through its own error region. */
     function messageBesideControl(controlId: string): readonly string[] {
       const control: HTMLElement = field<HTMLElement>(controlId);
       const wrapper: Element | null = control.closest('.form-field');
@@ -2514,32 +2090,22 @@ describe('PortalFormComponent', () => {
   // Which failure sentence belongs to which operation
 
   /**
-   * The last-resort failure sentence is chosen BY MODE.
-   *
-   * Found at runtime rather than by reading: a portal UPDATE that failed with no server document
-   * displayed `Signup.ascx.resx`'s CREATE wording, so it named "the Creation Of Your Portal" for an
-   * operation that created nothing and told the operator to check a password "For An Existing User
-   * Account" when neither credential control is rendered in edit mode at all. Both arms are pinned
-   * here so the two sentences cannot be collapsed back into one.
-   *
-   * The `400` arm is pinned too, because it is deliberately NOT mode-dependent: a bad request is
-   * answered beside the fields, and a summary sentence there would only compete with them.
+   * The last-resort failure sentence is chosen BY MODE. Found at runtime rather than by reading: a portal
+   * UPDATE that failed with no server document displayed `Signup.ascx.resx`'s CREATE wording, so it named
+   * "the Creation Of Your Portal" for an operation that created nothing and told the operator to check a
+   * password "For An Existing User Account" when neither credential control is rendered in edit mode at
+   * all.
    */
   describe('which failure sentence belongs to which operation', () => {
-    /** The sentence authored for a failed update. `SiteSettings.ascx.vb` supplies no wording. */
     const UPDATE_ERROR_MESSAGE =
       'The portal could not be updated. Nothing was changed. Check the connection and try again.';
 
     /**
-     * A fault carrying no problem document, which is what forces the fallback arm.
-     *
-     * ⚠ THE SURFACE UNDER TEST IS THE NOTIFICATION, NOT THE BANNER. The two are fed from
-     * different places and say different things: the banner renders the problem document, so on a
-     * documentless fault it shows a status-derived sentence, while `failureMessage` — the mode-
-     * dependent sentence these specs exist for — reaches the operator through the notification
-     * queue. A first draft of these specs read `.error-banner__message` and failed against the
-     * status sentence, which is the banner working correctly on a surface that never carried the
-     * wording. Read through the spy, as every sibling failure spec here already does.
+     * A fault carrying no problem document, which is what forces the fallback arm. ⚠ THE SURFACE UNDER
+     * TEST IS THE NOTIFICATION, NOT THE BANNER. The two are fed from different places and say different
+     * things: the banner renders the problem document, so on a documentless fault it shows a
+     * status-derived sentence, while `failureMessage` — the mode- dependent sentence these specs exist
+     * for — reaches the operator through the notification queue.
      */
     const DOCUMENTLESS_FAULT: RawFault = { message: 'upstream unavailable' };
 
@@ -2612,13 +2178,7 @@ describe('PortalFormComponent', () => {
     });
   });
 
-  // The fields the legacy screen showed that are gone
-
   describe('the fields the legacy screen showed that are gone', () => {
-    // MIGRATION: `signup.ascx` declared the template selector `cboTemplate`, its description label
-    // `lblTemplateDescription` and the eighth required validator `valTemplate` ("Please select a template
-    // file"). The list was populated by ENUMERATING THE FILESYSTEM for `*.template` and no endpoint replaces
-    // it.
     it('offers no template selector and never asks for one', () => {
       createMode();
 
@@ -2632,9 +2192,6 @@ describe('PortalFormComponent', () => {
       expect(queryAll('select')).withContext('no selector at all').toHaveSize(0);
     });
 
-    // MIGRATION: `signup.ascx` declared the home-directory box `txtHomeDirectory` and its
-    // `btnCustomizeHomeDir` toggle. The filesystem subsystem is out of scope, so there is nothing to browse
-    // and no directory to create.
     it('offers no home directory and neither of its two commands', () => {
       createMode();
 
@@ -2731,9 +2288,9 @@ describe('PortalFormComponent', () => {
   // SENTINEL VALUES
 
   describe('sentinel values', () => {
-    // MIGRATION: `Null.NullString` is the EMPTY STRING and not null, so a legacy read could not tell a
-    // stored null from a stored empty string. Both arrive here as something the control can show, and an
-    // absent member is shown as nothing rather than as the word null.
+    // `Null.NullString` is the EMPTY STRING and not null, so a legacy read could not tell a stored null
+    // from a stored empty string. Both arrive here as something the control can show, and an absent member
+    // is shown as nothing rather than as the word null.
     it('shows an absent member as an empty control, never as the word null', () => {
       arriveEditing(5, { portalName: null, description: null, keyWords: null });
 
@@ -2768,10 +2325,6 @@ describe('PortalFormComponent', () => {
       answerListingReread();
     });
 
-    // MIGRATION: `Null.NullDate` is `DateTime.MinValue`. It is carried through as the value it is rather
-    // than being rendered — this screen offers no date at all, because the expiry date is one of the six
-    // host-administered terms that belong to the settings screen — and it is never presented anywhere as
-    // `01/01/0001`.
     it('carries an unset date through a replacement without rendering it', () => {
       const detail: PortalDetail = arriveEditing(5, { expiryDate: NULL_DATE });
 
@@ -2861,22 +2414,11 @@ describe('PortalFormComponent', () => {
 
   // Structure, typing and reach
 
-  // =========================================================================
   // WHICH PORTAL, AND HOW TO REACH ITS SIBLINGS
-  // =========================================================================
-  //
-  // ⚠ THE HEADING IDENTIFIES NOTHING ON ITS OWN. It reads "Edit Portals" for every tenant, and
-  // the three controls beneath it are a title, a description and a keyword list — so an operator
-  // arriving from a bookmark had nothing on screen saying WHICH tenant they were about to
-  // rewrite, only a number in the address bar.
-  //
-  // ⚠ AND THE SIBLINGS WERE UNREACHABLE. Every anchor the console renders was enumerated: none
-  // addressed `:portalId/aliases` at all, and the listing's one row command targets
-  // `:portalId/settings`. The three portal screens each own part of one tenant, and moving
-  // between them meant leaving the feature and coming back through the listing. The legacy
-  // console had them as separate administration modules reached from its menu —
-  // `SiteSettings.ascx.vb:L484-L489` inspects the referrer specifically to detect arrival FROM
-  // the Portal Aliases module, which is direct evidence operators moved between them.
+  // ⚠ THE HEADING IDENTIFIES NOTHING ON ITS OWN. It reads "Edit Portals" for every tenant, and the three
+  // controls beneath it are a title, a description and a keyword list — so an operator arriving from a
+  // bookmark had nothing on screen saying WHICH tenant they were about to rewrite, only a number in the
+  // address bar.
 
   describe('identifying the portal and reaching its siblings', () => {
     /** Every action projected into the shared header, in document order. */
@@ -2928,10 +2470,8 @@ describe('PortalFormComponent', () => {
     });
 
     it('builds those addresses correctly for the two sentinel identifiers', () => {
-      // `Portals.PortalID` is `IDENTITY (-1, 1)`, so 0 is the first real tenant and -1 is a real
-      // tenant as well as the legacy absent-marker. A falsy test or a magnitude test anywhere in
-      // the link composition would drop one of them, and the link would then resolve to the
-      // wildcard route rather than failing visibly.
+      // `Portals.PortalID` is `IDENTITY (-1, 1)`, so 0 is the first real tenant and -1 is a real tenant as
+      // well as the legacy absent-marker.
       arriveEditing(0);
       expect(headerAddresses()).toEqual(['/portals/0/settings', '/portals/0/aliases']);
 
@@ -2949,10 +2489,8 @@ describe('PortalFormComponent', () => {
     });
 
     it('keeps the sibling links out of the form\u2019s own action row', () => {
-      // Three affordances that must not merge: page-level navigation belongs in the header slot,
-      // while submit and cancel belong to the form footer. Asserted because the shared header's
-      // own documentation names this as the obvious mistake, and because a link inside the form
-      // would sit in the submit control's tab path.
+      // Three affordances that must not merge: page-level navigation belongs in the header slot, while
+      // submit and cancel belong to the form footer.
       arriveEditing(5);
 
       expect(required<HTMLElement>('.portal-form__actions').querySelectorAll('a')).toHaveSize(0);
@@ -2961,9 +2499,6 @@ describe('PortalFormComponent', () => {
   });
 
   describe('structure, typing and reach', () => {
-    // The component declares on-push change detection, so a change reaching it out of band marks the view
-    // for checking and renders on the next check rather than immediately. Asserting the withholding is the
-    // observable proof of that declaration.
     it('renders a newly read record only when change detection runs', () => {
       editMode('5');
 
@@ -2992,9 +2527,6 @@ describe('PortalFormComponent', () => {
       const call = expectRequest('POST', PORTALS_URL, 'the creation');
       const body = call.request.body as Record<string, unknown>;
 
-      // A control declared nullable reads back as null when untouched, and these do not: every one of them
-      // is a string. That is the observable consequence of declaring the whole group non-nullable, and it is
-      // why the payload never carries a surprise null.
       ['portalName', 'description', 'keyWords'].forEach((member: string) => {
         expect(typeof body[member]).withContext(`${member} is a string`).toBe('string');
         expect(body[member]).withContext(`${member} is not null`).not.toBeNull();

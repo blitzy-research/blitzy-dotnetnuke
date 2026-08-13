@@ -20,24 +20,8 @@ import { TokenStorageService } from '../../../core/services/token-storage.servic
 import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
 
 /**
- * Specification for the dynamic profile editor.
- *
- * The cases below are chosen around the failure modes this screen actually has rather
- * than around its members. Four are worth naming because getting them wrong produces a
- * screen that looks correct and is not:
- *
- *   - A DECLARED LENGTH OF ZERO MEANS "NO MAXIMUM". The column is
- *     `Length int NOT NULL ... DEFAULT 0`, so zero is what every property gets when
- *     nobody chose a bound. A maximum-length validator built from it would mark every
- *     control invalid and no operator could save anything.
- *   - THE ROUTE INPUT MUST BE NAMED `userId`. The router binds a route parameter to an
- *     input by name, so a rename produces no compile error, no runtime error and no data.
- *   - "NEVER SET" IS NOT "SET TO EMPTY". The legacy accessor could not tell them apart;
- *     the API can, through `lastUpdatedDate`, and conflating them silently repopulates a
- *     value the operator deliberately cleared.
- *   - A STORED VALIDATION PATTERN IS UNTRUSTED. It is authored by an administrator and
- *     compiled by the browser, so one the browser rejects must degrade one field rather
- *     than throw and take the screen down.
+ * Specification for the dynamic profile editor. The cases below are chosen around the failure modes this
+ * screen actually has rather than around its members.
  */
 describe('UserProfileComponent', () => {
   let fixture: ComponentFixture<UserProfileComponent>;
@@ -48,12 +32,10 @@ describe('UserProfileComponent', () => {
   const USER_ID = 7;
 
   /**
-   * The address of one account, built from the shared endpoint table rather than spelled.
-   *
-   * ⚠️ BUILT, NOT SPELLED, SO A ROUTE-TEMPLATE CHANGE FAILS HERE INSTEAD OF DRIFTING. Every
-   * literal in this file is additionally pinned against these builders by the endpoint block
-   * below, so the two can never disagree: a segment rename breaks the pin, and the pin names
-   * exactly what changed.
+   * The address of one account, built from the shared endpoint table rather than spelled. ⚠️ BUILT, NOT
+   * SPELLED, SO A ROUTE-TEMPLATE CHANGE FAILS HERE INSTEAD OF DRIFTING. Every literal in this file is
+   * additionally pinned against these builders by the endpoint block below, so the two can never
+   * disagree: a segment rename breaks the pin, and the pin names exactly what changed.
    *
    * @param userId The account.
    * @returns The relative address.
@@ -73,38 +55,26 @@ describe('UserProfileComponent', () => {
   }
 
   /**
-   * The address of the tenant's profile-declaration collection.
-   *
-   * ⚠️ PRESENT SO ITS ABSENCE FROM THE NETWORK CAN BE ASSERTED. This screen deliberately does
-   * NOT read it: a declaration arrives embedded in each profile entry, so fetching the list as
-   * well would be a redundant round trip for data already in hand. The endpoint is named here
-   * from the shared table so that the "one request, not two" contract is pinned against the real
-   * address rather than against a guess at it.
+   * The address of the tenant's profile-declaration collection. ⚠️ PRESENT SO ITS ABSENCE FROM THE
+   * NETWORK CAN BE ASSERTED. This screen deliberately does NOT read it: a declaration arrives embedded in
+   * each profile entry, so fetching the list as well would be a redundant round trip for data already in
+   * hand.
    */
   const profileDefinitionsUrl: string = API_ENDPOINTS.profileDefinitions.forCurrentPortal.collection();
 
   /**
-   * The tenant's account policy - an address this screen must NEVER reach.
-   *
-   * ⚠ HELD ONLY SO THE CASES CAN PROVE IT IS UNUSED. The screen once read this address to learn
-   * whether the per-property visibility control is offered, because `Profile.ascx.vb` L59-L63
-   * computed that from `Profile_DisplayVisibility`. The server declares `GET api/v1/users/settings`
-   * administrator-only, so the one caller the affordance exists for - the subject of the profile -
-   * was answered 403 and the control was never offered whatever the tenant had configured. The fact
-   * now travels on the profile projection instead, as `displayVisibilityEnabled`, and this constant
-   * remains only as the subject of the case that asserts the request is not issued.
+   * The tenant's account policy - an address this screen must NEVER reach. ⚠ HELD ONLY SO THE CASES CAN
+   * PROVE IT IS UNUSED. The screen once read this address to learn whether the per-property visibility
+   * control is offered, because `Profile.ascx.vb` L59-L63 computed that from `Profile_DisplayVisibility`.
    */
   const membershipSettingsUrl: string = API_ENDPOINTS.users.membershipSettings();
 
   /**
-   * The reason phrase the API publishes as the problem `title`, keyed by status.
-   *
-   * ⚠️ NOT FREE TEXT. A refusal reaches the wire through one shared problem factory that fills the
-   * title from a status-keyed vocabulary and fills an unspecified type from the same vocabulary's
-   * default code - so a document carrying a bespoke title such as `'Server error'`, or carrying no
-   * `type` at all, describes no response this server can produce. Worse, such a fixture silently
-   * exercises the message-precedence rule (detail, then title, then a fallback) and the failure-code
-   * reader against values no operator will ever see.
+   * The reason phrase the API publishes as the problem `title`, keyed by status. ⚠️ NOT FREE TEXT. A
+   * refusal reaches the wire through one shared problem factory that fills the title from a status-keyed
+   * vocabulary and fills an unspecified type from the same vocabulary's default code - so a document
+   * carrying a bespoke title such as `'Server error'`, or carrying no `type` at all, describes no
+   * response this server can produce.
    */
   const PROBLEM_TITLE: Readonly<Record<number, string>> = Object.freeze({
     400: 'Bad Request',
@@ -116,11 +86,9 @@ describe('UserProfileComponent', () => {
   });
 
   /**
-   * A problem document as this API publishes one: complete, coherent and emittable.
-   *
-   * There is deliberately no `instance` member - every call site supplies null for it and the
-   * framework's problem type omits a null one per member - and both identifiers are present, because
-   * the pipeline attaches both.
+   * A problem document as this API publishes one: complete, coherent and emittable. There is deliberately
+   * no `instance` member - every call site supplies null for it and the framework's problem type omits a
+   * null one per member - and both identifiers are present, because the pipeline attaches both.
    *
    * @param status The status the server answered with.
    * @param code The failure code, carried behind the URN prefix.
@@ -141,10 +109,6 @@ describe('UserProfileComponent', () => {
   /**
    * Narrows a value the DOM or a form reports as possibly absent.
    *
-   * A helper rather than a non-null assertion, so a fixture that stops matching fails
-   * with a sentence naming what was missing instead of a `TypeError` deep inside an
-   * expectation.
-   *
    * @param value The value to narrow.
    * @param what What was expected, named in the failure.
    * @returns The value, guaranteed present.
@@ -158,8 +122,7 @@ describe('UserProfileComponent', () => {
   }
 
   /**
-   * Builds a property declaration, defaulting every member so a case states only what it
-   * is about.
+   * Builds a property declaration, defaulting every member so a case states only what it is about.
    *
    * @param overrides The members this case cares about.
    * @returns A declaration.
@@ -207,12 +170,6 @@ describe('UserProfileComponent', () => {
   }
 
   /** The account read for the heading. */
-  // Declared WITHOUT a type assertion, so the compiler requires every member the contract
-  // declares. The previous `as UserDetail` cast admitted an object missing eight of them,
-  // which made this fixture a less demanding stand-in for the server than the server is: the
-  // transport now decodes each response against the published contract, and a body missing
-  // `roles`, `isOnline`, `mustChangePassword` or any of the audit instants is refused at the
-  // boundary exactly as a drifted server response would be.
   const account: UserDetail = {
     userId: USER_ID,
     portalId: 0,
@@ -239,10 +196,6 @@ describe('UserProfileComponent', () => {
   /**
    * Answers both reads the screen dispatches and renders the result.
    *
-   * The account read is answered as well as the profile read because the screen issues
-   * both; leaving one outstanding would make the verification at teardown fail for a
-   * reason unrelated to the case.
-   *
    * @param properties The profile entries to return.
    * @param userId The account being read.
    */
@@ -251,16 +204,8 @@ describe('UserProfileComponent', () => {
     userId: number = USER_ID,
     displayVisibilityEnabled = true,
   ): void {
-    // The tenant's visibility policy travels ON THE PROFILE. It used to be fetched separately from
-    // `GET api/v1/users/settings`, which the server declares administrator-only - so the one caller
-    // the affordance exists for, the subject of the profile, was answered 403 and never saw it.
-    // `true` is the default here because it is the default the server publishes when a tenant has
-    // stored nothing.
     const profile: UserProfile = { userId, properties, displayVisibilityEnabled };
 
-    // `meta` is stated rather than omitted: the envelope declares it as present-and-nullable
-    // for every response, paged or not, so a fixture that left it out would not be the shape
-    // the client actually receives.
     httpMock
       .expectOne(`/api/v1/users/${userId}`)
       .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
@@ -328,20 +273,8 @@ describe('UserProfileComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [UserProfileComponent],
-      // The real client first, then the testing backend that displaces it. Reversing the
-      // order leaves the live backend in place and every expectation times out against a
-      // request nothing intercepted. No interceptor is registered: the correlation
-      // identifier, the bearer token and the problem-document translation are three
-      // separately specified units, and running them here would assert several at once.
-      //
-      // `provideRouter([])` supplies the router injectables with an EMPTY route table. The
-      // deprecated router testing module is deliberately NOT used - it is removed in a later
-      // major and its `ActivatedRoute` stub is a different object from the one the application
-      // actually resolves. An empty table is correct rather than merely convenient: this screen
-      // is reached by `loadComponent` and navigates nowhere, so any route declared here would be
-      // a route the production configuration does not have. The provider is present because the
-      // shared components this screen composes may inject router services, and a fixture that
-      // omitted them would fail on an injection error that says nothing about the profile.
+      // The real client first, then the testing backend that displaces it. Reversing the order leaves the
+      // live backend in place and every expectation times out against a request nothing intercepted.
       providers: [provideHttpClient(), provideHttpClientTesting(), provideRouter([])],
     }).compileComponents();
 
@@ -351,13 +284,9 @@ describe('UserProfileComponent', () => {
   });
 
   /**
-   * Seats the caller's identity in the stored session.
-   *
-   * The identity is READ FROM THE STORED SESSION rather than fetched, so seating it is what decides
-   * whether the caller is the subject of the profile - the second half of the legacy
-   * `ShowVisibility` predicate (`Profile.ascx.vb` L58-L63, over `UserModuleBase.IsUser`
-   * L399-L406). The expiry is a FIXED literal: reading the clock in a specification would make it
-   * depend on when it runs.
+   * Seats the caller's identity in the stored session. The identity is READ FROM THE STORED SESSION
+   * rather than fetched, so seating it is what decides whether the caller is the subject of the profile -
+   * the second half of the legacy `ShowVisibility` predicate.
    *
    * @param userId The account the caller is signed in as.
    */
@@ -388,10 +317,6 @@ describe('UserProfileComponent', () => {
     // The session is cleared so one case's signed-in caller cannot decide another's affordances.
     TestBed.inject(TokenStorageService).clear();
 
-    // ⚠ NOTHING IS DRAINED HERE ANY MORE. A previous revision drained the tenant account-policy
-    // read, because the screen issued one on every mount whatever the route said. It no longer
-    // issues that request at all - the visibility policy arrives on the profile - so `verify` is
-    // reached with an undrained queue, and any outstanding request whatsoever now fails the case.
     httpMock.verify();
   });
 
@@ -402,40 +327,15 @@ describe('UserProfileComponent', () => {
       expect(fixture.componentInstance).toBeTruthy();
     });
 
-    // The on-push strategy, the selector and the exported class name are asserted together under
-    // "the structural contract" below, because they are one contract: the route resolves the class
-    // by name, the shell instantiates it by selector, and the change-detection strategy is what
-    // makes the signal-driven rendering correct. Splitting them across two places invited one to be
-    // updated without the others.
-
     it('dispatches nothing account-scoped until the route supplies an account', () => {
       fixture.detectChanges();
 
-      // Asserted through `match` rather than `expectNone`, so the count is a real
-      // expectation. `expectNone` throws on a match but registers no expectation, and a
-      // spec with none silently passes if its subject stops doing anything at all.
-      //
-      // ⚠ EVERY REQUEST IS COUNTED, NOT JUST THE ACCOUNT-SCOPED ONES. An earlier revision had to
-      // exclude the tenant account-policy address here, because the screen read it on every mount
-      // before any account was known. It reads nothing at all until the route supplies an account
-      // now, so the exclusion is gone and the claim is the stronger one.
       expect(httpMock.match(() => true).length).toBe(0);
     });
   });
 
-  // MIGRATION: THE ACCOUNT IS ADDRESSED BY A PLAIN ROUTE SEGMENT WHERE THE LEGACY VIEW PAGE USED AN
-  // ENCRYPTED QUERY PARAMETER. `ViewProfile.ascx.vb` L61-L63 read `userticket` and passed it through
-  // `UrlUtils.DecryptParameter` before `Int32.Parse`; `UrlUtils` is out of scope and the target uses
-  // `users/:userId/profile`. The identifier is consequently VISIBLE in the address bar where it
-  // previously was not - which is a deliberate, documented divergence and not a weakening of access
-  // control. The access control is the server's 403 and always was: the legacy ticket was obfuscation,
-  // never authorisation, and the cases below prove the plain segment is converted explicitly and that a
-  // malformed one loads nothing rather than dispatching a request for a row that cannot exist.
   describe('the route contract', () => {
     it('accepts the account through an input named exactly userId', () => {
-      // The router binds a route parameter to an input BY NAME. If this input were named
-      // anything else this call would throw, which is the only compile-time-free proof
-      // available that the binding the router performs will land.
       expect(() => fixture.componentRef.setInput('userId', '7')).not.toThrow();
     });
 
@@ -449,12 +349,6 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', '7');
       fixture.detectChanges();
 
-      // ⚠️ A 404, NOT A 200 CARRYING `data: null`. The shared result translator turns a SUCCESSFUL
-      // outcome carrying no value into a `404` under `resource.not_found` - with a detail naming
-      // neither the identifier nor the resource kind, so an unauthorised caller cannot tell "this
-      // exists but is not yours" from "this does not exist" - so a 200 with a null payload cannot
-      // leave this API for ANY single-resource route. An earlier revision modelled one, which proved
-      // the screen copes with a shape nothing sends while leaving the shape it does send untested.
       httpMock
         .expectOne('/api/v1/users/7')
         .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
@@ -472,9 +366,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('treats zero as a real identifier rather than as an absent one', () => {
-      // Accounts seed at one, so zero does not occur naturally - but neighbouring tables
-      // seed at zero and at minus one, and any code that treats a particular integer as
-      // "absent" makes a real row unreachable. Handled defensively.
       fixture.componentRef.setInput('userId', '0');
       fixture.detectChanges();
 
@@ -488,10 +379,6 @@ describe('UserProfileComponent', () => {
       ]);
 
       reads[0]?.flush({ data: account, meta: null });
-      // A declared-nothing profile is an EMPTY property list, not a null payload. An account with no
-      // values still HAS a profile resource; the only way this API can answer null is by answering
-      // 404, which would mean the resource does not exist at all - a different fact, and one the
-      // screen renders differently.
       reads[1]?.flush({
         data: { userId: 0, properties: [], displayVisibilityEnabled: true },
         meta: null,
@@ -564,9 +451,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders no group, no field and no update action', () => {
-      // A tenant declaring nothing is a legitimate configuration rather than a failure, so the
-      // affordances are ABSENT FROM THE DOCUMENT rather than hidden by a stylesheet: a control that
-      // merely looks inert is still reachable by keyboard and still announced.
+      // A tenant declaring nothing is a legitimate configuration rather than a failure, so the affordances
+      // are ABSENT FROM THE DOCUMENT rather than hidden by a stylesheet: a control that merely looks inert
+      // is still reachable by keyboard and still announced.
       load([]);
 
       expect(host().querySelector('fieldset')).toBeNull();
@@ -581,10 +468,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('names the screen that resolves it, in prose rather than as a link', () => {
-      // MIGRATION: the destination is named in PROSE and not as a router link. This component
-      // declares no router-link directive, so a link would either navigate nowhere or force a full
-      // document load - and a full load would discard the memory-held session and sign the operator
-      // out mid-edit.
       load([]);
 
       const message = present(host().querySelector('app-empty-state'), 'the empty state').textContent ?? '';
@@ -602,27 +485,12 @@ describe('UserProfileComponent', () => {
   });
 
   describe('when the address names no readable account', () => {
-    // TWO SITUATIONS THAT USED TO COLLAPSE INTO ONE SENTENCE. `hasProperties()` is false both when
-    // the tenant declares no property AND when nothing was ever FETCHED, and an unreadable identifier
-    // produces the second, because no request is issued for a key that cannot be parsed. With no
-    // branch of its own, `/users/abc/profile` therefore reached the empty-properties branch and
-    // claimed "This site declares no profile properties" against a tenant declaring TWELVE - not
-    // merely unhelpful but factually wrong about the tenant's configuration, and it sent the operator
-    // to define a property to fix an address that no property could ever fix.
     const UNREADABLE_IDENTIFIER = 'abc';
 
-    // ⚠ RESTATED HERE RATHER THAN IMPORTED. The component owns both sentences, and comparing its
-    // constant against itself would pass for ANY wording - including the wording this block exists to
-    // forbid. A literal is the only assertion that can fail if the sentence changes.
     const NO_USER_SENTENCE = "This account doesn't exist";
     const NO_PROPERTIES_OPENING = 'This site declares no profile properties';
 
-    /**
-     * Puts an unparseable identifier on the route and renders.
-     *
-     * Deliberately NOT `load()`, which flushes two responses: the point of this situation is that no
-     * request is ever made, so there is nothing to flush and `load()` would fail looking for one.
-     */
+    /** Puts an unparseable identifier on the route and renders. */
     function arriveAtUnreadableAddress(): void {
       fixture.componentRef.setInput('userId', UNREADABLE_IDENTIFIER);
       fixture.detectChanges();
@@ -677,8 +545,8 @@ describe('UserProfileComponent', () => {
 
     it('still gives the declared-nothing tenant its OWN sentence, not the account one', () => {
       // NEGATIVE CONTROL. Without this, every assertion above would also pass if the new branch had
-      // swallowed the empty-properties case as well - trading one wrong sentence for another. A
-      // READABLE identifier whose tenant declares nothing must still be told about the tenant.
+      // swallowed the empty-properties case as well - trading one wrong sentence for another. A READABLE
+      // identifier whose tenant declares nothing must still be told about the tenant.
       load([]);
 
       const emptyState = present(host().querySelector('app-empty-state'), 'the empty state');
@@ -687,7 +555,6 @@ describe('UserProfileComponent', () => {
       expect(host().querySelector('.user-profile__notice')).toBeNull();
     });
   });
-
 
   describe('ordering and grouping', () => {
     it('orders properties by the declared view order, not by arrival order', () => {
@@ -724,16 +591,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders every property, including one the tenant marked not visible', () => {
-      // MIGRATION: THE LEGACY VISIBILITY FILTER COLLAPSES TO "SHOW EVERYTHING", and that is the legacy
-      // OUTCOME rather than a relaxation of it. `Profile.ascx.vb` L162-L168 set `Visible = True` on every
-      // property for an administrator immediately before binding, and this route is administrator-only.
-      // The view page's own filter (`ViewProfile.ascx.vb` L84-L97) reaches the same conclusion here: it
-      // narrows an `AdminOnly` property to `(IsAdmin Or IsUser)` and a `MembersOnly` one to
-      // `Request.IsAuthenticated`, and on an administrator-only, authenticated route all three
-      // `UserVisibilityMode` branches evaluate to visible. `UserVisibilityMode` is additionally NOT one
-      // of the nine ported enumerations, so the ported model could not express the filter even if the
-      // route did not collapse it. A client-side filter is therefore NOT implemented rather than
-      // implemented and then always passing, and no filter is tested that the model cannot express.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', visible: true, viewOrder: 1 })),
         entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', visible: false, viewOrder: 2 })),
@@ -746,9 +603,9 @@ describe('UserProfileComponent', () => {
 
   describe('the declared length bound', () => {
     it('applies NO maximum-length rule when the declared length is zero', () => {
-      // THE MOST CONSEQUENTIAL CASE IN THIS FILE. Zero is the column default and means
-      // "no bound"; treating it as a bound of nothing invalidates every control on every
-      // screen and no operator can save anything at all.
+      // THE MOST CONSEQUENTIAL CASE IN THIS FILE. Zero is the column default and means "no bound"; treating
+      // it as a bound of nothing invalidates every control on every screen and no operator can save
+      // anything at all.
       load([entry(declaration({ length: 0 }))]);
 
       const control = controls()[0];
@@ -785,24 +642,11 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // THE TENANT'S VALIDATION EXPRESSION IS NOT RUN HERE
-  // ---------------------------------------------------------------------------
-  //
   // ⚠ THIS BLOCK ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE VULNERABILITY. The expression is
   // administrator-authored data, so it is untrusted input to whatever engine runs it, and it was being
   // compiled and executed synchronously on the UI thread on every keystroke — on controls whose length is
-  // frequently unbounded, because a declared length of zero means no maximum. A catastrophically
-  // backtracking pattern therefore froze the browser tab with no way out, and the tenant who authored the
-  // declaration is not necessarily the operator who suffers it.
-  //
-  // The server is not merely a second authority here, it is the only party that can run these safely: it
-  // compiles with a fifty-millisecond match timeout, a length ceiling and a bounded cache. The browser's
-  // engine exposes no timeout at all, so a client-side evaluation cannot be bounded — only avoided.
-  //
-  // These cases therefore pin the ABSENCE of the rule, which is deliberately not the same thing as the
-  // rule being unenforced: it is enforced by the endpoint, and reported per field through the server's own
-  // model-state message, which this screen already renders.
+  // frequently unbounded, because a declared length of zero means no maximum.
   describe('the declared validation pattern', () => {
     it('does not evaluate a stored expression in the browser', () => {
       load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
@@ -828,9 +672,6 @@ describe('UserProfileComponent', () => {
       present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
       fixture.detectChanges();
 
-      // The value travels, and the endpoint decides. A client-side rule here would have to be exactly as
-      // strict as a .NET expression evaluated by a different engine, which is not something a browser can
-      // promise — and being stricter would refuse values the server accepts.
       const written = httpMock.expectOne(
         (request) => request.method === 'PUT' && request.url === `/api/v1/users/${USER_ID}/profile`,
       );
@@ -913,10 +754,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders a property whose declared length is large with a multi-line control', () => {
-      // ⚠ A TENANT-AUTHORED NAME, DELIBERATELY. The seeded rich-text property gets a multi-line
-      // control by NAME as well as by length, so naming it here would leave this case unable to
-      // say which of the two rules produced the box. This name is in no measured table, so the
-      // declared length is the only thing that can have decided it.
+      // ⚠ A TENANT-AUTHORED NAME, DELIBERATELY. The seeded rich-text property gets a multi-line control by
+      // NAME as well as by length, so naming it here would leave this case unable to say which of the two
+      // rules produced the box.
       load([entry(declaration({ propertyName: 'ProjectSummary', length: 3750 }))]);
 
       expect(host().querySelector('textarea')).not.toBeNull();
@@ -1022,9 +862,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('marks the control itself invalid, not merely the message region', () => {
-      // The shared field owns the error region and gives it `role="alert"`, but it cannot
-      // mark a projected control. Without `aria-invalid` a screen-reader user hears the
-      // message and finds nothing on the field identifying it as the one at fault.
+      // The shared field owns the error region and gives it `role="alert"`, but it cannot mark a projected
+      // control. Without `aria-invalid` a screen-reader user hears the message and finds nothing on the
+      // field identifying it as the one at fault.
       load([entry(declaration({ required: true }))]);
 
       const control = present(controls()[0], 'the value control');
@@ -1083,12 +923,6 @@ describe('UserProfileComponent', () => {
         ],
       });
 
-      // ⚠️ `204` WITH A NULL BODY, STATED EXPLICITLY. Letting the status default to 200 encoded the
-      // wrong contract and still passed: `PUT /api/v1/users/{userId}/profile` returns an outcome that
-      // carries no value, and the shared translator answers such an outcome with `204` - which HTTP
-      // forbids from having a body at all. That is precisely WHY the store re-reads the profile
-      // afterwards, so a fixture that answered 200 was quietly removing the reason for the follow-up
-      // it then went on to expect.
       request.flush(null, { status: 204, statusText: 'No Content' });
       httpMock
         .expectOne(`/api/v1/users/${USER_ID}/profile`)
@@ -1134,14 +968,9 @@ describe('UserProfileComponent', () => {
 
     it('does NOT submit an invalid form, so the administrator bypass is not reproduced', () => {
       // MIGRATION: THE LEGACY ADMINISTRATOR VALIDATION BYPASS IS DELIBERATELY NOT REPRODUCED.
-      // `Profile.ascx.vb` L94-L104 read `If ProfileProperties.IsValid Or IsAdmin Then _IsValid = True`,
-      // so an administrator was considered valid unconditionally and every declared rule - required,
-      // length, pattern - was skipped for them. Because THIS route is administrator-only, reproducing
-      // that would make client-side validation entirely vacuous on the only screen that has it, which
-      // contradicts the requirement that validation rules must match. The declared rules are therefore
-      // applied to every operator and an invalid form issues NO write. Nothing is weakened: the server
-      // validates independently and answers 400 with a problem document either way, so the change makes
-      // the client agree with the server rather than disagree with it.
+      // `Profile.ascx.vb` L94-L104 read `If ProfileProperties.IsValid Or IsAdmin Then _IsValid = True`, so
+      // an administrator was considered valid unconditionally and every declared rule - required, length,
+      // pattern - was skipped for them.
       load([entry(declaration({ required: true }))]);
 
       submit();
@@ -1178,37 +1007,13 @@ describe('UserProfileComponent', () => {
   });
 
   describe('the visibility affordance', () => {
-    /*
-     * MIGRATION: `Profile.ascx.vb` L58-L63 computed
-     * `CType(UserModuleBase.GetSetting(PortalId, "Profile_DisplayVisibility"), Boolean) And IsUser` -
-     * the tenant's policy AND the viewer being the subject of the profile
-     * (`Library/Components/Users/UserModuleBase.vb` L399-L406). BOTH halves are resolved on the
-     * routed path: the policy from `displayVisibilityEnabled` on the profile projection, the
-     * identity from the signed-in session.
-     *
-     * ⚠ TWO SUCCESSIVE REVISIONS LEFT THIS AFFORDANCE INERT, AND EACH FAILED DIFFERENTLY.
-     * The first took it from an input alone, which no route supplies, so the routed screen never
-     * offered the control whatever the tenant had configured. The second read the policy from
-     * `GET api/v1/users/settings`, which the server declares administrator-only - so the routed
-     * caller the affordance exists for, the subject of the profile, was answered 403, the read
-     * failed, and the screen rendered its own inertness as though the tenant had switched the policy
-     * off. The policy now arrives on the profile the subject is already permitted to read, which is
-     * why every case below states it as the third argument of `load` rather than answering a
-     * separate request.
-     *
-     * No signed-in session is established in this fixture, so the identity half is false throughout
-     * except where a case says otherwise, which is why the policy being enabled is not on its own
-     * enough to render the control.
-     */
+    // ⚠ TWO SUCCESSIVE REVISIONS LEFT THIS AFFORDANCE INERT, AND EACH FAILED DIFFERENTLY. The first took it
+    // from an input alone, which no route supplies, so the routed screen never offered the control whatever
+    // the tenant had configured.
 
     it('is not offered while the tenant policy is unresolved, whatever the caller is', () => {
-      // The conservative posture: offering a control that then disappears is worse than offering it
-      // a moment late, so an unresolved policy reads as "not offered" rather than as a stored false.
-      //
-      // ⚠ UNRESOLVED NOW MEANS "THE PROFILE HAS NOT ARRIVED". The policy rides the profile, so the
-      // two facts resolve together and there is no window in which the screen holds one without the
-      // other. The subject's own identity is seated first, so the ONLY reason the control is absent
-      // at the first assertion is that the profile is still outstanding.
+      // The conservative posture: offering a control that then disappears is worse than offering it a
+      // moment late, so an unresolved policy reads as "not offered" rather than as a stored false.
       seatIdentity(USER_ID);
       fixture.componentRef.setInput('userId', String(USER_ID));
       fixture.detectChanges();
@@ -1227,12 +1032,8 @@ describe('UserProfileComponent', () => {
     });
 
     it('is not offered to a caller who is not the subject of the profile, even with the policy on', () => {
-      /*
-       * ⚠ THE SECOND HALF OF THE LEGACY PREDICATE, AND WHY IT MATTERS. Visibility is a choice the
-       * account holder makes about their OWN data. An administrator editing somebody else's profile
-       * could otherwise change who can see it without the holder knowing, so the legacy hid the
-       * affordance for exactly that caller however the tenant had set the policy.
-       */
+      // ⚠ THE SECOND HALF OF THE LEGACY PREDICATE, AND WHY IT MATTERS. Visibility is a choice the account
+      // holder makes about their OWN data.
       load([entry(declaration())], USER_ID, true);
 
       expect(host().querySelector('select'))
@@ -1241,10 +1042,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('is not offered when the tenant switched the policy off', () => {
-      // ⚠ THE SUBJECT'S OWN IDENTITY IS SEATED, so the identity half of the predicate is TRUE and the
-      // stated policy is the only thing withholding the control. Without the session this case would
-      // pass on a screen that ignored the policy entirely, which is how the previous revision's
-      // failure went unnoticed.
       seatIdentity(USER_ID);
       load([entry(declaration())], USER_ID, false);
 
@@ -1254,9 +1051,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('is offered to the subject of the profile when the tenant enabled the policy', () => {
-      // BOTH halves of the legacy predicate satisfied at once, which is the only combination the
-      // legacy screen rendered the control for: the tenant's policy on, and the signed-in caller
-      // being the account whose profile is on screen.
       seatIdentity(USER_ID);
       load([entry(declaration())], USER_ID, true);
 
@@ -1282,9 +1076,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('lets the caller override force it on, and never lets a false override force it off', () => {
-      // The input is an OVERRIDE for an embedding caller, not the routed behaviour: it can only turn
-      // the affordance on. A false defers to the resolved answer rather than suppressing it, which is
-      // what stops an embedding context silently overriding a tenant that enabled the policy.
+      // The input is an OVERRIDE for an embedding caller, not the routed behaviour: it can only turn the
+      // affordance on. A false defers to the resolved answer rather than suppressing it, which is what
+      // stops an embedding context silently overriding a tenant that enabled the policy.
       fixture.componentRef.setInput('manageVisibility', true);
       load([entry(declaration())], USER_ID, false);
 
@@ -1294,14 +1088,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('costs no request of its own, and never the administrator-only account settings', () => {
-      /*
-       * ⚠ THE REGRESSION THIS CASE EXISTS TO CATCH. `Profile.ascx.vb` L60 read the tenant setting
-       * inside a property GETTER, so it was fetched on every render of every field; a later revision
-       * of this screen read it once per mount from `GET api/v1/users/settings`. That address admits
-       * only portal administrators, so the subject of the profile - the only caller the affordance is
-       * offered to - was answered 403 and the control was never rendered. Naming the address here is
-       * what makes a re-introduction fail rather than degrade silently.
-       */
       seatIdentity(USER_ID);
       load([entry(declaration()), entry(declaration({ propertyDefinitionId: 88, propertyName: 'City' }))]);
 
@@ -1315,11 +1101,9 @@ describe('UserProfileComponent', () => {
       fixture.componentRef.setInput('userId', '8');
       fixture.detectChanges();
 
-      // ⚠ ONE `match` FOR THE WHOLE QUEUE, NOT A FILTERED ONE FOLLOWED BY A TOTAL. `match` REMOVES
-      // what it returns, so a filtered call followed by a broader one would inspect an already
-      // drained queue and pass on an empty result. Matching everything and asserting the addresses
-      // is both correct and the stronger claim: it names what IS dispatched and, by exhausting the
-      // queue, proves nothing else was.
+      // ⚠ ONE `match` FOR THE WHOLE QUEUE, NOT A FILTERED ONE FOLLOWED BY A TOTAL. `match` REMOVES what it
+      // returns, so a filtered call followed by a broader one would inspect an already drained queue and
+      // pass on an empty result.
       const reads = httpMock.match(() => true);
 
       expect(reads.map((request) => request.request.url))
@@ -1332,10 +1116,8 @@ describe('UserProfileComponent', () => {
     });
 
     it('withholds the control for the second account when that profile says the policy is off', () => {
-      // ⚠ THE POLICY IS RE-STATED BY EVERY PROFILE, so a route move re-resolves it rather than
-      // carrying the first account's answer forward. The caller here is the subject of the FIRST
-      // account only, so the second account's control is withheld on both halves at once - which is
-      // the correct outcome and the reason the assertion below names the policy it is testing.
+      // ⚠ THE POLICY IS RE-STATED BY EVERY PROFILE, so a route move re-resolves it rather than carrying the
+      // first account's answer forward.
       seatIdentity(USER_ID);
       load([entry(declaration())], USER_ID, true);
 
@@ -1410,10 +1192,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders values as read-only text rather than as inert controls', () => {
-      // ⚠️ READ-ONLY, NOT DISABLED, AND NOT MERELY STYLED INERT. A disabled control is removed from
-      // the accessibility tree AND from the form's value, so a screen-reader user would be told the
-      // profile is empty; a control that only LOOKS inert invites an edit that cannot be saved. The
-      // values are therefore plain text in a description list, which is read-only structurally.
+      // ⚠️ READ-ONLY, NOT DISABLED, AND NOT MERELY STYLED INERT. A disabled control is removed from the
+      // accessibility tree AND from the form's value, so a screen-reader user would be told the profile is
+      // empty; a control that only LOOKS inert invites an edit that cannot be saved.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
           propertyValue: 'John',
@@ -1528,9 +1309,6 @@ describe('UserProfileComponent', () => {
       httpMock
         .expectOne(`/api/v1/users/${USER_ID}`)
         .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
-      // The live document, complete: an unhandled fault leaves the type unspecified so the shared
-      // factory fills it from the status - `server.unexpected_failure` - and the title is the reason
-      // phrase for 500, not the bespoke `'Server error'` the previous fixture invented.
       httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
         problemOf(
           500,
@@ -1551,8 +1329,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('announces a refusal at warning severity rather than as an error', () => {
-      // `AccessDenied.ascx.vb` rendered at the warning message type in BOTH branches of
-      // its load handler, so a permission refusal is a warning here too.
       fixture.componentRef.setInput('userId', String(USER_ID));
       fixture.detectChanges();
 
@@ -1592,10 +1368,7 @@ describe('UserProfileComponent', () => {
       present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
       fixture.detectChanges();
 
-      // A model-state refusal, complete. `request.invalid` is the status vocabulary's own default code
-      // for a 400 and is what the model-binding path publishes; the title is the framework's fixed
-      // sentence for this one document shape; and the per-field map is Pascal-cased because its keys
-      // name model members rather than JSON members, so the camel-case body policy does not reach them.
+      // A model-state refusal, complete.
       httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush(
         {
           type: 'urn:dnnmigration:error:request.invalid',
@@ -1616,20 +1389,9 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // A VALUE THAT IS PRESENT IS NEVER REPLACED BY A DEFAULT
-  // ---------------------------------------------------------------------------
-  //
-  // The seeding rule decided on the audit timestamp alone: no timestamp meant "never recorded", so the
-  // declaration's default was seeded. This screen submits EVERY property it renders, so a property that
-  // arrived carrying content but no timestamp was rendered as the default and the operator's next save
-  // wrote that default straight over the content — silent loss, on a screen that looked as though it had
-  // loaded correctly.
-  //
   // The current projection cannot produce that combination: the entity's column is `NOT NULL` and the
-  // mapper emits `stored?.LastUpdatedDate`, so a null timestamp means precisely "no row". These cases are
-  // therefore about the ORDER OF EVIDENCE — a value present outweighs metadata about it — which costs
-  // nothing today and forecloses an unrecoverable failure if the contract ever changes shape.
+  // mapper emits `stored?.LastUpdatedDate`, so a null timestamp means precisely "no row".
   describe('seeding when the audit metadata disagrees with the value', () => {
     it('keeps a supplied value even with no recorded timestamp', () => {
       load([
@@ -1666,14 +1428,7 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // THE WRITE'S OWN PROPERTY LIMIT
-  // ---------------------------------------------------------------------------
-  //
-  // The endpoint refuses a profile write carrying more than sixty-four properties, and this screen submits
-  // every declared property on every save because the write replaces rather than merges. So for a tenant
-  // declaring more than that, NO save on this screen can succeed — and the operator used to discover it by
-  // filling the form in and being refused whole, with nothing to say which end was at fault.
   describe('a tenant declaring more properties than one write may carry', () => {
     /** One entry per declaration, each with its own identifier and view order. */
     function manyProperties(count: number): readonly UserProfileValue[] {
@@ -1712,9 +1467,6 @@ describe('UserProfileComponent', () => {
 
       const form = host().querySelector('form');
 
-      // The branch withholds the form, so there is nothing to submit through — which is the primary
-      // protection. The component's own guard is the second, for a submission raised while a re-read is in
-      // flight, and it is asserted by the absence of any write here.
       form?.dispatchEvent(new Event('submit'));
       fixture.detectChanges();
 
@@ -1722,19 +1474,7 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // THE ADDRESSES THIS SCREEN USES
-  // ---------------------------------------------------------------------------
-  //
-  // ⚠️⚠️ EVERY ADDRESS MUST BE RELATIVE, AND AN ABSOLUTE ONE WOULD PASS HERE WHILE BREAKING THE
-  // DEPLOYED APPLICATION. The test builder declares no file replacement, so a spec compiles
-  // against the PRODUCTION environment, whose base is the relative `/api/v1`; the container serves
-  // the bundle from nginx, which forwards `/api/` to the API service. An absolute
-  // absolute address naming the API service by its compose service name and port resolves only
-  // inside the Docker network and never from a browser, and one naming the loopback host and the
-  // API port turns every call into a cross-origin request. Neither failure is visible to a
-  // compiler, and neither literal appears anywhere in this file - not even as an example - so the
-  // rule is asserted below rather than merely described.
   describe('the addresses this screen uses', () => {
     it('addresses the profile relatively, through the shared endpoint table', () => {
       // Pinned against the literal every other case in this file spells, so the two can never
@@ -1744,9 +1484,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('addresses the declaration collection relatively and without a tenant parameter', () => {
-      // MIGRATION: the tenant is resolved SERVER-SIDE from the request's host against the alias
-      // table, exactly as the legacy `GetPortalSettings` procedure resolved it from the alias - so
-      // no `portalId` travels in the query string and none is asserted here.
+      // The tenant is resolved SERVER-SIDE from the request's host against the alias table, exactly as the
+      // legacy `GetPortalSettings` procedure resolved it from the alias - so no `portalId` travels in the
+      // query string and none is asserted here.
       expect(profileDefinitionsUrl).toBe('/api/v1/profile-definitions');
     });
 
@@ -1762,17 +1502,8 @@ describe('UserProfileComponent', () => {
     });
 
     it('reads the profile and the account, and nothing else', () => {
-      // ONE REQUEST FOR THE FIELDS, NOT TWO. A declaration arrives embedded in each profile entry,
-      // so the declaration collection is deliberately never read: it would be a second round trip
-      // for data already in hand. The account is read as well, but for the heading rather than for
-      // the fields.
       load([entry(declaration())]);
 
-      // ⚠ THE ADMINISTRATOR-ONLY SETTINGS ADDRESS IS NAMED AND ASSERTED ABSENT. The screen used to
-      // read it for the visibility policy, and the server answers an ordinary account 403 there, so
-      // the read was a guaranteed refusal on the routed path this screen exists to serve. Naming it
-      // is what keeps the regression detectable; asserting the whole queue empty is what proves the
-      // profile and the account are the only two addresses used.
       expect(httpMock.match(membershipSettingsUrl).length)
         .withContext('the administrator-only account settings must not be read by this screen')
         .toBe(0);
@@ -1785,21 +1516,15 @@ describe('UserProfileComponent', () => {
     it('never reads /api/v1/profile-definitions', () => {
       load([entry(declaration({ propertyName: 'FirstName' }))]);
 
-      // Asserted through `match` rather than `expectNone` so the count is a real expectation:
-      // `expectNone` throws on a match but registers nothing when it finds none, which makes a
-      // silently mis-wired fixture look like a pass.
       expect(httpMock.match((request) => request.url === profileDefinitionsUrl).length).toBe(0);
       expect(httpMock.match((request) => request.url.includes('profile-definitions')).length).toBe(0);
     });
   });
 
-  // ---------------------------------------------------------------------------
   // THE STRUCTURAL CONTRACT THE ROUTE DEPENDS ON
-  // ---------------------------------------------------------------------------
-  //
   // `user.routes.ts` reaches this screen through `loadComponent`, so the exported class name is
-  // load-bearing, and the selector is what the shell instantiates. Neither is checked by a
-  // compiler at the point that matters, so both are pinned.
+  // load-bearing, and the selector is what the shell instantiates. Neither is checked by a compiler at the
+  // point that matters, so both are pinned.
   describe('the structural contract', () => {
     /** The compiled component definition, read once. */
     function componentDef(): { readonly selectors?: readonly unknown[]; readonly onPush?: boolean } {
@@ -1827,35 +1552,20 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // THE FOUR CATEGORIES DOTNETNUKE SEEDED, AS THE INSTALLER SEEDS THEM
-  // ---------------------------------------------------------------------------
-  //
-  // Grouping is a BEHAVIOURAL requirement rather than decoration: the legacy editor was declared
-  // `groupByMode="Section"` with `groupHeaderIncludeRule="True"` (`Profile.ascx` L18 and L25), so a
-  // legacy operator read this screen as four captioned groups and must still read it that way.
-  //
-  // ⚠️ NINETEEN PROPERTIES, NOT TWENTY. `Profile.ascx.resx` holds 67 `<data>` nodes, four of which
-  // are the inert designer placeholders, leaving 63 keyed entries: 19 x 3 keys = 57, plus the four
-  // `.Header` values, plus `ProfileProperties_Country.Not Specified`, plus `ProfileTitle.Text`.
-  // Every figure below is read from `04.00.04.SqlDataProvider` L1307-L1332, which is the installer
-  // procedure that seeds them, so no property, category, order or bound is invented here.
   describe('the four categories DotNetNuke seeds', () => {
     /**
-     * One seeded declaration, exactly as `AddDefaultPropertyDefinitions` seeds it.
-     *
-     * ⚠️ THE DATA TYPE IS NOT REPRODUCED, AND THAT IS DELIBERATE. The installer resolves it BY
-     * NAME out of the excluded `Lists` table - `SELECT EntryID ... WHERE ListName='DataType' AND
-     * Value='Text'` - so the stored integer is DATABASE-ASSIGNED and differs between installations.
-     * Writing one here would pin a value no installation guarantees. An arbitrary integer is used
-     * instead and the text-control fallback is asserted separately.
+     * One seeded declaration, exactly as `AddDefaultPropertyDefinitions` seeds it. ⚠️ THE DATA TYPE IS
+     * NOT REPRODUCED, AND THAT IS DELIBERATE. The installer resolves it BY NAME out of the excluded
+     * `Lists` table - `SELECT EntryID ... WHERE ListName='DataType' AND Value='Text'` - so the stored
+     * integer is DATABASE-ASSIGNED and differs between installations.
      *
      * @param viewOrder The seeded display order, which doubles as the identifier here because the
-     *   installer's orders are distinct.
+     * installer's orders are distinct.
      * @param category The seeded category.
      * @param propertyName The seeded property name.
-     * @param length The seeded bound: 50 for a text property, 0 for one the installer gave a
-     *   specialised data type, where 0 means NO bound rather than a bound of nothing.
+     * @param length The seeded bound: 50 for a text property, 0 for one the installer gave a specialised
+     * data type, where 0 means NO bound rather than a bound of nothing.
      * @returns The profile entry, with no value recorded against it.
      */
     function seeded(
@@ -1912,10 +1622,6 @@ describe('UserProfileComponent', () => {
     it('renders one captioned group per seeded category, in the seeded order', () => {
       load(seededProperties());
 
-      // ⚠️ "Contact Info" CONTAINS A SPACE. Its resource key is
-      // `ProfileProperties_Contact Info.Header`, the only heading key in the file with one, and the
-      // value is byte-identical to the category - which is why the category string is rendered
-      // straight out of the declaration and no key is ever composed or parsed.
       expect(headings()).toEqual(['Name', 'Address', 'Contact Info', 'Preferences']);
     });
 
@@ -2018,16 +1724,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders the seeded rich-text property as a plain textarea, a reported reduction', () => {
-      // MIGRATION: A DELIBERATE, REPORTED FUNCTIONAL REDUCTION — rich text becomes a PLAIN
-      // MULTI-LINE BOX, not a single-line one and not an editor. Biography is the one property the
-      // installer seeds with the rich-text data type
-      // (`04.00.04.SqlDataProvider` L1330), and it was edited through the excluded FCK provider.
-      //
-      // ⚠ IT IS RECOGNISED BY NAME, AND IT HAS TO BE. The installer also seeds it with
-      // `@Length = 0`, which is the ABSENCE of a bound rather than a large one, so the
-      // length-driven rule cannot reach it — a purely length-driven screen renders the one
-      // property that is unambiguously prose in a one-line box. The declared DATA TYPE cannot
-      // drive the choice either, because it is an unresolved database-assigned integer.
       load(seededProperties());
 
       const biography = present(
@@ -2040,12 +1736,6 @@ describe('UserProfileComponent', () => {
       expect(host().querySelectorAll('textarea').length).toBe(1);
       expect(host().querySelectorAll('input[type="text"]').length).toBe(18);
       expect(controls().length).toBe(19);
-      // ⚠ U-M6 — TWELVE ROWS, NOT FOUR, AND THE DECLARATION IS WHY. Every multi-line control used to
-      // render exactly four rows however much it could hold; the row count is now derived from the
-      // declared length. Biography is seeded with `@Length = 0`, which is the ABSENCE of a bound rather
-      // than a bound of nothing — the same rule the length validator and the published `maxlength`
-      // attribute both follow — so a field that can hold anything takes the CEILING rather than the
-      // floor. That is the right direction for the one seeded property that is unambiguously prose.
       expect(biography.getAttribute('rows')).withContext('a real multi-line box').toBe('12');
 
       // The label proves it is Biography that got the box rather than some other property.
@@ -2057,11 +1747,6 @@ describe('UserProfileComponent', () => {
         ).trim(),
       ).toBe('Biography');
 
-      // ⚠ AND NO RICH-TEXT AFFORDANCE IS SUBSTITUTED, which is the other half of the reduction.
-      // A `textarea` cannot render markup, and nothing on this screen opts back into it: there
-      // is no editable container, no editor toolbar, no framed editor document, and no element
-      // whose content was written as trusted HTML. Asserting the reduction without asserting
-      // this would leave the door open to a "small" editor being added later.
       expect(host().querySelector('[contenteditable]')).toBeNull();
       expect(host().querySelector('iframe')).toBeNull();
       expect(host().querySelector('[role="toolbar"]')).toBeNull();
@@ -2074,12 +1759,6 @@ describe('UserProfileComponent', () => {
   // ---------------------------------------------------------------------------
   describe('the mode-dependent control title', () => {
     it('titles the editable screen as the legacy edit page was titled', () => {
-      // Measured as `ControlTitle_profile.Text` = "Manage Profile".
-      //
-      // ⚠️ THAT KEY IS NOT IN THIS SCREEN'S OWN RESOURCE FILE. It is in
-      // `Website/admin/Users/App_LocalResources/ManageUsers.ascx.resx` L202-L203, because the
-      // legacy title belonged to the container that HOSTED the editor rather than to the editor.
-      // Reading only the local file would have found no title at all.
       load([entry(declaration())]);
 
       expect(present(host().querySelector('app-page-header'), 'the page header').textContent).toContain(
@@ -2099,9 +1778,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders the per-record heading in both modes, as the legacy page did', () => {
-      // The legacy assigned the record heading inside `DataBind()` regardless of the editor mode,
-      // so a legacy operator READING a profile also saw the word "Edit" in that row. Preserving
-      // that is behavioural equivalence rather than an oversight.
       fixture.componentRef.setInput('mode', 'view');
       load([entry(declaration())]);
 
@@ -2120,24 +1796,7 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // ⚠️⚠️ TEXT FROM THE API IS UNTRUSTED MARKUP, BY MEASUREMENT
-  // ---------------------------------------------------------------------------
-  //
-  // Across the thirty-seven in-scope resource files - 1,111 keyed entries in 1,211 raw `<data>`
-  // nodes - SEVENTY-SIX values carry a raw HTML tag and FOUR carry a live `script` element, stored
-  // XML-escaped so a naive search clears them wrongly. This screen's own sixty-three values happen
-  // to carry none, which is exactly why the rule must be asserted rather than assumed: the runtime
-  // property list, its names, its categories and the server's per-field messages all arrive from
-  // the API, not from that file.
-  //
-  // The legacy code knew this. `AccessDenied.ascx.vb` L43 re-ENCODED the message it had just decoded
-  // before showing it, so escaping is preservation of a legacy safety property rather than a new
-  // restriction.
-  //
-  // Every case below asserts the same two things: the text is present VERBATIM, brackets included,
-  // and NO element was created from it. The first without the second would pass for a screen that
-  // rendered the markup and then happened to contain the text.
   describe('text that arrives from the API is never treated as markup', () => {
     /** A property name carrying a live script element, as four measured resource values do. */
     const SCRIPT_NAME = '<script>window.__pwned = true;</script>';
@@ -2188,10 +1847,10 @@ describe('UserProfileComponent', () => {
           detail: 'The request could not be processed as submitted.',
           traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
           correlationId: '6e2b0c94-3f57-4a81-b2d6-84c1f9e50a7b',
-          // ⚠️ THE KEYS ARE .NET MODEL-STATE NAMES AND ARE PASCAL-CASED. They name model members
-          // rather than JSON members, so the camel-case body policy does not reach them, and the
-          // document is read with a BRACKET because property access on an index signature is a
-          // compile error in this workspace.
+          // ⚠️ THE KEYS ARE .NET MODEL-STATE NAMES AND ARE PASCAL-CASED. They name model members rather
+          // than JSON members, so the camel-case body policy does not reach them, and the document is read
+          // with a BRACKET because property access on an index signature is a compile error in this
+          // workspace.
           errors: { FirstName: ['<b>Rejected</b> by the server.'] },
         },
         { status: 400, statusText: 'Bad Request' },
@@ -2204,12 +1863,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('strips the leading break markup the legacy validator messages carried', () => {
-      // ⚠️ MEASURED AS INCONSISTENT: 28 of the 34 in-scope validator messages begin with a literal
-      // `<br>`, which the legacy page emitted as MARKUP to push the message onto its own line. It is
-      // layout expressed as content, and because nothing here treats a message as markup an operator
-      // would otherwise literally read the characters `<br>` in front of every message. The break is
-      // therefore RESOLVED to a line break rather than rendered, and the line break itself comes
-      // from the stylesheet.
       load([entry(declaration({ propertyName: 'FirstName' }))]);
 
       present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
@@ -2256,9 +1909,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('never writes a recorded value into the document as markup', () => {
-      // A recorded value reaches a control's `value` rather than its content, so it cannot create an
-      // element even in principle - but the property is asserted because the reverse mistake, using
-      // a raw-HTML binding to show a value, is exactly what this rule forbids.
       load([
         entry(declaration(), {
           propertyValue: BOLD_NAME,
@@ -2276,16 +1926,10 @@ describe('UserProfileComponent', () => {
   // ---------------------------------------------------------------------------
   describe('the list-backed empty option', () => {
     it('publishes the legacy empty-option wording verbatim', () => {
-      // MIGRATION: measured as `ProfileProperties_Country.Not Specified`, whose suffix is the ONLY
-      // one in the entire thirty-seven-file resource census that contains a space - and therefore
-      // the only key that is not a legal identifier. It labels the blank entry of a list-backed
-      // control.
-      //
-      // ⚠️ NO LIST-BACKED CONTROL IS RENDERED FOR A PROFILE VALUE, and the reason is a reported gap
-      // rather than an omission: the declared data type is an unresolved, database-assigned integer
-      // (a foreign key into the excluded `Lists` table, resolved BY NAME), so nothing can decide
-      // that a property is a country. The wording is published so it survives the migration and is
-      // reachable the moment data-type resolution lands.
+      // ⚠️ NO LIST-BACKED CONTROL IS RENDERED FOR A PROFILE VALUE, and the reason is a reported gap rather
+      // than an omission: the declared data type is an unresolved, database-assigned integer (a foreign key
+      // into the excluded `Lists` table, resolved BY NAME), so nothing can decide that a property is a
+      // country.
       expect(NOT_SPECIFIED_OPTION_TEXT).toBe('Not Specified');
     });
 
@@ -2300,9 +1944,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('tolerates a property name that is not a legal identifier', () => {
-      // The wording table is a string-keyed record, so a name containing a space, a dot or a
-      // bracket must miss cleanly and fall back to the name itself rather than throwing or
-      // resolving something inherited from `Object.prototype`.
+      // The wording table is a string-keyed record, so a name containing a space, a dot or a bracket must
+      // miss cleanly and fall back to the name itself rather than throwing or resolving something inherited
+      // from `Object.prototype`.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'Contact Info', viewOrder: 1 })),
         entry(declaration({ propertyDefinitionId: 2, propertyName: 'constructor', viewOrder: 2 })),
@@ -2325,9 +1969,6 @@ describe('UserProfileComponent', () => {
     }
 
     it('is text-only, because no legacy raster asset is carried across', () => {
-      // MIGRATION: the legacy affordance was `<dnn:commandbutton ... imageurl="~/images/save.gif">`
-      // (`Profile.ascx` L33). The frontend ships one static asset - a favicon - so the icon is
-      // neither reproduced nor substituted with a lookalike, and the action is text-only.
       load([entry(declaration())]);
 
       expect(host().querySelector('img')).toBeNull();
@@ -2335,9 +1976,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('is worded "Update", which resolves from the global resource file', () => {
-      // MIGRATION: `cmdUpdate.Text` is ABSENT from this screen's own resource file; the wording
-      // resolves from `Website/App_GlobalResources/SharedResources.resx` through the two-level
-      // fallback. Reading only the local file would have found no wording at all.
       load([entry(declaration())]);
 
       const submit = present(actions()[0], 'the update action');
@@ -2360,9 +1998,6 @@ describe('UserProfileComponent', () => {
       control.dispatchEvent(new Event('input'));
       fixture.detectChanges();
 
-      // THE CONTROL. Without it a later `false` would be indistinguishable from a probe that was never
-      // registered, or from a form that was never dirty. `isDirty()` is the guard's own public surface, so
-      // this is asserted through the very call the guard makes.
       expect(tracker.isDirty())
         .withContext('a dirty form with no write in flight is what the guard exists to catch')
         .toBeTrue();
@@ -2375,13 +2010,6 @@ describe('UserProfileComponent', () => {
         .flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // ⚠ ASSERTED IN THE WINDOW BETWEEN THE WRITE SETTLING AND THE RE-READ BEING ANSWERED, WHICH IS THE
-      // ONLY WINDOW THAT DISCRIMINATES. This screen's form is a `computed()` over the profile, so once the
-      // re-read below lands a brand-new pristine form replaces this one and any assertion made afterwards
-      // would hold whether or not the settling was done deliberately. Three real cases live in this window:
-      // the asynchronous gap itself, a re-read that FAILS - which would leave a saved form advertising
-      // unsaved work for the rest of the screen's life - and the mandatory-completion path, which navigates
-      // in this same task and would have had its navigation refused by the guard.
       expect(tracker.isDirty())
         .withContext('a saved profile must not advertise unsaved work before its re-read has landed')
         .toBeFalse();
@@ -2429,10 +2057,6 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
       expect(httpMock.match((request) => request.method === 'PUT').length).toBe(0);
 
-      // ⚠️ `204` WITH A NULL BODY. The endpoint is declared
-      // `[ProducesResponseType(StatusCodes.Status204NoContent)]` on `PUT {userId:int}/profile`, so a
-      // fixture answering `200` would encode a contract this API does not have - and would remove
-      // the very reason the store re-reads afterwards.
       written.flush(null, { status: 204, statusText: 'No Content' });
 
       // The success path re-reads the profile rather than assuming it: the server records the
@@ -2461,17 +2085,6 @@ describe('UserProfileComponent', () => {
       expect((present(host().querySelector('app-error-banner'), 'the banner').textContent ?? '').trim())
         .toBe('');
 
-      /*
-       * ⚠ THE SAVE IS NOW CONFIRMED, AND THIS ASSERTION USED TO REQUIRE THE OPPOSITE. It read
-       * `toBe(0)`, which encoded a measured defect rather than a decision: `PUT /users/1/profile`
-       * answered `204`, the value DID persist, and the notification region stayed empty for a polled
-       * six seconds with no `[role=alert]` anywhere - so the only difference between a save that
-       * worked and one that was silently ignored was the absence of an error. The identical action on
-       * the site-settings screen has always confirmed itself.
-       *
-       * Exactly ONE notification, at the success severity: a second would be noise, and an error or
-       * warning severity would contradict a `204`.
-       */
       expect(notifications.notifications().length)
         .withContext('a save that kept the values says so')
         .toBe(1);
@@ -2480,31 +2093,9 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------
   // EVERY MEASURED LEGACY VALIDATION EXPRESSION, AGAINST THE SAME RULE
-  // ---------------------------------------------------------------------------
-  //
-  // MIGRATION: THE TENANT'S VALIDATION EXPRESSION IS NOT EVALUATED IN THE BROWSER, AND THAT IS A
-  // DELIBERATE DIVERGENCE FROM `Profile.ascx` L15, WHICH DECLARED `enableClientValidation="true"`.
-  //
-  // ⚠️⚠️ THESE CASES PIN THE ABSENCE OF A CLIENT-SIDE PATTERN RULE, WHICH IS NOT THE SAME THING AS
-  // THE RULE BEING UNENFORCED. The endpoint enforces it, compiling the expression with a
-  // fifty-millisecond match timeout, a length ceiling and a bounded compiled-expression cache, and
-  // reports a refusal per field through its model-state document, which this screen already renders.
-  //
-  // The browser cannot make the same promise. A `ValidationExpression` is ADMINISTRATOR-AUTHORED
-  // DATA, so it is untrusted input to whatever engine runs it, and a catastrophically backtracking
-  // pattern takes exponential time on an ordinary input. Evaluated here it would run synchronously on
-  // the UI thread on EVERY KEYSTROKE of a control whose length is frequently unbounded, because a
-  // declared length of zero means no maximum - and the browser's engine exposes no match timeout of
-  // any kind, so such an evaluation cannot be bounded, only avoided.
-  //
-  // The expressions below are the ones the legacy tree actually contains, each cited, so the case is
-  // about measured data rather than about invented data:
-  //   * `^[0-9]*$`                                    `Website/admin/Vendors/banneroptions.ascx` L36
-  //   * `[\w\.-]+(\+[\w-]*)?@([\w-]+\.)+[\w-]+`       `Website/controls/user.ascx` L62
-  //   * `\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*` `Website/admin/Users/bulkemail.ascx` L46
-  //   * `^[a-zA-Z0-9._%\-+']+$`                       `ProfilePropertyDefinition.vb` L228
+  // MIGRATION: THE TENANT'S VALIDATION EXPRESSION IS NOT EVALUATED IN THE BROWSER, AND THAT IS A DELIBERATE
+  // DIVERGENCE FROM `Profile.ascx` L15, WHICH DECLARED `enableClientValidation="true"`.
   describe('every measured legacy validation expression', () => {
     /** One measured expression, with a value it plainly refuses and one it plainly accepts. */
     interface MeasuredExpression {
@@ -2546,10 +2137,6 @@ describe('UserProfileComponent', () => {
     ]);
 
     it('declares each expression exactly as the legacy markup declares it', () => {
-      // A guard on the fixtures themselves: an expression mistranscribed here would make every case
-      // below assert against a rule the legacy application never had. Each pair is checked with the
-      // browser's own engine, which is the one place a pattern IS compiled - in a test, never in the
-      // component.
       for (const measured of MEASURED) {
         const compiled = new RegExp(measured.expression);
 
@@ -2589,9 +2176,9 @@ describe('UserProfileComponent', () => {
       });
     }
 
-    // `ValidationExpression nvarchar(100) NULL` permits null, and the installer seeds the EMPTY
-    // STRING for all nineteen properties, so BOTH spellings of "no expression" occur in real data
-    // and both must behave identically. One case each, so neither can be satisfied by the other.
+    // `ValidationExpression nvarchar(100) NULL` permits null, and the installer seeds the EMPTY STRING for
+    // all nineteen properties, so BOTH spellings of "no expression" occur in real data and both must behave
+    // identically. One case each, so neither can be satisfied by the other.
     for (const absent of [null, ''] as const) {
       it(`adds no pattern rule for the ${absent === null ? 'null' : 'empty'} expression`, () => {
         expect(() => load([entry(declaration({ validationExpression: absent }))])).not.toThrow();
@@ -2607,11 +2194,6 @@ describe('UserProfileComponent', () => {
     }
 
     it('renders every other property when one expression could never compile', () => {
-      // ⚠️ THE EXPRESSION IS UNTRUSTED CALLER-SUPPLIED DATA, so an uncompilable one must degrade one
-      // field rather than throw and take the screen down. Nothing compiles it any longer, which is
-      // why this costs nothing - but the case is kept because it is the shape of stored data most
-      // likely to be present, and it would fail loudly the moment anyone reintroduced a client-side
-      // evaluation without guarding it.
       expect(() =>
         load([
           entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 })),
@@ -2646,17 +2228,6 @@ describe('UserProfileComponent', () => {
   // ---------------------------------------------------------------------------
   describe('the declared data type', () => {
     it('renders a text control whatever integer the declaration carries', () => {
-      // MIGRATION: A REPORTED FUNCTIONAL REDUCTION, NOT A SHORTCUT. `DataType` is a foreign key into
-      // the EXCLUDED `Lists` table, resolved BY NAME by the installer
-      // (`SELECT EntryID ... WHERE ListName='DataType' AND Value='Text'`), so the stored integer is
-      // DATABASE-ASSIGNED and differs between installations. A hardcoded integer-to-control map
-      // would silently render the WRONG control wherever the list seeded in a different order, so
-      // the thirteen legacy control kinds - unknown, text, integer, true/false, time zone, locale,
-      // page, rich text, country, region, list, date, date-time - are not offered.
-      //
-      // ⚠️ THE INTEGERS BELOW ARE DELIBERATELY ARBITRARY AND CARRY NO MEANING. Choosing values that
-      // looked like real `EntryID`s would suggest this screen knows what they mean, which is exactly
-      // the mistake the reduction exists to avoid.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', dataType: 101, viewOrder: 1 })),
         entry(declaration({ propertyDefinitionId: 2, propertyName: 'Country', dataType: 202, viewOrder: 2 })),
@@ -2664,11 +2235,6 @@ describe('UserProfileComponent', () => {
         entry(declaration({ propertyDefinitionId: 4, propertyName: 'Biography', dataType: 404, viewOrder: 4 })),
       ]);
 
-      // Four PLAIN TEXT controls for four arbitrary integers, and not one specialised control
-      // among them. Three are single-line; the fourth is Biography's textarea, which is still a
-      // plain text control and is chosen by the measured seeded-rich-text set rather than by its
-      // integer — the proof being that FirstName, Country and TimeZone carry three DIFFERENT
-      // arbitrary integers here and all three stay single-line.
       expect(controls().length).toBe(4);
       expect(host().querySelectorAll('input[type="text"]').length).toBe(3);
       expect(host().querySelectorAll('textarea').length).toBe(1);
@@ -2679,17 +2245,15 @@ describe('UserProfileComponent', () => {
     });
 
     it('tolerates the legacy sentinel a declaration may carry as its data type', () => {
-      // `ProfilePropertyDefinition.vb` L47 initialises `DataType` to `Null.NullInteger`, which is
-      // `-1`. It is a legitimate stored value and must not be mistaken for an absent one.
       expect(() => load([entry(declaration({ dataType: -1 }))])).not.toThrow();
 
       expect(controls().length).toBe(1);
     });
 
     it('chooses a multi-line control on the declared LENGTH rather than the type', () => {
-      // ⚠ NEITHER NAME IS IN THE MEASURED SEEDED-RICH-TEXT SET, and that is what isolates the
-      // rule under test. Naming Biography here would give the multi-line control a second,
-      // independent reason to appear and the case could no longer attribute it to the length.
+      // ⚠ NEITHER NAME IS IN THE MEASURED SEEDED-RICH-TEXT SET, and that is what isolates the rule under
+      // test. Naming Biography here would give the multi-line control a second, independent reason to
+      // appear and the case could no longer attribute it to the length.
       load([
         entry(
           declaration({
@@ -2711,9 +2275,6 @@ describe('UserProfileComponent', () => {
         ),
       ]);
 
-      // The property with the LONGER declared bound gets the multi-line control, and the data types
-      // are swapped relative to what a type-driven choice would need - so this can only pass if the
-      // length decided it.
       expect(host().querySelectorAll('textarea').length).toBe(1);
       expect(host().querySelectorAll('input[type="text"]').length).toBe(1);
       expect(present(host().querySelector('textarea'), 'the multi-line control').getAttribute('maxlength'))
@@ -2726,17 +2287,8 @@ describe('UserProfileComponent', () => {
   // ---------------------------------------------------------------------------
   describe('a declaration scoped outside this tenant', () => {
     it('renders a declaration whose tenant differs from the account\'s', () => {
-      // `04.03.03.SqlDataProvider` L77-L84 altered `ProfilePropertyDefinition.PortalID` to NULL and
-      // ran `UPDATE ... SET PortalId = NULL WHERE PortalId = -1` - the ONE place the schema itself
-      // migrated the `-1` sentinel to a real SQL NULL - so a null tenant means a GLOBAL, host-level
-      // declaration that every tenant inherits.
-      //
-      // ⚠️ REPORTED GAP: the published client contract declares `portalId: number`, NOT
-      // `number | null`, so a host-level declaration cannot be expressed on this side of the
-      // boundary at all. A `portalId: null` fixture would not compile, and inventing one would
-      // assert a contract that does not exist. What CAN be asserted is the consequence that
-      // matters: the server decides which declarations a profile carries, and this screen renders
-      // every entry it is given whatever tenant the declaration names.
+      // `04.03.03.SqlDataProvider` L77-L84 altered `ProfilePropertyDefinition.PortalID` to NULL and ran
+      // `UPDATE ...
       load([
         entry(declaration({ propertyDefinitionId: 1, portalId: 0, propertyName: 'FirstName', viewOrder: 1 })),
         entry(declaration({ propertyDefinitionId: 2, portalId: -1, propertyName: 'LastName', viewOrder: 2 })),
@@ -2748,33 +2300,14 @@ describe('UserProfileComponent', () => {
     });
 
     it('applies no client-side soft-delete filter', () => {
-      // `Deleted bit NOT NULL` exists on the table but is ABSENT from the fifteen properties of the
-      // legacy class, because `GetPropertyDefinitionsByPortal(portalId, True)` filtered it
-      // SERVER-SIDE. Filtering again here would duplicate a decision this screen cannot see the
-      // inputs to, so the contract carries no such member and none is asserted.
       load([entry(declaration({ propertyName: 'FirstName' }))]);
 
       expect(controls().length).toBe(1);
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // ⚠️ THE OPTION STRICT ASYMMETRY, MADE EXPLICIT
-  // ---------------------------------------------------------------------------
-  //
-  // The class library compiled with Option Strict ON, but `Website/release.config` L125 compiled the
-  // admin pages with `<compilation debug="false" strict="false">` - Option Strict OFF - so the
-  // thirty-nine admin code-behinds may legally contain late binding and implicit narrowing that
-  // TypeScript rejects outright. Every such coercion has to be made EXPLICIT during translation, and
-  // each one is a place the behaviour could quietly differ. The cases below pin the three that reach
-  // this screen.
   describe('the coercions the legacy pages performed implicitly', () => {
     it('coerces the visibility setting the way a valueless attribute would', () => {
-      // `Profile.ascx.vb` L58-L63 computed `CType(setting, Boolean) And IsUser`, where `setting` is
-      // an `Object` returned by the settings accessor - a conversion legal only because the page
-      // compiled with strict checking off. It is explicit here: the input is declared boolean and
-      // transformed by `booleanAttribute`, so an attribute written WITHOUT a value still means true,
-      // which is the HTML rule for a boolean attribute.
       fixture.componentRef.setInput('manageVisibility', '');
       load([entry(declaration())]);
 
@@ -2798,10 +2331,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('converts the route parameter explicitly, refusing the forms a loose parse would accept', () => {
-      // The route delivers a STRING and the conversion happens once, in one place. A loose conversion
-      // would accept a hexadecimal literal, an exponent and a decimal point - `'0x10'` becomes 16 -
-      // and would check neither the exactly-representable ceiling nor the API's 32-bit range. Each
-      // form below must load NOTHING rather than dispatch a request for a row that does not exist.
       for (const loose of ['0x10', '7.0', '1e1', ' 7', '7 ', '+7', '', 'seven']) {
         fixture.componentRef.setInput('userId', loose);
         fixture.detectChanges();
@@ -2815,11 +2344,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('accepts the negative integer that is simultaneously a real key and a sentinel', () => {
-      // ⚠️ `Null.NullInteger` IS `-1`, AND `Portals.PortalID` IS `IDENTITY(-1,1)`, so minus one is a
-      // real row identifier as well as the legacy marker for "absent". `Roles.RoleID` seeds at zero
-      // for the same reason. Presence is therefore tested EXPLICITLY - never by truthiness, never by
-      // a comparison against zero, and never by coalescing to a sentinel - so a well-formed negative
-      // identifier is dispatched rather than swallowed.
+      // ⚠️ `Null.NullInteger` IS `-1`, AND `Portals.PortalID` IS `IDENTITY(-1,1)`, so minus one is a real
+      // row identifier as well as the legacy marker for "absent". `Roles.RoleID` seeds at zero for the same
+      // reason.
       fixture.componentRef.setInput('userId', '-1');
       fixture.detectChanges();
 
@@ -2835,11 +2362,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('submits a visibility as a number, never as the string an option value would be', () => {
-      // The template binds each option with `ngValue` rather than `value` precisely because the
-      // control holds a NUMBER: a plain value binding writes the option back as a string, and the
-      // submitted visibility would then stop matching the integer codes the API declares. This is the
-      // integer-to-string coercion that Option Strict OFF would have performed silently, made
-      // explicit and asserted at the boundary where it matters.
       fixture.componentRef.setInput('manageVisibility', true);
       load([
         entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
@@ -2875,10 +2397,6 @@ describe('UserProfileComponent', () => {
     });
 
     it('submits every value as a string, whatever the declaration says it means', () => {
-      // MIGRATION: `UserProfile.PropertyValue` is `nvarchar` and the legacy accessor returned a
-      // STRING for every data type - a date, an integer and a boolean alike - so the wire form is a
-      // string in every case and no local conversion is performed. A screen that parsed a value into
-      // a number or a date would submit a differently formatted string than the legacy screen did.
       load([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'Telephone', viewOrder: 1 }), {
           propertyValue: '0123',
@@ -2925,16 +2443,6 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
     });
   });
-
-  // =========================================================================
-  // THE MANDATORY VISIT: WHEN THIS SCREEN IS THE ONLY ONE THE SERVER ALLOWS
-  // =========================================================================
-  //
-  // A caller whose account owes a mandatory profile completion is refused nearly every read
-  // the console performs, but NOT this screen's own profile read: the API exempts
-  // `GET api/v1/users/{id}/profile` and `PUT api/v1/users/{id}/profile` precisely so the
-  // advisory can be cleared here. `GET api/v1/users/{id}` is NOT exempted and answers 403
-  // `auth.remediation_required` - measured against the running API.
 
   describe('the mandatory-remediation visit', () => {
     /** Seats a caller who owes a mandatory profile completion on their own account. */
@@ -2988,8 +2496,6 @@ describe('UserProfileComponent', () => {
         }),
       ]);
 
-      // The account read used to be dispatched here too, met a 403, and put an error banner
-      // across the one screen the server was requiring the caller to complete.
       httpMock.expectNone(`/api/v1/users/${USER_ID}`);
 
       expect(controls().length)
@@ -2998,17 +2504,10 @@ describe('UserProfileComponent', () => {
     });
 
     it('clears the advisory locally and returns to the root once the completion is written', async () => {
-      // ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS. The advisory is carried in the held session, so
-      // the server stops requiring the completion the moment the values are written while the
-      // client goes on believing it is outstanding — and the root goes on resolving back here.
-      //
-      // ⚠ AND NO RENEWAL IS ATTEMPTED, WHICH IS THE SUBSTANCE OF THIS CASE. A caller can owe a
-      // credential change as well, in which case that change came first and has already revoked
-      // every refresh token the account holds; a renewal here would answer 401 and sign the
-      // caller out at the end of a journey they had just completed. `expectNone` keeps that
-      // regression from returning. The local assertion is sound because this screen's own write
-      // REFUSES a submission that leaves any required property blank, which is exactly the
-      // condition the advisory is computed from.
+      // ⚠ AND NO RENEWAL IS ATTEMPTED, WHICH IS THE SUBSTANCE OF THIS CASE. A caller can owe a credential
+      // change as well, in which case that change came first and has already revoked every refresh token
+      // the account holds; a renewal here would answer 401 and sign the caller out at the end of a journey
+      // they had just completed.
       const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
       const storage = TestBed.inject(TokenStorageService);
 
@@ -3043,20 +2542,13 @@ describe('UserProfileComponent', () => {
         .withContext('the satisfied advisory is cleared on the held session')
         .toBe(false);
 
-      // ⚠ AND NOW THE WITHHELD ACCOUNT READ IS ISSUED, which is the other half of the same rule:
-      // the suppression is a reaction to the server's current answer, not a permanent state. The
-      // PROFILE read is deliberately NOT repeated here - it was already re-read after the write,
-      // and the two reads are dispatched by separate effects precisely so that clearing the
-      // advisory cannot re-issue one that is already current.
+      // ⚠ AND NOW THE WITHHELD ACCOUNT READ IS ISSUED, which is the other half of the same rule: the
+      // suppression is a reaction to the server's current answer, not a permanent state.
       httpMock
         .expectOne((request) => request.method === 'GET' && request.url === `/api/v1/users/${USER_ID}`)
         .flush({ data: account, meta: null } satisfies ApiResponse<UserDetail>);
       fixture.detectChanges();
 
-      // ⚠ REPLACES: a completed remediation must not sit in BACK history, and
-      // `core/guards/unsaved-changes.guard.ts` reads this flag to tell an application-initiated
-      // departure from an operator's. Pushing would make the gate offer to discard a profile that
-      // had already been saved successfully.
       expect(navigate)
         .withContext('the root decides where a remediated caller goes, so it is asked')
         .toHaveBeenCalledWith('/', { replaceUrl: true });
@@ -3087,7 +2579,6 @@ describe('UserProfileComponent', () => {
         } satisfies ApiResponse<UserProfile>);
       fixture.detectChanges();
 
-      // An ordinary caller stays where they are, which is what the legacy screen did.
       httpMock.expectNone('/api/v1/auth/refresh');
       expect(TestBed.inject(TokenStorageService).session()?.mustUpdateProfile)
         .withContext('and nothing is asserted about an advisory that was never outstanding')
@@ -3095,5 +2586,4 @@ describe('UserProfileComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
   });
-
 });

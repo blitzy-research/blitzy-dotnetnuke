@@ -67,9 +67,7 @@ public sealed class LoggingAuditSinkTests
         health.FailureCount.Should().Be(0);
     }
 
-    /// <summary>
-    /// Even allowlisted metadata cannot expand one record beyond the fixed per-event ceiling.
-    /// </summary>
+    /// <summary>Even allowlisted metadata cannot expand one record beyond the fixed per-event ceiling.</summary>
     [Fact]
     public void Record_CapsTheNumberOfStructuredMetadataProperties()
     {

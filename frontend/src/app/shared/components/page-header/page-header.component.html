@@ -3,15 +3,9 @@
     <h1 class="page-header__title">{{ title }}</h1>
 
     <!--
-      A truthiness guard rather than a presence check: an omitted, empty or whitespace-only
-      value renders nothing at all, instead of a blank paragraph that would occupy vertical
-      space and add a node carrying no accessible name to the accessibility tree.
-
-      The guard covers the whitespace-only case because the input NORMALISES it away rather
-      than because truthiness catches it - `' '` is truthy in JavaScript, so this guard alone
-      would have rendered exactly the blank paragraph it exists to prevent. The paired input
-      transform collapses a blank value to `undefined` at assignment, which leaves this read
-      site with only two states to distinguish instead of three.
+      A truthiness guard rather than a presence check: an omitted, empty or whitespace-only value
+      renders nothing at all, instead of a blank paragraph that would occupy vertical space and add a
+      node carrying no accessible name to the accessibility tree.
     -->
     @if (subtitle) {
       <p class="page-header__subtitle">{{ subtitle }}</p>
@@ -19,103 +13,9 @@
   </div>
 
   <!--
-    THE SLOT HOLDS N ACTIONS, NOT ONE, and collapses to nothing at zero. Half the legacy
-    action-carrying screens carried more than one action and the maximum was five, so one
-    unnamed slot covers every case: nothing is enumerated, counted or capped, no selector is
-    used, no content query is declared and no third input is added. The wrapper is always
-    emitted and the stylesheet decides whether it generates a box, which keeps this markup
-    free of layout logic.
-
     THE SLOT MUST STAY ON ITS OWN LINE. The paired stylesheet suppresses this wrapper with an
-    empty-element selector, and that selector tolerates a comment child - the compiler's own
-    projection anchor - but not a space-only text child, which the compiler strips by default.
-
-    An empty-element selector is genuinely required, because a wrapper with no padding, border
-    or background does not come free here: the enclosing block is a flex container declaring a
-    gap, and a flex gap applies BETWEEN ITEMS regardless of whether an item has any size, so
-    most screens - which project no action at all - would pay a phantom gap beneath the title.
-    Only removing the wrapper from the flex formatting context suppresses that, which no
-    amount of zeroed padding can do.
-
-    MIGRATION: THREE AFFORDANCES ARE DELIBERATELY KEPT APART, because conflating them is the
-    obvious mistake here. Page-level actions project into this slot. An in-page form action
-    bar does NOT - it belongs to the consuming feature's own form footer. Per-row grid
-    commands do NOT either - they belong to the shared data table, as does a letter-filter
-    strip. This component must not become a form-footer component and must not grow row
-    commands.
-
-    MIGRATION: the legacy separators become spacing tokens, never non-breaking-space text
-    nodes. Spacing here is a gap declared once in the stylesheet against the shared spacing
-    scale, so it is inspectable and adjustable rather than smuggled into the markup as content.
-
-    MIGRATION: the legacy admin action affordance is retained as a text link and is NOT
-    promoted to a filled button - a filled-button class existed separately in the legacy
-    stylesheet and the admin action bars deliberately did not use it, so promoting them would
-    be an unrequested visual change. The appearance of the actions is delegated to the
-    consumer, because projected content keeps the style scoping of the component that declares
-    it; this component therefore cannot and must not style what it hosts, and neither
-    deep-descendant piercing nor disabling the per-component scoping is acceptable. One
-    collision matters: the legacy hover colour of that text-link class is the very same value
-    the token vocabulary assigns to the danger role, which it also uses for error text, so
-    action hover resolves to the primary-hover token instead.
-
-    MIGRATION: EVERY ACTION MUST CARRY A DISCERNIBLE ACCESSIBLE NAME. The legacy screens were
-    inconsistent - some image actions carried both alternate text and a resource key while
-    others carried neither - so wording sometimes has to be authored directly. Because the
-    actions are projected by the feature, this is an obligation on consumers rather than
-    something this template can enforce. What this template does guarantee is that it wraps
-    the projected actions in a plain container that suppresses no accessible name, and that it
-    invents no ARIA: no toolbar role is applied, because a toolbar role imposes arrow-key
-    management obligations that neither this component nor the projected actions implement, and
-    declaring ARIA that is not implemented is worse than declaring none. Visible focus
-    indication for those actions is a focus-visible concern of the stylesheets, never an
-    outline suppression.
-
-    MIGRATION: raster action icons are replaced by text, inline SVG or CSS. The legacy image
-    assets have no target equivalent and the only static asset this workspace ships is a
-    favicon, so no component may reference an image asset.
-
-    MIGRATION: wording resolution rule - the resource value wins WHERE THE KEY EXISTS, because
-    where markup text and resource wording disagreed the resource wording was the one that
-    matched the declared behaviour. Where the key is absent the markup text is the only wording
-    available and must be authored directly.
-
-    MIGRATION: THE WORDING SOURCE CANNOT BE TRUSTED AS MARKUP, so both inputs are rendered as
-    plain text through interpolation only - never through a raw-HTML property binding, never
-    through a sanitiser bypass, never through a trusted-HTML wrapper type, and never by
-    smuggling markup through an attribute binding. A substantial minority of legacy resource
-    values contain HTML tags, many opening with a line-break or heading tag, and at least one
-    carries a live advertising script sourced from a remote third-party host - invisible to a
-    naive search because the tags are stored HTML-escaped. Where a screen genuinely needs rich
-    introductory content, the feature re-authors it as real template markup; it is never
-    injected.
-
-    MIGRATION: localisation is not ported. No translation runtime is present in the pinned
-    dependency surface and no message-tagging attribute or helper is used anywhere; user-facing
-    strings are authored directly into templates, and the legacy resource files informed
-    wording only.
-
-    MIGRATION: THE LEGACY COLLAPSIBLE-SECTION AFFORDANCE IS NOT THIS COMPONENT'S CONCERN,
-    permanently and by design rather than deferred. The legacy section-head control named a
-    target element identifier, which is the legacy equivalent of an `aria-controls` reference,
-    and marked its advanced block collapsed by default - so a keyboard-reachable disclosure
-    carrying `aria-expanded` and `aria-controls` is a faithful translation rather than an
-    invention, and the legacy toggle's negative tab index is an accessibility defect to
-    reverse, not to reproduce. That disclosure belongs to the FEATURE screens, as a grouped
-    field set with a caption or as a native details-and-summary disclosure where collapse is
-    genuinely required. This component grows no toggle, gains no third input and does not
-    become a section component.
-
-    MIGRATION: the legacy title block also drew a horizontal-rule element beneath the title.
-    No rule element is emitted here. A separator, where the design calls for one, is a border
-    declared against the token vocabulary in the paired stylesheet, because a rule drawn in
-    markup is presentation masquerading as content and cannot respond to the surrounding
-    layout.
-
-    MIGRATION: section-level introductory text is a distinct layer and is not a page-header
-    concern. The legacy screens placed their supporting sentences inside the grouped block they
-    described rather than beside the page title, so the target equivalent is a paragraph inside
-    the feature's own grouped field set.
+    empty-element selector, and that selector tolerates a comment child - the compiler's own projection
+    anchor - but not a space-only text child, which the compiler strips by default.
   -->
   <div class="page-header__actions">
     <ng-content />

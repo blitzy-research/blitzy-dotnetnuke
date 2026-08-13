@@ -12,20 +12,6 @@ namespace DnnMigration.IntegrationTests.Security;
 /// Verifies the refresh-token store's clock-dependent lifecycle: sliding expiry, the family ceiling, the
 /// bounded same-client grace, and replay detection that survives a spent generation's own expiry.
 /// </summary>
-/// <remarks>
-/// <para>
-/// These facts live in the unit suite because they need the CLOCK moved, and moving it is the only honest
-/// way to reach the states they assert. The store no longer persists anything, so its state cannot be
-/// edited from outside; an earlier revision of the integration suite reached the same states with an
-/// <c>UPDATE</c> against a target-owned <c>[DnnMigration].[RefreshTokens]</c> table, and that table has been
-/// removed because AAP rule T4 forbids adding an object to the existing DotNetNuke schema.
-/// </para>
-/// <para>
-/// The store is constructed directly rather than resolved, which is what makes the clock controllable.
-/// <c>InternalsVisibleTo</c> on the Infrastructure project grants this assembly the visibility to do so, and
-/// nothing is widened to public for the sake of a test.
-/// </para>
-/// </remarks>
 [Trait("Category", "Integration")]
 public class RefreshTokenStoreBehaviorTests
 {
@@ -39,11 +25,6 @@ public class RefreshTokenStoreBehaviorTests
     /// replay revokes the live successor.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The sliding lifetime is one day and the family ceiling thirty, so advancing two days puts the spent
-    /// generation past its own expiry while its family is still live. Classifying it as expired rather than
-    /// as a replay would be the detection gap this fact exists to prevent.
-    /// </remarks>
     [Fact]
     public async Task ASpentGenerationPastItsSlidingExpiryIsStillAReplayAndRevokesTheFamily()
     {
@@ -88,8 +69,8 @@ public class RefreshTokenStoreBehaviorTests
     }
 
     /// <summary>
-    /// The family ceiling bounds the whole chain: a successor issued near the ceiling cannot be rotated past
-    /// it, and its expiry never exceeds the ceiling.
+    /// The family ceiling bounds the whole chain: a successor issued near the ceiling cannot be rotated
+    /// past it, and its expiry never exceeds the ceiling.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -115,8 +96,8 @@ public class RefreshTokenStoreBehaviorTests
     }
 
     /// <summary>
-    /// Two same-client exchanges inside the grace window yield one successor and one bounded refusal, and the
-    /// same replay outside the window is treated as theft.
+    /// Two same-client exchanges inside the grace window yield one successor and one bounded refusal, and
+    /// the same replay outside the window is treated as theft.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -143,8 +124,8 @@ public class RefreshTokenStoreBehaviorTests
     }
 
     /// <summary>
-    /// A family whose ceiling has passed is discarded rather than retained, so the tracked set does not grow
-    /// without bound.
+    /// A family whose ceiling has passed is discarded rather than retained, so the tracked set does not
+    /// grow without bound.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -203,11 +184,6 @@ public class RefreshTokenStoreBehaviorTests
 
     /// <summary>The store requires no database object of any kind to issue, rotate or revoke.</summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The whole lifecycle is exercised against a store constructed with a clock and options and nothing
-    /// else. There is no connection string, no context and no script to run first, which is precisely the
-    /// property AAP rule T4 requires: nothing this type does can reach a schema it is forbidden to alter.
-    /// </remarks>
     [Fact]
     public async Task TheWholeLifecycleRunsWithNoDatabaseDependency()
     {
@@ -238,16 +214,8 @@ public class RefreshTokenStoreBehaviorTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The ceiling used to be a compiled constant of one hundred thousand, which no test could reach without
-    /// issuing one hundred thousand tokens - so the eviction path, and the fact that its cost is an early
-    /// sign-out rather than a failed sign-in, were asserted nowhere. A configurable ceiling makes both
-    /// reachable.
-    /// </para>
-    /// <para>
-    /// Every family here has a distinct ceiling instant, because the clock advances a day between issues, so
-    /// the eviction order is deterministic: the oldest family goes first.
-    /// </para>
+    /// Every family here has a distinct ceiling instant, because the clock advances a day between issues,
+    /// so the eviction order is deterministic: the oldest family goes first.
     /// </remarks>
     [Fact]
     public async Task TheConfiguredCeilingRetiresTheOldestFamiliesRatherThanRefusingToIssue()
@@ -296,17 +264,10 @@ public class RefreshTokenStoreBehaviorTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// THE FACT THAT CATCHES THE HARD CASE. A rotation writes twice - the consumed generation and its
-    /// replacement - and ordinarily only the second is an addition, because the first replaces a key already
-    /// present. At capacity that stops being true: eviction may reclaim the presented generation itself, and
-    /// then both writes add. Reserving one place would leave the tracked set one entry above the ceiling in
-    /// exactly that case, which is a bound that is not a bound.
-    /// </para>
-    /// <para>
-    /// Every family here is issued at a distinct instant, so the eviction order is deterministic and the
-    /// presented family is the oldest - which is precisely the case that reclaims it.
-    /// </para>
+    /// replacement - and ordinarily only the second is an addition, because the first replaces a key
+    /// already present. At capacity that stops being true: eviction may reclaim the presented generation
+    /// itself, and then both writes add.
     /// </remarks>
     [Fact]
     public async Task RotatingAtCapacityStaysWithinTheCeilingAndStillReturnsAUsableSuccessor()
@@ -405,11 +366,6 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>
     /// The store refuses to be constructed on store settings nothing could work with, naming the section.
     /// </summary>
-    /// <remarks>
-    /// The store validates its own settings as well as the Api layer validating them on start, so a host
-    /// composed without those validators still cannot build a store on an unusable capacity. Asserted through
-    /// the constructor because that is the only point at which the values are read.
-    /// </remarks>
     [Fact]
     public void UnusableStoreSettingsAreRefusedByTheConstructor()
     {
@@ -428,11 +384,6 @@ public class RefreshTokenStoreBehaviorTests
     }
 
     /// <summary>An unrecognised provider name is refused by the constructor.</summary>
-    /// <remarks>
-    /// The store cannot judge whether a DECLARED external store was actually registered - that is a question
-    /// about the container, settled by <c>ValidateRefreshTokenStoreTopology</c> - but it can and does refuse a
-    /// name this build does not recognise, so a typo never reaches a running process.
-    /// </remarks>
     [Fact]
     public void AnUnrecognisedProviderNameIsRefusedByTheConstructor()
     {
@@ -453,25 +404,18 @@ public class RefreshTokenStoreBehaviorTests
             .Which.Failures.Should().ContainMatch("*does not recognise*");
     }
 
-    // ---------------------------------------------------------------------
     // PRIV-02 — ERASURE, AND RETENTION THAT DOES NOT DEPEND ON TRAFFIC
-    //
     // ⚠ EVERY FACT BELOW WAS UNREACHABLE BEFORE THE MEMBERS IT EXERCISES EXISTED, AND THAT IS THE FINDING.
     // The contract offered revocation and nothing else, so a record could be STAMPED and never REMOVED: an
-    // account or a tenant deleted from the application went on being described here - the account, the tenant
-    // and the token digest - until its family ceiling elapsed, and nothing on the contract could remove the
-    // description. Reclamation, meanwhile, ran only as a side effect of issuing or rotating, so an
-    // installation with no sign-in traffic reclaimed nothing at all.
-    //
-    // These are clock facts, which is why they live beside the lifecycle ones: a retention window cannot be
-    // observed without moving the clock past it.
-    // ---------------------------------------------------------------------
+    // account or a tenant deleted from the application went on being described here - the account, the
+    // tenant and the token digest - until its family ceiling elapsed, and nothing on the contract could
+    // remove the description.
 
     /// <summary>Erasing an account removes its records outright rather than stamping them.</summary>
     /// <remarks>
     /// The distinction between revocation and erasure, asserted where it is visible: after a REVOCATION the
-    /// store still recognises the token - it answers that the family is revoked - whereas after an ERASURE it
-    /// holds nothing and the same token is simply unknown.
+    /// store still recognises the token - it answers that the family is revoked - whereas after an ERASURE
+    /// it holds nothing and the same token is simply unknown.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -506,9 +450,8 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>An account-in-one-tenant erasure leaves that account's other tenants alone.</summary>
     /// <remarks>
     /// PRIV-02. THE SCOPE THAT MATTERS MOST. An account removed from one tenant may still be a member of
-    /// another, and its sessions there are legitimate: erasing across every tenant because one membership was
-    /// removed would sign it out of tenants it still belongs to. The tenant half of the scope is what prevents
-    /// that, and the only way to observe it is to hold records in two tenants at once.
+    /// another, and its sessions there are legitimate: erasing across every tenant because one membership
+    /// was removed would sign it out of tenants it still belongs to.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -538,8 +481,8 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>Erasing a tenant removes every account's records within it, and only within it.</summary>
     /// <remarks>
     /// PRIV-02. A tenant's records outlive its members: an account RETAINED because it belongs to another
-    /// tenant still holds records scoped to the deleted one, and a per-account sweep over the accounts being
-    /// deleted would leave exactly those behind.
+    /// tenant still holds records scoped to the deleted one, and a per-account sweep over the accounts
+    /// being deleted would leave exactly those behind.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -568,9 +511,9 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>Erasing a subject the store never held is a completed erasure, not a failure.</summary>
     /// <remarks>
     /// Idempotence, and it is what lets a deletion path call this unconditionally. Most members of a tenant
-    /// have never signed in on any given instance, so "no such record" is the ordinary answer rather than an
-    /// exceptional one - and a store that holds nothing about a subject genuinely holds no personal data about
-    /// it, which is the whole claim the erasure makes.
+    /// have never signed in on any given instance, so "no such record" is the ordinary answer rather than
+    /// an exceptional one - and a store that holds nothing about a subject genuinely holds no personal data
+    /// about it, which is the whole claim the erasure makes.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -589,10 +532,9 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>A revoked record is reclaimed once its retention window has elapsed, and not before.</summary>
     /// <remarks>
     /// PRIV-02. THE DOCUMENTED MINIMUM PERIOD, MEASURED AT BOTH ENDS. Before this window existed the only
-    /// thing that reclaimed a revoked record was its family's absolute ceiling, so an ordinary sign-out left
-    /// the account, the tenant and the token digest in the store for the remainder of the refresh lifetime -
-    /// thirty days, in this fact's configuration. The window is what the record is kept FOR: inside it a replay
-    /// of the family is still recognisable, and outside it the record is only personal data.
+    /// thing that reclaimed a revoked record was its family's absolute ceiling, so an ordinary sign-out
+    /// left the account, the tenant and the token digest in the store for the remainder of the refresh
+    /// lifetime - thirty days, in this fact's configuration.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -622,12 +564,6 @@ public class RefreshTokenStoreBehaviorTests
     }
 
     /// <summary>Reclamation never removes a record that is still redeemable.</summary>
-    /// <remarks>
-    /// The other half of the retention rule, and the half a careless implementation breaks: the window bounds
-    /// REVOKED records only. A live session's record is retained until its family ceiling whatever the window
-    /// says, because erasing it would sign its holder out - turning a data-retention improvement into an
-    /// availability defect.
-    /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ReclamationLeavesALiveSessionAlone()
@@ -648,8 +584,8 @@ public class RefreshTokenStoreBehaviorTests
     /// <summary>Reclamation still removes a family past its absolute ceiling.</summary>
     /// <remarks>
     /// The pre-existing ground for removal, asserted through the new entry point so that adding the second
-    /// ground cannot quietly have replaced the first. An expired family can never be redeemed and is no longer
-    /// a theft signal either.
+    /// ground cannot quietly have replaced the first. An expired family can never be redeemed and is no
+    /// longer a theft signal either.
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -672,26 +608,18 @@ public class RefreshTokenStoreBehaviorTests
     /// <param name="clock">The clock the test advances.</param>
     /// <param name="slidingDays">Per-generation sliding lifetime, in days.</param>
     /// <param name="familyDays">Family absolute ceiling, in days.</param>
-    /// <param name="maximumTrackedTokens">
-    /// Tracked-generation ceiling. Defaults to the shipped default so that every fact written before this
-    /// setting existed still exercises the shipped behaviour.
-    /// </param>
-    /// <param name="concurrentUseGraceSeconds">
-    /// Same-client grace, in seconds. Defaults to the shipped default for the same reason.
-    /// </param>
+    /// <param name="maximumTrackedTokens">Tracked-generation ceiling.</param>
+    /// <param name="concurrentUseGraceSeconds">Same-client grace, in seconds.</param>
     /// <param name="revokedRetentionHours">
-    /// How long a revoked record is retained before reclamation erases it, in hours. Defaults to the shipped
-    /// default so that every fact written before PRIV-02 introduced the window still exercises the shipped
-    /// behaviour; the retention facts set it explicitly because the window is what they measure.
+    /// How long a revoked record is retained before reclamation erases it, in hours.
     /// </param>
     /// <returns>The store.</returns>
     /// <remarks>
     /// The store-shape values below deliberately bypass the API layer's operational floor of one thousand
-    /// tracked generations, which a capacity fact could not otherwise reach in a unit test: that floor is HOST
-    /// POLICY enforced by <c>RefreshTokenStoreOptionsValidator</c>, whereas the store's own contract - stated
-    /// by <see cref="RefreshTokenStoreOptions.Validate"/> - is only that the ceiling is at least one. Testing
-    /// the store against its own contract is correct; a deployment cannot configure these values, and the fact
-    /// that it cannot is asserted in the options tests rather than here.
+    /// tracked generations, which a capacity fact could not otherwise reach in a unit test: that floor is
+    /// HOST POLICY enforced by <c>RefreshTokenStoreOptionsValidator</c>, whereas the store's own contract -
+    /// stated by <see cref="RefreshTokenStoreOptions.Validate"/> - is only that the ceiling is at least
+    /// one.
     /// </remarks>
     private static RefreshTokenStore Store(
         IClock clock,

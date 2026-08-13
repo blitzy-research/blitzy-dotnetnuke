@@ -1,76 +1,3 @@
-/**
- * Specification for {@link ModuleListComponent} — the module listing at `/modules`.
- *
- * ## WHAT THIS SPECIFICATION IS FOR
- *
- * The listing is the navigational entry point of the whole module feature: every other module screen
- * is reached from a row of it, and it is the only screen that removes a placement. Nothing else in the
- * workspace asserts any of that, so the behaviours proven here are proven nowhere else.
- *
- * ## HOW IT IS DRIVEN
- *
- * Through the REAL collaborators, over the REAL transport, against the REAL shared components:
- *
- *   - {@link ModuleStore} is genuine and listed in `providers`, so each case gets its own instance and
- *     no state leaks between cases. Its requests are answered through `HttpTestingController`, so every
- *     assertion about an address, a parameter or a status is an assertion about the wire.
- *   - The five shared components the screen composes are the genuine ones, so the DOM asserted here is
- *     the DOM an operator sees. That is what lets a case press a real sort button, a real pager button
- *     and a real confirmation, rather than calling a handler and hoping the template is wired to it.
- *   - `NotificationService.notify` is spied and CALLED THROUGH, so both the invocation and the queue it
- *     fills are observable.
- *   - No router is spied, because the screen injects none: every cross-screen movement it offers is a
- *     link, which is asserted as an address rather than as a navigation.
- *
- * ⚠ THE PAGED LISTING BODY IS `{ items, meta }`, NOT `{ data, meta }`. Every single-resource route
- * answers with a `data` member, but a collection's body IS the page envelope, whose records live under
- * `items` — `paged-result.model.ts:L493-L505` reads `response.items` and substitutes an EMPTY ARRAY
- * when it is absent. A fixture spelling it `data` flushes successfully and unwraps to no rows at all,
- * so every assertion afterwards would be made against an empty listing rather than against the screen.
- *
- * ⚠ A ROW IS A PLACEMENT, NOT A MODULE. One module whose all-pages flag is set contributes one row per
- * page of the site, each with its own `tabModuleId` while `moduleId` repeats. That single fact drives
- * the removal contract asserted below: BOTH identities travel, the confirmation speaks of a placement,
- * and a `204` is followed by a mandatory re-read because only the listing endpoint knows whether the
- * row survived the soft delete.
- *
- * ## WHAT IS BEING PRESERVED, AND WHAT IS NET-NEW
- *
- * Both halves are stated because a specification that blurs them invites a later reader to "restore"
- * behaviour that never existed, or to relax an assertion that is the only record of a measured legacy
- * fact. Each claim below is annotated again, with its legacy line, at the case that asserts it.
- *
- * NET-NEW, WITH NO LEGACY ANCESTOR AT ALL:
- *
- *   - THE SCREEN ITSELF. `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO. That directory
- *     holds `export.ascx`, `import.ascx`, `modulesettings.ascx`, their three code-behinds, one icon and
- *     `App_LocalResources` — and nothing that lists modules. All nine `<table>` elements in
- *     `modulesettings.ascx` are `summary="… Design Table"` layout tables. So no legacy screen is being
- *     reproduced, and none is manufactured to pretend otherwise.
- *   - THE FREE-TEXT FILTER. `Library/Components/Modules/ModuleController.vb:L1032` `GetSearchModules` is
- *     the search-INDEXING surface, not a user-facing query.
- *   - EVERY ACCESSIBILITY AFFORDANCE. `Website/admin/Portal/portals.ascx` has no `<caption>`, no
- *     `summary`, no column scope, and its two command columns at `:L21` and `:L22` carry neither
- *     `HeaderText` nor alternative text.
- *   - AND THESE TESTS. THE LEGACY TREE CONTAINS ZERO AUTOMATED TESTS OF ANY KIND — not a unit test, not
- *     an integration test, not a fixture. There is no legacy suite to port, so every assertion in this
- *     file is authored against measured legacy SOURCE rather than against a legacy test.
- *
- * MEASURED AND PRESERVED EXACTLY:
- *
- *   - The confirmation wording, including its space before the question mark
- *     (`SharedResources.resx` → `DeleteModule.Confirm`).
- *   - The affirmative and negative words (`Yes.Text`, `No.Text`) and the edit and removal wording
- *     (`Edit.Text`, `cmdDelete.Text` — there is no `Delete.Text` key in that file).
- *   - The three visibility words and their implicit ordinals (`ModuleInfo.vb:L30-L34`).
- *   - A minimum-value date rendering blank (`ModuleSettings.ascx.vb:L152-L157`).
- *   - A refusal reported at warning severity (`AccessDenied.ascx.vb`).
- *
- * ANNOTATED AS A LEGACY DEFECT AND DELIBERATELY NOT FIXED: `ModuleController.vb:L829` documents the
- * removal as permanent while `:L850` — in the same routine — says `' soft delete the module`. The code
- * is authoritative and the comment is wrong; Minimal Change Clause item 1 forbids correcting it, so it
- * is recorded here and the assertions follow the CODE.
- */
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -90,20 +17,9 @@ import type { ModuleListItem } from '../../../core/models/module.model';
 import type { ApiMeta, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 
-// =====================================================================================================
 // THE SESSION THE ROW COMMANDS ARE GATED ON
-//
-// The row commands are behind an `administration OR EDIT` gate, so a case that asserts anything about
-// them has to state which of those two things the caller is. There is no writable member for either
-// fact: `AuthStore.holdsPortalAdministration` and `AuthStore.permissions` are both PROJECTIONS over the
-// stored session, deliberately, so storing a real session is the only supported way to say it — the
-// shared directive's own specification records the same constraint and reaches for the same instrument.
-//
-// A stub store was the alternative and it is worse here: the gate's two arms are read by two different
-// consumers — the `@if` reads the screen's own signal and the second arm is read by the shared directive
-// — so a partial double would have to reproduce both members correctly to prove anything, and would then
-// be asserting against the double rather than against the store the screen actually uses.
-// =====================================================================================================
+// The row commands are behind an `administration OR EDIT` gate, so a case that asserts anything about them
+// has to state which of those two things the caller is.
 
 /** Builds a caller snapshot carrying exactly the standing each case needs. */
 function userWith(permissions: readonly string[], administersPortal: boolean): CurrentUser {
@@ -114,9 +30,9 @@ function userWith(permissions: readonly string[], administersPortal: boolean): C
     username: 'runtime_operator',
     displayName: 'Runtime Operator',
     email: 'operator@runtime.test',
-    // A host account is a separate fact from tenant administration and is deliberately NOT set here:
-    // the gate reads the tenant determination, so leaving this false keeps each case honest about
-    // which arm admitted it.
+    // A host account is a separate fact from tenant administration and is deliberately NOT set here: the
+    // gate reads the tenant determination, so leaving this false keeps each case honest about which arm
+    // admitted it.
     isSuperUser: false,
     isPortalAdministrator: administersPortal,
     roles: administersPortal ? ['Administrators'] : [],
@@ -138,14 +54,7 @@ function sessionWith(permissions: readonly string[], administersPortal: boolean)
   };
 }
 
-// =====================================================================================================
 // NARROWING WITHOUT AN ESCAPE HATCH
-//
-// No escape hatch is used anywhere in this file: no wildcard type annotation, no compiler-directive
-// comment and no non-null assertion. Where an assertion needs an element that must exist, it is
-// unwrapped through the helper below, which FAILS BY NAME rather than letting `null` travel on into a
-// property read that then reports itself as an unrelated type error somewhere else.
-// =====================================================================================================
 
 /**
  * Unwraps a required descendant, throwing with the selector when it is absent.
@@ -163,12 +72,7 @@ function requireElement(root: Element, selector: string): Element {
   return found;
 }
 
-// =====================================================================================================
 // ADDRESSES
-//
-// Hand-written relative literals. Building them from the endpoint registry would assert the registry
-// against itself and could not detect a change to it.
-// =====================================================================================================
 
 /** The listing address. */
 const MODULES_URL = '/api/v1/modules';
@@ -181,12 +85,7 @@ function moduleUrl(moduleId: number): string {
 /** The default page size the store asks for when nobody has changed it. */
 const DEFAULT_PAGE_SIZE = '10';
 
-// =====================================================================================================
 // THE WORDING THIS SCREEN PUBLISHES
-//
-// Restated rather than imported: the component exports none of these, and a specification reading them
-// off the component could not detect a change to them.
-// =====================================================================================================
 
 const PAGE_TITLE = 'Modules';
 const PAGE_SUBTITLE = 'Every module placed on a page of this site, one row per placement.';
@@ -203,13 +102,6 @@ const REMOVE_COMMAND_LABEL = 'Delete';
 
 const REMOVE_CONFIRM_TITLE = 'Confirm Delete';
 
-/**
- * The removal confirmation.
- *
- * ⚠ THE SPACE BEFORE THE QUESTION MARK IS PART OF THE VALUE. `SharedResources.resx` declares
- * `DeleteModule.Confirm` as `'Are You Sure You Wish To Delete This Module ?'`, and the Minimal Change
- * Clause forbids tidying it: an equivalent message means the same message.
- */
 const REMOVE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Module ?';
 
 const REMOVE_SUCCESS_MESSAGE = 'The module placement was removed.';
@@ -218,15 +110,7 @@ const DISMISS_LABEL = 'Dismiss';
 
 const RETRY_LABEL = 'Try again';
 
-// =====================================================================================================
 // THE FAILURE VOCABULARY, TAKEN FROM THE SERVER
-//
-// ⚠ EVERY DOCUMENT BELOW IS ONE THE API CAN ACTUALLY EMIT. The type is built by the server's own
-// `BuildProblemType`, so it is lower-cased with hyphens folded to underscores; the title comes from the
-// status vocabulary; the trace and correlation identifiers are attached to every document by the
-// problem-details factory; and NO document carries an `instance` member, because every call site
-// supplies null and the serialiser omits it.
-// =====================================================================================================
 
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
@@ -257,11 +141,9 @@ function problem(code: string, status: number, detail: string): ProblemDetails {
 // =====================================================================================================
 
 /**
- * One listing row.
- *
- * ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so module zero is the
- * first module of an installation. Every default here is chosen so that a truthiness test anywhere in
- * the screen would be caught rather than accidentally satisfied.
+ * One listing row. ⚠ THE DEFAULT IDENTIFIER IS ZERO. `dbo.Modules.ModuleID` is `IDENTITY(0, 1)`, so
+ * module zero is the first module of an installation. Every default here is chosen so that a truthiness
+ * test anywhere in the screen would be caught rather than accidentally satisfied.
  */
 function moduleRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
   return {
@@ -323,13 +205,10 @@ describe('ModuleListComponent', () => {
     httpMock = TestBed.inject(HttpTestingController);
     tokenStorage = TestBed.inject(TokenStorageService);
 
-    // THE DEFAULT CALLER ADMINISTERS THE TENANT, AND THAT IS THE HONEST DEFAULT RATHER THAN A
-    // CONVENIENCE. This screen's route is declared under the portal-administrator gate, so an
-    // administrator is who actually reaches it; every case below that asserts a row command therefore
-    // describes a real caller instead of an anonymous one. Note the EMPTY key list: it is the seeded
-    // reality — an administrator named in no grant row holds no keys — so these cases are admitted by
-    // the gate's FIRST arm alone and would all fail against a key-only gate. The cases that exercise
-    // the second arm, and the one that must be refused, each store their own session instead.
+    // THE DEFAULT CALLER ADMINISTERS THE TENANT, AND THAT IS THE HONEST DEFAULT RATHER THAN A CONVENIENCE.
+    // This screen's route is declared under the portal-administrator gate, so an administrator is who
+    // actually reaches it; every case below that asserts a row command therefore describes a real caller
+    // instead of an anonymous one.
     tokenStorage.store(sessionWith([], true));
 
     // `notify` is the single sink every convenience method delegates to, so this records every message
@@ -346,12 +225,7 @@ describe('ModuleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /** Creates the screen. The first read is issued from `ngOnInit`, during this first pass. */
-  /**
-   * Lets a navigation this screen started actually happen.
-   *
-   * The search box, the sortable headings and the pager write the ADDRESS rather than calling the store, and
-   * a router navigation is asynchronous, so the read that follows one is not issued in the same task.
-   */
+  /** Lets a navigation this screen started actually happen. */
   /** Navigates to an address BEFORE the screen mounts, which is how an entry on a later page is simulated. */
   async function enterAt(url: string): Promise<void> {
     await TestBed.inject(Router).navigateByUrl(url);
@@ -505,9 +379,6 @@ describe('ModuleListComponent', () => {
 
       const call = expectList();
 
-      // The address must never be absolute: the application is served from the same origin as the API
-      // through the reverse proxy, and an absolute address would turn every read into a cross-origin
-      // request that resolves only inside the container network.
       expect(call.request.url.startsWith('http')).withContext('relative address').toBeFalse();
       expect(call.request.params.get('pageIndex')).toBe('0');
       expect(call.request.params.get('pageSize')).toBe(DEFAULT_PAGE_SIZE);
@@ -566,17 +437,16 @@ describe('ModuleListComponent', () => {
     it('shows the wait inside the grid rather than beside it while the first read is outstanding', () => {
       create();
 
-      // The shared table renders both the wait and the empty state itself, in one spanning row, and
-      // lets the wait win. This screen must therefore render NEITHER of its own, or a person would meet
-      // two indicators for one wait.
+      // The shared table renders both the wait and the empty state itself, in one spanning row, and lets
+      // the wait win. This screen must therefore render NEITHER of its own, or a person would meet two
+      // indicators for one wait.
       const message = query<HTMLElement>('td.data-table__message[data-placeholder]');
 
       expect(message).withContext('the table carries the wait').not.toBeNull();
 
       // ⚠ THE INDICATOR THE TABLE OWNS IS ITSELF AN `app-loading-spinner`, SO ITS MERE PRESENCE PROVES
       // NOTHING. What distinguishes the two is WHERE it sits: the table's own lives inside the spanning
-      // message cell, so an indicator anywhere OUTSIDE that cell would be this screen's second one. That
-      // is the assertion, and it is why the sibling component's imports list contains neither component.
+      // message cell, so an indicator anywhere OUTSIDE that cell would be this screen's second one.
       expect((message as HTMLElement).querySelector('app-loading-spinner'))
         .withContext('the wait is announced from inside the spanning cell')
         .not.toBeNull();
@@ -614,9 +484,9 @@ describe('ModuleListComponent', () => {
 
       const cells: readonly string[] = cellsOf(0);
 
-      // ⚠ IF ANY LINK BUILDER OR ANY CELL TESTED THE IDENTIFIER FOR TRUTHINESS, THIS ROW WOULD BE THE
-      // ONE IT BROKE. The identity column is seeded from zero, so zero addresses the first module of
-      // an installation and must render and link exactly like any other.
+      // ⚠ IF ANY LINK BUILDER OR ANY CELL TESTED THE IDENTIFIER FOR TRUTHINESS, THIS ROW WOULD BE THE ONE
+      // IT BROKE. The identity column is seeded from zero, so zero addresses the first module of an
+      // installation and must render and link exactly like any other.
       expect(cells).toContain('0');
       expect(textOf('tr.data-table__row a').length).withContext('links offered').toBeGreaterThan(0);
     });
@@ -624,9 +494,6 @@ describe('ModuleListComponent', () => {
     it('renders the all-pages flag as words, including the negative one', async () => {
       arrive([moduleRow({ allTabs: false })]);
 
-      // `false` is DATA here, not an absence: the legacy grids drew this flag as a pair of images with
-      // no alternative text, so the state was drawn but never announced. It is words now, and the
-      // negative word must appear rather than an empty cell.
       expect(cellsOf(0)).toContain('No');
 
       await answerAfterReplacement([moduleRow({ allTabs: true })]);
@@ -641,28 +508,16 @@ describe('ModuleListComponent', () => {
         moduleRow({ moduleId: 2, tabModuleId: 9, visibility: ModuleVisibility.None }),
       ]);
 
-      // MIGRATION: THE ORDINALS ARE IMPLICIT IN THE LEGACY SOURCE AND ARE THEREFORE LOAD-BEARING.
-      //   `Library/Components/Modules/ModuleInfo.vb:L30-L34` is, verbatim,
-      //   `Public Enum VisibilityState / Maximized / Minimized / None / End Enum` — with NO explicit
-      //   values, so 0, 1 and 2 come from declaration order alone and every stored row depends on that
-      //   order never changing. The enumeration was renamed `ModuleVisibility` on the way across and the
-      //   numbers were not touched, which is what this case pins. `Website/App_GlobalResources/
-      //   SharedResources.resx` independently declares `Maximized.Text` = 'Maximized' and
-      //   `None.Text` = 'None', so the wording is measured rather than invented.
       expect(cellsOf(0)).toContain('Maximized');
       expect(cellsOf(1)).toContain('Minimized');
 
-      // ⚠ ZERO IS A REAL STATE AND IS THE LEGACY DEFAULT, so the first row must carry a word rather
-      // than an empty cell. A lookup written as `VISIBILITY_LABEL[code] || ''` would pass the two rows
-      // below and fail this one, which is exactly why it is asserted as NON-EMPTY and not merely as
-      // "contains".
+      // ⚠ ZERO IS A REAL STATE AND IS THE LEGACY DEFAULT, so the first row must carry a word rather than an
+      // empty cell. A lookup written as `VISIBILITY_LABEL[code] || ''` would pass the two rows below and
+      // fail this one, which is exactly why it is asserted as NON-EMPTY and not merely as "contains".
       expect(cellsOf(0).filter((text) => text === 'Maximized'))
         .withContext('code 0 resolves to a real word, never to an empty cell')
         .toHaveSize(1);
 
-      // ⚠ THE THIRD MEMBER IS A STATE, NOT AN ABSENCE. A placement set to it exists and is placed; it
-      // simply draws no container chrome. Rendering it blank would tell an operator the value was
-      // missing when the operator themselves chose it.
       expect(cellsOf(2)).toContain('None');
       expect(cellsOf(2).filter((text) => text === 'None'))
         .withContext('code 2 renders the real word "None", never an empty cell')
@@ -680,14 +535,6 @@ describe('ModuleListComponent', () => {
         .withContext('both absences render empty')
         .toBeGreaterThanOrEqual(2);
 
-      // MIGRATION: THE MARKER DATE RENDERS BLANK, WHICH IS EXACTLY WHAT THE LEGACY SCREEN DID.
-      //   `Website/admin/Modules/ModuleSettings.ascx.vb:L152-L154` reads
-      //   `If Not Null.IsNull(objModule.StartDate) Then txtStartDate.Text =
-      //   objModule.StartDate.ToShortDateString / End If`, and `:L155-L157` is the identical pair for
-      //   the end date — the field was LEFT BLANK on the sentinel rather than showing a minimum date.
-      //   `Library/Components/Shared/Null.vb:L66-L68` defines that sentinel as `Date.MinValue`, and it
-      //   still travels on the wire because the API serialises it as a real ISO-8601 string rather than
-      //   omitting the member. So `01/01/0001` must appear NOWHERE on the row, in any locale spelling.
       const rowText: string = cells.join(' ');
 
       expect(rowText).withContext('the marker date is never painted').not.toContain('0001');
@@ -696,11 +543,9 @@ describe('ModuleListComponent', () => {
     });
 
     it('paints a far-future date as the real value it is, rather than blanking it too', () => {
-      // ⚠ THE COMPANION TO THE CASE ABOVE, AND THE ONE THAT STOPS THE BLANKING FROM OVER-REACHING.
-      // A perpetual expiry is ordinary data: the shared pipe tests for `0001-01-01` specifically and
-      // never for an upper bound, so a year-9999 value must survive to the cell. Without this case, a
-      // pipe that blanked "implausible" dates in general would satisfy the sentinel case and silently
-      // erase every perpetual schedule in the tenant.
+      // ⚠ THE COMPANION TO THE CASE ABOVE, AND THE ONE THAT STOPS THE BLANKING FROM OVER-REACHING. A
+      // perpetual expiry is ordinary data: the shared pipe tests for `0001-01-01` specifically and never
+      // for an upper bound, so a year-9999 value must survive to the cell.
       arrive([moduleRow({ startDate: '2024-03-01T00:00:00Z', endDate: '9999-12-31T00:00:00Z' })]);
 
       const cells: readonly string[] = cellsOf(0);
@@ -762,21 +607,7 @@ describe('ModuleListComponent', () => {
       expect(remove.getAttribute('type')).toBe('button');
     });
 
-    /**
-     * ⚠ REWRITTEN. This spec used to assert `labels).toContain('Edit ')` — it pinned the defect. Runtime
-     * measurement on the module that stores the EMPTY STRING as its title showed what that produced:
-     * Chrome computed `link "Edit "`, `link "Settings "`, `link "Export "` and `button "Delete "`, each
-     * with a trailing U+0020 that Chrome does not trim, so in a screen reader's control list none of the
-     * four said which module it acted on and the one that destroys a placement said least of all. The
-     * row carried no `<th scope="row">` to supply the context either.
-     *
-     * The half of the old spec that WAS a requirement — that no absence marker leaks into a name — is
-     * kept and widened to `undefined` as well.
-     *
-     * The substitution is the legacy platform's own: `ControlPanelBase.vb:192-196` tests `If title = ""`
-     * and puts `objModuleDefinition.FriendlyName` in the field. The identifier is appended because one
-     * definition serves many placements, so the friendly name alone still would not distinguish a row.
-     */
+    /** ⚠ REWRITTEN. This spec used to assert `labels).toContain('Edit ')` — it pinned the defect. */
     it('names a command of an untitled placement from the definition and the identifier', () => {
       arrive([moduleRow({ moduleTitle: null, moduleId: 10 })]);
 
@@ -806,8 +637,8 @@ describe('ModuleListComponent', () => {
     });
 
     /**
-     * A titled row is deliberately left exactly as it was: its title already identifies it, and
-     * appending an identifier to every name would add noise a reader hears on every row.
+     * A titled row is deliberately left exactly as it was: its title already identifies it, and appending
+     * an identifier to every name would add noise a reader hears on every row.
      */
     it('leaves a titled placement to its own title, with no identifier appended', () => {
       arrive([moduleRow({ moduleTitle: 'Announcements', moduleId: 10 })]);
@@ -821,7 +652,7 @@ describe('ModuleListComponent', () => {
     /**
      * The last resort. A placement with neither a title nor any definition name still has an identity,
      * and `Modules.ModuleID` is `IDENTITY(0, 1)` — so nought is a real module and must never be treated
-     * as absent. This row is the one that would have announced the bare verb.
+     * as absent.
      */
     it('falls back to the identifier alone when no name of any kind is recorded', () => {
       arrive([moduleRow({ moduleTitle: '   ', friendlyName: null, moduleName: null, moduleId: 0 })]);
@@ -832,9 +663,9 @@ describe('ModuleListComponent', () => {
     });
 
     /**
-     * The title CELL states the absence rather than rendering blank. Measured before the fix: the
-     * cell's whole content was two literal spaces in a single text node with no element children, and
-     * Chrome reported the cell as unnamed — indistinguishable from a cell that failed to render.
+     * The title CELL states the absence rather than rendering blank. Measured with the cell left blank:
+     * its whole content is two literal spaces in a single text node with no element children, and Chrome
+     * reports the cell as unnamed — indistinguishable from a cell that failed to render.
      */
     it('states an absent title in the cell instead of leaving it blank', () => {
       arrive([moduleRow({ moduleTitle: '' })]);
@@ -853,9 +684,6 @@ describe('ModuleListComponent', () => {
     it('escapes a hostile title rather than parsing it into elements', () => {
       arrive([moduleRow({ moduleTitle: '<img src=x onerror="window.__listed=true">' })]);
 
-      // Legacy resource and content values are untrusted markup, so every string on this screen is
-      // interpolated. What matters is the element tree, not the text of the serialised markup: the
-      // brackets survive as characters, and no element is constructed from them.
       expect(queryAll('img')).withContext('no element parsed out of a title').toHaveSize(0);
       expect((window as unknown as Record<string, unknown>)['__listed'])
         .withContext('the title was never evaluated')
@@ -864,17 +692,10 @@ describe('ModuleListComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // THE PERMISSION GATE ON THE ROW COMMANDS
-  // ---------------------------------------------------------------------------------------------------
-  //
   // Three cases, because the gate has three outcomes and the first two would collapse into one under a
   // single-arm gate: admitted BY ADMINISTRATION with no key held, admitted BY THE KEY without
-  // administering, and refused. The middle case is the shared directive doing the work; the first is the
-  // reason the directive cannot be the only arm.
-  //
-  // Each case replaces the session the suite's `beforeEach` stored, before the screen is created, so the
-  // gate is evaluated once against the standing under test rather than transitioning mid-case.
+  // administering, and refused.
   describe('the permission gate on the row commands', () => {
     /** Every command the row offers, by its accessible name, in document order. */
     function rowCommandNames(): readonly string[] {
@@ -886,9 +707,6 @@ describe('ModuleListComponent', () => {
     }
 
     it('offers the commands to a tenant administrator who holds no permission key at all', () => {
-      // ⚠ THE CASE THAT A KEY-ONLY GATE FAILS, and it is the seeded reality rather than a contrivance:
-      // the key list is derived from grant rows alone, so an administrator named in none holds nothing,
-      // while every one of these operations has an administrator arm on the API that admits them.
       tokenStorage.store(sessionWith([], true));
       arrive([moduleRow({ moduleId: 3 })]);
 
@@ -929,8 +747,6 @@ describe('ModuleListComponent', () => {
 
       expect(row.querySelectorAll('.module-list__row-command')).toHaveSize(0);
 
-      // THE ROW ITSELF SURVIVES. The gate withholds the commands, not the listing: the caller is still
-      // shown what exists, which is what the legacy screen did for a reader without edit rights.
       expect(bodyRows()).withContext('the placement is still listed').toHaveSize(1);
       expect((row.textContent ?? '')).toContain('Announcements');
     });
@@ -941,9 +757,6 @@ describe('ModuleListComponent', () => {
 
       expect(rowCommandNames()).withContext('admitted by the key').toHaveSize(4);
 
-      // Signing out mid-screen must withdraw the affordance immediately rather than leaving it painted
-      // until the next navigation — both arms of the gate are signal reads, so this is a re-evaluation
-      // and not a reload.
       tokenStorage.clear();
       fixture.detectChanges();
 
@@ -956,13 +769,10 @@ describe('ModuleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * A failed read must offer a way back.
-   *
-   * Measured before this existed: with the network unreachable the whole page offered ZERO affordances
-   * matching retry, try-again, reload or refresh — sixty-four interactive elements healthy and
-   * sixty-five failed, the single addition being `Dismiss`, which clears the banner and re-attempts
-   * nothing. The stale rows were correctly retained, so an operator was left looking at data that was
-   * no longer current with no offered way to make it current.
+   * A failed read must offer a way back. Measured before this existed: with the network unreachable the
+   * whole page offered ZERO affordances matching retry, try-again, reload or refresh — sixty-four
+   * interactive elements healthy and sixty-five failed, the single addition being `Dismiss`, which clears
+   * the banner and re-attempts nothing.
    */
   describe('recovering from a failed read', () => {
     /** Puts the listing into its failed state through the transport, as the defect occurs. */
@@ -1032,16 +842,10 @@ describe('ModuleListComponent', () => {
 
   describe('the free-text filter', () => {
     /**
-     * The box must show the filter that is actually in force.
-     *
-     * Measured before the reconciling effect existed: search for a term, leave the screen, come back,
-     * and the box read the empty string while the grid was still filtered — 248 rows of a collection of
-     * 250, the two withheld rows unmentioned, and the return request still carrying the term. The stores
-     * are `providedIn: 'root'` singletons, so the FILTER survives the screen while the CONTROL is
-     * rebuilt empty. Nothing on the page disclosed that a filter was in force.
-     *
-     * Driven the way the defect occurs — the store already holding a filter when the component is
-     * created, which is exactly the state a return navigation produces.
+     * The box must show the filter that is actually in force. Measured before the reconciling effect
+     * existed: search for a term, leave the screen, come back, and the box read the empty string while
+     * the grid was still filtered — 248 rows of a collection of 250, the two withheld rows unmentioned,
+     * and the return request still carrying the term.
      */
     it('shows a filter that was already in force when the screen was reached', fakeAsync(() => {
       create();
@@ -1080,35 +884,18 @@ describe('ModuleListComponent', () => {
       field.value = 'news';
       field.dispatchEvent(new Event('input'));
 
-      // The shared control debounces its own emission, so the read does not exist until the delay has
-      // elapsed. Driving it through the real control is what proves the template is wired to the
-      // handler at all — a case calling the handler directly could pass with no binding present.
       tick(300);
       fixture.detectChanges();
 
       const call = expectList('the filtered read');
 
       // MIGRATION: THE FREE-TEXT FILTER IS NET-NEW; THE LEGACY HAD NO MODULE SEARCH OF ANY KIND.
-      //   `Library/Components/Modules/ModuleController.vb:L1032` declares
-      //   `Public Function GetSearchModules(ByVal PortalId As Integer) As ArrayList`, which is the
-      //   search-INDEXING surface of the legacy searchable-module contract — it returns the modules that
-      //   SUPPORT search so an indexer can walk them — and is emphatically not a user-facing query.
-      //   Nothing in `Website/admin/Modules/` filtered a module list by text, because there was no
-      //   module list to filter: `grep -rio "<asp:DataGrid" Website/admin/Modules/` returns ZERO. So
-      //   this parameter has no legacy contract to preserve and the only thing to pin is that the screen
-      //   adds nothing to what a person typed.
-      //
-      // Recorded EXACTLY AS EMITTED: no wildcard appended, no pattern syntax introduced, no escaping
-      // applied. Match semantics belong to the server, which is where the legacy call-site pattern
-      // decoration moved to.
+      // `Library/Components/Modules/ModuleController.vb:L1032` declares `Public Function
+      // GetSearchModules(ByVal PortalId As Integer) As ArrayList`, which is the search-INDEXING surface of
+      // the legacy searchable-module contract — it returns the modules that SUPPORT search so an indexer
+      // can walk them — and is emphatically not a user-facing query.
       expect(call.request.params.get('query')).toBe('news');
 
-      // ⚠ NO PER-CENT SIGN, IN EITHER POSITION. Server-side matching is `LIKE 'text%'` — STARTS-WITH,
-      // with the wildcard appended SERVER-SIDE — so a screen that appended one would ask for
-      // `LIKE 'news%%'`, and one that prepended it would silently convert a starts-with filter into a
-      // contains filter. Both would be a behaviour change no status code reveals. The parameter is
-      // asserted against the raw text and separately against the character itself, because an equality
-      // assertion alone would not say WHY the value must be bare.
       const sent: string = call.request.params.get('query') ?? '';
 
       expect(sent).withContext('no wildcard is added by the client').not.toContain('%');
@@ -1146,10 +933,6 @@ describe('ModuleListComponent', () => {
 
       const cleared = expectList('the unfiltered read');
 
-      // ⚠ THE EMPTY STRING IS THE LEGACY ABSENT-STRING MARKER — `Null.vb:L71-L75` returns `""` — so the
-      // two were indistinguishable in the legacy and are deliberately held apart here. `null` means
-      // "no filter" and is therefore OMITTED from the request; the empty string would be a filter for
-      // nothing, and sending it would ask the server a different question.
       expect(cleared.request.params.has('query')).withContext('the parameter is omitted').toBeFalse();
 
       cleared.flush(pageOf([moduleRow()]));
@@ -1219,21 +1002,6 @@ describe('ModuleListComponent', () => {
       fixture.detectChanges();
     });
 
-    /**
-     * THE THIRD PRESS RETURNS THE LISTING TO THE SERVER'S OWN ORDER, WHICH USED TO BE UNREACHABLE.
-     *
-     * This screen arrives with no ordering: the store initialises both coordinates to null and the first
-     * request carries neither parameter. With ascending and descending as the only two steps, that
-     * arrival order was lost the moment a reader pressed any heading, and the only way back was to
-     * reload the page. The shared table’s cycle now has a third step which asks for no ordering at all,
-     * and this screen clears its own key alongside the direction rather than substituting a default -
-     * which is what makes the request below carry neither parameter again.
-     *
-     * Asserted on the WIRE rather than on the store, because the omission is the whole point: a request
-     * carrying `sortBy` with no `sortDir`, or a direction with no key, would be a different question
-     * asked of the server. The ordering travels through the ADDRESS, so each press is settled before the
-     * read it causes is consumed.
-     */
     it('clears the ordering on a third press, and sends neither parameter', async () => {
       arrive();
 
@@ -1262,13 +1030,8 @@ describe('ModuleListComponent', () => {
       cleared.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
-      // And the headings say so. ⚠ CLEARING RETURNS THIS SCREEN TO ITS ARRIVAL STATE, WHICH IS NOT
-      // THE SAME AS AN UNORDERED ONE, and that distinction is this screen's alone among the four
-      // listings. A request carrying no sort parameter does not come back unordered here: it comes back
-      // by title, ascending, measured row-for-row against an explicit ascending read. So the heading
-      // that must fall silent is the one that WAS pressed, while the title heading states the order the
-      // rows are actually in - exactly as it does on arrival, which the case above proves. Asserting an
-      // empty set here would be asserting that the grid lies about what it is rendering.
+      // And the headings say so. ⚠ CLEARING RETURNS THIS SCREEN TO ITS ARRIVAL STATE, WHICH IS NOT THE SAME
+      // AS AN UNORDERED ONE, and that distinction is this screen's alone among the four listings.
       const orderedHeadings: readonly string[] = queryAll<HTMLElement>('th.data-table__header')
         .filter((cell) => {
           const state: string | null = cell.getAttribute('aria-sort');
@@ -1294,9 +1057,9 @@ describe('ModuleListComponent', () => {
       expectList().flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
-      // The state a reader perceives is the column heading's own, which the shared table derives from
-      // the two inputs this screen supplies from the store. Asserting the attribute proves the round
-      // trip rather than just the request.
+      // The state a reader perceives is the column heading's own, which the shared table derives from the
+      // two inputs this screen supplies from the store. Asserting the attribute proves the round trip
+      // rather than just the request.
       const sorted: readonly string[] = queryAll<HTMLElement>('th.data-table__header')
         .map((cell) => cell.getAttribute('aria-sort') ?? '')
         .filter((value) => value === 'ascending' || value === 'descending');
@@ -1311,25 +1074,6 @@ describe('ModuleListComponent', () => {
       const announced = (): readonly (string | null)[] =>
         queryAll<HTMLElement>('th.data-table__header').map((cell) => cell.getAttribute('aria-sort'));
 
-      // ⚠ ON ARRIVAL THE GRID ANNOUNCES THE ORDER IT IS ACTUALLY IN, WHICH IS NOT THE SAME AS
-      //   ANNOUNCING NOTHING. This expectation previously asserted all four sortable headings reported
-      //   `none` before a press, and that was the DEFECT rather than the contract: the endpoint applies
-      //   its own default ordering when the request carries no `sortBy`, so the rows arriving on this
-      //   screen are already Title-ascending. Runtime measurement proved it three ways — the arrival
-      //   rows were byte-identical to an explicit ascending read, every heading reported `none` with an
-      //   EMPTY indicator, and the first press on Title was therefore a visual no-op because it asked
-      //   for the order the grid was already in.
-      //
-      //   The screen now declares that effective order, so the announcement matches what a reader sees
-      //   and the first press on Title REVERSES rather than doing nothing. It is presentation-only: the
-      //   store's query and the address are both untouched on arrival, which the ordering cases above
-      //   and the address cases elsewhere in this file continue to prove — nothing here sends `sortBy`
-      //   until a column is pressed, and the screen does not navigate to correct its own address.
-      //
-      //   Three states are still distinguished, and this case pins all three at once:
-      //   * a NON-SORTABLE heading carries NO `aria-sort` attribute — six of the ten columns;
-      //   * a sortable heading that is not the effective one carries `none` — three columns here;
-      //   * exactly one carries a direction, and it is the column the server ordered by.
       expect(announced().filter((value) => value === 'none'))
         .withContext('the three inactive sortable columns each report themselves unsorted')
         .toHaveSize(3);
@@ -1358,9 +1102,9 @@ describe('ModuleListComponent', () => {
       expectList().flush(pageOf([moduleRow()]));
       fixture.detectChanges();
 
-      // ⚠ `sortBy` AND `sortDir` ARE THE SOLE SOURCE OF TRUTH FOR THIS ATTRIBUTE. They are supplied
-      // from the store, so the heading that announces itself sorted is the one the NEXT request would
-      // order by — the announcement and the wire cannot disagree.
+      // ⚠ `sortBy` AND `sortDir` ARE THE SOLE SOURCE OF TRUTH FOR THIS ATTRIBUTE. They are supplied from
+      // the store, so the heading that announces itself sorted is the one the NEXT request would order by —
+      // the announcement and the wire cannot disagree.
       expect(announced().filter((value) => value === 'ascending')).toHaveSize(1);
       expect(announced().filter((value) => value === 'descending')).toHaveSize(0);
       expect(announced().filter((value) => value === 'none'))
@@ -1372,16 +1116,6 @@ describe('ModuleListComponent', () => {
     it('scopes every heading to its column and names the grid with a real caption', () => {
       arrive();
 
-      // MIGRATION: THE GRID'S ACCESSIBILITY AFFORDANCES ARE NET-NEW ADDITIONS MADE AT ZERO VISUAL COST,
-      //   AND THIS IS THE CASE THAT PROVES THEY EXIST. Neither measured legacy grid had any of them.
-      //   `Website/admin/Portal/portals.ascx` declares its grid and its columns with NO `<caption>`, NO
-      //   `summary` and no column-scope information whatsoever — `grep -ciE "<caption|scope=|summary="`
-      //   over that file returns ZERO — and its two command columns at `:L21` and `:L22` are
-      //   `dnn:imagecommandcolumn` entries carrying an `ImageUrl` and neither `HeaderText` nor
-      //   alternative text, so both reached assistive technology as unnamed graphics.
-      //   `Website/admin/Users/users.ascx:L35-L39` is worse: an entirely header-less template column
-      //   whose only content is an icon with no alternative text. None of what is asserted below has a
-      //   legacy ancestor, and none of it changes a painted pixel.
       const headers: readonly HTMLElement[] = queryAll<HTMLElement>('th[scope="col"]');
 
       expect(headers).withContext('ten columns, ten headings').toHaveSize(10);
@@ -1395,9 +1129,9 @@ describe('ModuleListComponent', () => {
       });
 
       // The caption must resolve to a REAL TEXT NODE rather than to an empty element: the shared table
-      // renders the element unconditionally and falls back to its own placeholder wording when nothing
-      // is projected, so an empty caption would leave the grid with a misleading accessible name rather
-      // than with none.
+      // renders the element unconditionally and falls back to its own placeholder wording when nothing is
+      // projected, so an empty caption would leave the grid with a misleading accessible name rather than
+      // with none.
       const caption: Element = requireElement(host(), 'caption');
 
       expect((caption.textContent ?? '').trim())
@@ -1407,10 +1141,9 @@ describe('ModuleListComponent', () => {
         .withContext('and it is a real text node, not an empty element')
         .toBeGreaterThan(0);
 
-      // Every row command is an icon-free text control, and each carries a non-empty accessible name.
-      // The global register measured for the two that have one is `Website/App_GlobalResources/
-      // SharedResources.resx`: `Edit.Text` = 'Edit' and `cmdDelete.Text` = 'Delete'. There is NO
-      // `Delete.Text` key in that file, which is why the removal wording is taken from `cmdDelete`.
+      // Every row command is an icon-free text control, and each carries a non-empty accessible name. The
+      // global register measured for the two that have one is `Website/App_GlobalResources/
+      // SharedResources.resx`: `Edit.Text` = 'Edit' and `cmdDelete.Text` = 'Delete'.
       const row: Element = requireElement(host(), 'tr.data-table__row');
 
       Array.from(row.querySelectorAll('a, button')).forEach((command) => {
@@ -1432,9 +1165,6 @@ describe('ModuleListComponent', () => {
     it('draws no steps when the whole match set fits on one page, but still states the count', () => {
       arrive([moduleRow()], 1);
 
-      // The shared pager decides for itself what it has to offer: the range summary when everything fits
-      // on one page, the summary plus the steps when it does not. This screen wraps it in no condition
-      // about THAT — a wrapper would be a second opinion on the same question.
       expect(query('.pagination')).withContext('the group and its count').not.toBeNull();
       expect((query('.pagination__status')?.textContent ?? '').trim()).toContain('of 1');
       expect(queryAll('button.pagination__button')).withContext('nowhere to step to').toHaveSize(0);
@@ -1472,8 +1202,8 @@ describe('ModuleListComponent', () => {
 
       const call = expectList('the second page');
 
-      // ⚠ NO `+ 1` AND NO `- 1`, ANYWHERE. The wire coordinate is zero-based, the pager's input IS
-      // that index and its event emits that index back. Any adjustment on either side would serve the
+      // ⚠ NO `+ 1` AND NO `- 1`, ANYWHERE. The wire coordinate is zero-based, the pager's input IS that
+      // index and its event emits that index back. Any adjustment on either side would serve the
       // NEIGHBOURING page behind a perfectly successful response, which no status code would reveal.
       expect(call.request.params.get('pageIndex')).toBe('1');
 
@@ -1484,10 +1214,7 @@ describe('ModuleListComponent', () => {
     });
 
     it('returns to the first page from the last, again without adjustment', async () => {
-      // ⚠ THE LATER PAGE IS REACHED THROUGH THE ADDRESS, not by handing the store a page in a response. The
-      // page is now stated in the address, so a store-side page the address never carried is a state the
-      // application cannot be in - and pressing "First page" from it would clear a parameter that was never
-      // set, changing no address and therefore reading nothing.
+      // ⚠ THE LATER PAGE IS REACHED THROUGH THE ADDRESS, not by handing the store a page in a response.
       await enterAt('/modules?currentpage=4');
       arrive([moduleRow()], 40, 3);
 
@@ -1525,9 +1252,9 @@ describe('ModuleListComponent', () => {
       expect(query('.confirm-dialog')).withContext('open once asked').not.toBeNull();
       expect((query('.confirm-dialog__title')?.textContent ?? '').trim()).toBe(REMOVE_CONFIRM_TITLE);
 
-      // ⚠ ASSERTED WITH ITS SPACE BEFORE THE QUESTION MARK. The wording constant lives on the
-      // component precisely so the significant spacing survives the template compiler's whitespace
-      // collapsing, and this is the assertion that would catch it being tidied.
+      // ⚠ ASSERTED WITH ITS SPACE BEFORE THE QUESTION MARK. The wording constant lives on the component
+      // precisely so the significant spacing survives the template compiler's whitespace collapsing, and
+      // this is the assertion that would catch it being tidied.
       expect((query('.confirm-dialog__message')?.textContent ?? '').trim()).toBe(
         REMOVE_CONFIRM_MESSAGE,
       );
@@ -1537,19 +1264,6 @@ describe('ModuleListComponent', () => {
         .withContext('the confirming button is marked destructive')
         .not.toBeNull();
 
-      // MIGRATION: THE REMOVAL IS SOFT AND TWO-TIERED, SO THE WORDING MUST PROMISE NO PERMANENCE.
-      //   `Library/Components/Modules/ModuleController.vb:L837` `DeleteTabModule(TabId, ModuleId)`
-      //   hard-deletes ONLY the per-page reference row (`:L843`), reorders the survivors on that page
-      //   (`:L846`), and then tests whether any OTHER page still references the module (`:L849`). Only
-      //   if none does does it soft-delete, under the source's own verbatim comment at `:L850`,
-      //   `' soft delete the module`, followed by `objModule.TabID = Null.NullInteger` (`:L851`),
-      //   `objModule.IsDeleted = True` (`:L852`) and `UpdateModule(objModule)` (`:L853`). Nothing is
-      //   destroyed outright, so every one of the phrases below would be a FALSE PROMISE about a flag
-      //   flip. This is asserted rather than trusted because the legacy DOCUMENTATION says the opposite:
-      //   `:L829` reads `''' Delete a module reference permanently from the database.`, twenty-one lines
-      //   above the comment that contradicts it. The code is authoritative and the doc comment is a
-      //   legacy defect — Minimal Change Clause item 1 forbids correcting it, so it is annotated here and
-      //   left alone in the legacy tree, and this case makes sure the wrong word never reaches a person.
       const spoken: string = (query('.confirm-dialog__message')?.textContent ?? '').toLowerCase();
 
       expect(spoken).withContext('a soft delete is not permanent').not.toContain('permanently');
@@ -1572,8 +1286,7 @@ describe('ModuleListComponent', () => {
       const call = expectRequest('DELETE', moduleUrl(4), 'the removal');
 
       // ⚠ BOTH IDENTITIES TRAVEL, and that is the whole contract. A module placed on every page has one
-      // placement per page, so the module identity alone does not name a single row. This mirrors the
-      // legacy `DeleteTabModule(TabId, ModuleId)` and emphatically NOT `DeleteModule`, the hard delete.
+      // placement per page, so the module identity alone does not name a single row.
       expect(call.request.params.get('tabModuleId')).toBe('11');
 
       // The dialogue is dismissed the moment the command is issued, so the screen is not left holding
@@ -1583,24 +1296,6 @@ describe('ModuleListComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // MIGRATION: THE RE-READ IS MANDATORY AND IS NOT AN OPTIMISATION, BECAUSE THE REMOVAL IS SOFT AND
-      //   TWO-TIERED AND THE ROW MAY LEGITIMATELY SURVIVE IT.
-      //   `Library/Components/Modules/ModuleController.vb:L837` `DeleteTabModule(TabId, ModuleId)`
-      //   hard-deletes only the per-page reference row (`:L843`), reorders the survivors on that page
-      //   (`:L846`), then tests whether any other page still references the module (`:L849`) and ONLY
-      //   THEN soft-deletes it — `:L850` reads verbatim `' soft delete the module`, with `:L851` setting
-      //   the page reference to the absence marker, `:L852` setting `IsDeleted = True` and `:L853`
-      //   persisting it. So a `204` does NOT imply the row disappears: whether it still belongs in the
-      //   listing is the LISTING endpoint's decision, expressed through its inclusion flag, and an
-      //   optimistic local splice would wrongly hide a placement that survived. The fixture below
-      //   answers the re-read with a DIFFERENT surviving placement of the SAME module for exactly that
-      //   reason — a screen that spliced locally would show zero rows here and this case would catch it.
-      //
-      //   The legacy XML doc at `:L829` — `''' Delete a module reference permanently from the
-      //   database.` — contradicts the comment sixteen lines below it. The code is authoritative; the
-      //   doc comment is a legacy defect, annotated and deliberately not fixed. Note too that the
-      //   neighbouring `DeleteModule` at `:L819` IS the hard delete, and is emphatically NOT what this
-      //   screen invokes.
       const reread = expectList('the mandatory re-read');
 
       reread.flush(pageOf([moduleRow({ moduleId: 4, tabModuleId: 12 })]));
@@ -1621,14 +1316,6 @@ describe('ModuleListComponent', () => {
       expectRequest('DELETE', moduleUrl(4)).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // MIGRATION: THERE IS NO RESTORE, RECYCLE-BIN, PURGE OR UNDELETE PATH, AND THAT IS AN ABSENCE OF
-      //   ENDPOINT RATHER THAN AN ABSENCE OF AFFORDANCE. `ModuleController.vb` contains no
-      //   `RestoreModule` of any kind, and the target surface exposes nothing that reverses a removal —
-      //   the legacy recycle bin lived under `Website/admin/Tabs/`, which this feature does not replace.
-      //   A soft-removed module simply stops appearing. This is asserted as a NEGATIVE because the
-      //   temptation runs the other way: the soft delete makes a restore look implementable, and a
-      //   screen that offered one would address a route the API does not serve and fail at run time with
-      //   a 404 an operator could not act on.
       const forbidden: readonly string[] = ['restore', 'recycle-bin', 'recyclebin', 'undelete', 'purge'];
 
       forbidden.forEach((segment) => {
@@ -1679,27 +1366,20 @@ describe('ModuleListComponent', () => {
 
       const call = expectRequest('DELETE', moduleUrl(4), 'the outstanding removal');
 
-      // The outcome bridge is gated on the store's SAVING flag, so nothing is announced while the
-      // command is in flight - an operator is not told a placement was removed before it was. And the
-      // dialogue is already dismissed, so the screen is not holding a modal over an open request.
+      // The outcome bridge is gated on the store's SAVING flag, so nothing is announced while the command
+      // is in flight - an operator is not told a placement was removed before it was. And the dialogue is
+      // already dismissed, so the screen is not holding a modal over an open request.
       expect(notifications()).withContext('nothing announced yet').toHaveSize(0);
       expect(query('.confirm-dialog')).withContext('no modal over the request').toBeNull();
 
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      // \u26a0 THE OUTCOME IS ANNOUNCED AS SOON AS THE REMOVAL SETTLES, NOT WHEN THE RE-READ DOES, and the
-      // gate is deliberately on the saving flag rather than on the store's aggregate busy flag: a
-      // success triggers the mandatory re-read, so the aggregate flag is STILL raised at the moment the
-      // removal itself has finished. Waiting for it would delay the message behind an unrelated request
-      // and, on a slow listing, could leave a person with no feedback at all.
       expect(notifications()).toEqual([{ severity: 'success', message: REMOVE_SUCCESS_MESSAGE }]);
 
       // Meanwhile the re-read is outstanding, and the wait for it is reported by the shared table's own
       // busy state - not by a second indicator of this screen's own, and NOT by replacing the rows the
-      // operator is looking at. The placeholder assertion this replaces required the grid to tear its body
-      // down to one spanning cell on every read, which measured as a zero-data row on every transition and
-      // as the largest layout shift in the application.
+      // operator is looking at.
       expect(query('table.data-table')?.getAttribute('aria-busy'))
         .withContext('the re-read is reported as a busy region')
         .toBe('true');
@@ -1725,11 +1405,6 @@ describe('ModuleListComponent', () => {
 
       const first = expectRequest('DELETE', moduleUrl(4), 'the first removal');
 
-      // \u26a0 THE ROW COMMAND CARRIES NO `disabled` BINDING, AND THAT IS DELIBERATE RATHER THAN AN
-      // OVERSIGHT: THE CONFIRMATION IS THE GUARD. Pressing it again while a removal is outstanding
-      // therefore re-opens the dialogue and sends NOTHING - a second command cannot be dispatched
-      // without a second, explicit confirmation. A disabled control would also announce nothing about
-      // why it could not be used, whereas a confirmation states the question in words.
       requestRemoval();
 
       expect(query('.confirm-dialog')).withContext('the question is asked again').not.toBeNull();
@@ -1777,19 +1452,9 @@ describe('ModuleListComponent', () => {
       );
       fixture.detectChanges();
 
-      // MIGRATION: A REFUSAL OF AUTHORITY IS A WARNING, NOT AN ERROR, AND THE CLASSIFICATION IS MEASURED
-      //   FROM THE LEGACY SCREEN THAT DID THE SAME JOB. `Website/admin/Security/AccessDenied.ascx.vb`
-      //   reported a refusal with `ModuleMessageType.YellowWarning` in BOTH of its branches, never with
-      //   `RedError` — and the legacy severity vocabulary was genuinely three-valued, so choosing the
-      //   warning was a choice rather than the only option available. `form-errors.util.ts:L401-L412`
-      //   reproduces that decision for 401 and 403, and this screen passes the resolved severity through
-      //   UNALTERED: re-deriving it here would give one decision two homes free to disagree.
-      //
-      // ⚠ AND EXACTLY ONE MESSAGE IS RAISED, WHICH IS A CLAIM ABOUT OWNERSHIP. `ModuleStore` injects
-      // only the two transports — it records failures structurally and notifies NOBODY — so the
-      // reporting duty falls to this component alone and there is no double-notification hazard to
-      // guard against. The single-element assertion below is what would catch a notification being
-      // added to the store later: the count, not just the severity, is the contract.
+      // ⚠ AND EXACTLY ONE MESSAGE IS RAISED, WHICH IS A CLAIM ABOUT OWNERSHIP. `ModuleStore` injects only
+      // the two transports — it records failures structurally and notifies NOBODY — so the reporting duty
+      // falls to this component alone and there is no double-notification hazard to guard against.
       expect(notifications()).toEqual([
         {
           severity: 'warning',
@@ -1804,13 +1469,9 @@ describe('ModuleListComponent', () => {
       // nothing to learn.
       httpMock.expectNone(() => true);
 
-      // The banner carries the same event in full, with its reference an operator can quote.
-      //
-      // ⚠ THE REFERENCE IS THE CORRELATION IDENTIFIER, NOT THE TRACE IDENTIFIER, AND THE PRECEDENCE IS
-      // THE SHARED UTILITY'S: `form-errors.util.ts:L474-L486` returns the correlation identifier when
-      // one is present and falls back to the trace identifier only when it is not. Every live document
-      // carries BOTH, so the fallback is unreachable in practice - which is exactly why asserting the
-      // trace identifier here would encode a screen nobody ever sees.
+      // ⚠ THE REFERENCE IS THE CORRELATION IDENTIFIER, NOT THE TRACE IDENTIFIER, AND THE PRECEDENCE IS THE
+      // SHARED UTILITY'S: `form-errors.util.ts:L474-L486` returns the correlation identifier when one is
+      // present and falls back to the trace identifier only when it is not.
       expect(query('.error-banner__title')).not.toBeNull();
       expect(textOf('.error-banner__trace').join(' ')).toContain(CORRELATION_ID);
     });
@@ -1884,9 +1545,6 @@ describe('ModuleListComponent', () => {
       fixture.detectChanges();
 
       expect(textOf('.error-banner__message').join(' ')).toContain('No portal could be resolved.');
-      // ⚠ NOTHING IS ANNOUNCED TRANSIENTLY FOR A LISTING FAILURE. The banner already shows it in full,
-      // with its per-field detail and its reference, and the reporting effect is gated on a removal
-      // being outstanding precisely so one event is never reported twice.
       expect(notifications()).toHaveSize(0);
     });
 
@@ -1894,10 +1552,9 @@ describe('ModuleListComponent', () => {
       create();
 
       // ⚠ THE PER-FIELD MAP IS READ WITH AN INDEX EXPRESSION, NEVER WITH A PROPERTY ACCESS. Its keys are
-      // .NET model-state keys — PascalCase, NOT camel-cased on the way out — and the member is declared
-      // as an index signature, which `noPropertyAccessFromIndexSignature` makes a compile error to reach
-      // with a dot. Writing the fixture the same way the production code must read it is what keeps this
-      // case honest about the constraint.
+      // .NET model-state keys — PascalCase, NOT camel-cased on the way out — and the member is declared as
+      // an index signature, which `noPropertyAccessFromIndexSignature` makes a compile error to reach with
+      // a dot.
       const refusal: ProblemDetails = {
         type: `${FAILURE_TYPE_PREFIX}module.request_invalid`,
         title: STATUS_TITLE[400] ?? 'Error',
@@ -1926,9 +1583,6 @@ describe('ModuleListComponent', () => {
         .withContext('the per-field wording reaches the reader')
         .toContain('The module title is too long.');
 
-      // ⚠ AND NOTHING IS RAISED TRANSIENTLY FOR IT. A listing failure is shown by the banner alone; the
-      // reporting bridge is gated on a REMOVAL being outstanding precisely so one event is never
-      // reported twice, once in a banner a person must dismiss and once in a message that disappears.
       expect(notifications()).withContext('the banner is the only report').toHaveSize(0);
     });
 
@@ -1950,10 +1604,6 @@ describe('ModuleListComponent', () => {
     });
 
     it('re-issues the failed read when the recovery affordance is pressed', () => {
-      // ⚠ THE DEFECT: this was the one listing whose failure banner offered a dismissal and NOTHING
-      // else, so a person whose read failed could remove the report of the failure but never act on
-      // it - leaving an empty grid whose only recovery was to leave the screen. The three sibling
-      // listings all pair the banner with a re-read.
       create();
 
       expectList().flush(problem('request.invalid', 400, 'The paging arguments are invalid.'), {
@@ -2017,10 +1667,8 @@ describe('ModuleListComponent', () => {
     it('makes every command a natively operable element rather than a scripted one', () => {
       arrive();
 
-      // Not one `div` with a click handler and not one anchor standing in for an action: links
-      // navigate, buttons act, and both are reachable and activatable from the keyboard with no
-      // scripting. The legacy screens declared their commands as link buttons, which render as
-      // anchors — announced as links and not activated by the space key.
+      // Not one `div` with a click handler and not one anchor standing in for an action: links navigate,
+      // buttons act, and both are reachable and activatable from the keyboard with no scripting.
       const row: HTMLTableRowElement = bodyRows()[0] as HTMLTableRowElement;
 
       Array.from(row.querySelectorAll<HTMLAnchorElement>('a')).forEach((link) => {
@@ -2053,14 +1701,7 @@ describe('ModuleListComponent', () => {
     });
   });
 
-  // ---------------------------------------------------------------------------------------------------
   // PROOF 9 — WHAT THIS SCREEN DELIBERATELY DOES NOT OFFER
-  //
-  // Negative cases, and they carry real weight here. Every affordance below EXISTS in the legacy
-  // controller and NONE survives into the target surface, so each is a thing a well-meaning change could
-  // plausibly add — and adding one would paint a control whose request the server refuses, which is
-  // strictly worse than offering no control at all.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the affordances that deliberately do not exist', () => {
     it('offers no reorder, pane, copy, bulk, cache or synchronise control', () => {
@@ -2069,17 +1710,6 @@ describe('ModuleListComponent', () => {
         moduleRow({ moduleId: 5, tabModuleId: 12, moduleOrder: 2 }),
       ]);
 
-      // MIGRATION: SIX LEGACY OPERATIONS HAVE NO ENDPOINT IN THE TARGET AND THEREFORE NO AFFORDANCE HERE.
-      //   Each is named in `Library/Components/Modules/ModuleController.vb` and none is reachable now:
-      //   `MoveModule` (`:L1078`) for pane placement, both `CopyModule` overloads (`:L700` and `:L743`),
-      //   `DeleteAllModules` (`:L795`) for bulk removal, `UpdateModuleOrder` (`:L1160`) and
-      //   `UpdateTabModuleOrder` (`:L1197`) for ordering, and `SynchronizeModule` (`:L614`) for the cache
-      //   flush. The placement position is consequently DISPLAYED AS DATA and is not editable — which is
-      //   itself asserted below, because a numeric column is exactly where an editor would be added.
-      // Asserted against the rendered WORDING rather than against class names, and each needle is chosen
-      // to be unambiguous: bare `pane` is deliberately avoided because it is a substring of the shared
-      // dialogue's own `panel` class, and an assertion that fails for that reason would report the wrong
-      // defect. The structural claims that follow are the stronger half of this case in any event.
       const rendered: string = host().innerHTML.toLowerCase();
       const absent: readonly string[] = [
         'draggable',
@@ -2127,11 +1757,6 @@ describe('ModuleListComponent', () => {
 
       const store: ModuleStore = TestBed.inject(ModuleStore);
 
-      // ⚠ THE PROOF IS STRUCTURAL RATHER THAN BEHAVIOURAL, AND IT HAS TO BE. A writable signal carries
-      // `set` and `update`; a read-only projection does not. Asserting their ABSENCE is the only check
-      // that cannot be satisfied by a signal that merely happens not to be written today — and it is
-      // made with the `in` operator rather than by casting to a writable type, because such a cast would
-      // assert the very thing under test away.
       const rows: Signal<readonly ModuleListItem[]> = store.modules;
       const meta: Signal<ApiMeta> = store.meta;
 
@@ -2150,10 +1775,9 @@ describe('ModuleListComponent', () => {
 
       const call = expectList();
 
-      // ⚠ THE CORRELATION IDENTIFIER IS ATTACHED BY THE SHARED INTERCEPTOR, WHICH IS NOT REGISTERED IN
-      // THIS HARNESS — so its absence here is the expected reading and is precisely what proves the
-      // screen does not write it. A feature that set the header itself would produce it in this
-      // configuration, and every request would then carry two sources of one value free to disagree.
+      // ⚠ THE CORRELATION IDENTIFIER IS ATTACHED BY THE SHARED INTERCEPTOR, WHICH IS NOT REGISTERED IN THIS
+      // HARNESS — so its absence here is the expected reading and is precisely what proves the screen does
+      // not write it.
       expect(call.request.headers.has('X-Correlation-Id'))
         .withContext('the feature does not write the correlation header')
         .toBeFalse();
@@ -2171,11 +1795,10 @@ describe('ModuleListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * Replaces the painted page by re-reading through the real filter path.
-   *
-   * Used where a case needs a second, differently shaped page without creating a second component: the
-   * ordering path is the cheapest genuine trigger for a re-read, and using a genuine one keeps the
-   * case honest about how a page is replaced.
+   * Replaces the painted page by re-reading through the real filter path. Used where a case needs a
+   * second, differently shaped page without creating a second component: the ordering path is the
+   * cheapest genuine trigger for a re-read, and using a genuine one keeps the case honest about how a
+   * page is replaced.
    */
   async function answerAfterReplacement(items: readonly ModuleListItem[]): Promise<void> {
     const sort = queryAll<HTMLButtonElement>('button.data-table__sort')[0];
@@ -2189,15 +1812,7 @@ describe('ModuleListComponent', () => {
     expectList('the replacement read').flush(pageOf(items));
     fixture.detectChanges();
   }
-  // ---------------------------------------------------------------------------------------------------
   // PROOF — THE ADDRESS CARRIES THE SEARCH, THE ORDERING AND THE PAGE
-  //
-  // Runtime testing on the sibling portal listing measured five desyncs from keeping this state privately:
-  // pager clicks advanced the grid while the address stayed on the bare route, pressing back from page three
-  // was not possible because paging created no history entry at all, a typed address carrying a filter issued
-  // no request, and a fresh arrival from another screen landed on a page and a filter the operator could not
-  // see, because this store is provided at the application root and OUTLIVES this route.
-  // ---------------------------------------------------------------------------------------------------
 
   describe('the address', () => {
     /** Presses a pager step by its accessible name and settles the navigation it starts. */
@@ -2246,9 +1861,9 @@ describe('ModuleListComponent', () => {
     });
 
     it('restores a whole view from the address on entry: search, ordering and page together', async () => {
-      // ⚠ ONE READ, AT THE RIGHT COORDINATE. The store's search and ordering setters each return the listing
-      // to the first page, so applying the three in the wrong order would discard the page the address asked
-      // for. This is the case that catches that.
+      // ⚠ ONE READ, AT THE RIGHT COORDINATE. The store's search and ordering setters each return the
+      // listing to the first page, so applying the three in the wrong order would discard the page the
+      // address asked for. This is the case that catches that.
       await enterAt('/modules?filter=news&sortby=moduleTitle&sortdir=Descending&currentpage=3');
       create();
 

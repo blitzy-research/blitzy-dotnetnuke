@@ -1,21 +1,5 @@
-// Component stylesheet for the module export screen, served by the route
-// /portals/:portalId/modules/:moduleId/export.
-//
-// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the component's own
-// content attribute, so a class name that drifts does not error - it silently matches nothing and the
-// screen renders unstyled. The template must therefore emit exactly this vocabulary:
-//
-//     .module-export
-//     .module-export__form
-//     .module-export__actions
-
 @use '../../../../styles/mixins' as mx;
 
-// The host needs a box-generating display regardless, because a custom element defaults to inline and
-// would not contain block-level children correctly. Both selectors carry the same flow so the rhythm holds
-// whether the blocks sit directly on the host or inside one wrapper; a flow container with a single child
-// simply has no gap to apply.
-//
 // Focus indication is deliberately absent here and must stay absent: _reset.scss applies the shared
 // focus-ring mixin to a superset of the controls this screen can render, so the design system owns focus
 // indication and a feature screen consumes it rather than redeclaring it.
@@ -26,9 +10,6 @@
   gap: var(--space-4);
 }
 
-// Reading `breakpoint()` for a raw width is the sanctioned use of that function - what is barred is
-// writing a media query by hand. A maximum rather than a fixed measure keeps the form fluid below the step
-// and capped above it, which is why this screen needs no breakpoint mixin at all.
 .module-export__form {
   display: flex;
   flex-direction: column;

@@ -8,40 +8,17 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
 
-/// <summary>
-/// Pins who may reach the OpenAPI document and the interactive console, in each environment.
-/// </summary>
+/// <summary>Pins who may reach the OpenAPI document and the interactive console, in each environment.</summary>
 /// <remarks>
 /// <para>
-/// <strong>What is at stake.</strong> The console is an unauthenticated, machine-readable description of every
-/// endpoint, every parameter and every error shape this application accepts. Published on a production port it
-/// is a reconnaissance document written by the application about itself. The gating is therefore a security
-/// control, and it is a control with an unusually quiet failure mode in BOTH directions: published when it
-/// should not be, nothing fails and no log line appears; withheld when a deployment asked for it, the operator
-/// sees a 404 and cannot tell it from a console that was never built.
+/// <strong>What is at stake.</strong> The console is an unauthenticated, machine-readable description of
+/// every endpoint, every parameter and every error shape this application accepts. Published on a
+/// production port it is a reconnaissance document written by the application about itself.
 /// </para>
 /// <para>
-/// <strong>Why no existing test could reach it.</strong> The shared fixture runs as <c>Testing</c>, which is
-/// neither development nor an opted-in production, so the console is unmounted for the whole suite and every
-/// path below is dead code from its point of view. The three decisions - the environment name, the explicit
-/// opt-in, and the authenticated-caller gate - are made while the pipeline is being COMPOSED, so each one needs
-/// a host of its own, built inside an environment override.
-/// </para>
-/// <para>
-/// <strong>Transport enforcement is switched off in these hosts, deliberately.</strong>
-/// <c>appsettings.Production.json</c> turns HTTPS redirection on, and the test client speaks plain HTTP, so a
-/// production host would answer every request below with a redirect before the documentation stage was ever
-/// reached - and every assertion would then pass or fail for a reason that has nothing to do with Swagger. The
-/// override reproduces the shipped container topology, which is cleartext behind a TLS-terminating proxy and
-/// sets exactly this flag to false.
-/// </para>
-/// <para>
-/// <strong>The gate is middleware, not a routed endpoint</strong>, which is why it is written explicitly in the
-/// pipeline rather than expressed as an authorisation policy: the document endpoints carry no authorisation
-/// metadata, so no attribute and no fallback policy can be attached to them. That also means its ORDER is
-/// load-bearing - after authentication so the gate can read the caller, before authorisation so a fallback
-/// policy cannot refuse the console first - and the authenticated-caller facts below are what would fail if
-/// either half of that ordering were disturbed.
+/// <strong>Why no existing test could reach it.</strong> The shared fixture runs as <c>Testing</c>, which
+/// is neither development nor an opted-in production, so the console is unmounted for the whole suite and
+/// every path below is dead code from its point of view.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -49,26 +26,15 @@ namespace DnnMigration.IntegrationTests.Api;
 public sealed class SwaggerPublicationTests
 {
     /// <summary>The document address, spelled exactly as the console lists it.</summary>
-    /// <remarks>
-    /// Asserted as a literal because it is a published address: a client, a proxy rule or a generator
-    /// configuration outside this repository can depend on it, so a change to the route prefix or the version
-    /// group name is a breaking change and must fail here rather than be discovered by whatever was pointing
-    /// at it.
-    /// </remarks>
     private const string DocumentPath = "/swagger/v1/swagger.json";
 
     /// <summary>The interactive console's own address under the same prefix.</summary>
     private const string ConsolePath = "/swagger/index.html";
 
-    /// <summary>
-    /// An address this application never serves, used as the reference refusal.
-    /// </summary>
+    /// <summary>An address this application never serves, used as the reference refusal.</summary>
     /// <remarks>
-    /// The gating's confidentiality claim is that an unpublished console is refused "on exactly the same terms
-    /// as any address that matches no endpoint". Comparing against a measured never-served address states that
-    /// claim directly, and it is stronger than pinning a status literal: it keeps holding if the pipeline's
-    /// refusal for an unmatched path ever changes, and it fails the moment the console's refusal stops
-    /// matching it - which is the only difference an unauthenticated caller could actually detect.
+    /// The gating's confidentiality claim is that an unpublished console is refused "on exactly the same
+    /// terms as any address that matches no endpoint".
     /// </remarks>
     private const string NeverServedPath = "/there-is-no-endpoint-here-a3f91c";
 
@@ -85,12 +51,6 @@ public sealed class SwaggerPublicationTests
     public SwaggerPublicationTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>The opt-in key is spelled as the extension declares it.</summary>
-    /// <remarks>
-    /// The key is published as a constant precisely because it is depended upon from outside its own file, and
-    /// the double-underscore form below is what a container actually sets. A key renamed on one side only
-    /// becomes INERT rather than failing, and an inert opt-in is indistinguishable from one that was never set -
-    /// so every other fact in this suite would keep passing while the opt-in silently stopped working.
-    /// </remarks>
     [Fact]
     public void TheOptInKey_IsTheOneTheExtensionReads()
     {
@@ -102,12 +62,6 @@ public sealed class SwaggerPublicationTests
     }
 
     /// <summary>In development the document and the console are published without any opt-in.</summary>
-    /// <remarks>
-    /// Development is the one environment where the console is unconditional, and the document is parsed rather
-    /// than merely fetched: a 200 carrying an error page, an empty body or a document with no paths would
-    /// satisfy a status check while being useless, and generation is where this most plausibly breaks - a
-    /// filter that throws produces exactly that.
-    /// </remarks>
     [Fact]
     public async Task InDevelopment_TheDocumentAndTheConsoleArePublished()
     {
@@ -152,9 +106,7 @@ public sealed class SwaggerPublicationTests
     /// <summary>Outside development the default is off, for an authenticated caller as much as anyone.</summary>
     /// <remarks>
     /// The default is the setting that matters most, because it is the one every deployment gets without
-    /// deciding anything. The authenticated caller is included deliberately: the opt-in and the
-    /// authenticated-caller gate are two separate conditions, and an implementation that treated
-    /// authentication as sufficient would publish the console on every production deployment to every account.
+    /// deciding anything.
     /// </remarks>
     [Fact]
     public async Task InProduction_WithNoOptIn_NeitherTheDocumentNorTheConsoleIsPublished()
@@ -199,12 +151,6 @@ public sealed class SwaggerPublicationTests
     }
 
     /// <summary>A blank or unparsable opt-in leaves it off.</summary>
-    /// <remarks>
-    /// These are the values a deployment produces by ACCIDENT - a compose file interpolating an unset variable,
-    /// a yes/no spelling, a capitalisation the parser does not accept - and each of them must fail safe. An
-    /// implementation that treated "any value present" as consent would publish the console on a deployment
-    /// whose variable was defined and empty.
-    /// </remarks>
     [Theory]
     [InlineData("")]
     [InlineData("false")]
@@ -234,20 +180,10 @@ public sealed class SwaggerPublicationTests
 
     /// <summary>A value that is neither true nor false stops the application from starting.</summary>
     /// <remarks>
-    /// <para>
-    /// These are the values a deployment produces by ACCIDENT - a yes/no spelling, a numeric flag, a variable
-    /// set to whitespace - and none of them is a boolean. The configuration binder refuses to convert them and
-    /// the pipeline never finishes composing, so the process does not start and the message names the exact key
-    /// and the offending value.
-    /// </para>
-    /// <para>
-    /// That is the SAFE direction and it is asserted rather than corrected: no console is published, and an
-    /// operator who typed <c>yes</c> is told so on start-up instead of being left to wonder why an opt-in they
-    /// believe they set has no effect. The alternative - treating an unconvertible value as consent withheld -
-    /// would make a misconfigured security switch completely silent, which is worse than a refusal to start.
-    /// The extension's own documentation is corrected to say this rather than the behaviour being changed to
-    /// match the documentation.
-    /// </para>
+    /// These are the values a deployment produces by ACCIDENT - a yes/no spelling, a numeric flag, a
+    /// variable set to whitespace - and none of them is a boolean. The configuration binder refuses to
+    /// convert them and the pipeline never finishes composing, so the process does not start and the
+    /// message names the exact key and the offending value.
     /// </remarks>
     [Theory]
     [InlineData("   ")]
@@ -282,8 +218,9 @@ public sealed class SwaggerPublicationTests
     /// <summary>An opted-in production deployment publishes it to an authenticated caller.</summary>
     /// <remarks>
     /// The other half of the gate, and the half that would fail silently if the stage were placed before
-    /// authentication: the gate would then see every caller as anonymous, the console would never appear, and a
-    /// deployment that had explicitly opted in would look at a 404 and conclude the opt-in was broken.
+    /// authentication: the gate would then see every caller as anonymous, the console would never appear,
+    /// and a deployment that had explicitly opted in would look at a 404 and conclude the opt-in was
+    /// broken.
     /// </remarks>
     [Theory]
     [InlineData("true")]
@@ -323,12 +260,6 @@ public sealed class SwaggerPublicationTests
     }
 
     /// <summary>An opted-in production deployment still refuses an anonymous caller.</summary>
-    /// <remarks>
-    /// Opting in does not make the console public. The refusal is deliberately the same 404 an unpublished
-    /// address gets, so the response distinguishes neither a console that is off from one that is on, nor
-    /// either from a path that was never served - which is what stops the refusal itself from confirming that
-    /// a console exists here.
-    /// </remarks>
     [Fact]
     public async Task InProduction_WhenOptedIn_AnAnonymousCallerIsStillRefused()
     {
@@ -373,9 +304,10 @@ public sealed class SwaggerPublicationTests
 
     /// <summary>An anonymous caller is refused identically whether or not the console is published.</summary>
     /// <remarks>
-    /// This is the indistinguishability claim stated as an assertion rather than as prose. If the two refusals
-    /// differed in status, in content type or in body length, the difference alone would tell an unauthenticated
-    /// caller that a console exists on this deployment - which is most of what the gate is protecting.
+    /// This is the indistinguishability claim stated as an assertion rather than as prose. If the two
+    /// refusals differed in status, in content type or in body length, the difference alone would tell an
+    /// unauthenticated caller that a console exists on this deployment - which is most of what the gate is
+    /// protecting.
     /// </remarks>
     [Fact]
     public async Task InProduction_TheAnonymousRefusalDoesNotRevealWhetherTheConsoleExists()
@@ -432,10 +364,10 @@ public sealed class SwaggerPublicationTests
     /// <summary>Mints a bearer token through the production sign-in endpoint of the shared host.</summary>
     /// <returns>The compact serialised access token.</returns>
     /// <remarks>
-    /// Issued by the shared host rather than by the host under test, and valid on it: the signing secret, the
-    /// issuer and the audience are all process-wide environment values that every host in this run composes
-    /// from, so a token minted by one is accepted by another. Minting it through the sign-in endpoint rather
-    /// than fabricating one means the claim set is the one production issues.
+    /// Issued by the shared host rather than by the host under test, and valid on it: the signing secret,
+    /// the issuer and the audience are all process-wide environment values that every host in this run
+    /// composes from, so a token minted by one is accepted by another. Minting it through the sign-in
+    /// endpoint rather than fabricating one means the claim set is the one production issues.
     /// </remarks>
     private Task<string> MintHostTokenAsync() =>
         AuthenticatedClientFactory.GetAccessTokenAsync(
@@ -445,9 +377,9 @@ public sealed class SwaggerPublicationTests
 
     /// <summary>A host built under the surrounding environment override, in a named environment.</summary>
     /// <remarks>
-    /// Built per fact rather than shared, because the publication decision is made while the pipeline is being
-    /// composed: a host built outside the override would compose against whatever configuration was in force
-    /// then, and the fact would assert nothing about the value it set.
+    /// Built per fact rather than shared, because the publication decision is made while the pipeline is
+    /// being composed: a host built outside the override would compose against whatever configuration was
+    /// in force then, and the fact would assert nothing about the value it set.
     /// </remarks>
     private sealed class DocumentationHost : WebApplicationFactory<Program>
     {

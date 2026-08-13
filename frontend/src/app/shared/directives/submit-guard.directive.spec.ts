@@ -1,34 +1,9 @@
 /**
  * ⚠ THE ONLY PRODUCTION DIRECTIVE IN THE WORKSPACE THAT HAD NO SPECIFICATION OF ITS OWN, AND THE
- * ONE WHOSE BEHAVIOUR IS HARDEST TO INFER FROM ITS CONSUMERS.
- *
- * Its effects were exercised INDIRECTLY, through the fourteen feature specifications that press a
- * submit control twice to prove a refusal does not latch. That coverage is real but it is
- * one-sided: it pins the behaviour the directive must NOT break and says nothing about the
- * behaviour it exists for. Nothing anywhere asserted that a second press inside one task is
- * refused — the very defect it was written to close — and nothing asserted the two mechanisms it
- * deliberately does not use, so a later author could have replaced the whole approach with one of
- * the two the directive's own notes record as unsound and every existing specification would still
- * have passed.
- *
- * WHAT IS ASSERTED HERE, and why each case is not redundant with the feature suites:
- *
- *   • A first press submits. The control, without which every refusal case below is vacuous.
- *   • A second press in the SAME TASK is refused, and refused by cancelling the click's default
- *     action rather than by touching the control's `disabled` property or by swallowing a `submit`
- *     event. The mechanism is asserted, not merely the outcome, because the directive's own notes
- *     record both alternatives as unsound and the only thing that can hold that decision in place
- *     is a specification that fails when it is reversed.
- *   • A press, a CHECK, and a later press is admitted. This is the handover the fourteen feature
- *     specifications depend on, stated here directly against the directive rather than as a
- *     side-effect of a feature.
- *   • A press on a control that is not a submit control is untouched, including the Cancel that an
- *     operator may legitimately want during a slow request.
- *   • A press that lands on a child element of the control still counts, because every button in
- *     this console wraps its label.
- *   • Implicit submission — Enter in a text field — is not intercepted, because it dispatches no
- *     click and is therefore outside what this guard claims to govern.
- *   • The listener is removed when the host is destroyed.
+ * ONE WHOSE BEHAVIOUR IS HARDEST TO INFER FROM ITS CONSUMERS. Its effects were exercised INDIRECTLY,
+ * through the fourteen feature specifications that press a submit control twice to prove a refusal does
+ * not latch. That coverage is real but it is one-sided: it pins the behaviour the directive must NOT
+ * break and says nothing about the behaviour it exists for.
  */
 import { Component, DebugElement, ViewChild } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule } from '@angular/forms';
@@ -37,13 +12,7 @@ import { By } from '@angular/platform-browser';
 
 import { SubmitGuardDirective } from './submit-guard.directive';
 
-/**
- * A host carrying every control shape the guard has to distinguish.
- *
- * Deliberately minimal and deliberately REAL: a reactive form group, because the directive's
- * selector is `form[formGroup]` and a host without one would never instantiate it, and one control
- * of each kind the selector either matches or ignores.
- */
+/** A host carrying every control shape the guard has to distinguish. */
 @Component({
   standalone: true,
   imports: [ReactiveFormsModule, SubmitGuardDirective],
@@ -133,15 +102,8 @@ describe('SubmitGuardDirective', () => {
   }
 
   /**
-   * Presses a control the way a pointer does, and reports whether the default action survived.
-   *
-   * ⚠ THE RETURN VALUE IS THE WHOLE POINT OF DISPATCHING BY HAND rather than calling `.click()`.
-   * `dispatchEvent` answers `false` when a listener called `preventDefault`, which is exactly the
-   * mechanism this directive uses; `.click()` discards that answer, so a case using it could
-   * observe the OUTCOME of the guard but never the means.
-   *
-   * `cancelable` is set because a click really is cancelable, and an event dispatched without it
-   * would silently ignore `preventDefault` and make every refusal case pass for the wrong reason.
+   * Presses a control the way a pointer does, and reports whether the default action survived. ⚠ THE
+   * RETURN VALUE IS THE WHOLE POINT OF DISPATCHING BY HAND rather than calling `.click()`.
    *
    * @param selector The control to press.
    * @returns True when the default action was NOT cancelled.
@@ -153,12 +115,11 @@ describe('SubmitGuardDirective', () => {
   }
 
   /**
-   * Raises a `submit` event on the first form directly.
-   *
-   * ⚠ NOT A STAND-IN FOR A PRESS, AND THE DISTINCTION IS ONE OF THE THINGS UNDER TEST. A press's
-   * default action already submits — the browser performs it for a dispatched click just as it does
-   * for a real one — so this is used only where a case needs to raise the `submit` event WITHOUT a
-   * click, which is how it proves the guard intercepts clicks and never the submit event itself.
+   * Raises a `submit` event on the first form directly. ⚠ NOT A STAND-IN FOR A PRESS, AND THE DISTINCTION
+   * IS ONE OF THE THINGS UNDER TEST. A press's default action already submits — the browser performs it
+   * for a dispatched click just as it does for a real one — so this is used only where a case needs to
+   * raise the `submit` event WITHOUT a click, which is how it proves the guard intercepts clicks and
+   * never the submit event itself.
    */
   function raiseSubmitDirectly(): void {
     element<HTMLFormElement>('#first').dispatchEvent(
@@ -169,9 +130,6 @@ describe('SubmitGuardDirective', () => {
 
   describe('construction', () => {
     it('attaches to a reactive form without being named in its template', () => {
-      // The selector is `form[formGroup]`, so every reactive form in the console receives the guard
-      // by virtue of being one. A directive that had to be applied per form would be absent from
-      // exactly the form somebody forgot.
       const directive: DebugElement | null = fixture.debugElement.query(
         By.directive(SubmitGuardDirective),
       );
@@ -189,19 +147,12 @@ describe('SubmitGuardDirective', () => {
         .withContext('the default action is untouched, so the browser submits')
         .toBeTrue();
 
-      // ⚠ THE SUBMISSION IS THE BROWSER'S OWN DEFAULT ACTION, NOT A SECOND RAISE. A dispatched click
-      // on a submit control really does submit its form in a browser, which is why this suite drives
-      // the guard with dispatched clicks rather than with `.click()`: only `dispatchEvent` reports
-      // whether the default action survived, and the default action is what the guard cancels.
       fixture.detectChanges();
 
       expect(component.submissions).toBe(1);
     });
 
     it('is allowed through when the press lands on a CHILD of the control', () => {
-      // Every button in this console wraps its label, so the press usually lands on the inner
-      // element rather than on the button. The guard resolves it with `closest`, and a direct
-      // target match would miss precisely the presses that matter.
       const survived: boolean = press('#submit-glyph');
 
       expect(survived).toBeTrue();
@@ -222,19 +173,15 @@ describe('SubmitGuardDirective', () => {
 
   describe('a second press inside the SAME task', () => {
     it('is refused, and no second submission is dispatched', () => {
-      // ⚠ THE MEASURED DEFECT. Two presses with no rendering frame between them posted the form
-      // twice: on the portal-alias screen that produced two creations for one operator action, and
-      // the tenant was saved from a duplicate row by a database constraint rather than by anything
-      // on this side of the wire.
+      // ⚠ THE MEASURED DEFECT. Two presses with no rendering frame between them posted the form twice: on
+      // the portal-alias screen that produced two creations for one operator action, and the tenant was
+      // saved from a duplicate row by a database constraint rather than by anything on this side of the
+      // wire.
       expect(press('#submit-button')).withContext('the first press is allowed').toBeTrue();
       expect(component.submissions)
         .withContext('and its default action submitted the form')
         .toBe(1);
 
-      // ⚠ NO CHANGE DETECTION IN BETWEEN, which is what "the same task" means in practice: the
-      // `[disabled]` binding every submit control in this console carries has not been written yet,
-      // so the DOM the second press reads is the pre-disabled DOM. That is the window this guard
-      // exists to close and the one no `[disabled]` binding can.
       expect(press('#submit-button'))
         .withContext('the second press is refused by cancelling its default action')
         .toBeFalse();
@@ -264,12 +211,6 @@ describe('SubmitGuardDirective', () => {
     });
 
     it('refuses by cancelling the click and NOT by disabling the control', () => {
-      // ⚠ THE MECHANISM IS ASSERTED, NOT JUST THE OUTCOME. The directive's own notes record why
-      // disabling from here is unsound: the flag has to be released once Angular can take over,
-      // which would overrule the `[disabled]` binding for a request that IS in flight — and
-      // declining to release is worse, because a property binding writes only when its value
-      // changes, so a submit that failed validation and dispatched nothing would leave the control
-      // disabled forever. This case is what stops that being reintroduced.
       const control = element<HTMLButtonElement>('#submit-button');
 
       expect(control.disabled).withContext('not disabled before').toBeFalse();
@@ -286,11 +227,8 @@ describe('SubmitGuardDirective', () => {
     });
 
     it('refuses without swallowing the submit event, which is the other rejected mechanism', () => {
-      // The second alternative the directive's notes reject: `stopImmediatePropagation` on the
-      // `submit` event depends on winning a listener-registration race this file cannot settle. The
-      // observable consequence of NOT taking that route is that a `submit` event raised directly —
-      // as the browser's default action does, and as implicit submission does — still reaches the
-      // component even after a refused click.
+      // The second alternative the directive's notes reject: `stopImmediatePropagation` on the `submit`
+      // event depends on winning a listener-registration race this file cannot settle.
       press('#submit-button');
       expect(press('#submit-button')).toBeFalse();
 
@@ -306,9 +244,9 @@ describe('SubmitGuardDirective', () => {
 
   describe('the handover to change detection', () => {
     it('admits a later press once the host view has been checked', () => {
-      // ⚠ THE BEHAVIOUR FOURTEEN FEATURE SPECIFICATIONS DEPEND ON, asserted here against the
-      // directive itself rather than as a side-effect of a feature. Those cases press submit, see a
-      // refusal reported, correct the entry and press again — a real retry, which must not latch.
+      // ⚠ THE BEHAVIOUR FOURTEEN FEATURE SPECIFICATIONS DEPEND ON, asserted here against the directive
+      // itself rather than as a side-effect of a feature. Those cases press submit, see a refusal reported,
+      // correct the entry and press again — a real retry, which must not latch.
       expect(press('#submit-button')).toBeTrue();
       expect(press('#submit-button')).withContext('still the same task').toBeFalse();
 
@@ -325,11 +263,8 @@ describe('SubmitGuardDirective', () => {
     });
 
     it('releases on the directive lifecycle hook, and on no timer', () => {
-      // The release is expressed as `ngDoCheck` precisely because it names the moment Angular writes
-      // the `[disabled]` binding and takes over the wider window. A timer was written first and
-      // replaced: it releases after a DURATION, which is only a guess at when rendering happened,
-      // and it is unobservable to a synchronous caller. This case proves the hook is what releases,
-      // by driving it directly with no change detection and no elapsed time.
+      // The release is expressed as `ngDoCheck` precisely because it names the moment Angular writes the
+      // `[disabled]` binding and takes over the wider window.
       expect(press('#submit-button')).toBeTrue();
       expect(press('#submit-button')).toBeFalse();
 
@@ -341,11 +276,6 @@ describe('SubmitGuardDirective', () => {
     });
 
     it('is released for every form independently, so one form never blocks another', () => {
-      // ⚠ ONE GUARD PER FORM, WHICH THE SELECTOR STATES AND NOTHING ELSE ASSERTED. The directive
-      // matches `form[formGroup]`, so each form carries its own instance and its own flag. Were the
-      // flag shared — a static field, a service, a signal in a provider — pressing one form's submit
-      // would refuse every other form on the screen for the rest of the task, and the console does
-      // render two forms on one screen.
       expect(press('#submit-button')).withContext('the first form submits').toBeTrue();
       expect(press('#submit-button')).withContext('and refuses its own second press').toBeFalse();
 
@@ -364,9 +294,6 @@ describe('SubmitGuardDirective', () => {
 
   describe('what the guard leaves alone', () => {
     it('never intercepts a control that cannot submit', () => {
-      // A `type="button"` control cannot post a form, so it was never part of the hazard — and
-      // widening the selector would reach the Cancel an operator may legitimately want DURING a
-      // slow request, which is the one press that must always work.
       press('#submit-button');
 
       expect(press('#plain-button'))
@@ -400,17 +327,10 @@ describe('SubmitGuardDirective', () => {
     });
 
     it('does not govern implicit submission, which dispatches no click', () => {
-      // ⚠ A DELIBERATE BOUNDARY RATHER THAN A GAP. Enter in a text field submits a form without any
-      // click, so the guard cannot see it — and it cannot produce the hazard either: a keypress
-      // cannot be delivered twice inside one task the way two pointer presses can. The case exists
-      // so the boundary is stated rather than discovered.
       element<HTMLInputElement>('#text').dispatchEvent(
         new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
       );
 
-      // A synthetic keypress performs no default action, so the submission is raised directly here —
-      // which is exactly the shape implicit submission has from the guard's point of view: a `submit`
-      // event with no click anywhere near it.
       raiseSubmitDirectly();
 
       expect(component.submissions).withContext('the implicit submission is served').toBe(1);
@@ -422,10 +342,7 @@ describe('SubmitGuardDirective', () => {
 
   describe('teardown', () => {
     it('removes its listener when the host is destroyed', () => {
-      // The listener is added imperatively in the constructor, so its removal is not automatic. A
-      // leaked capture-phase listener on a detached form would keep the whole component tree
-      // reachable, and the destroyed directive's own flag would go on cancelling clicks on a form
-      // that no longer belongs to a live view.
+      // The listener is added imperatively in the constructor, so its removal is not automatic.
       const form = element<HTMLFormElement>('#first');
 
       press('#submit-button');
@@ -434,10 +351,8 @@ describe('SubmitGuardDirective', () => {
       fixture.destroy();
 
       // ⚠ THE FORM'S OWN SUBMIT HANDLING GOES WITH THE COMPONENT, so a press after destruction would
-      // perform the browser's REAL default action and reload the test page — which fails the whole
-      // run for a reason that has nothing to do with the subject. The default action is neutralised
-      // here explicitly, and only here: the assertion below is about the CLICK, and the click is
-      // still cancelable, so neutralising the submit cannot mask what is being measured.
+      // perform the browser's REAL default action and reload the test page — which fails the whole run for
+      // a reason that has nothing to do with the subject.
       const swallowSubmit = (event: Event): void => {
         event.preventDefault();
       };

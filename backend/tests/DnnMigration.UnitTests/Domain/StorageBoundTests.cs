@@ -12,14 +12,11 @@ namespace DnnMigration.UnitTests.Domain;
 /// A security review found that CLR types were being treated as sufficient bounds although the stored
 /// domains are narrower: a page offset multiplication could overflow a 32-bit integer, decimal amounts
 /// could exceed what a currency column holds, and a CLR instant could fall centuries before the stored
-/// calendar begins. These tests state each boundary exactly, at the boundary, because a bound asserted
-/// only well inside or well outside its limit does not pin where the limit is.
+/// calendar begins.
 /// </remarks>
 public class StorageBoundTests
 {
-    /// <summary>
-    /// An ordinary read position is the plain product of the page index and the page size.
-    /// </summary>
+    /// <summary>An ordinary read position is the plain product of the page index and the page size.</summary>
     /// <param name="pageIndex">The requested page.</param>
     /// <param name="pageSize">The requested page size.</param>
     /// <param name="expected">The position the reader should skip to.</param>
@@ -31,16 +28,7 @@ public class StorageBoundTests
     public void SkipCount_ForAnOrdinaryRequest_IsThePlainProduct(int pageIndex, int pageSize, int expected)
         => Paging.SkipCount(pageIndex, pageSize).Should().Be(expected);
 
-    /// <summary>
-    /// A product too large for a 32-bit integer is clamped rather than wrapped.
-    /// </summary>
-    /// <remarks>
-    /// This is the defect the helper exists to close. Multiplied in 32-bit arithmetic the pair below wraps
-    /// to a NEGATIVE position, and a negative skip is not merely wrong - it is rejected outright by the
-    /// reader, so a caller received a server fault. The clamp is exact rather than approximate: a position
-    /// past the largest addressable one selects no records, and skipping the largest addressable number of
-    /// records selects none either, so the two answers are indistinguishable to a caller.
-    /// </remarks>
+    /// <summary>A product too large for a 32-bit integer is clamped rather than wrapped.</summary>
     [Fact]
     public void SkipCount_WhenTheProductExceedsTheAddressableRange_ClampsRatherThanWrapping()
     {
@@ -64,9 +52,7 @@ public class StorageBoundTests
     public void SkipCount_AtTheLargestValidatedRequest_IsRepresentable()
         => Paging.SkipCount(int.MaxValue, int.MaxValue).Should().Be(int.MaxValue);
 
-    /// <summary>
-    /// The currency bounds are the column's own, to the last of its four decimal places.
-    /// </summary>
+    /// <summary>The currency bounds are the column's own, to the last of its four decimal places.</summary>
     [Fact]
     public void MoneyBounds_AreTheColumnsOwn()
     {
@@ -74,9 +60,7 @@ public class StorageBoundTests
         SqlServerRange.MaximumMoney.Should().Be(922_337_203_685_477.5807m);
     }
 
-    /// <summary>
-    /// An amount inside the currency range is storable and one outside it is not.
-    /// </summary>
+    /// <summary>An amount inside the currency range is storable and one outside it is not.</summary>
     [Fact]
     public void CanStore_DecidesAnAmountAtTheCurrencyBoundary()
     {
@@ -100,9 +84,7 @@ public class StorageBoundTests
     public void CanStore_DoesNotRefuseAnAmountFinerThanTheColumnsScale()
         => SqlServerRange.CanStore(1.23456789m).Should().BeTrue();
 
-    /// <summary>
-    /// The calendar bounds begin where the stored column begins, not where the CLR type does.
-    /// </summary>
+    /// <summary>The calendar bounds begin where the stored column begins, not where the CLR type does.</summary>
     [Fact]
     public void DateBounds_BeginWhereTheColumnBegins()
     {
@@ -118,9 +100,7 @@ public class StorageBoundTests
     /// <remarks>
     /// This is the most consequential assertion in this file. The literal <c>9999-12-31</c> is an ordinary
     /// stored value meaning "no expiry" that a legacy reader expects to see verbatim, and it is distinct
-    /// from the sentinel minimum date which means absence. An upper bound stated at that day's midnight
-    /// would have refused the very value the bound exists to protect, so the rule would have broken the
-    /// contract it was added to defend.
+    /// from the sentinel minimum date which means absence.
     /// </remarks>
     [Fact]
     public void CanStore_AdmitsThePreservedPerpetualValue()
@@ -132,9 +112,7 @@ public class StorageBoundTests
             "the type's own maximum carries finer precision than the column holds");
     }
 
-    /// <summary>
-    /// The kind of an instant does not decide whether it is storable.
-    /// </summary>
+    /// <summary>The kind of an instant does not decide whether it is storable.</summary>
     /// <remarks>
     /// The column records no offset and carries no kind, so two values differing only in kind are the same
     /// stored value; admitting one and refusing the other would be arbitrary.
@@ -149,9 +127,7 @@ public class StorageBoundTests
         SqlServerRange.CanStore(DateTime.SpecifyKind(instant, DateTimeKind.Unspecified)).Should().BeTrue();
     }
 
-    /// <summary>
-    /// Absence is storable on both optional overloads.
-    /// </summary>
+    /// <summary>Absence is storable on both optional overloads.</summary>
     /// <remarks>
     /// The optional overloads exist so a validation rule can be stated over the member a caller submitted
     /// rather than over its unwrapped value, which keeps the reported field name matching the submitted

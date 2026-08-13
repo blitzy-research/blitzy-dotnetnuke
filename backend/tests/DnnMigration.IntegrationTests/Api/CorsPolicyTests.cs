@@ -11,30 +11,16 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The fixture has always configured the Angular origin, and until now nothing sent an <c>Origin</c> header or
-/// looked at a single cross-origin response header. That gap is not cosmetic: a policy that had been widened to
-/// any origin, or narrowed to none, or that had quietly gained credential support, would have been invisible.
-/// A same-origin suite cannot see any of it, because the stage writes nothing at all unless an origin is
-/// presented.
-/// </para>
-/// <para>
-/// <b>CORS is enforced by the browser and not by the server, and these facts are written accordingly.</b> An
-/// unpermitted origin is not refused - the request is served exactly as it would have been - and what changes
-/// is that the response carries no permission header, so a browser withholds it from script. Asserting a
-/// status code for an unpermitted origin would therefore assert the wrong thing entirely; every negative fact
-/// here asserts the ABSENCE of the permission header instead.
-/// </para>
-/// <para>
-/// <b>Preflight is asserted separately from a simple request because the two carry different headers.</b> The
-/// permitted methods, the permitted request headers and the cache lifetime are published only in answer to a
-/// preflight; the exposed-headers list is published only on the real response. A suite that probed one shape
-/// would leave half the contract unmeasured.
+/// The fixture has always configured the Angular origin, and until now nothing sent an <c>Origin</c> header
+/// or looked at a single cross-origin response header. That gap is not cosmetic: a policy that had been
+/// widened to any origin, or narrowed to none, or that had quietly gained credential support, would have
+/// been invisible.
 /// </para>
 /// <para>
 /// The probe address is the anonymous health endpoint for the simple requests, because a cross-origin
-/// permission must not depend on who is asking, and a protected route for the preflight facts, because that is
-/// where a browser actually sends one - and because a preflight must be answered WITHOUT a credential, which is
-/// asserted explicitly.
+/// permission must not depend on who is asking, and a protected route for the preflight facts, because that
+/// is where a browser actually sends one - and because a preflight must be answered WITHOUT a credential,
+/// which is asserted explicitly.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -84,15 +70,14 @@ public sealed class CorsPolicyTests
     public CorsPolicyTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// A request from the configured origin is answered with that origin echoed back exactly, and never with a
-    /// wildcard.
+    /// A request from the configured origin is answered with that origin echoed back exactly, and never
+    /// with a wildcard.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The exactness is the whole assertion. A wildcard would satisfy a browser just as well for an anonymous
-    /// read, so a test that merely checked the header was present would pass against a policy that permits the
-    /// entire internet. This asserts the value character for character and separately asserts it is not a
-    /// wildcard, so neither a widened policy nor a reflected-any-origin implementation can pass.
+    /// The exactness is the whole assertion. A wildcard would satisfy a browser just as well for an
+    /// anonymous read, so a test that merely checked the header was present would pass against a policy
+    /// that permits the entire internet.
     /// </remarks>
     [Fact]
     public async Task SimpleRequest_FromTheConfiguredOrigin_EchoesThatOriginExactly()
@@ -108,15 +93,10 @@ public sealed class CorsPolicyTests
     }
 
     /// <summary>
-    /// A request from an origin the configuration does not name is SERVED, and carries no permission header.
+    /// A request from an origin the configuration does not name is SERVED, and carries no permission
+    /// header.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The status assertion is deliberate rather than incidental: an implementation that refused the request
-    /// would be enforcing something the protocol does not ask it to enforce, and would break every non-browser
-    /// caller - a health probe, a monitor, a proxy - that happens to send an origin. The protection is the
-    /// missing header, and that is what is asserted.
-    /// </remarks>
     [Fact]
     public async Task SimpleRequest_FromAnUnconfiguredOrigin_IsServedWithoutAPermissionHeader()
     {
@@ -136,25 +116,11 @@ public sealed class CorsPolicyTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// WHY THE DECLARATION IS NEEDED. The cross-origin stage writes a permission header for a permitted
-    /// origin and writes nothing for any other, which makes the response a function of a REQUEST HEADER. The
-    /// framework's own stage announces that with <c>Vary: Origin</c> only when the policy names MORE THAN ONE
-    /// origin - and this deployment names exactly one, so in practice no response carried the declaration at
-    /// all. A shared cache is then entitled to replay the variant produced for one origin to another, or the
-    /// no-permission variant to the single-page application, which sees an opaque cross-origin failure it
-    /// cannot diagnose.
-    /// </para>
-    /// <para>
-    /// ALL FOUR CASES ARE ASSERTED, AND THE THIRD IS THE ONE THAT MATTERS MOST. Declaring the dependency only
-    /// where an origin was supplied would leave the response to a request WITHOUT one carrying no
-    /// declaration - so a cache could reuse precisely that variant for a request with one. The variant that
-    /// LACKS the permission header needs the declaration just as much as the variant that has it.
-    /// </para>
-    /// <para>
-    /// Exactly one entry is asserted, not merely presence, because a duplicated header would mean two stages
-    /// were both declaring it and one of them could later be removed in the belief that it was redundant.
-    /// </para>
+    /// origin and writes nothing for any other, which makes the response a function of a REQUEST HEADER.
+    /// The framework's own stage announces that with <c>Vary: Origin</c> only when the policy names MORE
+    /// THAN ONE origin - and this deployment names exactly one, so in practice no response carried the
+    /// declaration at all.
     /// </remarks>
     [Fact]
     [Trait("Category", "Integration")]
@@ -197,9 +163,10 @@ public sealed class CorsPolicyTests
     /// <summary>A request carrying no origin at all is answered with no cross-origin headers.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is the shape every other suite in this assembly sends, and it is worth pinning: the stage must be
-    /// inert for a same-origin caller. A permission header emitted unconditionally would be a policy that
-    /// depends on nothing the caller said, which is the same hazard as a wildcard wearing different clothes.
+    /// This is the shape every other suite in this assembly sends, and it is worth pinning: the stage must
+    /// be inert for a same-origin caller. A permission header emitted unconditionally would be a policy
+    /// that depends on nothing the caller said, which is the same hazard as a wildcard wearing different
+    /// clothes.
     /// </remarks>
     [Fact]
     public async Task SimpleRequest_WithNoOrigin_CarriesNoCrossOriginHeaders()
@@ -216,14 +183,6 @@ public sealed class CorsPolicyTests
     /// The correlation identifier is exposed to script, and it is the only response header that is.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Without this the client could read the identifier's VALUE from nowhere: a browser hides every response
-    /// header from script except a short fixed list, and the identifier is not on it. The client is expected to
-    /// report the identifier alongside a failure so that a support request can be joined to a server log, so
-    /// losing this header would silently break the correlation loop end to end while every status code stayed
-    /// the same. The list is asserted to be exactly one entry, because exposing more than was intended is the
-    /// same class of mistake as exposing none.
-    /// </remarks>
     [Fact]
     public async Task SimpleRequest_FromTheConfiguredOrigin_ExposesTheCorrelationIdentifierAndNothingElse()
     {
@@ -236,23 +195,13 @@ public sealed class CorsPolicyTests
     }
 
     /// <summary>
-    /// A preflight from the configured origin publishes the permitted methods, the permitted request headers
-    /// and the cache lifetime.
+    /// A preflight from the configured origin publishes the permitted methods, the permitted request
+    /// headers and the cache lifetime.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// The three published lists are what a browser obeys, so each is asserted against the shipped policy
-    /// rather than for mere presence. The method list must carry the four verbs the API answers plus the
-    /// preflight verb itself; the header list must carry the authorization header, without which no
-    /// authenticated cross-origin call is possible at all, the content type, without which no write is, and the
-    /// correlation identifier the client stamps on every request.
-    /// </para>
-    /// <para>
-    /// The lifetime is asserted as a value because it is a real trade-off that was chosen: too short and every
-    /// call pays for a round trip it did not need, too long and a corrected policy takes that long to reach the
-    /// browsers that cached the old one.
-    /// </para>
+    /// rather than for mere presence.
     /// </remarks>
     [Fact]
     public async Task Preflight_FromTheConfiguredOrigin_PublishesTheMethodsHeadersAndLifetime()
@@ -281,10 +230,9 @@ public sealed class CorsPolicyTests
     /// <summary>A preflight is answered without any credential, and reaches no endpoint.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// A browser sends a preflight with no <c>Authorization</c> header, by specification, so a pipeline that
-    /// authenticated it would answer <c>401</c> and the real request would never be sent - every authenticated
-    /// cross-origin call would fail while every same-origin call kept working. The answer must therefore be a
-    /// no-content approval and never a challenge, which also proves the stage runs ahead of authentication.
+    /// A browser sends a preflight with no <c>Authorization</c> header, by specification, so a pipeline
+    /// that authenticated it would answer <c>401</c> and the real request would never be sent - every
+    /// authenticated cross-origin call would fail while every same-origin call kept working.
     /// </remarks>
     [Fact]
     public async Task Preflight_ForAProtectedRoute_IsApprovedWithoutACredential()
@@ -305,9 +253,9 @@ public sealed class CorsPolicyTests
     /// <summary>A preflight from an unconfigured origin is approved for nothing.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The absence of the method and header lists matters as much as the absence of the origin echo: publishing
-    /// what WOULD be permitted to an origin that is not permitted tells an unpermitted caller the shape of the
-    /// policy for nothing in return.
+    /// The absence of the method and header lists matters as much as the absence of the origin echo:
+    /// publishing what WOULD be permitted to an origin that is not permitted tells an unpermitted caller
+    /// the shape of the policy for nothing in return.
     /// </remarks>
     [Fact]
     public async Task Preflight_FromAnUnconfiguredOrigin_IsApprovedForNothing()
@@ -325,33 +273,18 @@ public sealed class CorsPolicyTests
     }
 
     /// <summary>
-    /// A preflight asking for a method or a request header the policy does not permit is answered with lists
-    /// that EXCLUDE it, which is what makes the browser refuse to send the real request.
+    /// A preflight asking for a method or a request header the policy does not permit is answered with
+    /// lists that EXCLUDE it, which is what makes the browser refuse to send the real request.
     /// </summary>
     /// <param name="requestedMethod">The method the browser says it intends to use.</param>
     /// <param name="requestedHeaders">The headers the browser says it intends to send.</param>
     /// <param name="excluded">The value that must not appear in the answer.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// The origin is the permitted one, so nothing here can be attributed to the origin check - which is what
-    /// isolates the method and header lists as the real constraints.
-    /// </para>
-    /// <para>
-    /// <b>The stage PUBLISHES the policy rather than adjudicating the request, and that is the contract being
-    /// asserted.</b> Verified by execution: the answer to a preflight naming an unpermitted verb still carries
-    /// the origin echo, the full permitted-method list, the full permitted-header list and the cache lifetime,
-    /// with a no-content status. It does not withhold approval, because CORS does not work that way - the
-    /// server states what it permits and the BROWSER compares its intent against that statement and declines to
-    /// send the real request. An assertion that the server refused would therefore be asserting behaviour no
-    /// conforming implementation has.
-    /// </para>
-    /// <para>
-    /// What must hold, then, is that the published lists are CLOSED: the requested value is absent from them and
-    /// the lists are exactly the policy's own. A policy widened to any method or any header would answer with a
-    /// list containing whatever was asked for - which is precisely the failure this pins, and the reason both a
-    /// verb the API does not answer and a header a caller invented are exercised.
-    /// </para>
+    /// <b>The stage PUBLISHES the policy rather than adjudicating the request, and that is the contract
+    /// being asserted.</b> Verified by execution: the answer to a preflight naming an unpermitted verb
+    /// still carries the origin echo, the full permitted-method list, the full permitted-header list and
+    /// the cache lifetime, with a no-content status.
     /// </remarks>
     [Theory]
     [InlineData("PATCH", "content-type", "PATCH")]
@@ -387,17 +320,9 @@ public sealed class CorsPolicyTests
     /// <summary>Credential support is never granted, on either response shape.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// A decision rather than an omission, and asserted so that it stays one. This API authenticates with a
-    /// bearer token on a request header, so there is no cookie for a cross-origin request to carry and nothing
-    /// that credential support would enable. Granting it would add a real hazard - a browser attaching ambient
-    /// credentials to cross-origin requests - for no benefit whatever.
-    /// </para>
-    /// <para>
-    /// It also guards the combination the migration plan forbids outright: credential support alongside a
-    /// wildcard origin. The framework refuses that pairing at startup, but only if it is ever asked for, and
-    /// this fact is what notices the first half of it arriving.
-    /// </para>
+    /// bearer token on a request header, so there is no cookie for a cross-origin request to carry and
+    /// nothing that credential support would enable.
     /// </remarks>
     [Fact]
     public async Task CredentialSupport_IsNeverGranted()
@@ -418,9 +343,10 @@ public sealed class CorsPolicyTests
 
     /// <summary>The policy the pipeline applies is the named one this API declares.</summary>
     /// <remarks>
-    /// A named policy is what makes every one of the facts above about a single, greppable declaration. Pinning
-    /// the name here means that a pipeline switched to a default policy - which would apply to every origin the
-    /// default names, and would silently stop being the policy these facts measure - cannot pass unnoticed.
+    /// A named policy is what makes every one of the facts above about a single, greppable declaration.
+    /// Pinning the name here means that a pipeline switched to a default policy - which would apply to
+    /// every origin the default names, and would silently stop being the policy these facts measure -
+    /// cannot pass unnoticed.
     /// </remarks>
     [Fact]
     public void ThePolicyIsNamedRatherThanDefaulted() =>
@@ -449,12 +375,6 @@ public sealed class CorsPolicyTests
     /// <param name="requestedMethod">The method the real request would use.</param>
     /// <param name="requestedHeaders">The headers the real request would carry.</param>
     /// <returns>The response.</returns>
-    /// <remarks>
-    /// Composed by hand rather than through a helper, because all three request headers are what MAKE it a
-    /// preflight: an <c>OPTIONS</c> request without them is an ordinary request for an endpoint that answers no
-    /// such verb, and would measure routing instead of the cross-origin stage. The header names are sent in
-    /// lower case, as a browser sends them, so the comparison is proven to be case-insensitive.
-    /// </remarks>
     private async Task<HttpResponseMessage> PreflightAsync(
         Uri route,
         string origin,
@@ -476,9 +396,9 @@ public sealed class CorsPolicyTests
     /// <param name="name">The header name.</param>
     /// <returns>The values, trimmed, or an empty list when the header is absent.</returns>
     /// <remarks>
-    /// The values are split here rather than asserted as one string, because the cross-origin headers are lists
-    /// whose ORDER carries no meaning: an assertion against the joined text would fail on a reordering that no
-    /// browser could distinguish.
+    /// The values are split here rather than asserted as one string, because the cross-origin headers are
+    /// lists whose ORDER carries no meaning: an assertion against the joined text would fail on a
+    /// reordering that no browser could distinguish.
     /// </remarks>
     private static IReadOnlyList<string> Values(HttpResponseMessage response, string name) =>
         response.Headers.TryGetValues(name, out IEnumerable<string>? values)

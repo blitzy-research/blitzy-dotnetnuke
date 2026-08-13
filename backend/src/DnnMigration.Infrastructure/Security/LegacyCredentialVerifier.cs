@@ -7,14 +7,12 @@ using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Infrastructure.Security;
 
-/// <summary>
-/// Configuration for the migration-only legacy membership credential verifier.
-/// </summary>
+/// <summary>Configuration for the migration-only legacy membership credential verifier.</summary>
 /// <remarks>
-/// The decryption key is intentionally absent from every tracked configuration file. A deployment
-/// that still has format-2 rows supplies it through an environment-backed secret for the bounded
-/// migration window, removes it after all rows have been upgraded or reset, and rotates the legacy
-/// machine-key material because its historical disclosure makes it compromised.
+/// The decryption key is intentionally absent from every tracked configuration file. A deployment that
+/// still has format-2 rows supplies it through an environment-backed secret for the bounded migration
+/// window, removes it after all rows have been upgraded or reset, and rotates the legacy machine-key
+/// material because its historical disclosure makes it compromised.
 /// </remarks>
 internal sealed class LegacyCredentialOptions
 {
@@ -29,14 +27,10 @@ internal sealed class LegacyCredentialOptions
     /// representation regardless of <see cref="Enabled"/>.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: THE SWITCH ALONE IS NOT A BOUNDED WINDOW, WHICH IS WHY THIS DEADLINE IS REQUIRED
-    /// WHENEVER THE SWITCH IS ON. A deployment that turns compatibility on and forgets it has not
-    /// migrated its credential store - it has permanently re-admitted a reversible representation on the
-    /// ordinary sign-in path, which is the property the migration exists to remove. An absolute instant
-    /// closes the capability without anyone having to remember to close it, and because it is absolute
-    /// rather than a duration measured from process start, restarting the application cannot renew it.
-    /// It is compared against <see cref="IClock.UtcNow"/> so the boundary is testable, and a zero offset
-    /// is demanded rather than assumed so that a local-time value cannot silently extend the window.
+    /// THE SWITCH ALONE IS NOT A BOUNDED WINDOW, WHICH IS WHY THIS DEADLINE IS REQUIRED WHENEVER THE SWITCH
+    /// IS ON. A deployment that turns compatibility on and forgets it has not migrated its credential store
+    /// - it has permanently re-admitted a reversible representation on the ordinary sign-in path, which is
+    /// the property the migration exists to remove.
     /// </remarks>
     public DateTimeOffset? EnabledUntilUtc { get; set; }
 
@@ -112,13 +106,10 @@ internal sealed class LegacyCredentialOptions
             return "LegacyCredentials:DecryptionKey must contain hexadecimal key material.";
         }
 
-        // A KEY OF THE RIGHT LENGTH IS NOT NECESSARILY A KEY. Triple-DES degenerates to single DES when
-        // its three sub-keys are not distinct, and the legacy machine-key material this option carries was
+        // A KEY OF THE RIGHT LENGTH IS NOT NECESSARILY A KEY. Triple-DES degenerates to single DES when its
+        // three sub-keys are not distinct, and the legacy machine-key material this option carries was
         // committed to a configuration file, so the population of keys reaching it is exactly the
-        // population most likely to contain a hand-written degenerate value. Refusing it while the
-        // application is still starting is the only point at which the refusal is cheap; discovering it at
-        // the first legacy sign-in would mean discovering it in production, on the credential path. The
-        // message names the setting and never the material.
+        // population most likely to contain a hand-written degenerate value.
         try
         {
             if (RequiresTripleDesStrength(DecryptionAlgorithm)
@@ -140,19 +131,6 @@ internal sealed class LegacyCredentialOptions
 /// Verifies legacy clear, SHA-1 membership-hash and machine-key-encrypted credential values without
 /// exposing a plaintext recovery operation.
 /// </summary>
-/// <remarks>
-/// <para>
-/// MIGRATION: the legacy ASP.NET membership provider prepended the per-user salt to the UTF-16LE
-/// password bytes. Its encrypted format additionally prepended one random cipher block and encrypted
-/// with a zero initialisation vector. Verification decrypts only long enough to compare those bytes,
-/// clears every temporary buffer, and returns a boolean; no caller can retrieve the plaintext.
-/// </para>
-/// <para>
-/// The implementation is deliberately migration-only and fail-closed. When disabled, or when any
-/// representation, salt, algorithm or key is malformed, a legacy value never matches. Current BCrypt
-/// values are recognised by their self-describing prefix and are left to <see cref="IPasswordHasher"/>.
-/// </para>
-/// </remarks>
 internal sealed class LegacyCredentialVerifier : ILegacyCredentialVerifier, IDisposable
 {
     private const int MaximumStoredValueLength = 2_048;
@@ -192,9 +170,6 @@ internal sealed class LegacyCredentialVerifier : ILegacyCredentialVerifier, IDis
         _enabled = configured.Enabled;
 
         // Read once and held, because the window must not be re-read from a source that could move it.
-        // Validation above guarantees the value is present and zero-offset whenever the switch is on, so
-        // the UTC conversion here cannot shift the instant; a disabled verifier is given the minimum
-        // instant, which keeps every comparison below uniform without a second nullable branch.
         _enabledUntilUtc = configured.Enabled && configured.EnabledUntilUtc is DateTimeOffset deadline
             ? deadline.UtcDateTime
             : DateTime.MinValue;
@@ -240,17 +215,9 @@ internal sealed class LegacyCredentialVerifier : ILegacyCredentialVerifier, IDis
             return LegacyCredentialVerification.Current;
         }
 
-        // THE DEADLINE IS PART OF THE SAME FAIL-CLOSED GATE AS THE SWITCH, AND IT IS DELIBERATELY
-        // INCLUSIVE OF THE CONFIGURED INSTANT. An operator naming a closing instant means "up to and
-        // including then"; excluding it would close the window a tick early for no benefit. Everything
-        // after it refuses, and because the comparison is against an absolute instant no restart, clock
-        // adjustment forward, or re-read of configuration can reopen it.
-        //
-        // The refusal is reported as a LEGACY non-match rather than as a current representation. That
-        // distinction is load-bearing at the call site: the sign-in path pairs a legacy representation
-        // with the hasher's decoy so that an expired legacy account costs what a migrated one costs.
-        // Reporting the expiry as "not legacy" would hand the stored legacy value straight to the BCrypt
-        // parser, which fails fast, and would make an unmigrated account measurably distinguishable.
+        // THE DEADLINE IS PART OF THE SAME FAIL-CLOSED GATE AS THE SWITCH, AND IT IS DELIBERATELY INCLUSIVE
+        // OF THE CONFIGURED INSTANT. An operator naming a closing instant means "up to and including then";
+        // excluding it would close the window a tick early for no benefit.
         bool withinMigrationWindow = _enabled && _clock.UtcNow <= _enabledUntilUtc;
 
         if (!withinMigrationWindow

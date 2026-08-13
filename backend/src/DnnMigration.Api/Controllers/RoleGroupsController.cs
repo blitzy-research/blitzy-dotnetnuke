@@ -17,154 +17,16 @@ namespace DnnMigration.Api.Controllers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>What this type does, and the complete list.</strong> It binds a request, delegates to
-/// <see cref="IRoleService"/>, and translates the returned outcome into a status code. Nothing else. No
-/// name is checked for uniqueness here, no tally of the roles a group classifies is taken, no cache is
-/// evicted and no role-group audit record is written. The service deliberately preserves that last
-/// absence because the legacy event vocabulary had no role-group event to reproduce. A rule implemented
-/// in a controller applies only to callers arriving over HTTP and silently fails to apply to every other
-/// caller - a background job, a console tool, a unit test - so every rule lives in the service, which is
-/// also the thing the unit tests exercise.
-/// </para>
-/// <para>
-/// <strong>Legacy origin.</strong> One Web Forms editor and one grid collapse into this resource:
-/// <c>Website/admin/Security/EditGroups.ascx.vb</c> (the single-group editor, which was simultaneously
-/// the add form, the edit form and the delete command) and the group selector plus delete button hosted
-/// by <c>Website/admin/Security/Roles.ascx.vb</c> (L108 for the list, L294 for the delete). Both reached
-/// the domain through the static <c>RoleController</c> (892 lines, 42 public members), whose role group
-/// surface was six declarations - <c>AddRoleGroup</c> (L626), the two <c>DeleteRoleGroup</c> overloads
-/// (L779, L794), <c>GetRoleGroup</c> (L811), <c>GetRoleGroups</c> (L825) and <c>UpdateRoleGroup</c>
-/// (L838). They collapse into the five actions below, because the two delete overloads differed only in
-/// whether the caller had already loaded the group and both addressed the same row.
+/// <strong>What this type does, and the complete list.</strong> It binds a request, delegates to <see
+/// cref="IRoleService"/>, and translates the returned outcome into a status code. Nothing else.
 /// </para>
 /// <para>
 /// <strong>Why the flat route remains tenant-bound.</strong> A role group is unconditionally tenant-owned:
 /// <c>RoleGroups.PortalID</c> is declared <c>NOT NULL</c> and the uniqueness constraint on the table is
 /// <c>UNIQUE ([PortalID] ASC, [RoleGroupName] ASC)</c> (measured at
-/// <c>Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider:L49-L62</c>, where the
-/// table reaches its terminal shape; it first appears at <c>03.02.03.SqlDataProvider:L16</c> and not, as
-/// might be assumed, in the baseline script). Every member of the application contract accordingly takes
-/// the portal identifier. The HTTP resource takes that identifier from the portal resolved for the request
-/// host and exposes no route or query parameter through which a caller can substitute another tenant.
-/// </para>
-/// <para>
-/// MIGRATION: the legacy editor decided between inserting and updating by testing a private field
-/// against -1 (<c>EditGroups.ascx.vb:L42</c> initialises it, <c>L68</c> branches the load on it,
-/// <c>L113</c> branches the save on it and <c>L165</c> branches the cancel on it). That discriminator is
-/// deliberately not carried forward: POST creates and PUT on a member address updates, so the method IS
-/// the discriminator. No identifier is compared against -1, against 0, or against any lower bound
-/// anywhere in this file, and none may be added. The reason is that the value is not free. -1 is
-/// simultaneously the legacy absent-integer marker <c>Null.NullInteger</c>
-/// (<c>Library/Components/Shared/Null.vb:L41-L45</c>), the "Global Roles" selector value meaning a role
-/// belongs to no group (<c>Roles.ascx.vb:L114</c> and <c>EditRoles.ascx.vb:L75</c>), the persisted
-/// <c>RoleGroupID</c> such a role carries, and the unauthenticated-role token <c>glbRoleAllUsers</c>
-/// (<c>Library/Components/Shared/Globals.vb:L95</c>); -2 is both the "All Roles" selector value
-/// (<c>Roles.ascx.vb:L112</c>) and <c>glbRoleSuperUser</c> (<c>Globals.vb:L96</c>). And 0 is not absent
-/// either: <c>RoleGroups.RoleGroupID</c> is seeded <c>IDENTITY(0,1)</c>, so the first role group a portal
-/// ever creates is numbered 0. A test against any of those three values would misread a real row.
-/// </para>
-/// <para>
-/// MIGRATION: the two selector sentinels are not tunnelled through this API. The legacy drop-down mixed
-/// two pseudo-entries - "All Roles" as -2 and "Global Roles" as -1 - in with the real groups it listed
-/// (<c>Roles.ascx.vb:L110-L126</c>), so one integer carried both a group identity and a filtering intent
-/// and the reader could not tell which it held. The list action below returns real groups only, and the
-/// filtering intent belongs to the collection it actually filters, which is the role collection: the
-/// "All Roles" intent is expressed there by simply omitting the optional, nullable group filter. Neither
-/// -1 nor -2 is accepted or emitted as an identifier by any action in this file, and addressing one
-/// yields <c>404</c> naturally, because the pseudo-entries are not resources. That also subsumes the
-/// legacy delete guard at <c>Roles.ascx.vb:L293</c>, whose <c>If RoleGroupId &gt; -1</c> test existed
-/// solely to stop a user deleting one of those two pseudo-entries.
-/// </para>
-/// <para>
-/// MIGRATION - a gap stated rather than papered over. The "Global Roles" intent, meaning the roles that
-/// belong to NO group, has no representation in the current role-listing contract: its group filter is a
-/// nullable identifier whose absent state already means "do not filter", so the third state the legacy
-/// drop-down offered is not expressible. It is deliberately NOT reintroduced by letting -1 travel through
-/// this resource, which is precisely the collision described above - the same integer would once again
-/// mean an absent value, a real stored identifier and a filtering intent at the same time. Serving the
-/// intent properly would mean adding a named, typed member to the role-listing contract, which is that
-/// resource's surface and not this one's, so it is recorded here as a known difference from the legacy
-/// screen rather than approximated.
-/// </para>
-/// <para>
-/// MIGRATION: no sentinel is manufactured or erased on this boundary, and the wire form of an absent
-/// value is an EXPLICIT JSON null rather than a missing member. Serialisation is configured once for the
-/// whole application with the <c>Never</c> ignore condition, so every property is written including a
-/// null one; the transfer object carries stored values through unchanged either way.
-/// That matters for the description in particular: the legacy read path funnelled every string through
-/// <c>Null.SetNull</c>, whose string sentinel is the empty string rather than null
-/// (<c>Null.vb:L71-L75</c>), so a database NULL and an empty description were indistinguishable once
-/// loaded. Which of the two now stands for an absent description is settled once, in the mapper that
-/// translates between the contract and the persisted model, and this file neither adds a sentinel nor
-/// removes one - the only way the two can stay consistent. A client must therefore read a null
-/// member as "no value", and must never read it as -1, 0 or the empty string.
-/// </para>
-/// <para>
-/// MIGRATION: the legacy screens authorised themselves imperatively, calling
-/// <c>PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName)</c> during the page lifecycle and
-/// answering a refusal with <c>Response.Redirect(NavigateURL("Access Denied"), True)</c> - a 302 to an
-/// HTML page, which no programmatic caller can interpret, and which conflated "you did not say who you
-/// are" with "you may not do this". That becomes the declarative class-level policy below, which answers
-/// <c>401</c> when no valid credential was presented and <c>403</c> when the credential is valid but does
-/// not administer the addressed tenant. The measured legacy role name is <c>Administrators</c> - plural
-/// (<c>Library/Components/Portal/PortalController.vb:L1390</c>) - and resolving it belongs to
-/// <c>Extensions/AuthenticationExtensions.cs</c>, not to this file.
-/// </para>
-/// <para>
-/// MIGRATION - discovered legacy defect, recorded rather than reproduced. The sibling security screen
-/// guarded itself with
-/// <c>If (Not (objUser Is Nothing) AndAlso objUser.IsSuperUser) OrElse PortalSecurity.IsInRoles(PortalSettings.AdministratorRoleName) = False Then</c>
-/// (<c>Website/admin/Security/SecurityRoles.ascx.vb:L318-L324</c>). The <c>OrElse</c> stands where
-/// <c>AndAlso</c> was plainly intended, so the condition is true for a super user and that most
-/// privileged of accounts was redirected TO the access-denied page. The declarative policy used here does
-/// not reproduce the inversion, and it is recorded rather than silently absorbed. Note also that the
-/// policy is the whole of the decision: <c>ICurrentUser.IsSuperUser</c> is informational and is never
-/// consulted as a gate in a controller, which is why it does not appear in this file.
-/// </para>
-/// <para>
-/// MIGRATION: the policy named below is the portal-administrator policy and not one of the module or tab
-/// policies, and the choice is load-bearing rather than stylistic. Those policies resolve a module or tab
-/// identifier out of route data; this route carries neither, so one of them would find nothing to
-/// evaluate and fail closed, answering <c>403</c> to every request including a legitimate one. The policy
-/// catalogue is closed, and an unregistered policy name fails at request time rather than at compile
-/// time, so the name is taken from the <see cref="PolicyNames"/> constants and never spelled as a
-/// literal.
-/// </para>
-/// <para>
-/// The tenant the policy evaluates and the tenant passed to the service are the same portal the request
-/// resolves from its host alias. This file neither performs nor duplicates that lookup; it reads the scoped
-/// holder populated by the resolution pipeline. A request arriving on a host with no alias row therefore
-/// names no tenant and is refused.
-/// </para>
-/// <para>
-/// MIGRATION: cache invalidation has moved out of the presentation layer. Both legacy call sites
-/// followed a write by evicting a bare literal key - <c>DataCache.RemoveCache("GetRoles")</c> at
-/// <c>Roles.ascx.vb:L263</c> and again at <c>:L294</c> - which meant a caller that reached the domain by
-/// any other path left the cache stale. Invalidation now belongs to the service that performs the write,
-/// behind the shared cache abstraction, so it happens exactly once per write and for every caller. This
-/// controller injects no cache and evicts nothing.
-/// </para>
-/// <para>
-/// MIGRATION: role-group writes deliberately produce no business-audit event because there is no legacy
-/// event to preserve. The forty-three-member legacy event vocabulary names role creation, update and
-/// deletion, but no role-group operation, and <c>Website/admin/Security/EditGroups.ascx.vb</c> wrote no
-/// event-log record when it changed a group. Those <c>ROLE_CREATED</c>, <c>ROLE_UPDATED</c> and
-/// <c>ROLE_DELETED</c> events belong to role writes and are emitted by <c>RoleService</c> on those paths.
-/// Minting a new group event here would be a behavioural addition and would also couple audit to the HTTP
-/// transport, so this controller injects no audit dependency.
-/// </para>
-/// <para>
-/// <strong>What this resource deliberately does not expose.</strong> There is no action that lists or
-/// changes the roles filed under a group: a role's group membership is a field of the role, changed
-/// through the role resource, exactly as the legacy application changed it on the role editor rather than
-/// on the group editor. There is no membership sub-collection, because a group confers no permission of
-/// its own; there is no user-to-role assignment action, which belongs to the role resource; and there is
-/// no cache-invalidation or bulk action of any kind.
-/// </para>
-/// <para>
-/// <strong>One canonical address.</strong> The five actions below are exposed only at
-/// <c>/api/v1/role-groups</c>. A host account administers another tenant by addressing that tenant's alias,
-/// not by giving the same resource a second portal-nested identity.
+/// <c>Website/Providers/DataProviders/SqlDataProvider/04.00.04.SqlDataProvider:L49-L62</c>, where the table
+/// reaches its terminal shape; it first appears at <c>03.02.03.SqlDataProvider:L16</c> and not, as might be
+/// assumed, in the baseline script).
 /// </para>
 /// </remarks>
 [ApiController]
@@ -178,20 +40,9 @@ public sealed class RoleGroupsController : ControllerBase
     /// Failure code carried as the problem type when the request reached this action without a tenant.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// A distinct code from the middleware's generic refusal, so an operator reading a support log can tell
     /// "this host resolves to no portal" apart from "this caller lacks the grant" - while the caller reads
-    /// the same fixed wording either way and learns nothing from the difference. The same constant is
-    /// declared by <c>PortalAliasResolutionMiddleware</c> and by the other controllers that guard on tenant
-    /// resolution, because the two paths must be indistinguishable to a client.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the tenant guards in this controller answered with a bare <c>Forbid()</c>. A controller's
-    /// <c>Forbid()</c> does NOT pass through the authorisation middleware's result handler, so it produced a
-    /// 403 with an EMPTY BODY while every action here declares a problem document for 403 - the response
-    /// contradicted its own declaration, and it was distinguishable from the middleware's refusal for the
-    /// identical cause. Routing the refusal through the shared helper closes both gaps at once.
-    /// </para>
+    /// the same fixed wording either way and learns nothing from the difference.
     /// </remarks>
     private const string TenantUnresolvedCode = "portal.tenant_unresolved";
 
@@ -200,14 +51,7 @@ public sealed class RoleGroupsController : ControllerBase
     /// Role groups live on the role contract rather than on one of their own, and deliberately so: every
     /// rule about a group is a rule about the roles it classifies - the per-portal name uniqueness the
     /// table enforces, and the refusal to remove a group while it still classifies a role. There is no
-    /// <c>IRoleGroupService</c> to inject. One dependency, and it is an application-layer interface:
-    /// there is no repository, no persistence context, no cache and no clock here. What keeps them out is
-    /// not the project reference graph - this project references the Infrastructure assembly, because it
-    /// has to compose the container at start-up - but two other things: the persistence context and the
-    /// repositories are declared internal to that assembly and so are not nameable here at all, and this
-    /// controller depends only on the application abstraction. A type that IS visible and reachable, such
-    /// as a cache or a clock, is kept out by that discipline rather than by the compiler, so injecting one
-    /// would be a review finding rather than a build failure.
+    /// <c>IRoleGroupService</c> to inject.
     /// </remarks>
     private readonly IRoleService _roles;
 
@@ -215,8 +59,8 @@ public sealed class RoleGroupsController : ControllerBase
     /// <remarks>
     /// Needed only by the flat address, which carries no tenant identifier and therefore has to read the
     /// one the alias-resolution middleware already resolved. It is an abstraction over that resolution
-    /// rather than a reach for the ambient HTTP context: this file still performs no alias lookup and
-    /// still touches no request feature bag.
+    /// rather than a reach for the ambient HTTP context: this file still performs no alias lookup and still
+    /// touches no request feature bag.
     /// </remarks>
     private readonly IPortalContextHolder _portalContext;
 
@@ -227,58 +71,18 @@ public sealed class RoleGroupsController : ControllerBase
     /// tenant the flat address acts on.
     /// </param>
     /// <exception cref="ArgumentNullException">Either argument is <see langword="null"/>.</exception>
-    /// <remarks>
-    /// Declarative validation is applied by the globally registered validation filter, which resolves a
-    /// validator for each action argument's type and runs it before any action body, so no validator is
-    /// injected here and no action inspects model state. That placement is deliberate: a per-action opt-in
-    /// has a silent failure mode, because an endpoint whose author forgot the call looks exactly like one
-    /// with no rules declared against it.
-    /// <para>
-    /// MIGRATION: this remark previously stated that the filter found nothing to run for this resource,
-    /// because no validator was registered for the role-group contract. That is no longer true, and the
-    /// reason it changed matters. Both write verbs used to bind the <c>RoleGroupDto</c> response
-    /// projection; they now bind <c>CreateRoleGroupRequest</c> and <c>UpdateRoleGroupRequest</c>, and the
-    /// assembly scan registers a validator for each, so the filter resolves one on every write and a
-    /// field failure is a declarative <c>400</c> rather than a service refusal. The service still
-    /// re-asserts the name rules, because it is reachable by callers that do not arrive over HTTP.
-    /// </para>
-    /// </remarks>
     public RoleGroupsController(IRoleService roles, IPortalContextHolder portalContext)
     {
         _roles = roles ?? throw new ArgumentNullException(nameof(roles));
         _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
     }
 
-    /// <summary>
-    /// Returns the tenant the request resolved to.
-    /// </summary>
-    /// <returns>
-    /// The tenant identifier, or <see langword="null"/> when the request resolved to no tenant.
-    /// </returns>
+    /// <summary>Returns the tenant the request resolved to.</summary>
+    /// <returns>The tenant identifier, or <see langword="null"/> when the request resolved to no tenant.</returns>
     /// <remarks>
-    /// <para>
     /// The holder is read rather than a placeholder returned, and it throws instead of yielding one, so
     /// resolution is tested first, and the null answer here is a precondition rather than a state a caller
     /// can steer into.
-    /// </para>
-    /// <para>
-    /// MIGRATION: WHAT REFUSES FIRST DEPENDS ON THE CALLER. The tenant-resolution middleware records an
-    /// unresolved host and continues. A portal administrator is then refused by the policy with
-    /// <c>auth.not_permitted</c>; a superuser passes that policy because host authority is installation-wide
-    /// and is refused by this guard with <c>portal.tenant_unresolved</c>. Either way the
-    /// action never runs, so this guard is defence in depth and is expected to be unreachable; it stays
-    /// because the alternative to an unreachable refusal is the holder throwing, and a <c>500</c> is a worse
-    /// answer than a <c>403</c> for a condition that is not the caller's fault.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE REFUSAL IS NO LONGER A BARE <c>403</c>. This block previously said the caller sees the
-    /// same bare status either way, which was the justification for answering with <c>Forbid()</c>, and it
-    /// described a body that contradicted this action's own declaration: <c>Forbid()</c> does not pass
-    /// through the authorisation middleware's result handler, so it produced an EMPTY body while every action
-    /// here declares a problem document for <c>403</c>. The guard now answers through the shared
-    /// problem-details path carrying the same failure code the middleware uses, so the two refusals are
-    /// indistinguishable to a client keying on that code.
-    /// </para>
     /// </remarks>
     private int? ResolvePortalId() =>
         _portalContext.IsResolved ? _portalContext.Current.PortalId : null;
@@ -286,33 +90,10 @@ public sealed class RoleGroupsController : ControllerBase
     /// <summary>Lists every role group a portal defines.</summary>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The portal's role groups.</returns>
-    /// <response code="200">
-    /// The role groups, inside the shared success envelope: the sequence is the envelope's payload rather
-    /// than the whole body. An empty payload is a legitimate answer and means the portal defines none; it
-    /// is never reported as a failure. The legacy grid distinguished the two - it hid its group row
-    /// entirely when the list came back empty (<c>Roles.ascx.vb:L128-L131</c>) - and that presentation
-    /// choice is the client's to make from an empty payload.
-    /// </response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request resolves to.
-    /// </response>
-    /// <response code="404">No portal bears that identifier.</response>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: deliberately unpaged, and no page, size or sort parameter is accepted. The legacy read
-    /// it replaces returned an untyped <c>ArrayList</c> of every group in the portal with no pager at all
-    /// (<c>RoleController.vb:L825</c>, consumed at <c>Roles.ascx.vb:L108</c> and
-    /// <c>EditRoles.ascx.vb:L73</c>), both consumers bound the whole answer to a drop-down rather than to
-    /// a grid, and a portal defines groups in the tens. Introducing paging would add a contract the
-    /// legacy application never had, and the untyped collection becomes a typed read-only sequence rather
-    /// than acquiring a pager on the way.
-    /// </para>
-    /// <para>
     /// The <c>404</c> above reports an unknown PORTAL, not an empty result. Tenant scoping is part of the
     /// question the contract answers, which is what makes asking about a portal that does not exist
     /// different from asking about a portal that has no groups.
-    /// </para>
     /// </remarks>
     [HttpGet]
     [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<RoleGroupDto>>), StatusCodes.Status200OK)]
@@ -332,43 +113,15 @@ public sealed class RoleGroupsController : ControllerBase
             .ConfigureAwait(false);
 
         // The shared translator tests the outcome before reading its value, so a failed outcome never has
-        // its value touched - reading the value of a failed outcome throws by design - and any failure
-        // code is mapped through the single table this API uses.
+        // its value touched - reading the value of a failed outcome throws by design - and any failure code
+        // is mapped through the single table this API uses.
         return this.Complete(outcome);
     }
 
     /// <summary>Reads one role group.</summary>
-    /// <param name="roleGroupId">
-    /// Identifier of the role group to read. Forwarded exactly as bound and never compared against a
-    /// sentinel; see the note at the head of this file on why no range constraint appears here. The
-    /// column is seeded <c>IDENTITY(0,1)</c>, so 0 addresses the portal's first role group.
-    /// </param>
+    /// <param name="roleGroupId">Identifier of the role group to read.</param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns>The role group.</returns>
-    /// <response code="200">The role group.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request resolves to.
-    /// </response>
-    /// <response code="404">
-    /// The portal owns no role group with that identifier. Tenant scoping is part of the question, so a
-    /// group that exists in another portal is reported as absent here rather than returned.
-    /// </response>
-    /// <remarks>
-    /// <para>
-    /// The contract reports an unknown group as a SUCCESSFUL outcome carrying no value rather than as a
-    /// failure, because being asked for something that is not there is not an error on the server's part.
-    /// The shared translator reads that absent value as <c>404 Not Found</c>, which is the whole of how
-    /// this action produces that status - there is no null test written here, and none is needed.
-    /// </para>
-    /// <para>
-    /// MIGRATION: replaces <c>RoleController.vb:L811</c>. The legacy editor treated an empty answer as an
-    /// attempted security violation - "attempt to access item not related to this Module" - and answered
-    /// it with a redirect to another page (<c>EditGroups.ascx.vb:L80-L82</c>). Answering <c>404</c>
-    /// instead is both truthful and no more revealing: the cross-portal case and the does-not-exist case
-    /// are reported identically, so the response discloses nothing about groups in other tenants.
-    /// </para>
-    /// </remarks>
     [HttpGet("{roleGroupId:int}")]
     [ProducesResponseType(typeof(ApiResponse<RoleGroupDto>), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
@@ -472,53 +225,21 @@ public sealed class RoleGroupsController : ControllerBase
             .ConfigureAwait(false);
 
         // The identifier is read from the persisted representation rather than from the submitted body,
-        // because the store assigns it, and it is read only on the success path: the translator checks
-        // the outcome first.
+        // because the store assigns it, and it is read only on the success path: the translator checks the
+        // outcome first.
         return this.Created(outcome, created => created.RoleGroupId);
     }
 
     /// <summary>Updates an existing role group.</summary>
-    /// <param name="roleGroupId">
-    /// Identifier of the role group to update. This is the authoritative subject of the request.
-    /// </param>
-    /// <param name="request">
-    /// The replacement state for the role group: its name and an optional description. Omitting the
-    /// description clears it, because this is a replacement rather than a partial edit. Neither the
-    /// group's identifier nor its portal is expressible in the body - both arrive in the route - so there
-    /// is nothing here for the two to disagree about.
-    /// </param>
+    /// <param name="roleGroupId">Identifier of the role group to update.</param>
+    /// <param name="request">The replacement state for the role group: its name and an optional description.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The role group as persisted.</returns>
-    /// <response code="200">The role group as persisted.</response>
-    /// <response code="400">The body failed validation, or a value could not be bound.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request resolves to.
-    /// </response>
-    /// <response code="404">The portal owns no role group with that identifier.</response>
-    /// <response code="409">
-    /// A different role group in the same portal already has the submitted name.
-    /// </response>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: replaces <c>RoleController.vb:L838</c>, which returned nothing at all and so left a
-    /// caller unable to tell an applied update from a discarded one - the legacy screen simply redirected
-    /// afterwards and assumed the best (<c>EditGroups.ascx.vb:L122-L123</c>). The persisted state is
-    /// returned here, so the caller sees what was actually stored.
-    /// </para>
-    /// <para>
     /// MIGRATION - behavioural difference, deliberately introduced. The legacy save wrapped ONLY its add
     /// branch in a <c>Try</c>; the update branch at <c>EditGroups.ascx.vb:L122</c> had no duplicate
     /// handling whatsoever, so renaming a group onto an existing name violated the table's unique
     /// constraint and surfaced as an unhandled provider error through the module's load-exception path.
-    /// The collision is now an expected outcome on this path too, reported as the same code the create
-    /// action reports and answered with the same <c>409</c>.
-    /// </para>
-    /// <para>
-    /// Re-classifying a group moves no role between groups. A role's group membership is a field of the
-    /// role, changed through the role resource, which is why no action here touches the roles a group
-    /// classifies.
-    /// </para>
     /// </remarks>
     [HttpPut("{roleGroupId:int}")]
     [ProducesResponseType(typeof(ApiResponse<RoleGroupDto>), StatusCodes.Status200OK)]
@@ -537,9 +258,6 @@ public sealed class RoleGroupsController : ControllerBase
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
-        // The subject travels as a route value and the state travels in the body, and the two cannot
-        // disagree: the request contract declares no identifier of its own, so there is no reconciliation
-        // for any layer to perform. Nothing here rewrites a member of the body.
         Result<RoleGroupDto> outcome = await _roles
             .UpdateRoleGroupAsync(scopedPortalId, roleGroupId, request, cancellationToken)
             .ConfigureAwait(false);
@@ -551,50 +269,9 @@ public sealed class RoleGroupsController : ControllerBase
     /// <param name="roleGroupId">Identifier of the role group to remove.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns><c>204 No Content</c> once the role group has been removed.</returns>
-    /// <response code="204">The role group has been removed.</response>
-    /// <response code="401">No credential was presented, or the one presented is not valid.</response>
-    /// <response code="403">
-    /// The caller is authenticated but is not an administrator of the portal this request resolves to.
-    /// </response>
-    /// <response code="404">The portal owns no role group with that identifier.</response>
-    /// <response code="409">
-    /// The role group still classifies at least one role, so removing it would leave those roles pointing
-    /// at a group that no longer exists. The request is well formed and the state of the resource is what
-    /// refuses it, which is why this is a conflict rather than a bad request. Releasing the roles first
-    /// makes the same request succeed, so the refusal is a guard and not a permanent obstacle.
-    /// </response>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the in-use rule is enforced behind this action, not in front of it. The legacy editor
-    /// counted the group's roles and merely HID its delete button when the count was positive -
-    /// <c>roleCount = objRoles.GetRolesByGroup(PortalId, RoleGroupID).Count</c> followed by
-    /// <c>cmdDelete.Visible = False</c> (<c>EditGroups.ascx.vb:L75-L79</c>). Hiding a control is not
-    /// enforcement: any caller that issued the post-back directly walked straight through it. The rule now
-    /// lives in the operation and is reported as a reason code, which closes that gap. No tally is taken
-    /// in this file, and no separate "can this be deleted" question is exposed for a client to ask and
-    /// then ignore - a client that wants to hide the affordance uses the permission directive, exactly as
-    /// the legacy screen used the count for button visibility.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the two legacy overloads collapse into one action. <c>RoleController.vb:L779</c> took a
-    /// portal and an identifier and immediately delegated to <c>:L794</c>, which took the whole object -
-    /// so the object-taking overload only ever received a group the first had just fetched. One address
-    /// with two identifiers expresses the same thing without the round trip.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy delete was reachable from two places - the editor's delete button
-    /// (<c>EditGroups.ascx.vb:L142-L150</c>) and the grid's delete command
-    /// (<c>Roles.ascx.vb:L290-L299</c>) - both calling the same underlying member. One endpoint serves
-    /// both, and the client's confirmation dialog replaces the post-back confirmation the legacy editor
-    /// attached to its button. The grid's <c>If RoleGroupId &gt; -1</c> pre-test is not reproduced: as
-    /// noted at the head of this file, it guarded against deleting the two selector pseudo-entries, which
-    /// are not resources here, so addressing one is simply a <c>404</c>.
-    /// </para>
-    /// <para>
     /// The valueless overload of the shared translator answers <c>204</c> on success, which is the
-    /// documented contract for a removal: the resource is gone, so there is nothing to return in its
-    /// place.
-    /// </para>
+    /// documented contract for a removal: the resource is gone, so there is nothing to return in its place.
     /// </remarks>
     [HttpDelete("{roleGroupId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

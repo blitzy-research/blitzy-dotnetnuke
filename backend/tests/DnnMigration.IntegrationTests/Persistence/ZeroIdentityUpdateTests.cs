@@ -17,32 +17,13 @@ namespace DnnMigration.IntegrationTests.Persistence;
 /// <para>
 /// <strong>Why this is a suite of its own.</strong> Four of this schema's identity columns are seeded below
 /// one - <c>Portals.PortalID</c> at <c>IDENTITY(-1, 1)</c> (<c>01.00.00.SqlDataProvider:L77</c>) and
-/// <c>Roles.RoleID</c>, <c>Tabs.TabID</c>, <c>Modules.ModuleID</c> at <c>IDENTITY(0, 1)</c> (L115, L140,
-/// L221), with <c>RoleGroups.RoleGroupID</c> joining them at <c>03.02.03.SqlDataProvider:L18</c>. So zero is
-/// a real, addressable key for the first tenant's administrators role, its home page, its first module and
-/// its first role group - and zero is simultaneously the value an unassigned <see cref="int"/> holds.
+/// <c>Roles.RoleID</c>, <c>Tabs.TabID</c>, <c>Modules.ModuleID</c> at <c>IDENTITY(0, 1)</c>, with
+/// <c>RoleGroups.RoleGroupID</c> joining them at <c>03.02.03.SqlDataProvider:L18</c>.
 /// </para>
 /// <para>
 /// <strong>The defect this pins.</strong> <c>DbSet.Update</c> and <c>DbSet.Attach</c> decide between
 /// <c>Added</c> and <c>Modified</c>/<c>Unchanged</c> by asking whether the key "is set", and they read an
-/// <see cref="int"/> key of 0 as unset. Every detached update path that used them therefore INSERTED a
-/// duplicate under a freshly generated key, left the addressed row exactly as it was, and reported success -
-/// silent divergence rather than a failure anybody could see. The repositories now assign the entity state
-/// directly, which consults neither the key nor the navigation graph.
-/// </para>
-/// <para>
-/// <strong>Why every case reads in one scope and writes in another.</strong> That is what makes the instance
-/// DETACHED with respect to the writing context, which is the condition the defect needed, and it is an
-/// ordinary shape rather than a contrived one: repository reads differ in whether they track, so a caller
-/// that reads and writes through separate scopes - or rebuilds an entity from a contract - is the case the
-/// staging members exist to serve. Asserting the row COUNT alongside the changed value is essential: the
-/// defective behaviour changed nothing about the addressed row, so an assertion on the row alone would have
-/// reported the duplicate as a plain failure to update rather than as data corruption.
-/// </para>
-/// <para>
-/// Seeded rows are used where zero is already occupied - a shared database cannot hold a second
-/// <c>RoleID = 0</c> - and every one of them is restored on the way out, so this suite leaves the database
-/// exactly as it found it.
+/// <see cref="int"/> key of 0 as unset.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -63,9 +44,9 @@ public sealed class ZeroIdentityUpdateTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The row is planted with an explicit key because the provisioned database holds only the seeded tenant
-    /// at -1, so zero is free; the legacy installation script plants its own tenant the same way, switching
-    /// <c>IDENTITY_INSERT</c> on at <c>01.00.00.SqlDataProvider:L7123</c> before supplying
+    /// The row is planted with an explicit key because the provisioned database holds only the seeded
+    /// tenant at -1, so zero is free; the legacy installation script plants its own tenant the same way,
+    /// switching <c>IDENTITY_INSERT</c> on at <c>01.00.00.SqlDataProvider:L7123</c> before supplying
     /// <c>PortalID = 0</c> explicitly.
     /// </remarks>
     [Fact]
@@ -119,14 +100,12 @@ public sealed class ZeroIdentityUpdateTests
         }
     }
 
-    /// <summary>
-    /// A detached role whose key is zero is rewritten in place, and the role table does not grow.
-    /// </summary>
+    /// <summary>A detached role whose key is zero is rewritten in place, and the role table does not grow.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// The seeded administrators role IS role zero, so it is the subject rather than a planted stand-in -
-    /// which is the whole point, because that row is the target of <c>Portals.AdministratorRoleId</c> and the
-    /// grant the tenant-administration policy tests. Its description is restored afterwards.
+    /// which is the whole point, because that row is the target of <c>Portals.AdministratorRoleId</c> and
+    /// the grant the tenant-administration policy tests. Its description is restored afterwards.
     /// </remarks>
     [Fact]
     public async Task RoleUpdate_OnADetachedKeyZeroRole_RewritesTheRowAndDoesNotDuplicateIt()
@@ -194,11 +173,6 @@ public sealed class ZeroIdentityUpdateTests
     /// A detached role group whose key is zero is rewritten in place, and the group table does not grow.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// A group is the sharpest of these cases in one respect: unlike a role or a page it carries no seeded
-    /// name a reader would recognise, so a duplicated group is indistinguishable from a deliberate second
-    /// group until somebody counts them.
-    /// </remarks>
     [Fact]
     public async Task RoleGroupUpdate_OnADetachedKeyZeroGroup_RewritesTheRowAndDoesNotDuplicateIt()
     {
@@ -249,14 +223,12 @@ public sealed class ZeroIdentityUpdateTests
         }
     }
 
-    /// <summary>
-    /// A detached page whose key is zero is rewritten in place, and the page table does not grow.
-    /// </summary>
+    /// <summary>A detached page whose key is zero is rewritten in place, and the page table does not grow.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The seeded home page IS page zero. A duplicate would join the portal's page tree, so every navigation,
-    /// ordering and permission read that walks the tree would carry it - which is why the count matters more
-    /// here than anywhere else. The title is restored afterwards.
+    /// The seeded home page IS page zero. A duplicate would join the portal's page tree, so every
+    /// navigation, ordering and permission read that walks the tree would carry it - which is why the count
+    /// matters more here than anywhere else.
     /// </remarks>
     [Fact]
     public async Task TabUpdate_OnADetachedKeyZeroPage_RewritesTheRowAndDoesNotDuplicateIt()
@@ -323,12 +295,8 @@ public sealed class ZeroIdentityUpdateTests
     /// <returns>A task representing the test.</returns>
     /// <remarks>
     /// Two facts in one test, because they are two halves of the same contract. The renumbering must reach
-    /// the existing row rather than insert a second one - <c>DbSet.Attach</c> read the zero key as unset and
-    /// marked the page <c>Added</c>, after which the property flags had no update to narrow at all. And it
-    /// must stay narrow: the supplied instance deliberately carries an altered title that the write is
-    /// required to IGNORE, because the legacy procedure set exactly <c>TabOrder</c>, <c>Level</c>,
-    /// <c>ParentId</c> and <c>TabPath</c> (<c>04.05.00.SqlDataProvider</c> lines 1815-1828) and a reordering
-    /// pass must not carry each page's unrelated edits along with it.
+    /// the existing row rather than insert a second one - <c>DbSet.Attach</c> read the zero key as unset
+    /// and marked the page <c>Added</c>, after which the property flags had no update to narrow at all.
     /// </remarks>
     [Fact]
     public async Task TabOrderUpdate_OnADetachedKeyZeroPage_RenumbersTheRowAndWritesOnlyItsPosition()
@@ -393,24 +361,13 @@ public sealed class ZeroIdentityUpdateTests
     }
 
     /// <summary>
-    /// Editing a page whose key is not zero leaves the page count unchanged even though the edit renumbers a
-    /// sibling whose key is.
+    /// Editing a page whose key is not zero leaves the page count unchanged even though the edit renumbers
+    /// a sibling whose key is.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// THIS IS THE CASE THAT MADE THE DEFECT REACH ORDINARY USE, and it is the reason a repository-level fix
-    /// alone would not have been enough evidence. Editing a page runs the portal's whole tree through the
-    /// recomputation and stages a positional write for every page whose position moved, so an edit to page 1
-    /// passes page 0 through the positional write - and the page table grew by one on an edit that never
-    /// mentioned page 0. The service reported success throughout.
-    /// </para>
-    /// <para>
-    /// The edit is deliberately a re-parent rather than a rename, because a rename need not move any
-    /// sibling: making page 1 a child of page 0 renumbers the root band and therefore guarantees the sibling
-    /// write actually happens. The page is restored to the root afterwards through the same service, which
-    /// also proves the reverse move.
-    /// </para>
+    /// THIS IS THE CASE THAT MADE THE DEFECT REACH ORDINARY USE, and it is the reason a repository-level
+    /// fix alone would not have been enough evidence.
     /// </remarks>
     [Fact]
     public async Task TabServiceUpdate_OfANonZeroPage_DoesNotDuplicateItsZeroKeyedSibling()
@@ -478,10 +435,6 @@ public sealed class ZeroIdentityUpdateTests
     /// <param name="page">The page as it currently stands.</param>
     /// <param name="parentId">The parent the request should ask for.</param>
     /// <returns>A request carrying every current value and the requested parent.</returns>
-    /// <remarks>
-    /// Every member is copied so the edit changes exactly one thing. A partially populated request would
-    /// clear the columns it omitted, which would make a count assertion pass for the wrong reason.
-    /// </remarks>
     private static UpdateTabRequest RequestFrom(TabDetailDto page, int? parentId) => new()
     {
         TabName = page.TabName,
@@ -505,9 +458,9 @@ public sealed class ZeroIdentityUpdateTests
     /// <param name="portalName">The name the planted tenant carries.</param>
     /// <returns>A task that completes once the row exists.</returns>
     /// <remarks>
-    /// Only the name has no store default among the tenant table's required columns, so one column is enough
-    /// to produce a valid row. <c>IDENTITY_INSERT</c> is switched off again in the same batch so a failure
-    /// cannot leave the session setting behind.
+    /// Only the name has no store default among the tenant table's required columns, so one column is
+    /// enough to produce a valid row. <c>IDENTITY_INSERT</c> is switched off again in the same batch so a
+    /// failure cannot leave the session setting behind.
     /// </remarks>
     private Task PlantKeyZeroPortalAsync(string portalName) => _fixture.Database.ExecuteAsync(
         "SET IDENTITY_INSERT [dbo].[Portals] ON; "

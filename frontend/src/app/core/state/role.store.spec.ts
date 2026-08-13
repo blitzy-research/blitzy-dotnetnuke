@@ -1,223 +1,3 @@
-/**
- * Specification for `./role.store`, the signal-backed state behind role administration.
- *
- * Exercises the store against a mock HTTP backend rather than against a mocked service,
- * so each case proves the URL, the verb, the query parameters, the response handling AND
- * — decisively for this store — the NUMBER OF REQUESTS in a single pass. The request
- * count is not incidental here: the store's most consequential behaviour is that a
- * successful assignment removal is followed by a SECOND request, and a mocked service
- * would let a missing second request pass unnoticed.
- *
- * ---------------------------------------------------------------------------
- * NO USER-SPECIFIED RULES GOVERN THIS FILE
- *
- * The project supplies no rules document. The rules review returns a one-line absence
- * statement, and it returns the byte-identical statement for ranges that BEGIN PAST THE
- * FIRST LINE, which establishes there is no document body left to page through. No file
- * therefore enters scope on rule grounds and none is invented. Absence is not licence to
- * lower the bar: the migration plan's enterprise baseline governs instead, and its
- * behavioural-equivalence, code-organisation, migration-record and strict-typing items
- * are what the cases below are organised around.
- *
- * ---------------------------------------------------------------------------
- * THE HARNESS, AND WHY IT IS SHAPED THIS WAY
- *
- * - The real client is registered FIRST and the testing backend SECOND. The testing
- *   provider overrides the backend the real one installed, so the order is load-bearing:
- *   reversed, the genuine backend survives and the cases attempt live requests.
- * - No interceptor is registered. This file is about the store's own behaviour, and
- *   running the interceptor chain here would assert two units at once.
- * - `httpMock.verify()` runs after every case. It is the load-bearing assertion of the
- *   whole file: it fails on any request opened and never consumed, which is what proves
- *   each command issues exactly the requests it should and is the entire mechanism behind
- *   the re-read cases and the no-request cases alike.
- * - Every asserted URL is RELATIVE. The test target declares no environment file
- *   replacement, so these cases compile against the production environment module, whose
- *   API base is the root-relative `/api/v1`. The reverse proxy serves the bundle and the
- *   API from one origin, so a relative base is the correct value and an absolute one
- *   would be a portability defect that no build step detects.
- * - No timer, no wall-clock read, no randomness. Every instant in a fixture is a fixed
- *   absolute string, which is also what the wire carries.
- * - Two families of statement in the store are DELIBERATELY left uncovered, and neither is
- *   an omission. The first is the exhaustiveness arm at the end of each branch over a
- *   discriminated union: it is reachable in principle but not in practice, because the
- *   compiler rejects any call that could reach it — covering it would require the very type
- *   assertion the workspace forbids, and the compiler's refusal is the stronger proof. The
- *   second is the structural guard in the failure reader that rejects a thrown value which
- *   is not an object, or which carries no numeric status: the mock backend answers every
- *   failure with the framework's own error response, which always carries both, so no case
- *   written through this harness can produce that input. Anything else uncovered is a gap.
- * - The store registers no reactive side effect, so no effect-flushing step is needed;
- *   every projection below is a pull-based derivation read at the moment it is asserted.
- *
- * ---------------------------------------------------------------------------
- * MIGRATION RECORD — the legacy behaviour each group of cases pins, with the line it was
- * measured against. Every citation below was read first-hand in this repository.
- *
- * 1. VIEW STATE AND SESSION STATE ARE ELIMINATED, AND THERE WAS NOTHING TO TRANSLATE.
- *    The security admin tree contains ZERO view-state sites — as do the module and page
- *    admin trees — and session state has zero sites anywhere in the migrated surface.
- *    What `Website/admin/Security/Roles.ascx.vb` did instead was RE-BIND EVERYTHING ON
- *    EVERY POSTBACK: it re-queried the roles and the groups each time and rebound the
- *    grid at `:L91`. So this store replaces postback re-binding, not state round-tripping,
- *    and the cases assert held state that survives between commands. The one view-state
- *    key that appears elsewhere in the admin tree, the return-navigation referrer, is a
- *    router concern and deliberately never becomes a signal.
- *
- * 2. THE THREE-WAY GROUP NARROWING IS A TYPED DISCRIMINATOR, NOT A SIGNED INTEGER.
- *    `Roles.ascx.vb` declared one field at `:L48`, gave its every-role entry the value -2
- *    at `:L112` and its ungrouped entry the value -1 at `:L114`, then read the field back
- *    with TWO COMPARISONS THAT DISAGREE: `:L72` branches on the value being strictly
- *    below -1 to choose the whole-portal query, while `:L79` branches on the value merely
- *    being negative to hide the edit and delete controls. Rewriting either as the other
- *    changes behaviour. The target names the three intents instead, so neither number
- *    exists as a value — which is why no case below asserts on -2 as a narrowing.
- *
- * 3. THE MEASURED DEFAULT IS THE UNGROUPED INTENT, NOT THE EVERY-ROLE ONE.
- *    `Roles.ascx.vb:L48` initialises the field to -1, and -1 is the ungrouped narrowing
- *    per `:L114`. This CORRECTS the folder requirements, which imply -2. The value -2
- *    arises from exactly two places, neither of them initialisation: an explicit choice
- *    in the dropdown, and the no-groups fall-back at `:L129`.
- *
- * 4. DELETING A GROUP RESETS THE NARROWING TO THE UNGROUPED INTENT, NOT TO THE EVERY-ROLE
- *    ONE. `Roles.ascx.vb:L292-L295` is the third guard on the feature: `:L292` parses the
- *    selected value, `:L293` performs the delete for a real key alone, `:L294` deletes and
- *    `:L295` resets the field to -1. The numeric guard is now the type system's job — a
- *    key can be had from a real-group narrowing and from nothing else — so the reset is
- *    what remains observable, and it is asserted.
- *
- * 5. THE DELETE-WHEN-EMPTY AFFORDANCE IS AT `:L85`, NOT `:L84`. `Roles.ascx.vb:L85` sets
- *    the delete control's visibility from the listed roles being empty; `:L84` assigns the
- *    edit-group link's navigation address. The folder requirements cite `:L84`, which is
- *    the wrong line. Both halves are asserted: the affordance projection, AND that the
- *    request is issued regardless of it, because the server is the authority and answers
- *    a stale affordance with a conflict.
- *
- * 6. THE PAGING SHAPES DIFFER PER LISTING, AND MUST NOT BE MADE TO LOOK UNIFORM. Resolved
- *    from the contract rather than from prose, because the migration plan describes the
- *    role listing as paged in one place and unpaged in another. Four authorities agree
- *    that the ROLE listing is PAGED: the service's list method answers the paged envelope,
- *    the service imports that envelope, the shared query builder carries a purpose-built
- *    entry point that merges paging with the narrowing, and the store holds a page
- *    coordinate for it. The ASSIGNMENT listing is PAGED too. The ROLE-GROUP listing is
- *    UNPAGED — a plain array in the single-payload envelope, requested with no query
- *    parameters at all. The legacy screen paged NEITHER (`:L77` and `:L108` both bind
- *    untyped lists), so paging is an ADDED capability on two of the three listings, and
- *    the cases below assert a page coordinate for two and its total absence for the third.
- *
- * 7. ENDING A PAID ASSIGNMENT EXPIRES THE ROW RATHER THAN DELETING IT, SO AN EMPTY SUCCESS
- *    DOES NOT MEAN THE ROW IS GONE. This is the highest-value group in this file.
- *    `Library/Components/Security/Roles/RoleController.vb:L494` branches on the ASSIGNMENT
- *    row being paid and having used its trial — note it reads the assignment's own fee and
- *    trial flag, not the role's, which corrects the folder requirements — and in that case
- *    `:L496` back-dates the expiry bound to YESTERDAY and `:L497` writes the row back.
- *    Just the other branch, `:L500`, genuinely deletes. The endpoint answers an empty
- *    success in BOTH cases and nothing in the response distinguishes them, so the store
- *    RE-READS and never removes the row optimistically. A store that dropped the row and
- *    issued no second request would fail these cases, which is the point of them.
- *
- * 8. THE ASSIGNMENT WRITE IS AN UPDATE-OR-ADD WHOSE RESPONSE DOES NOT SAY WHICH HAPPENED.
- *    `RoleController.vb:L503` seeded an assignment key with the absent-integer marker,
- *    `:L550` looked for an existing row and updated it, and the else arm added one. The
- *    endpoint preserves that, so it legitimately answers created or no-content and the
- *    client cannot tell them apart. Both are asserted, both as successes, and the row is
- *    re-read rather than synthesised from the request — the server derives the expiry
- *    bound from its own clock and clamps the bounds it was given at `:L529-L534`.
- *
- * 9. THE SIX FREQUENCY CODES ARE PERSISTED CHARACTERS, PRESERVED VERBATIM.
- *    `RoleController.vb:L537-L547`. A period equal to the absent-integer marker means NO
- *    EXPIRY AT ALL and is tested FIRST, exactly as `:L537` orders it — it does not mean
- *    "unset, apply a default", so it is never coalesced and never made positive. The code
- *    `N` sets no expiry; `O` sets the far-future perpetual instant 9999-12-31, which is a
- *    real stored value that merely looks like a marker; `D` advances by the period, `W` by
- *    the period times seven — a scaled count of the same unit, not a distinct unit — `M`
- *    and `Y` by their own units. One vocabulary serves both the billing and the trial
- *    column. The table driving these cases is typed as the model's own union, so a folded
- *    case or a word-spelled code could not compile, let alone pass.
- *
- * 10. THE LEGACY FREQUENCY BRANCH HAD NO FALLBACK ARM. `:L540-L547` is a six-arm branch
- *     with no final catch-all, so an unrecognised code left the expiry at whatever value
- *     it already held and reported nothing. The target's classification is exhaustive over
- *     the union and ends in an unreachable-variant failure, which turns that silent wrong
- *     answer into a loud one. A deliberate improvement, not a transliteration.
- *
- * 11. FOUR SEPARATE VOCABULARIES SPELL THEMSELVES WITH THE SAME NEGATIVE NUMBERS, AND THE
- *     CASES KEEP THEM APART PAIRWISE:
- *     (a) The group NARROWING, where -2 meant every role and -1 meant the ungrouped ones
- *         (`Roles.ascx.vb:L112`, `:L114`). Now a typed intent; neither number is a value.
- *     (b) The group FIELD on a role row, where -1 meant "belongs to no group". The API
- *         publishes `null` for it — the grouping table is seeded from zero with a foreign
- *         key pointing at it, so -1 was never a stored value; the legacy reader
- *         manufactured it outbound and undid it inbound. Read with an absence check.
- *     (c) The PSEUDO-ROLE constants at `Library/Components/Shared/Globals.vb:L95-L98`,
- *         which are STRING constants — "-1" all users, "-2" superuser, "-3"
- *         unauthenticated, "-4" nothing — compared as strings at
- *         `Library/Components/Portal/PortalController.vb:L2303` and `:L2305`, never parsed
- *         to numbers. That file's path is worth stating because the migration plan cites a
- *         common-component path that does not exist; the real one is under the shared
- *         component directory.
- *     (d) The ABSENT-INTEGER marker at `Library/Components/Shared/Null.vb:L41-L45`, whose
- *         body returns -1, used as "no existing assignment row" at `RoleController.vb:L503`
- *         and as "no expiry at all" at `:L537`.
- *     A case is written per pair, and a further case asserts the store publishes no
- *     general negative-identifier normaliser, because such a helper is exactly what would
- *     collapse these four into one.
- *
- * 12. A FEE OF ZERO MEANS FREE, AND IS REAL DATA. `RoleController.vb:L494` discriminates
- *     paid from free with a strictly-greater-than-zero test, so zero falls on the free side
- *     deliberately. The fee is a single-precision column whose legacy absent-marker was the
- *     type's minimum value — neither zero nor minus one — so zero is never absence, and a
- *     recorded zero is asserted to survive as zero.
- *
- * 13. THE THREE LEGACY DISPLAY HELPERS ARE PRESENTATION AND ARE ABSENT FROM THE STORE.
- *     `Roles.ascx.vb:L152-L162` rendered a period as a phrase and `:L175` rendered a fee as
- *     currency; a third helper in `SecurityRoles.ascx.vb` rendered a date and filtered
- *     absent ones out for display. A case asserts the store publishes no such member, and
- *     would report one as a code-organisation violation rather than test it.
- *
- * 14. THE LEGACY CACHING LAYER IS NOT REPRODUCED CLIENT-SIDE. The legacy code reached a
- *     static cache helper from well over a hundred call sites across the migrated domains,
- *     with coarse portal-wide and host-wide invalidation;
- *     `Library/Components/Providers/Caching/DataCache.vb` is 317 lines of it, and the
- *     permission controllers alone accounted for 26 of those sites. The migration plan
- *     cites a shared-component path for that file, which does not exist. Caching is a
- *     server concern now, and the cases assert re-reads where the server may have diverged
- *     rather than cache hits.
- *
- * 15. AUTHORISATION IS DECIDED SERVER-SIDE. The refusal arrives as a forbidden response or
- *     a conflict, and a case asserts the store publishes no permission-deciding member.
- *     The two closed permission vocabularies — the persisted keys and the policy names —
- *     are never interchanged, and neither carries a negation prefix in this generation of
- *     the product.
- *
- * 16. A FORBIDDEN RESPONSE IS A WARNING, NOT AN ERROR, and the security tree's own file is
- *     the precedent: `Website/admin/Security/AccessDenied.ascx.vb` performs no permission
- *     check at all and renders BOTH of its branches, at `:L43` and `:L45`, as a yellow
- *     warning. A case asserts warning severity for a forbidden response and error severity
- *     for a conflict. A rate-limited response does not arise on these endpoints — it
- *     belongs to the authentication routes — so no case asserts one here.
- *
- * 17. LOCALISATION IS NOT PORTED. The legacy narrowing entries were LOCALISED strings
- *     looked up by resource key at `Roles.ascx.vb:L112` and `:L114`, which made the control
- *     flow depend on the active language. The target keys off a typed intent, so the branch
- *     is language-independent, and no case asserts on message wording the server owns.
- *
- * 18. EVERY IMPLICIT COERCION IS MADE EXPLICIT, AND ONE IS REMOVED OUTRIGHT. The legacy
- *     admin screens compiled with strictness disabled (`Website/release.config:L125`), so
- *     they could legally narrow implicitly and bind late. `Roles.ascx.vb:L292` is the
- *     concrete instance: it hands the dropdown's selected value — a string — to an
- *     unguarded integer parse, which throws on a non-numeric value rather than reporting
- *     one. The typed intent removes the parse entirely. A discrepancy worth recording,
- *     since the plan calls this an implicit narrowing: it is an EXPLICIT parse, and the
- *     defect is that it is unguarded. Note also that `Roles.ascx.vb:L111` spells the
- *     control in lower case where `:L112`, `:L118` and `:L125` capitalise it — identical in
- *     the legacy language, two different identifiers in this one.
- *
- * The repository-root migration notes document belongs to another agent and is not edited
- * from here; the record above and the completion report carry this file's contribution.
- * ---------------------------------------------------------------------------
- */
-
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
@@ -260,17 +40,14 @@ import type {
 // THE ADDRESSES UNDER TEST — every one root-relative
 // ---------------------------------------------------------------------------
 
-/** The role collection. Paged; accepts a creation. */
+/** The role collection. */
 const ROLES_URL = '/api/v1/roles';
 
 /**
- * One role, addressed with the identity seed itself.
- *
- * The role table is declared with an identity seed of zero
- * (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L115`), so
- * the FIRST role every tenant creates carries the key zero — and the shipped data seeds a
- * registered-users role at `:L7194`. A truthiness guard anywhere on the path would issue
- * no request for this address at all, which the backend verification turns into a failure.
+ * One role, addressed with the identity seed itself. The role table is declared with an identity seed of
+ * zero (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider:L115`), so the FIRST
+ * role every tenant creates carries the key zero — and the shipped data seeds a registered-users role at
+ * `:L7194`.
  */
 const ROLE_ZERO_URL = '/api/v1/roles/0';
 
@@ -280,24 +57,19 @@ const ROLE_SEVEN_URL = '/api/v1/roles/7';
 /** The accounts holding the seed-keyed role. */
 const ROLE_ZERO_MEMBERS_URL = '/api/v1/roles/0/users';
 
-/** The accounts holding an ordinarily-keyed role. Reads a page; accepts an assignment. */
+/** The accounts holding an ordinarily-keyed role. */
 const ROLE_SEVEN_MEMBERS_URL = '/api/v1/roles/7/users';
 
 /** One account's membership of one role. */
 const ROLE_SEVEN_MEMBER_URL = '/api/v1/roles/7/users/42';
 
-/** The role-group collection. Unpaged, and parameterless. */
+/** The role-group collection. */
 const ROLE_GROUPS_URL = '/api/v1/role-groups';
 
 /** One role group, addressed with its own identity seed of zero. */
 const ROLE_GROUP_ZERO_URL = '/api/v1/role-groups/0';
 
-/**
- * The memberships-of-one-account address, for an ordinary account key.
- *
- * Nested under the ACCOUNT because the answer is one person's memberships. This is the read
- * that lets the role listing open narrowed to the person an operator was just looking at.
- */
+/** The memberships-of-one-account address, for an ordinary account key. */
 const USER_ROLES_URL = '/api/v1/users/42/roles';
 
 /** The same address for the account keyed nought, which no truthiness test may drop. */
@@ -317,58 +89,26 @@ const OTHER_USER_ROLES_URL = '/api/v1/users/43/roles';
 // ---------------------------------------------------------------------------
 
 /**
- * The prefix the server wraps a failure code in before publishing it.
- *
- * The code arrives in exactly one place and it is not a member of its own: the server
- * writes it into the problem document's type member. A consumer that does not read that
- * member cannot key on a code at all, so every failure fixture below carries it.
+ * The prefix the server wraps a failure code in before publishing it. The code arrives in exactly one
+ * place and it is not a member of its own: the server writes it into the problem document's type member.
  */
 const FAILURE_TYPE_PREFIX = 'urn:dnnmigration:error:';
 
-/**
- * The conflict codes the server publishes for this feature, spelled as IT spells them.
- *
- * MIGRATION: this CORRECTS the folder requirements, which assert three capitalised
- * identifiers descended from the legacy enumeration member names. Those values could
- * never match anything taken off the wire. The wording the migration has to preserve is
- * preserved by the shared failure catalogue; the KEY is what the server sends, and these
- * are the three keys that reach role administration — a duplicate role name, a duplicate
- * role-group name, and a protected assignment whose legacy wording refused to strip the
- * portal administrator or the registered-users role.
- */
+/** The conflict codes the server publishes for this feature, spelled as IT spells them. */
 const CONFLICT_CODE = Object.freeze({
   duplicateRoleName: 'role.name_duplicate',
   duplicateRoleGroupName: 'role_group.name_duplicate',
   protectedAssignment: 'role_assignment.protected',
 } as const);
 
-/**
- * A fixed correlation value, shaped like the trace parent the server derives one from.
- *
- * Fixed rather than generated, because a generated value would make the case
- * irreproducible. It is the operator's single join key between a browser report and a
- * server log, so its survival into the held failure is asserted rather than assumed.
- */
+/** A fixed correlation value, shaped like the trace parent the server derives one from. */
 const TRACE_ID = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
 
 /** A second fixed correlation value, for proving which of the two members wins. */
 const CORRELATION_ID = 'e7bf0e34-9c1a-4f2f-9c0e-4a1d5c8b2f10';
 
-/**
- * The absent-instant marker, as the wire spells it.
- *
- * `Library/Components/Shared/Null.vb:L66-L70` returns the minimum representable date for
- * an absent instant rather than nothing at all, so a row carrying this value means "no
- * expiry" and is DATA. Normalising it to absence would discard that distinction.
- */
 const MIN_INSTANT = '0001-01-01T00:00:00Z';
 
-/**
- * The perpetual instant the one-time-fee code produces.
- *
- * `RoleController.vb:L542` assigns 9999-12-31 for that code. A real stored value that
- * merely looks like a marker; neither absence nor an error.
- */
 const PERPETUAL_INSTANT = '9999-12-31T00:00:00Z';
 
 /** An instant already in the past, which is what a back-dated expiry bound looks like. */
@@ -378,10 +118,9 @@ const PAST_INSTANT = '2019-03-14T00:00:00Z';
 const FUTURE_INSTANT = '2099-06-01T00:00:00Z';
 
 /**
- * The six persisted frequency codes, typed as the model's own union.
- *
- * Typing the table this way is what makes a folded case, a word-spelled unit or an
- * integer substitution a COMPILE failure rather than a runtime surprise.
+ * The six persisted frequency codes, typed as the model's own union. Typing the table this way is what
+ * makes a folded case, a word-spelled unit or an integer substitution a COMPILE failure rather than a
+ * runtime surprise.
  */
 const FREQUENCY_CODES: readonly BillingFrequency[] = Object.freeze([
   'N',
@@ -392,14 +131,7 @@ const FREQUENCY_CODES: readonly BillingFrequency[] = Object.freeze([
   'Y',
 ] as const);
 
-/**
- * The assignment-status vocabulary the model declares.
- *
- * Present in the contract module but a member of NEITHER the role NOR the membership
- * contract, so no held value can carry one — which is itself the assertion: the store
- * does not re-derive a status the server never sent. Its members are disjoint from the
- * store's own term classification, and a case proves the two are not confused.
- */
+/** The assignment-status vocabulary the model declares. */
 const ROLE_STATUS_VALUES: readonly RoleStatus[] = Object.freeze([
   'Pending',
   'Active',
@@ -408,12 +140,7 @@ const ROLE_STATUS_VALUES: readonly RoleStatus[] = Object.freeze([
 
 /**
  * The legacy pseudo-role identifiers, as STRING constants.
- *
- * `Library/Components/Shared/Globals.vb:L95-L98`. They are a third, independent negative
- * vocabulary: not rows in the role table, not group keys, and never parsed to numbers.
- * Held here as strings, which is what they are, so a case can prove the store neither
- * parses one into the narrowing space nor confuses the superuser constant with the
- * every-role intent.
+ * `Library/Components/Shared/Globals.vb:L95-L98`.
  */
 const LEGACY_PSEUDO_ROLE_IDS: readonly string[] = Object.freeze([
   '-1',
@@ -422,32 +149,11 @@ const LEGACY_PSEUDO_ROLE_IDS: readonly string[] = Object.freeze([
   '-4',
 ] as const);
 
-// ---------------------------------------------------------------------------
 // FIXTURE FACTORIES
-// ---------------------------------------------------------------------------
-//
-// Each is a FUNCTION rather than a shared constant, so no case can mutate a value another
-// case depends on. Each default deliberately carries the awkward values rather than tidy
-// ones — a key of zero, an absent-integer period, a fee of zero, empty strings and false
-// booleans — because the server serialises with no ignore condition at all and every one
-// of those arrives on the wire as DATA.
-//
-// The member spellings are taken from the contract module, not guessed. They carry a
-// single lower-case letter in the identity suffix, and a mis-spelled fixture key would
-// yield nothing at run time with no compile complaint, so the return type is annotated on
-// every factory to force the compiler to check the spelling for us.
+// The member spellings are taken from the contract module, not guessed.
 
 /**
  * One row of the role listing.
- *
- * Defaults to the seed key zero and to the plural administrator name the shipped data
- * actually creates (`Library/Components/Portal/PortalController.vb:L1390` creates
- * "Administrators" with a positional monthly billing code, a no-expiry trial code and two
- * positional false booleans; `:L1393` creates the registered-users role). No case compares
- * a role NAME for behaviour — the server decides names — the name is fixture noise.
- *
- * Note what the listing contract does NOT carry: the grouping key. That is deliberate, so
- * grouping is observable on the detail contract alone.
  *
  * @param overrides Members to replace on the default row.
  * @returns One listing row.
@@ -472,9 +178,6 @@ function aRoleListItem(overrides: Partial<RoleListItem> = {}): RoleListItem {
 /**
  * One role in full, as the detail endpoint publishes it.
  *
- * The grouping key defaults to absence, which is the form the API publishes for a role
- * belonging to no group — not the legacy manufactured minus one.
- *
  * @param overrides Members to replace on the default role.
  * @returns One role.
  */
@@ -494,22 +197,19 @@ function aRole(overrides: Partial<Role> = {}): Role {
     autoAssignment: false,
     rsvpCode: '',
     iconFile: null,
-    // Present on every served role. Declared BEFORE the spread so a case may replace it - the store
-    // carries it through a read and a write untouched, and a case that needed two different revisions
-    // could not express them otherwise.
+    // Present on every served role. Declared BEFORE the spread so a case may replace it - the store carries
+    // it through a read and a write untouched, and a case that needed two different revisions could not
+    // express them otherwise.
     concurrencyToken: 'revision-1',
     ...overrides,
   };
 }
 
 /**
- * One role group.
- *
- * The tenant key defaults to minus one, which is a REAL tenant: the portal table is
- * declared with an identity seed of minus one
- * (`01.00.00.SqlDataProvider:L77`), so the first tenant ever created carries minus one and
- * the second carries zero — while the absent-integer marker is also minus one. Both of
- * those values are asserted to survive on this member.
+ * One role group. The tenant key defaults to minus one, which is a REAL tenant: the portal table is
+ * declared with an identity seed of minus one (`01.00.00.SqlDataProvider:L77`), so the first tenant ever
+ * created carries minus one and the second carries zero — while the absent-integer marker is also minus
+ * one.
  *
  * @param overrides Members to replace on the default group.
  * @returns One role group.
@@ -526,10 +226,6 @@ function aRoleGroup(overrides: Partial<RoleGroup> = {}): RoleGroup {
 
 /**
  * One user-to-role assignment.
- *
- * Both instants default to fixed absolute strings. The membership contract carries neither
- * a fee nor a trial-usage flag nor a status, which is precisely why the store cannot
- * classify a removal's outcome and must re-read instead.
  *
  * @param overrides Members to replace on the default assignment.
  * @returns One assignment.
@@ -550,9 +246,6 @@ function anAssignment(overrides: Partial<UserRole> = {}): UserRole {
 
 /**
  * A paged wire envelope.
- *
- * The total is stated independently of the page's length, because a consumer that read the
- * array's length would page wrongly the moment a second page existed.
  *
  * @param items The page's rows.
  * @param totalCount The total across every page.
@@ -588,10 +281,6 @@ function envelopeOf<T>(data: T): ApiResponse<T> {
 /**
  * A problem document, shaped as the server's own exception handler shapes one.
  *
- * The status is written into the BODY as well as onto the response, because severity
- * resolves from the document's own status member and a body without one would resolve to
- * the default severity for a reason unrelated to the case under test.
- *
  * @param status The status to report, in the body and expected on the response.
  * @param code The failure code, or absence for a failure the server did not classify.
  * @param detail The human-readable explanation, held verbatim and never laundered.
@@ -616,12 +305,8 @@ function aProblem(
 }
 
 /**
- * A model-state refusal, carrying the per-member dictionary.
- *
- * The dictionary's keys are the server's own model-state keys and are NOT lower-camel: it
- * publishes them as the request contract declares them. The dictionary is an index
- * signature and the workspace's compiler settings refuse dotted access to one by design,
- * so every read of it below is a bracket read.
+ * A model-state refusal, carrying the per-member dictionary. The dictionary's keys are the server's own
+ * model-state keys and are NOT lower-camel: it publishes them as the request contract declares them.
  *
  * @param fieldErrors The per-member messages.
  * @param detail The overall explanation.
@@ -649,11 +334,6 @@ function aValidationProblem(
 /**
  * Narrows away absence by throwing, so no case needs a cast or a suppression comment.
  *
- * The workspace forbids the non-null assertion operator, and reaching for one here would
- * hide the very distinction several of these cases exist to prove — that absence is a
- * distinct value and not a stand-in for zero or minus one. Throwing fails the case with a
- * message naming what was missing, which is strictly more useful than a type assertion.
- *
  * @param value The value to narrow.
  * @param what What was expected, for the failure message.
  * @returns The value, narrowed.
@@ -668,10 +348,6 @@ function present<T>(value: T | null | undefined, what: string): T {
 
 /**
  * Every member name the store publishes, instance members and methods alike.
- *
- * Reads both the instance's own members — where the signal projections live, since they
- * are assigned in field initialisers — and the prototype's, where the commands live. Used
- * by the cases that assert what the store deliberately does NOT publish.
  *
  * @param store The store to enumerate.
  * @returns Every own and prototype member name, the constructor excluded.
@@ -690,14 +366,8 @@ describe('RoleStore', () => {
   let httpMock: HttpTestingController;
 
   /**
-   * Claims the single open request at one PATH, issued with one verb.
-   *
-   * Always the predicate form, and always matched on the verb and the PATH rather than by
-   * whole-string comparison. The backend's string matcher compares the address WITH its
-   * query, so a bare address would fail to match any paged read at all and would couple
-   * every other assertion to the order parameters happen to be appended in. Matching the
-   * verb as well is what keeps a write and the read that follows it on the same address —
-   * a creation and then the listing — from being claimed in the wrong order.
+   * Claims the single open request at one PATH, issued with one verb. Always the predicate form, and
+   * always matched on the verb and the PATH rather than by whole-string comparison.
    *
    * @param method The verb the request must carry.
    * @param url The path the request must address, without its query.
@@ -752,15 +422,13 @@ describe('RoleStore', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
-        // The real client FIRST and the testing backend SECOND. The testing provider
-        // overrides the backend the real one installed, so the order is not cosmetic:
-        // reversed, the genuine backend survives and these cases attempt live requests.
+        // The real client FIRST and the testing backend SECOND. The testing provider overrides the backend
+        // the real one installed, so the order is not cosmetic: reversed, the genuine backend survives and
+        // these cases attempt live requests.
         provideHttpClient(),
         provideHttpClientTesting(),
-        // Listed explicitly so each case runs against a freshly constructed store whose
-        // slices start at their initial values, independent of the decorator's own root
-        // registration. The store's collaborator resolves from the root injector either
-        // way, so nothing about the composition under test changes.
+        // Listed explicitly so each case runs against a freshly constructed store whose slices start at
+        // their initial values, independent of the decorator's own root registration.
         RoleStore,
       ],
     });
@@ -770,11 +438,7 @@ describe('RoleStore', () => {
   });
 
   afterEach(() => {
-    // The load-bearing assertion of this file. Fails on any request opened and never
-    // consumed, which is what proves a command issued EXACTLY the requests it should —
-    // and it is the mechanism by which a missing re-read after a removal, or a request
-    // suppressed by a truthiness guard on a key of zero, becomes a visible failure rather
-    // than a silent pass.
+    // The load-bearing assertion of this file.
     httpMock.verify();
   });
 
@@ -784,10 +448,6 @@ describe('RoleStore', () => {
 
   describe('the published surface and its read-only guarantee', () => {
     it('publishes every state slice as a signal that cannot be written from outside', () => {
-      // A writable signal carries a setter and an updater; a read-only projection carries
-      // neither. Presence is therefore the whole proof, and it needs no cast — reaching
-      // for one to attempt a write would require exactly the type assertion the
-      // workspace's settings forbid, and would prove less.
       const projections: readonly (readonly [string, Signal<unknown>])[] = [
         ['roles', store.roles],
         ['roleGroups', store.roleGroups],
@@ -901,14 +561,7 @@ describe('RoleStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // THE ROLES ONE ACCOUNT HOLDS
-  //
-  // MIGRATION: `SecurityRoles.ascx.vb:L413-L418` served two modes from one screen, keyed by
-  // either a role or an account, and `Users.ascx.vb:L542` reached the account-keyed mode from
-  // the account listing. This slice is the account-keyed mode: an unpaged answer to "what does
-  // this person hold", held apart from the browsable listing so neither overwrites the other.
-  // -------------------------------------------------------------------------
 
   describe('the roles one account holds', () => {
     it('reads the memberships at the account address and publishes them in their own slice', () => {
@@ -926,9 +579,6 @@ describe('RoleStore', () => {
     });
 
     it('leaves the BROWSABLE listing completely alone, so neither answer overwrites the other', () => {
-      // ⚠ THE TWO ANSWERS ARE DIFFERENT QUESTIONS. The listing is paged, ordered and
-      // filterable; this is unpaged. Landing the narrowed answer in `roles` would put rows the
-      // pager cannot account for into a slice whose meta says otherwise.
       store.loadRoles();
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 7, roleName: 'Subscribers' })], 1));
 
@@ -954,9 +604,6 @@ describe('RoleStore', () => {
     });
 
     it('records the account at DISPATCH, so a screen knows who is being waited for', () => {
-      // Recording it on arrival would leave a screen unable to distinguish "waiting for this
-      // person" from "waiting, subject unknown", and it would keep the PREVIOUS subject on
-      // screen for the whole of the new read.
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
 
       expect(store.heldRolesUserId())
@@ -970,9 +617,6 @@ describe('RoleStore', () => {
     });
 
     it('holds an account that belongs to NO role as the empty sequence, not as null', () => {
-      // ⚠ THE TWO ARE DIFFERENT FACTS. `null` means no account is the subject; the empty
-      // sequence means this account holds nothing. A screen that conflated them would fall
-      // back to the unnarrowed listing for a person who genuinely holds no role.
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
 
       expectGet(USER_ROLES_URL).flush(envelopeOf([]));
@@ -983,25 +627,6 @@ describe('RoleStore', () => {
     });
 
     it('KEEPS the account as the subject when the read fails, while holding no answer for it', () => {
-      /*
-       * ⚠ THREE DISTINCT FACTS, AND THE THIRD USED TO BE INEXPRESSIBLE. `null` collection with NO
-       * subject means no account is being asked about; the empty sequence WITH a subject means this
-       * account holds nothing; and `null` collection WITH a subject means this account was asked
-       * about and there is no answer. Clearing the subject on failure collapsed the third into the
-       * first, so a consumer comparing the two slices could not tell a refused narrowing from an
-       * ordinary unnarrowed listing.
-       *
-       * ⚠ THE DEFECT THAT COLLAPSE PRODUCED was critical and user-visible. Measured against
-       * `/roles?userId=999`, whose read is refused with `404` "Portal -1 has no member bearing
-       * identifier 999": the listing fell back to the unnarrowed rows and rendered ALL THREE roles
-       * under the subtitle "Roles held by account 999", asserting in writing that a non-existent
-       * account held every role in the tenant. The failure was recorded even then - what was missing
-       * was any way for the screen to know the subject it was still displaying had no answer.
-       *
-       * The original reasoning, that an empty set would read as "this account holds nothing", is
-       * sound and is preserved: the collection stays null rather than becoming empty. Only the
-       * subject is retained.
-       */
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
 
       expectGet(USER_ROLES_URL).flush(aProblem(403, null, 'Forbidden'), {
@@ -1037,10 +662,6 @@ describe('RoleStore', () => {
     });
 
     it('DISCARDS the previous account\u2019s answer the moment the subject changes', () => {
-      // ⚠ THE WINDOW THIS CLOSES. The subject is recorded at dispatch, so without this a consumer
-      // comparing "which account is the subject" against "is there an answer" found them in
-      // agreement while the collection still described the PREVIOUS account — and presented one
-      // person's memberships, and their count, under another person's name.
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
       expectGet(USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
       expect(store.rolesHeldByUser()).toHaveSize(1);
@@ -1060,9 +681,6 @@ describe('RoleStore', () => {
     });
 
     it('KEEPS the answer when the SAME account is re-read, so a refresh does not blank it', () => {
-      // The counterpart to the case above, and the reason the discard is conditional. An answer for
-      // the account still on screen is not wrong, so discarding it would blank the very listing the
-      // refresh exists to update.
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
       expectGet(USER_ROLES_URL).flush(envelopeOf([aRoleListItem({ roleId: 0 })]));
 
@@ -1091,17 +709,10 @@ describe('RoleStore', () => {
     });
 
     it('releases the narrowed read\u2019s failure when the narrowing is cleared', () => {
-      /*
-       * ⚠ MEASURED IN A BROWSER, WHICH IS WHY THIS EXISTS. From `/roles?userId=999` - refused with
-       * `404` "Portal -1 has no member bearing identifier 999" - pressing the on-screen affordance
-       * that returns to the unnarrowed listing left the warning banner standing above a correct
-       * three-row listing, unchanged across four seconds of sampling and reproduced twice. That path
-       * re-renders retained rows and starts no new read, so nothing else ever cleared the slot: the
-       * operator was left reading a refusal about an account the screen was no longer about.
-       *
-       * It only became reachable once the narrowed read's failure started being surfaced at all -
-       * before that it was recorded and never shown, so it could not go stale visibly.
-       */
+      // ⚠ MEASURED IN A BROWSER, WHICH IS WHY THIS EXISTS. From `/roles?userId=999` - refused with `404`
+      // "Portal -1 has no member bearing identifier 999" - pressing the on-screen affordance that returns
+      // to the unnarrowed listing left the warning banner standing above a correct three-row listing,
+      // unchanged across four seconds of sampling and reproduced twice.
       store.loadRolesHeldByUser(HELD_ROLES_USER_ID);
       expectGet(USER_ROLES_URL).flush(aProblem(404, null, 'Not Found'), {
         status: 404,
@@ -1118,9 +729,6 @@ describe('RoleStore', () => {
     });
 
     it('keeps an UNRELATED failure when the narrowing is cleared', () => {
-      // ⚠ ONE SLOT SERVES THE WHOLE STORE, so clearing it outright above would silently discard a
-      // refusal the reader still needs - merely because they widened the listing. Only the failure
-      // that the clearing actually invalidates is released.
       store.loadRoles();
       expectGet(ROLES_URL).flush(aProblem(500, null, 'Server Error'), {
         status: 500,
@@ -1204,9 +812,8 @@ describe('RoleStore', () => {
     it('issues a request for the role keyed zero rather than treating the key as absent', () => {
       store.selectRole(0);
 
-      // Matched on verb and PATH rather than by whole-string comparison, because the
-      // backend's string matcher compares the address WITH its query and would couple the
-      // assertion to parameter order.
+      // Matched on verb and PATH rather than by whole-string comparison, because the backend's string
+      // matcher compares the address WITH its query and would couple the assertion to parameter order.
       const request = expectGet(ROLE_ZERO_URL);
 
       expect(request.request.url)
@@ -1244,9 +851,9 @@ describe('RoleStore', () => {
           ),
         );
 
-      // The derivation must be a projection and not a filter: a row whose key is the seed
-      // is indistinguishable from a row whose key is absent to any predicate that tests
-      // the key for truth, and the first role of every tenant is exactly that row.
+      // The derivation must be a projection and not a filter: a row whose key is the seed is
+      // indistinguishable from a row whose key is absent to any predicate that tests the key for truth, and
+      // the first role of every tenant is exactly that row.
       expect(store.roleItems().map((item) => item.roleId)).toEqual([0, 1, 2]);
       expect(store.roles().items.map((item) => item.roleId)).toEqual([0, 1, 2]);
       expect(store.rolesMeta().totalCount).toBe(3);
@@ -1306,11 +913,9 @@ describe('RoleStore', () => {
           ]),
         );
 
-      // The tenant is not a query parameter on this feature at all — the server resolves it
-      // from the request host and the caller's claims — so the honest place to prove both
-      // values survive is the payload member that carries them. Minus one is the FIRST
-      // tenant the shipped schema creates and is simultaneously the absent-integer marker;
-      // zero is the second. Neither may be read as absence.
+      // The tenant is not a query parameter on this feature at all — the server resolves it from the
+      // request host and the caller's claims — so the honest place to prove both values survive is the
+      // payload member that carries them.
       expect(store.roleGroups().map((group) => group.portalId)).toEqual([-1, 0]);
     });
   });
@@ -1321,10 +926,6 @@ describe('RoleStore', () => {
 
   describe('the three-way group narrowing, and its two separate meanings of minus one', () => {
     it('starts at the ungrouped intent, which is the measured legacy default', () => {
-      // MIGRATION: `Roles.ascx.vb:L48` initialises the field to -1, and -1 is the ungrouped
-      // entry per `:L114`. This CORRECTS the folder requirements, which imply the
-      // every-role intent. The every-role value arises from the dropdown or from the
-      // no-groups fall-back at `:L129`, never from initialisation.
       expect(store.groupFilter().kind).toBe('GlobalRoles');
       expect(store.groupFilter().kind).not.toBe('AllRoles');
       expect(DEFAULT_ROLE_GROUP_FILTER.kind).toBe('GlobalRoles');
@@ -1388,9 +989,6 @@ describe('RoleStore', () => {
     });
 
     it('does not read minus one as absence when it arrives as a grouping key', () => {
-      // Vocabulary (a) against vocabulary (d): the narrowing's key space against the
-      // absent-integer marker. The store forwards what it was given, so a negative key
-      // stays a negative NUMBER and does not collapse to absence.
       store.setGroupFilter({ kind: 'Group', roleGroupId: -1 });
 
       const request = expectGet(ROLES_URL);
@@ -1423,9 +1021,6 @@ describe('RoleStore', () => {
     });
 
     it('does not confuse the ungrouped NARROWING with the ungrouped FIELD on a role row', () => {
-      // The pairing this feature is most likely to get wrong. The narrowing is a question
-      // about the listing; the grouping key on a role row is a fact about that row. The
-      // legacy design spelled both minus one, so proving they stay apart matters.
       store.selectRole(0);
       expectGet(ROLE_ZERO_URL).flush(envelopeOf(aRole({ roleId: 0, roleGroupId: -1 })));
 
@@ -1444,10 +1039,9 @@ describe('RoleStore', () => {
     });
 
     it('retains an absent grouping key as absence rather than manufacturing a negative one', () => {
-      // MIGRATION: the API publishes absence for a role belonging to no group. The legacy
-      // reader manufactured minus one outbound and undid it inbound, and the grouping table
-      // is seeded from zero with a foreign key pointing at it, so minus one was never a
-      // stored value. Absence and minus one are therefore distinguishable, and both survive.
+      // The API publishes absence for a role belonging to no group. The legacy reader manufactured minus
+      // one outbound and undid it inbound, and the grouping table is seeded from zero with a foreign key
+      // pointing at it, so minus one was never a stored value.
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL).flush(envelopeOf(aRole({ roleId: 7, roleGroupId: null })));
 
@@ -1459,9 +1053,6 @@ describe('RoleStore', () => {
     });
 
     it('falls back to the every-role intent when the tenant declares no group', () => {
-      // Legacy: `Roles.ascx.vb:L129` assigns the every-role value in the else arm of the
-      // group-count test, unconditionally, so it overrides a chosen group as well as the
-      // default.
       store.loadRoleGroups();
       expectGet(ROLE_GROUPS_URL).flush(envelopeOf([]));
 
@@ -1489,9 +1080,6 @@ describe('RoleStore', () => {
     });
 
     it('leaves an already-every-role narrowing exactly as it is when no group is declared', () => {
-      // The fall-back is idempotent, so a narrowing that already names every role is not
-      // reassigned. Worth pinning because a reassignment here would replace an equal value with
-      // a new object and wake every consumer of the narrowing for no reason.
       store.setGroupFilter({ kind: 'AllRoles' });
       expectGet(ROLES_URL).flush(pageOf([], 0));
 
@@ -1508,15 +1096,7 @@ describe('RoleStore', () => {
 
     it('JOINS a group read already in flight rather than abandoning and restarting it', () => {
       // ⚠ THE MEASURED DUPLICATE. Two role screens each need the group list on entry and each asks for it,
-      // which is correct - neither may render a group selector from data it has not read. What was wrong is
-      // what happened when the second asked while the first was still answering: the handle was
-      // unsubscribed, so the first request was CANCELLED mid-flight and reported as an aborted request, and
-      // an identical one was issued in its place. Runtime testing saw the pair on ordinary role-feature
-      // route changes.
-      //
-      // Joining is not a cache and introduces no staleness: a read IS in flight and it publishes to the
-      // same slots the second call would have published to. The read is still re-issued on every entry
-      // where none is in flight, which the case below pins.
+      // which is correct - neither may render a group selector from data it has not read.
       store.loadRoleGroups();
 
       const inFlight = expectGet(ROLE_GROUPS_URL);
@@ -1537,12 +1117,6 @@ describe('RoleStore', () => {
     });
 
     it('reads again on the next entry, so joining cannot become remembering', () => {
-      // ⚠ THE GUARD IS UNSOUND WITHOUT THE HANDLE BEING RELEASED, and it is released in a `finalize`, which
-      // runs on a value, an error and an unsubscription alike. Left set, a completed subscription would
-      // read as in-flight for the rest of the session and every later read would be refused - turning a
-      // duplicate-request fix into a screen that never refreshes its group list. A load-once flag was
-      // considered and refused for the same reason this case exists: the group list is reference data a
-      // selector must show CURRENT.
       store.loadRoleGroups();
       expectGet(ROLE_GROUPS_URL).flush(envelopeOf([]));
 
@@ -1586,10 +1160,6 @@ describe('RoleStore', () => {
 
     it('re-reads the whole listing from the first page when the narrowing changes', () => {
       store.loadRoles();
-      // A self-consistent single page: one row against a total of one, so the walk completes on
-      // this response. An earlier revision of this fixture reported a total of FORTY against one
-      // row, which the walk of the day accepted as complete because it stopped on a short page —
-      // the very behaviour this file now refuses. See the shortfall case further down.
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
 
       store.setGroupFilter({ kind: 'AllRoles' });
@@ -1615,28 +1185,13 @@ describe('RoleStore', () => {
 
       const request = expectGet(ROLES_URL);
 
-      // Zero-based, which is the base the API both accepts and reports, so an index sent
-      // may be compared with an index read back without arithmetic. The legacy screens that
-      // did page converted a one-based control index by subtracting one; nothing here is
-      // one-based, so nothing here needs that conversion.
+      // Zero-based, which is the base the API both accepts and reports, so an index sent may be compared
+      // with an index read back without arithmetic. The legacy screens that did page converted a one-based
+      // control index by subtracting one; nothing here is one-based, so nothing here needs that conversion.
       expect(request.request.params.get('pageIndex')).toBe('0');
-      // The SHARED default, so the role listing pages like every other listing in the application.
-      // It used to be the endpoint's maximum of a hundred, because the read behind it walked every page
-      // and joined them; the walk is gone and the window is now the unit the pager moves.
       expect(request.request.params.get('pageSize')).toBe(String(ROLES_PAGE_SIZE));
       expect(request.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize', 'scope']);
 
-      // The server's own record total is what ends the walk: one row against a total of one means
-      // everything it said exists is in hand, so this single response completes it.
-      //
-      // ⚠ AN EARLIER REVISION OF THIS CASE ENCODED THE DEFECT RATHER THAN THE CONTRACT. It flushed
-      // one row against a reported total of a hundred and thirty-seven, asserted that the walk
-      // ended there because "a short page is the last page by definition", and then asserted the
-      // published total was 137 on the reasoning that "a shortfall stays visible rather than
-      // passing as complete". The screen this slice feeds has no pager and renders no total, so
-      // nothing made that shortfall visible to anybody: one role was presented as the tenant's
-      // whole set of roles. A short page is no longer a termination condition, and a server that
-      // stops short of its own total now produces a refusal - see the case below.
       request.flush(pageOf([aRoleListItem()], 1));
 
       expect(store.rolesMeta().pageIndex)
@@ -1648,23 +1203,16 @@ describe('RoleStore', () => {
       expect(store.roleItems().length).toBe(1);
     });
 
-
-
     it('reads ONE page per read and joins nothing, so a second page costs a second command', () => {
       // ⚠ THIS CASE REPLACED THE COMPLETE-LISTING WALK, AND THE REPLACEMENT IS THE POINT. The walk
       // requested page after page at a hundred records each and joined them into one unpaged envelope,
-      // because the screen offered no pager and a single window would have presented the first page AS
-      // the whole set. Runtime testing measured the cost on a hundred and forty-five roles: an
-      // eight-thousand-pixel document at 320 units wide, three requests per arrival, the whole walk
-      // re-issued on every Back and after every write. Completeness now comes from being able to REACH
-      // every page, which is how the assignment listing in this same store has always worked.
+      // because the screen offered no pager and a single window would have presented the first page AS the
+      // whole set.
       store.loadRoles();
 
       const first = expectGet(ROLES_URL);
 
       expect(first.request.params.get('pageIndex')).toBe('0');
-      // A FULL page against a larger total, which is precisely the shape that used to provoke a second
-      // request. It must now provoke none.
       first.flush(
         pageOf(
           Array.from({ length: ROLES_PAGE_SIZE }, (_unused, index) =>
@@ -1699,10 +1247,7 @@ describe('RoleStore', () => {
     it('steps back to the last page that exists when a deletion strands the coordinate', () => {
       // ⚠ THE STRANDING THIS PREVENTS. Remove the only role on the last page and the coordinate the
       // operator stands on stops existing: the re-read asks for it again, the server answers an empty
-      // window while still reporting the true total, and the grid renders nothing. The pager is drawn on
-      // `pageSize < totalCount`, so it is WITHDRAWN at the same moment - leaving a blank grid with no
-      // way back to the rows that are still there. The unpaged listing could not reach that state; the
-      // row-level delete command on the listing makes it reachable.
+      // window while still reporting the true total, and the grid renders nothing.
       store.setRolesPage(2);
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 20 })], 21, 2));
 
@@ -1738,9 +1283,6 @@ describe('RoleStore', () => {
       store.loadRoles();
       expectGet(ROLES_URL).flush(pageOf([], 30, 3));
 
-      // The corrective read is issued with correction WITHHELD, which is what makes the recursion
-      // terminate: a second past-the-end answer is published as it stands rather than provoking a third
-      // request.
       expectGet(ROLES_URL).flush(pageOf([], 20, 2));
 
       httpMock.verify();
@@ -1760,7 +1302,6 @@ describe('RoleStore', () => {
       expect(store.roleItems()).toEqual([]);
       expect(store.failure()).toBeNull();
     });
-
 
     it('carries the ordering members and returns to the first page when they change', () => {
       store.setRolesSort('RoleName', 'Ascending');
@@ -1799,9 +1340,6 @@ describe('RoleStore', () => {
       const filter: string = present(request.request.params.get('query'), 'the filter parameter');
 
       expect(filter).toBe('admin');
-      // The legacy queries wrapped a filter in wildcards server-side. Composing a pattern in
-      // the client would hand the server a value it would wrap again, matching on the
-      // wildcard itself.
       expect(filter).not.toContain('%');
 
       request.flush(pageOf([aRoleListItem()], 1));
@@ -1812,10 +1350,6 @@ describe('RoleStore', () => {
 
       const empty = expectGet(ROLES_URL);
 
-      // The legacy contract treated the empty string and absence as one value — one screen
-      // compared a message against a literal empty string while another compared it against
-      // the absent-string marker, whose body returns the empty string. The target keeps them
-      // distinct on the wire and lets the server decide, so an empty filter is SENT.
       expect(empty.request.params.has('query')).toBeTrue();
       expect(empty.request.params.get('query')).toBe('');
       empty.flush(pageOf([aRoleListItem()], 1));
@@ -1849,11 +1383,6 @@ describe('RoleStore', () => {
     });
 
     it('issues exactly ONE request per assignment read, following no further page', () => {
-      // ⚠ THE REGRESSION THIS PINS DOWN. An earlier revision read the assignment listing at the widest
-      // legal page and then requested every further page the metadata reported, together, joining them
-      // into one set - a burst of concurrent requests bounded only by a thousand-page ceiling, the whole
-      // membership of a role retained in memory, and a repeat of the walk after every assignment write.
-      // The screen that consumes this slice mounts the shared pager instead, so the page is the unit.
       store.loadAssignments(7);
 
       const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
@@ -1884,10 +1413,9 @@ describe('RoleStore', () => {
 
       expect(store.assignmentsPage().pageIndex).toBe(2);
 
-      // A different role, and the page an operator was standing on belongs to the role they were
-      // looking at. Carrying the index across would request a window the new role may not have and
-      // present an empty grid for a role that has members. Zero is a REAL role, so this is also the
-      // case that proves the change of address is detected by identity rather than by truthiness.
+      // A different role, and the page an operator was standing on belongs to the role they were looking
+      // at. Carrying the index across would request a window the new role may not have and present an empty
+      // grid for a role that has members.
       store.loadAssignments(0);
 
       const fresh = expectGet('/api/v1/roles/0/users');
@@ -1902,13 +1430,8 @@ describe('RoleStore', () => {
     });
 
     it('steps back to the last page that exists when a removal leaves the coordinate past the end', () => {
-      // ⚠ THE DEAD END THIS PREVENTS, WHICH ONLY PAGING CAN REACH. Eleven members at ten a page;
-      // the operator moves to the second page, where the eleventh sits alone, and removes it. The
-      // write's re-read asks for page one again and the server answers an empty window whose
-      // metadata still reports ten members. Without a correction the grid renders nothing AND the
-      // pager is withdrawn — it is drawn on `pageSize < totalCount`, which ten against ten makes
-      // false — so the operator is left on a blank grid with no affordance back to the ten rows
-      // that are still there. An unpaged grid could not reach that state.
+      // ⚠ THE DEAD END THIS PREVENTS, WHICH ONLY PAGING CAN REACH. Eleven members at ten a page; the
+      // operator moves to the second page, where the eleventh sits alone, and removes it.
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 11));
 
@@ -1948,9 +1471,6 @@ describe('RoleStore', () => {
     });
 
     it('issues no corrective read when the listing is legitimately empty', () => {
-      // A role with no members answers an empty window with a total of nought, and that is a
-      // COMPLETE answer. Correcting it would cost a second request to be told the same thing, and
-      // the positive-total clause is the only thing separating the two cases.
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 25));
 
@@ -1969,9 +1489,9 @@ describe('RoleStore', () => {
     });
 
     it('issues no corrective read for an empty FIRST page, whatever the total says', () => {
-      // The first page is never past the end. A server reporting an empty first page beside a
-      // positive total is inconsistent with itself, and a correction would ask for page nought
-      // again — the page it just answered — for ever.
+      // The first page is never past the end. A server reporting an empty first page beside a positive
+      // total is inconsistent with itself, and a correction would ask for page nought again — the page it
+      // just answered — for ever.
       store.loadAssignments(7);
 
       const request = expectGet(ROLE_SEVEN_MEMBERS_URL);
@@ -1988,9 +1508,9 @@ describe('RoleStore', () => {
     });
 
     it('believes a server that reports the window it was asked for does exist', () => {
-      // An empty page can be a truthful answer for a window that DOES exist — every row in it
-      // removed by another administrator between the count and the window. The reported page
-      // count still covers the index, so nothing is corrected.
+      // An empty page can be a truthful answer for a window that DOES exist — every row in it removed by
+      // another administrator between the count and the window. The reported page count still covers the
+      // index, so nothing is corrected.
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 35));
 
@@ -2008,9 +1528,6 @@ describe('RoleStore', () => {
     });
 
     it('corrects AT MOST ONCE per read, so a listing shrinking underneath cannot loop', () => {
-      // ⚠ THE TERMINATION PROOF. The corrective read is issued with correction withheld, so a
-      // listing that keeps shrinking between requests costs one extra request and stops — rather
-      // than chasing a receding end for as long as the shrinking continues.
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment()], 35));
 
@@ -2045,11 +1562,6 @@ describe('RoleStore', () => {
 
       const request = expectGet(ROLE_GROUPS_URL);
 
-      // UNPAGED, and not merely un-indexed. The endpoint answers a plain array in the
-      // single-payload envelope and the legacy screen bound a plain list at `:L108`. There is
-      // also no tenant parameter: the server resolves the tenant from the request host and
-      // the caller's claims, so publishing one here would create a second public identity
-      // for the same operation.
       expect(request.request.params.keys()).toEqual([]);
       expect(request.request.params.has('pageIndex')).toBeFalse();
       expect(request.request.params.has('pageSize')).toBeFalse();
@@ -2104,13 +1616,6 @@ describe('RoleStore', () => {
   // -------------------------------------------------------------------------
 
   describe('the keyed membership probe answers about ONE pairing, in ONE request', () => {
-    // ⚠ THE ADDRESS IS THE FINDING. The probe used to narrow the membership LISTING by the
-    // account's login name, carried in the paging contract's free-text filter — and the server
-    // matches that filter against the login name and the display name, so the name had to be
-    // there for the request to work at all. A query string is written to browser history, to
-    // every proxy access log and to the server's own, all of them at an END of the encrypted
-    // channel, so transport security does not reach them: CWE-598. The pairing has its own
-    // address, so the two identifiers travel in the PATH and no name travels anywhere.
     it('addresses the pairing itself, naming nobody in the request target', () => {
       store.probeAssignment(7, 42);
 
@@ -2149,9 +1654,6 @@ describe('RoleStore', () => {
       // test on either would make this case pass for the wrong reason.
       store.probeAssignment(0, 0);
 
-      // The endpoint answers 404 when the account holds no membership of the role. That IS the
-      // negative answer — the state the legacy screen showed by blanking its date box — so it must
-      // not put a banner on the screen.
       expectGet('/api/v1/roles/0/users/0').flush(
         aProblem(404, 'role_assignment.not_found', 'The account holds no such membership.'),
         { status: 404, statusText: 'Not Found' },
@@ -2243,13 +1745,6 @@ describe('RoleStore', () => {
     }
 
     it('re-reads the assignment listing after an empty success, because the row may survive', () => {
-      // THE MOST CONSEQUENTIAL CASE IN THIS FILE. `RoleController.vb:L494` branches on the
-      // assignment being paid and having used its trial, and in that case `:L496` back-dates
-      // the expiry bound to YESTERDAY and `:L497` writes the row back — it does NOT delete.
-      // Just the other branch, `:L500`, genuinely deletes. The endpoint answers an empty
-      // success in BOTH cases and nothing in the response distinguishes them, so the sole
-      // correct response is to re-read. A store that removed the row and issued no second
-      // request would fail here, which is exactly why the case is written this way.
       givenOneAssignment(anAssignment({ userId: 42, roleId: 7 }));
 
       store.removeAssignment(7, 42);
@@ -2275,9 +1770,9 @@ describe('RoleStore', () => {
       expectDelete(ROLE_SEVEN_MEMBER_URL)
         .flush(null, { status: 204, statusText: 'No Content' });
 
-      // The re-read is open and unresolved at this instant. An optimistic removal would be
-      // wrong roughly half the time and the mistake would be invisible until the page was
-      // next read, so nothing is removed on speculation.
+      // The re-read is open and unresolved at this instant. An optimistic removal would be wrong roughly
+      // half the time and the mistake would be invisible until the page was next read, so nothing is
+      // removed on speculation.
       expect(store.assignmentItems().length)
         .withContext('held state must not be edited on the strength of an empty success')
         .toBe(1);
@@ -2287,10 +1782,6 @@ describe('RoleStore', () => {
     });
 
     it('keeps an expired-but-present row, with its back-dated bound held verbatim', () => {
-      // The paid, trial-used branch: the row is still there, its expiry bound moved to
-      // yesterday so the trial-usage record survives. The bound is PRESENT and populated, so
-      // recognising the condition is a comparison against the present instant and never an
-      // absence check — which is why the bound is held exactly as received.
       givenOneAssignment(anAssignment({ userId: 42, roleId: 7, expiryDate: FUTURE_INSTANT }));
 
       store.removeAssignment(7, 42);
@@ -2328,10 +1819,6 @@ describe('RoleStore', () => {
     });
 
     it('holds a recorded fee of zero as zero, because zero means free rather than absent', () => {
-      // `RoleController.vb:L494` discriminates paid from free with a strictly-greater-than-
-      // zero test, so zero falls on the free side deliberately. The fee's legacy
-      // absent-marker was the single-precision type's minimum value, neither zero nor minus
-      // one, so a recorded zero is never absence and is never coalesced away.
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL).flush(envelopeOf(aRole({ roleId: 7, serviceFee: 0 })));
 
@@ -2370,9 +1857,6 @@ describe('RoleStore', () => {
     });
 
     it('surfaces a protected-assignment conflict verbatim and re-reads nothing', () => {
-      // The legacy guard refusing to strip the portal administrator or the registered-users
-      // role is enforced server-side and arrives as a conflict. There is nothing to re-read,
-      // because nothing changed.
       givenOneAssignment(anAssignment({ userId: 42, roleId: 7 }));
 
       store.removeAssignment(7, 42);
@@ -2426,11 +1910,6 @@ describe('RoleStore', () => {
     });
 
     it('handles a no-content answer identically, and does not read a response body', () => {
-      // MIGRATION: the legacy write was an update-or-add. `RoleController.vb:L503` seeded an
-      // assignment key with the absent-integer marker, `:L550` updated a row it found and the
-      // else arm added one. The endpoint preserves that, so it legitimately answers either
-      // and the client cannot tell which happened. Neither answer is a failure and neither
-      // carries a body.
       store.assignUser(7, request);
 
       expectPost(ROLE_SEVEN_MEMBERS_URL)
@@ -2447,10 +1926,6 @@ describe('RoleStore', () => {
     });
 
     it('re-reads the row rather than synthesising it from the request', () => {
-      // The server derives the expiry bound from the role's trial or billing terms and its
-      // own clock, and clamps the bounds it was given at `:L529-L534`, so a row built from
-      // the request would show bounds the server did not store. The request carried no
-      // bounds at all here, and the held row carries the server's.
       store.assignUser(7, request);
       expectPost(ROLE_SEVEN_MEMBERS_URL)
         .flush(null, { status: 204, statusText: 'No Content' });
@@ -2479,10 +1954,6 @@ describe('RoleStore', () => {
     });
 
     it('does not confuse the absent-row marker with the ungrouped narrowing', () => {
-      // Vocabulary (d) again, in its second legacy use. The absent-integer marker meant "no
-      // existing assignment row" at `:L503`; it is a server-side local that never reaches the
-      // wire, and it is emphatically not the ungrouped narrowing. Nothing in the store
-      // converts between the two, and the narrowing is unmoved by an assignment write.
       const before: RoleGroupFilter = store.groupFilter();
 
       store.assignUser(7, request);
@@ -2501,10 +1972,8 @@ describe('RoleStore', () => {
 
   describe('the six persisted frequency codes survive verbatim', () => {
     it('holds each of the six codes on the billing member exactly as sent', () => {
-      // Table-driven over the model's own union, so a folded case, a word-spelled unit or an
-      // integer substitution could not compile, let alone reach this assertion. The codes are
-      // the literal bytes in two single-character columns and one vocabulary serves both;
-      // renaming one would silently mis-read live rows.
+      // Table-driven over the model's own union, so a folded case, a word-spelled unit or an integer
+      // substitution could not compile, let alone reach this assertion.
       for (const code of FREQUENCY_CODES) {
         store.selectRole(7);
         expectGet(ROLE_SEVEN_URL)
@@ -2534,9 +2003,6 @@ describe('RoleStore', () => {
 
     it('classifies each code by whether it bounds the membership, without producing a date', () => {
       // The classification is a fact about the terms, not an instant and not display text.
-      // The bound itself is derived server-side from an injected clock and arrives as an
-      // absolute instant; a second derivation in the client would disagree across a clock
-      // skew and neither answer would be reproducible.
       const expected: readonly (readonly [BillingFrequency, BillingTermsBound])[] = [
         ['N', 'Unbounded'],
         ['O', 'Perpetual'],
@@ -2554,10 +2020,6 @@ describe('RoleStore', () => {
     });
 
     it('treats the absent-integer period as no expiry at all, ahead of the code', () => {
-      // `RoleController.vb:L537` short-circuits the whole frequency branch when the period
-      // equals the absent-integer marker. It does not mean "unset, apply a default", so it is
-      // never coalesced to zero and never made positive — and it is tested FIRST, so it wins
-      // over a code that would otherwise bound the membership.
       expect(billingTermsBound('M', -1)).toBe('Unbounded');
       expect(billingTermsBound('Y', -1)).toBe('Unbounded');
       expect(billingTermsBound('D', -1)).toBe('Unbounded');
@@ -2570,24 +2032,9 @@ describe('RoleStore', () => {
     });
 
     it('reports a stored code outside the supported vocabulary as unsupported', () => {
-      // MIGRATION: THE CLASSIFIER USED TO THROW HERE, and the throw was reachable from shipped
-      //   data rather than from drift. Every DotNetNuke installation seeds roles whose stored
-      //   frequency characters come from the superseded numeric code set, the API carries a stored
-      //   character through losslessly, and the six-arm branch ended in an unreachable-case
-      //   assertion — so describing one of those roles raised an error on a screen that only
-      //   wanted to say what its terms were.
-      //
-      // `Unsupported` is neither of the two answers it could be mistaken for, and that is the
-      // point. `RoleController.vb:L540-L547` has no final arm, so an unrecognised code applied NO
-      // advance and left the expiry exactly as it stood: the terms neither remove an expiry
-      // (`Unbounded`) nor advance one (`Bounded`), so claiming either would assert something the
-      // stored terms do not say.
       expect(billingTermsBound('4', 12)).toBe('Unsupported');
       expect(billingTermsBound('0', 1)).toBe('Unsupported');
 
-      // Case is data. A lower-case `m` is a different stored byte from `M`, and it is classified
-      // as unsupported rather than folded onto the month code — the server's persistence read is
-      // case-sensitive for the same reason.
       expect(billingTermsBound('m', 12)).toBe('Unsupported');
     });
 
@@ -2629,10 +2076,6 @@ describe('RoleStore', () => {
     });
 
     it('classifies the billing and the trial terms separately, since the server chooses between them', () => {
-      // `RoleController.vb:L521` chose the trial terms over the billing terms when the trial
-      // had not already been used and the trial code was not the no-expiry one. The first half
-      // of that test reads a flag on the ASSIGNMENT row, which no published contract carries,
-      // so the choice stays where the data to make it lives and both sets are classified here.
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL)
         .flush(
@@ -2669,9 +2112,6 @@ describe('RoleStore', () => {
     });
 
     it('holds the minimum instant as a real value meaning no expiry, not as absence', () => {
-      // The legacy absent-instant marker is the minimum representable date, not nothing at
-      // all. Normalising it to absence would discard the distinction between "no expiry
-      // recorded" and "no expiry, recorded as such".
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL)
         .flush(
@@ -2725,9 +2165,6 @@ describe('RoleStore', () => {
     }
 
     it('offers the deletion when a real group is selected and its listing is empty', () => {
-      // Legacy: `Roles.ascx.vb:L85` sets the delete control's visibility from the listed roles
-      // being empty. The folder requirements cite `:L84`, which is the edit-group link's
-      // navigation address — the delete guard is `:L85`.
       givenGroupSelected(0, []);
 
       expect(store.canDeleteSelectedGroup()).toBeTrue();
@@ -2754,10 +2191,6 @@ describe('RoleStore', () => {
     });
 
     it('issues the deletion even while the affordance withholds it, because the server decides', () => {
-      // The affordance exists so a screen can disable a control. It is never consulted to
-      // decide whether to send the request: the listing it reads may be a stale page and it
-      // counts the roles on the CURRENT page rather than every role in the group, so it can
-      // disagree with the server in both directions.
       givenGroupSelected(0, [aRoleListItem({ roleId: 0 })]);
 
       expect(store.canDeleteSelectedGroup()).toBeFalse();
@@ -2778,9 +2211,6 @@ describe('RoleStore', () => {
     });
 
     it('resets the narrowing to the ungrouped intent after a successful deletion', () => {
-      // Legacy: `:L295` resets the field to minus one, which is the UNGROUPED entry per
-      // `:L114` — not the every-role one. The two are easily transposed, which is why the
-      // reset target is asserted by name.
       givenGroupSelected(0, []);
 
       store.deleteRoleGroup(0);
@@ -2804,11 +2234,6 @@ describe('RoleStore', () => {
     });
 
     it('surfaces a conflict on the deletion verbatim, and refreshes the stale affordance', () => {
-      // The affordance can say yes while the server says no, so the conflict is handled
-      // unconditionally. Because the conflict PROVES the held listing was stale, both
-      // listings are re-read on the failure path, which corrects the affordance instead of
-      // leaving a control enabled that would fail again — and the failure that prompted the
-      // refresh survives it.
       givenGroupSelected(0, []);
 
       expect(store.canDeleteSelectedGroup()).toBeTrue();
@@ -2923,10 +2348,9 @@ describe('RoleStore', () => {
         ),
       );
 
-      // Matched on identity with a strict comparison, never by truth: the grouping table is
-      // seeded from zero, so the row being patched here is exactly the one a truthy test
-      // would omit. No re-read follows, because a group's identity does not determine its own
-      // membership of the group listing.
+      // Matched on identity with a strict comparison, never by truth: the grouping table is seeded from
+      // zero, so the row being patched here is exactly the one a truthy test would omit. No re-read
+      // follows, because a group's identity does not determine its own membership of the group listing.
       expect(store.roleGroups().map((group) => group.roleGroupName)).toEqual([
         'Renamed Groups',
         'Other Groups',
@@ -2940,10 +2364,6 @@ describe('RoleStore', () => {
 
   describe('sentinel fidelity: zero, minus one, empty and false all survive unchanged', () => {
     it('holds a role carrying every awkward value exactly as the server sent it', () => {
-      // The server serialises with no ignore condition at all, so none of these values is
-      // elided on the way out and every one arrives as DATA. A member-by-member comparison is
-      // deliberate: a whole-object comparison would pass even if a member had been replaced
-      // by an equal-looking value of a different type.
       const wire: Role = aRole({
         roleId: 0,
         roleGroupId: null,
@@ -2980,10 +2400,9 @@ describe('RoleStore', () => {
     });
 
     it('holds a false boolean as data, because false was indistinguishable from unset before', () => {
-      // The legacy absence test reported true for false, so a false flag and an unset one were
-      // one value. Every wire boolean here is non-nullable, so false is DATA — and it matters
-      // acutely because the shipped tenant creation passes two false flags positionally
-      // (`PortalController.vb:L1390`).
+      // The legacy absence test reported true for false, so a false flag and an unset one were one value.
+      // Every wire boolean here is non-nullable, so false is DATA — and it matters acutely because the
+      // shipped tenant creation passes two false flags positionally.
       store.selectRole(0);
       expectGet(ROLE_ZERO_URL)
         .flush(envelopeOf(aRole({ roleId: 0, isPublic: false, autoAssignment: false })));
@@ -3069,9 +2488,6 @@ describe('RoleStore', () => {
 
   describe('the four negative vocabularies are never conflated', () => {
     it('keeps the pseudo-role STRINGS out of the numeric narrowing space', () => {
-      // Vocabulary (c) against vocabulary (a). The pseudo-role identifiers are String
-      // constants compared as strings, never parsed to numbers. A payload carrying one — here
-      // as a hostile group name — is held as the string it is, and the narrowing is unmoved.
       store.loadRoleGroups();
       expectGet(ROLE_GROUPS_URL)
         .flush(
@@ -3097,9 +2513,6 @@ describe('RoleStore', () => {
     });
 
     it('keeps a pseudo-role STRING distinct from absence', () => {
-      // Vocabulary (c) against vocabulary (d). The all-users constant is the string "-1"; the
-      // absent-integer marker is the number minus one. Neither is the other, and neither is
-      // absence.
       store.loadRoleGroups();
       expectGet(ROLE_GROUPS_URL)
         .flush(envelopeOf([aRoleGroup({ roleGroupId: 0, roleGroupName: '-1' })]));
@@ -3112,9 +2525,6 @@ describe('RoleStore', () => {
     });
 
     it('keeps the grouping FIELD distinct from the absent-integer marker', () => {
-      // Vocabulary (b) against vocabulary (d). Absence and minus one are both representable on
-      // this member and are told apart, which is what stops the legacy manufactured value from
-      // being reintroduced as though it were the same fact.
       store.selectRole(0);
       expectGet(ROLE_ZERO_URL).flush(envelopeOf(aRole({ roleId: 0, roleGroupId: null })));
 
@@ -3156,9 +2566,6 @@ describe('RoleStore', () => {
 
   describe('failures are held structurally as the server described them', () => {
     it('holds a forbidden response at warning severity, following the security tree\u2019s precedent', () => {
-      // `Website/admin/Security/AccessDenied.ascx.vb` performs no permission check at all and
-      // renders BOTH of its branches, at `:L43` and `:L45`, as a yellow warning rather than a
-      // red error. That is this feature's own precedent, so a refusal is a warning here too.
       store.loadRoles();
       expectGet(ROLES_URL)
         .flush(aProblem(403, 'authorization.forbidden', 'You do not administer this tenant.'), {
@@ -3193,9 +2600,6 @@ describe('RoleStore', () => {
     });
 
     it('carries the correlation value through into the held failure', () => {
-      // Required, not optional. The value is the operator's single join key between a browser
-      // report and a server log: the outgoing correlation header round-trips into the response
-      // body, and dropping it here would sever that join.
       store.loadRoles();
       expectGet(ROLES_URL)
         .flush(aProblem(500, null, 'Unexpected.'), {
@@ -3227,9 +2631,9 @@ describe('RoleStore', () => {
     });
 
     it('holds the per-member dictionary under the server\u2019s own keys, read with bracket access', () => {
-      // The dictionary is an index signature and the workspace's compiler settings refuse
-      // dotted access to one by design, so every read of it is a bracket read. The keys are the
-      // server's model-state keys and are NOT lower-camel.
+      // The dictionary is an index signature and the workspace's compiler settings refuse dotted access to
+      // one by design, so every read of it is a bracket read. The keys are the server's model-state keys
+      // and are NOT lower-camel.
       store.createRole(aCreateRequest());
       expectPost(ROLES_URL)
         .flush(
@@ -3256,10 +2660,9 @@ describe('RoleStore', () => {
     });
 
     it('holds an unsafe message as an inert string, marking nothing as trusted markup', () => {
-      // The legacy resource files carry live markup in dozens of values, script elements
-      // included, and the legacy precedent for showing an untrusted message was to encode it
-      // first. The document is therefore held as received and nothing is wrapped, blessed or
-      // rendered here; a consumer binds it as text.
+      // The legacy resource files carry live markup in dozens of values, script elements included, and the
+      // legacy precedent for showing an untrusted message was to encode it first. The document is therefore
+      // held as received and nothing is wrapped, blessed or rendered here; a consumer binds it as text.
       const hostile = '<script>alert(1)</script>';
 
       store.loadRoles();
@@ -3280,9 +2683,6 @@ describe('RoleStore', () => {
     });
 
     it('holds a message prefixed with the unspaced legacy break tag verbatim', () => {
-      // The legacy code prefixed messages with a break tag in BOTH spellings. Stripping it for
-      // display belongs to the shared form-error module; the store holds the raw structured
-      // document so nothing downstream is denied the original.
       store.createRole(aCreateRequest());
       expectPost(ROLES_URL)
         .flush(aProblem(409, CONFLICT_CODE.duplicateRoleName, '<br>The role was not added.'), {
@@ -3368,10 +2768,6 @@ describe('RoleStore', () => {
     });
 
     it('records no document when the response never arrived at all', () => {
-      // The network was unavailable, or the request was blocked. The framework reports a
-      // status of zero and puts a progress event where a body would go, so reading that slot
-      // would manufacture a document saying nothing. Absence is the honest answer, and the
-      // failure is still recorded.
       store.loadRoles();
       expectGet(ROLES_URL).error(new ProgressEvent('error'));
 
@@ -3408,9 +2804,6 @@ describe('RoleStore', () => {
     });
 
     it('records no document when a gateway answered with a page instead of one', () => {
-      // A failure produced by the reverse proxy rather than by the API arrives as markup. It is
-      // parsed defensively: a parse failure yields absence rather than replacing the caller's
-      // failure with a syntax error, which would report the wrong problem entirely.
       store.loadRoles();
       expectGet(ROLES_URL).flush('<html><body>504 Gateway Time-out</body></html>', {
         status: 504,
@@ -3575,14 +2968,10 @@ describe('RoleStore', () => {
         statusText: 'Created',
       });
 
-      // ⚠ NOT RE-READ HERE, AND THAT IS THE FIX FOR A MEASURED DEFECT. The reasoning for the old behaviour
-      // was sound as far as it went - where the role falls, and whether it falls on the current page at all,
-      // depends on the narrowing, the ordering and the page size, none of which this store may re-implement -
-      // but the read that answers those questions is the LISTING'S, not this command's. The listing keeps its
-      // page, narrowing and ordering in its address and reads on entry, and the only caller of this command
-      // leaves for the listing the moment the write settles. Doing it here as well produced a duplicate
-      // measured at 2,466 B sent and 25,283 B decoded per save, with 36 aborted listing refetches in one
-      // session as the two reads raced and the loser was cancelled mid-flight.
+      // ⚠ NOT RE-READ HERE, AND THE DUPLICATE THAT WOULD FOLLOW IS MEASURED. The case for re-reading is
+      // sound as far as it goes - where the role falls, and whether it falls on the current page at all,
+      // depends on the narrowing, the ordering and the page size, none of which this store may
+      // re-implement - but the read that answers those questions is the LISTING'S, not this command's.
       expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
         .withContext('a creation must not duplicate the read the listing issues for itself')
         .toHaveSize(0);
@@ -3613,19 +3002,14 @@ describe('RoleStore', () => {
       expect(write.request.body).toEqual(request);
       write.flush(envelopeOf(aRole({ roleId: 0, roleName: 'Site Administrators' })));
 
-      // The patch copies the SERVER's values, not the request's, so it cannot show something
-      // the server did not accept — and it matches the row keyed zero by identity, which is
-      // exactly the row a truthy test would omit.
+      // The patch copies the SERVER's values, not the request's, so it cannot show something the server did
+      // not accept — and it matches the row keyed zero by identity, which is exactly the row a truthy test
+      // would omit.
       expect(store.roleItems().map((item) => item.roleName)).toEqual([
         'Site Administrators',
         'Registered Users',
       ]);
 
-      // ⚠ AND NO RE-READ, WHICH IS THE OTHER HALF OF THE SAME FIX. It remains true that a changed grouping
-      // can move a role out of the current narrowing entirely and that no local patch can determine it - but
-      // the read that settles it belongs to the LISTING, which reads itself from its address on arrival, and
-      // the only caller of this command leaves for the listing as soon as the write settles. The patch above
-      // is what keeps a still-mounted listing honest in the meantime.
       expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
         .withContext('an update must not duplicate the read the listing issues for itself')
         .toHaveSize(0);
@@ -3641,9 +3025,6 @@ describe('RoleStore', () => {
 
       removal.flush(null, { status: 204, statusText: 'No Content' });
 
-      // MIGRATION: for a ROLE an empty success really does mean the row is gone, which is what
-      // makes the assignment removal the exception rather than the rule — and why the two are
-      // deliberately not implemented alike.
       expect(store.selectedRole()).toBeNull();
 
       expectGet(ROLES_URL).flush(pageOf([], 0));
@@ -3658,16 +3039,10 @@ describe('RoleStore', () => {
       store.deleteRole(0, { thenReadListing: false });
       expectDelete(ROLE_ZERO_URL).flush(null, { status: 204, statusText: 'No Content' });
 
-      // ⚠ THE SELECTION IS STILL DISCARDED ON THIS BRANCH TOO. What is HELD and what is DISPLAYED are
-      // different questions: the deleted role is gone from the store either way, and only the listing
-      // READ is at the caller's discretion.
       expect(store.selectedRole()).toBeNull();
 
-      // A caller that passes `false` is one that departs for the listing, and the listing reads itself
-      // from its own address on arrival. Reading here as well issued a second, identical request that
-      // the route teardown then cancelled mid-flight: runtime measurement caught exactly that shape on
-      // this path, two listing reads with different correlation ids, the first `net::ERR_ABORTED` after
-      // some seven milliseconds and the second supplying the rows actually shown.
+      // A caller that passes `false` is one that departs for the listing, and the listing reads itself from
+      // its own address on arrival.
       expect(httpMock.match((candidate) => candidate.url === ROLES_URL))
         .withContext('a deletion must not read the listing when it was told not to')
         .toHaveSize(0);
@@ -3692,11 +3067,6 @@ describe('RoleStore', () => {
 
   describe('the store publishes no presentation and decides no authorisation', () => {
     it('publishes no formatting member of any kind', () => {
-      // Legacy: `Roles.ascx.vb:L152-L162` rendered a period as a phrase and `:L175` rendered a
-      // fee as currency; a third helper in `SecurityRoles.ascx.vb` rendered a date and filtered
-      // absent ones out for display. All three are presentation and belong to a component or a
-      // shared pipe. A member found here would be a code-organisation violation to report, not
-      // a behaviour to test.
       const formatters: readonly string[] = publishedMembers(store).filter((name) =>
         /format|render|display|currency|toFixed|toLocale|label|caption|text$/i.test(name),
       );
@@ -3707,14 +3077,9 @@ describe('RoleStore', () => {
     });
 
     it('publishes no permission-deciding member', () => {
-      // Authorisation is decided server-side and arrives as a refusal or a conflict. The two
-      // closed permission vocabularies — the persisted keys and the policy names — are never
-      // interchanged, and neither carries a negation prefix in this generation of the product.
-      // Nothing here decides anything about either.
-      // The fragments are ANCHORED rather than loose. A loose fragment matching a role-bearing
-      // name would flag `hasRoleGroups`, which is a data projection reporting whether the
-      // tenant declares any group at all and decides nothing about permission — the sort of
-      // false positive that gets an assertion weakened rather than corrected.
+      // Authorisation is decided server-side and arrives as a refusal or a conflict. The two closed
+      // permission vocabularies — the persisted keys and the policy names — are never interchanged, and
+      // neither carries a negation prefix in this generation of the product.
       const decidingMembers: readonly string[] = [
         'hasPermission',
         'isInRole',
@@ -3742,9 +3107,9 @@ describe('RoleStore', () => {
     });
 
     it('publishes no cache, expiry stamp or invalidation member', () => {
-      // The legacy code reached a static cache helper from well over a hundred call sites with
-      // coarse portal-wide and host-wide invalidation. A second, unsynchronised cache here
-      // would answer from stale state after another administrator's change.
+      // The legacy code reached a static cache helper from well over a hundred call sites with coarse
+      // portal-wide and host-wide invalidation. A second, unsynchronised cache here would answer from stale
+      // state after another administrator's change.
       const caching: readonly string[] = publishedMembers(store).filter((name) =>
         /cache|invalidat|expiresAt|staleness|isStale|evict/i.test(name),
       );
@@ -3753,10 +3118,6 @@ describe('RoleStore', () => {
     });
 
     it('derives no assignment status, because the server never sends one', () => {
-      // The status vocabulary exists in the contract module but is a member of neither the role
-      // nor the membership contract, so no held value can carry one. The store's own term
-      // classification is a different vocabulary entirely, and the two are disjoint — which is
-      // what proves a status has not been quietly re-derived from an instant comparison.
       store.selectRole(7);
       expectGet(ROLE_SEVEN_URL)
         .flush(envelopeOf(aRole({ roleId: 7, billingFrequency: 'M', billingPeriod: 1 })));
@@ -3765,11 +3126,9 @@ describe('RoleStore', () => {
 
       expect(classification).toBe('Bounded');
 
-      // The two vocabularies are disjoint, and the COMPILER enforces it: writing the
-      // comparison against a status value directly is rejected outright, because no member of
-      // the status union is assignable to the term union. Widening to a plain string is what
-      // lets the disjointness be stated as a runtime assertion at all, and the emptiness of
-      // the intersection below is the machine-checkable form of the same claim.
+      // The two vocabularies are disjoint, and the COMPILER enforces it: writing the comparison against a
+      // status value directly is rejected outright, because no member of the status union is assignable to
+      // the term union.
       const termVocabulary: readonly string[] = [
         'Unbounded',
         'Perpetual',
@@ -3798,9 +3157,6 @@ describe('RoleStore', () => {
     });
 
     it('publishes no member that composes a request address', () => {
-      // The wire belongs to the service. A second opinion about a query string here would be a
-      // second answer, and this file asserts addresses the service composed rather than any
-      // the store composed.
       const wireMembers: readonly string[] = publishedMembers(store).filter((name) =>
         /^url|Url$|endpoint|baseAddress|httpClient|apiBase/i.test(name),
       );
@@ -3813,19 +3169,13 @@ describe('RoleStore', () => {
   // IMMUTABILITY AND LIFECYCLE
   // -------------------------------------------------------------------------
 
-  // -------------------------------------------------------------------------
   // STALE RESPONSES AND SESSION TEARDOWN
-  // -------------------------------------------------------------------------
-  //
-  // Two properties, one mechanism. Every read holds its handle and abandons the previous
-  // request before dispatching, so a slice is a function of the LATEST request rather than of
-  // whichever response happens to arrive last; and `reset()` abandons everything before
-  // clearing, so no response already on the wire can repopulate what a sign-out discarded.
+  // Two properties, one mechanism.
   describe('stale responses cannot overwrite newer state', () => {
     it('abandons a superseded listing read, so a late answer can never land', () => {
-      // ⚠ THE REGRESSION THIS PINS DOWN. Rapid narrowing, ordering or filter changes issue A
-      // then B. Without cancellation, B answering first and A answering second leaves the
-      // slice describing A - the narrowing the operator has already moved on from.
+      // ⚠ THE REGRESSION THIS PINS DOWN. Rapid narrowing, ordering or filter changes issue A then B.
+      // Without cancellation, B answering first and A answering second leaves the slice describing A - the
+      // narrowing the operator has already moved on from.
       store.setRolesQuery('alpha');
       const first = expectGet(ROLES_URL);
 
@@ -3836,9 +3186,9 @@ describe('RoleStore', () => {
         .withContext('the superseded read is abandoned when the next one is dispatched')
         .toBeTrue();
 
-      // The testing backend refuses to answer a cancelled request at all, which is a stronger
-      // statement than any arrival order this specification could stage: the stale read cannot
-      // deliver a value to this store under ANY interleaving.
+      // The testing backend refuses to answer a cancelled request at all, which is a stronger statement
+      // than any arrival order this specification could stage: the stale read cannot deliver a value to
+      // this store under ANY interleaving.
       expect(() => first.flush(pageOf([aRoleListItem({ roleName: 'Alpha' })], 1))).toThrowError(
         /cancelled/i,
       );
@@ -3908,9 +3258,6 @@ describe('RoleStore', () => {
 
       store.reset();
 
-      // ⚠ CLEARING A SLICE WHILE ITS REQUEST IS IN FLIGHT IS THE SAME DISCLOSURE WITH A DELAY IN
-      // FRONT OF IT: the response repopulates exactly what the sign-out discarded. Both halves -
-      // cancel, then clear - are necessary and neither is sufficient.
       expect(rolesCall.cancelled).toBeTrue();
       expect(groupsCall.cancelled).toBeTrue();
       expect(roleCall.cancelled).toBeTrue();
@@ -3933,10 +3280,6 @@ describe('RoleStore', () => {
     });
 
     it('abandons a corrective page read mid-flight rather than letting it land', () => {
-      // ⚠ THIS CASE USED TO ABANDON A COMPLETE-LISTING WALK. The walk is gone, but the property it
-      // proved still matters and now has a different second request to prove it on: the corrective read
-      // a past-the-end answer dispatches. It is issued from inside the first read's `next`, so it is the
-      // one request that could outlive a reset if the handle were not replaced.
       store.setRolesPage(2);
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 20 })], 21, 2));
 
@@ -3982,9 +3325,9 @@ describe('RoleStore', () => {
       expectPut(ROLE_ZERO_URL)
         .flush(envelopeOf(aRole({ roleId: 0, roleName: 'Site Administrators' })));
 
-      // A consumer that read the sequence before the write still sees what it read. That is
-      // possible solely because the update replaced the sequence instead of editing it in
-      // place, and it is what lets a reference-identity change-detection strategy work at all.
+      // A consumer that read the sequence before the write still sees what it read. That is possible solely
+      // because the update replaced the sequence instead of editing it in place, and it is what lets a
+      // reference-identity change-detection strategy work at all.
       expect(present(readEarlier[0], 'the earlier row').roleName).toBe('Administrators');
       expect(present(store.roleItems()[0], 'the current row').roleName).toBe(
         'Site Administrators',
@@ -4057,9 +3400,6 @@ describe('RoleStore', () => {
         .withContext('the reset target is the ungrouped intent, per the measured legacy default')
         .toBe('GlobalRoles');
       expect(store.rolesPage().pageIndex).toBe(0);
-      // Both listings now take the shared default. They keep SEPARATE coordinate constants so that
-      // resetting one cannot silently move the other, which is why the two assertions are written out
-      // rather than compared to each other.
       expect(store.rolesPage().pageSize).toBe(ROLES_PAGE_SIZE);
       expect(store.assignmentsPage().pageIndex).toBe(0);
       expect(store.assignmentsPage().pageSize).toBe(DEFAULT_PAGE_SIZE);
@@ -4095,26 +3435,13 @@ describe('RoleStore', () => {
       expect(store.busy()).toBeFalse();
     });
   });
-  // -------------------------------------------------------------------------
   // SESSION ISOLATION AND READ CONCURRENCY
-  //
-  // This store had a `reset` that cleared its slices and released NOTHING, and no request handles
-  // at all. Two consequences, neither of which looks like a defect from inside one screen:
-  //
-  // Clearing without releasing meant a reset cleared the slices and then let the responses already
-  // in flight repopulate them moments later — so the store ended up holding the PREVIOUS SESSION'S
-  // roles, groups and memberships, with no command issued to explain where they came from.
-  //
-  // No handles meant two reads of the same thing raced, and the winner was whichever response
-  // arrived LAST rather than whichever request was issued last. Responses are not ordered by
-  // request order, so a first request delayed behind a slow query lands after a second and
-  // overwrites the newer page with the older one — a grid showing a page the pager says it is not
-  // on, with nothing reproducible about it.
-  // -------------------------------------------------------------------------
+  // No handles meant two reads of the same thing raced, and the winner was whichever response arrived LAST
+  // rather than whichever request was issued last.
   describe('session isolation and read concurrency', () => {
-    // The shared helper matches on `request.url`, which is the path WITHOUT its query string, so
-    // the bare paths are what these cases claim. The coordinates and the narrowing the listing
-    // carries are asserted by the cases that exist for that purpose.
+    // The shared helper matches on `request.url`, which is the path WITHOUT its query string, so the bare
+    // paths are what these cases claim. The coordinates and the narrowing the listing carries are asserted
+    // by the cases that exist for that purpose.
     const ROLES_LISTING_URL = ROLES_URL;
     const ZERO_MEMBERS_LISTING_URL = ROLE_ZERO_MEMBERS_URL;
     const SEVEN_MEMBERS_LISTING_URL = ROLE_SEVEN_MEMBERS_URL;
@@ -4167,9 +3494,6 @@ describe('RoleStore', () => {
     });
 
     it('abandons the earlier single-role read when another role is selected', () => {
-      // The read most likely to be issued twice in quick succession, because moving between rows
-      // re-issues it — and the two answers describe DIFFERENT roles, so a stale winner shows one
-      // role's billing terms under another role's name.
       store.selectRole(0);
 
       const first = expectGet(ROLE_ZERO_URL);
@@ -4218,10 +3542,10 @@ describe('RoleStore', () => {
     });
 
     it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
-      // ⚠ A REGRESSION GUARD FOR A REAL TRAP. An RxJS `Subscription` used as a container is CLOSED
-      // once unsubscribed, and anything added afterwards is unsubscribed the instant it is added —
-      // so the FIRST boundary would release the writes correctly and then silently cancel every
-      // subsequent write for the rest of the application's life.
+      // ⚠ A REGRESSION GUARD FOR A REAL TRAP. An RxJS `Subscription` used as a container is CLOSED once
+      // unsubscribed, and anything added afterwards is unsubscribed the instant it is added — so the FIRST
+      // boundary would release the writes correctly and then silently cancel every subsequent write for the
+      // rest of the application's life.
       store.reset();
 
       store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
@@ -4245,31 +3569,15 @@ describe('RoleStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // WRITE IDENTITY, AND WHY AN AGGREGATE FLAG COULD NOT SETTLE A WRITE
-  //
-  // This store used to publish ONE boolean for "a write is in flight" and nothing else. It is
-  // provided at the application root, so every screen that dispatched a write watched that one
-  // boolean fall and then read the store's single failure slot to learn the outcome. Three distinct
-  // wrong answers follow from that, and none of them is visible from inside one screen:
-  //
-  //   (a) TWO WRITES, ONE FLAG. Screen A dispatches, screen B dispatches, A settles -> the flag
-  //       falls while B is still open, and BOTH screens conclude their own write is done.
-  //   (b) SOMEBODY ELSE'S FAILURE. A's write succeeds and B's is refused. A reads the failure slot,
-  //       finds B's refusal there and reports it as the outcome of its own successful write.
-  //   (c) A SUCCESS READ AS A FAILURE, AND THE REVERSE. The slot is cleared at every dispatch, so
-  //       whether a screen sees a refusal at all depends on which dispatch happened to be last.
-  //
-  // The correction is an identifier per write, handed back at dispatch, and a published result that
-  // carries the identifier, the operation and that write's OWN failure. The cases below pin each
-  // half: the identity is unique and monotone, the result names the write it belongs to, and the
-  // failure travels with the result rather than being read out of shared state.
-  // -------------------------------------------------------------------------
+  // (a) TWO WRITES, ONE FLAG. Screen A dispatches, screen B dispatches, A settles -> the flag falls while B
+  // is still open, and BOTH screens conclude their own write is done. (b) SOMEBODY ELSE'S FAILURE. A's
+  // write succeeds and B's is refused.
   describe('every write is settled by identity rather than by an aggregate flag', () => {
     it('hands back a distinct identifier for every write, and never the absent value', () => {
-      // Zero is reserved as "no write awaited" by the screens that hold one of these, so the
-      // FIRST identifier must not be zero. The counter therefore pre-increments, and that is
-      // asserted here rather than left to a comment.
+      // Zero is reserved as "no write awaited" by the screens that hold one of these, so the FIRST
+      // identifier must not be zero. The counter therefore pre-increments, and that is asserted here rather
+      // than left to a comment.
       const first = store.createRole(aCreateRequest());
       const second = store.createRoleGroup({ roleGroupName: 'Paid Services', description: null });
 
@@ -4325,9 +3633,9 @@ describe('RoleStore', () => {
     });
 
     it('settles the first of two open writes without settling the second', () => {
-      // ⚠ THIS IS DEFECT (a), AND IT IS THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes
-      // are open; the second answers first. The result must name the SECOND, and the aggregate must
-      // stay raised because the first is still open.
+      // ⚠ THIS IS DEFECT (a), AND IT IS THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes are
+      // open; the second answers first. The result must name the SECOND, and the aggregate must stay raised
+      // because the first is still open.
       const firstWrite = store.createRole(aCreateRequest());
       const secondWrite = store.createRoleGroup({
         roleGroupName: 'Paid Services',
@@ -4356,9 +3664,9 @@ describe('RoleStore', () => {
     });
 
     it('does not attach one write\u2019s refusal to another write\u2019s result', () => {
-      // ⚠ THIS IS DEFECT (b). The refused write and the successful one overlap, and the successful
-      // one settles LAST — so the shared failure slot holds a refusal at the very moment the
-      // successful write's result is published. The result must still carry no failure.
+      // ⚠ THIS IS DEFECT (b). The refused write and the successful one overlap, and the successful one
+      // settles LAST — so the shared failure slot holds a refusal at the very moment the successful write's
+      // result is published.
       store.updateRole(7, anUpdateRequest());
 
       const refused = expectPut(ROLE_SEVEN_URL);
@@ -4390,13 +3698,6 @@ describe('RoleStore', () => {
         .withContext('a successful write must not inherit the other write\u2019s refusal')
         .toBeNull();
 
-      // ⚠ AND THE SHARED SLOT IS ALREADY EMPTY, WHICH IS DEFECT (c) IN ITS PUREST FORM. The refusal
-      // WAS recorded there — asserted above — but the successful write's own listing re-read cleared
-      // it moments later, because every read clears the slot at dispatch.
-      // So a screen that learned its outcome from this slot would here have concluded that a REFUSED
-      // update succeeded, purely because an unrelated write finished afterwards. Whether the slot
-      // holds anything at all depends on what else the application happened to do next, which is
-      // exactly why the outcome travels on the settled result instead.
       expect(store.failure())
         .withContext('the shared slot cannot be relied on to still hold the refusal')
         .toBeNull();
@@ -4455,10 +3756,6 @@ describe('RoleStore', () => {
     });
 
     it('refuses to move the scope when a DIFFERENT role is the one being viewed', () => {
-      // ⚠ THE CROSS-ROLE REPUBLICATION. Role 7 is enrolled, the operator moves to role 0, and role
-      // 7's write then settles. The previous code forced the scope back to 7, cancelled the read of
-      // 0 and rendered 7's named members under 0's heading — silently, because a cancelled read
-      // delivers neither a value nor an error.
       store.assignUser(7, request);
 
       const write = expectPost(ROLE_SEVEN_MEMBERS_URL);
@@ -4509,12 +3806,9 @@ describe('RoleStore', () => {
     });
 
     it('refuses the refresh once the screen that asked has been LEFT', () => {
-      // ⚠ THE DEFECT RUNTIME VALIDATION CAUGHT, and the reason the screen's announcement exists at
-      // all. The scope test alone cannot see this case: leaving a membership listing does not blank
-      // the rows, so the scope STILL names role 7 here and agreed with the write. Reproduced three
-      // times out of three in a real browser by enrolling an account and clicking back to the role
-      // listing before the write settled — which is the ordinary path from one role's memberships to
-      // another's, the listing being the unavoidable stop between them.
+      // ⚠ THE DEFECT RUNTIME VALIDATION CAUGHT, and the reason the screen's announcement exists at all. The
+      // scope test alone cannot see this case: leaving a membership listing does not blank the rows, so the
+      // scope STILL names role 7 here and agreed with the write.
       store.openAssignmentsView(7);
       store.loadAssignments(7);
       expectGet(ROLE_SEVEN_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 7 })], 1));
@@ -4570,9 +3864,9 @@ describe('RoleStore', () => {
     });
 
     it('ignores a departing screen that names a role another screen has already claimed', () => {
-      // A screen tears down and a replacement announces itself in an order this store does not
-      // control. Were the close unconditional, the predecessor's teardown would un-announce the
-      // replacement and the replacement's own legitimate refresh would then be refused.
+      // A screen tears down and a replacement announces itself in an order this store does not control.
+      // Were the close unconditional, the predecessor's teardown would un-announce the replacement and the
+      // replacement's own legitimate refresh would then be refused.
       store.openAssignmentsView(0);
       store.closeAssignmentsView(7);
 
@@ -4605,8 +3899,8 @@ describe('RoleStore', () => {
 
     it('treats role zero as an occupied scope rather than as an absent one', () => {
       // Role keys are `IDENTITY(0, 1)`, so role 0 is the Administrators role of a fresh tenant. A
-      // truthiness test on the scope would read it as "nothing in scope" and take the adoption
-      // branch — reintroducing the republication for precisely the most important role.
+      // truthiness test on the scope would read it as "nothing in scope" and take the adoption branch —
+      // reintroducing the republication for precisely the most important role.
       store.loadAssignments(0);
       expectGet(ROLE_ZERO_MEMBERS_URL).flush(pageOf([anAssignment({ roleId: 0 })], 1));
 
@@ -4616,15 +3910,10 @@ describe('RoleStore', () => {
       expect(store.assignmentsRoleId()).toBe(0);
     });
   });
-
-
 });
 
 /**
  * A role creation request carrying the awkward values rather than tidy ones.
- *
- * Declared as a function so no case can mutate a value another depends on, and annotated
- * so the compiler checks every member spelling against the contract.
  *
  * @returns One creation request.
  */

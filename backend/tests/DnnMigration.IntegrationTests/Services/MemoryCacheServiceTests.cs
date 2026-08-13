@@ -12,44 +12,20 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Services;
 
-/// <summary>
-/// Drives the real cache adapter, rather than a mock of the contract it implements.
-/// </summary>
+/// <summary>Drives the real cache adapter, rather than a mock of the contract it implements.</summary>
 /// <remarks>
 /// <para>
 /// <strong>What the existing coverage actually protected.</strong> Every application service that caches is
 /// tested against a mock of <see cref="ICacheService"/>, and those tests assert that the service ASKED for
 /// something - that it read before loading, that it wrote with the expiry it computed, that it invalidated
-/// after a write. Not one of them asserts what happens when the answer arrives. The adapter behind that
-/// contract carries the entire behavioural burden: coalescing that must be shape-aware, cancellation that must
-/// be strictly per caller, a bounded creation that must be retired rather than left holding a key,
-/// publication that must be fenced against both an invalidation and a retirement, a registry that must not
-/// grow without bound, and diagnostics that must never quote a key that can carry a user name. Every one of
-/// those can break with the whole suite green, because a mock has none of them.
+/// after a write. Not one of them asserts what happens when the answer arrives.
 /// </para>
 /// <para>
-/// <strong>The store is this suite's own, not the application's.</strong> The production registration is a
-/// singleton over one process-wide store, so a test that invalidated the host on it would evict entries every
-/// other suite in the collection is relying on, and a test that asserted on registry contents would be reading
-/// whatever those suites had left behind. Each fact below therefore builds an adapter over a store of its own -
-/// the same class, the same construction, the same size limit - so that what it observes was caused by what it
-/// did. The production REGISTRATION is asserted separately and explicitly, so nothing is taken on trust.
-/// </para>
-/// <para>
-/// <strong>Key literals are restated here rather than borrowed.</strong> The adapter declares them
-/// <c>internal</c> and this project can see them, but importing them would make every key assertion an echo:
-/// a renamed key would rename the expectation with it. The literals below are transcribed from the legacy
-/// declarations at <c>Library/Components/Providers/Caching/DataCache.vb:L44-L79</c>, which is the authority the
-/// adapter is supposed to be reproducing, so a drift in either direction fails here.
-/// </para>
-/// <para>
-/// <strong>Two facts reach private state by reflection, and say so.</strong> The tracked-key registry and the
-/// category index are private bookkeeping with no public projection, and the guarantees about them - an entry
-/// that expires unobserved withdraws itself, an emptied category is dropped rather than retained, the portal
-/// dictionary is filed under its own category rather than the portal one - are guarantees about growth and
-/// classification that have no other observable consequence today. Reading the fields is the only way to
-/// assert them, and asserting them is worth it: each is a defect whose whole symptom is unbounded growth or a
-/// key swept as collateral by a future category sweep.
+/// <strong>Two facts reach private state by reflection, and say so.</strong> The tracked-key registry and
+/// the category index are private bookkeeping with no public projection, and the guarantees about them - an
+/// entry that expires unobserved withdraws itself, an emptied category is dropped rather than retained, the
+/// portal dictionary is filed under its own category rather than the portal one - are guarantees about
+/// growth and classification that have no other observable consequence today.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -84,9 +60,6 @@ public sealed class MemoryCacheServiceTests
     private const string ProfileDefinitionsKeyTemplate = "ProfileDefinitions{0}";
 
     /// <summary>Legacy key template for one account, from <c>DataCache.vb:L78</c>.</summary>
-    /// <remarks>
-    /// The second placeholder is a USER NAME, which is precisely why no diagnostic may quote a composed key.
-    /// </remarks>
     private const string UserKeyTemplate = "UserInfo|{0}|{1}";
 
     /// <summary>Legacy prefix under which per-module settings are cached.</summary>
@@ -127,13 +100,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>The registered store is bounded, and the adapter is what makes writing to it legal.</summary>
-    /// <remarks>
-    /// These two settings are a pair and neither may be changed alone. The store is configured with a size
-    /// limit, and a store with a limit REFUSES an entry that declares no size - so if the adapter ever stopped
-    /// declaring one, every cache write in the application would become an exception rather than a silently
-    /// unbounded store. The refusal is asserted directly against the production store so that the pairing is
-    /// shown to be real rather than assumed.
-    /// </remarks>
     [Fact]
     public void TheRegisteredStore_IsBoundedAndTheAdapterDeclaresASizeForEveryEntry()
     {
@@ -181,8 +147,9 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>A miss is reported as the caller's own default, never as a sentinel.</summary>
     /// <remarks>
-    /// The legacy null helpers mapped an absent integer to minus one and an absent string to the empty string,
-    /// and both are legitimate stored values in the existing schema, so neither may stand in for a miss.
+    /// The legacy null helpers mapped an absent integer to minus one and an absent string to the empty
+    /// string, and both are legitimate stored values in the existing schema, so neither may stand in for a
+    /// miss.
     /// </remarks>
     [Fact]
     public void Get_ReportsAMissAsTheCallersOwnDefault()
@@ -196,11 +163,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>A deliberately stored null round-trips rather than being turned into a miss.</summary>
-    /// <remarks>
-    /// The contract's generic parameter is unconstrained, so the caller decides whether null is meaningful for
-    /// its own value shape. An adapter that refused to store one would silently turn a cached negative answer
-    /// into a repeated load.
-    /// </remarks>
     [Fact]
     public void Set_StoresANullValueAndGetRoundTripsIt()
     {
@@ -216,13 +178,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>An entry of another shape is refused, and the refusal quotes no key.</summary>
-    /// <remarks>
-    /// Two callers sharing one key with different value shapes is a defect in the callers, and it surfaces
-    /// here deliberately rather than being disguised as a miss - a miss would provoke a silent reload and then
-    /// a silent overwrite, alternating for as long as both callers ran. The key used is a composed ACCOUNT
-    /// key, so the non-disclosure assertion is made on a key that genuinely carries personal data rather than
-    /// on a harmless one.
-    /// </remarks>
     [Fact]
     public void Get_RefusesAnEntryOfAnotherShapeWithoutQuotingTheKey()
     {
@@ -301,14 +256,9 @@ public sealed class MemoryCacheServiceTests
             + "without the store growing with it");
     }
 
-    /// <summary>A non-positive expiry writes nothing, where the legacy code wrote an entry that never expired.</summary>
-    /// <remarks>
-    /// The legacy sites multiplied a hardcoded twenty by the multiplier and inserted unconditionally, so at a
-    /// multiplier of zero they handed the framework a zero sliding window - which it read as "no sliding
-    /// expiration" and, with no absolute expiry either, cached the entry for the life of the process. That is
-    /// an accidental persistence path rather than an instruction, and the infinite span is not accepted as a
-    /// hidden equivalent for it.
-    /// </remarks>
+    /// <summary>
+    /// A non-positive expiry writes nothing, where the legacy code wrote an entry that never expired.
+    /// </summary>
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
@@ -342,10 +292,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>A miss with caching switched off is refused rather than loaded.</summary>
     /// <remarks>
-    /// "Caching off" means "do not do the work", not merely "do not store the result" - the legacy site that
-    /// establishes this skips an entire expensive query when its computed timeout is not positive. The adapter
-    /// cannot centralise that decision, so it refuses instead of guessing, and the refusal must not run the
-    /// factory: running it would perform exactly the load the legacy path would have skipped.
+    /// "Caching off" means "do not do the work", not merely "do not store the result" - the legacy site
+    /// that establishes this skips an entire expensive query when its computed timeout is not positive. The
+    /// adapter cannot centralise that decision, so it refuses instead of guessing, and the refusal must not
+    /// run the factory: running it would perform exactly the load the legacy path would have skipped.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_RefusesAMissWhenCachingIsSwitchedOffWithoutRunningTheFactory()
@@ -406,10 +356,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>A live entry is still served after caching has been switched off.</summary>
     /// <remarks>
-    /// The read happens BEFORE the multiplier is consulted, which is the legacy order: every measured call site
-    /// fetched from the cache first and computed its timeout only after a miss. An adapter that checked the
-    /// multiplier first would start refusing reads of entries it had already written, which is a refusal the
-    /// caller has no way to satisfy.
+    /// The read happens BEFORE the multiplier is consulted, which is the legacy order: every measured call
+    /// site fetched from the cache first and computed its timeout only after a miss. An adapter that
+    /// checked the multiplier first would start refusing reads of entries it had already written, which is
+    /// a refusal the caller has no way to satisfy.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_StillServesALiveEntryWhenCachingIsSwitchedOff()
@@ -460,9 +410,9 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>A failed load does not poison the key.</summary>
     /// <remarks>
-    /// The in-flight registration is released whether the creation completes, faults or is cancelled. Left in
-    /// place after a failure it would be joined by every later caller, so one transient database error would
-    /// become a permanent refusal to serve that key for the life of the process.
+    /// The in-flight registration is released whether the creation completes, faults or is cancelled. Left
+    /// in place after a failure it would be joined by every later caller, so one transient database error
+    /// would become a permanent refusal to serve that key for the life of the process.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_DoesNotPoisonAKeyWhenTheFactoryFails()
@@ -556,10 +506,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>Callers asking for different shapes are never joined.</summary>
     /// <remarks>
-    /// Two callers asking for the same key as two different shapes are not asking for the same thing: joining
-    /// them would hand one of them a value it cannot hold, and would do so intermittently, depending only on
-    /// which arrived first. Both factories are held open until both have been entered, so the assertion is
-    /// about the registry rather than about timing.
+    /// Two callers asking for the same key as two different shapes are not asking for the same thing:
+    /// joining them would hand one of them a value it cannot hold, and would do so intermittently,
+    /// depending only on which arrived first. Both factories are held open until both have been entered, so
+    /// the assertion is about the registry rather than about timing.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_DoesNotJoinCallersAskingForDifferentShapes()
@@ -605,11 +555,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>One caller's withdrawal never cancels the shared creation.</summary>
     /// <remarks>
-    /// Because a single creation serves every coalesced caller, binding it to whoever arrived first would let
-    /// that caller's withdrawal surface as a cancellation to unrelated callers whose own tokens are perfectly
-    /// healthy: two concurrent requests miss the same key, the first client disconnects, and the second fails
-    /// through no fault of its own. The factory records whether the token it was handed was cancelled, which
-    /// is the direct evidence that no caller's lifetime was attached to the shared work.
+    /// Because a single creation serves every coalesced caller, binding it to whoever arrived first would
+    /// let that caller's withdrawal surface as a cancellation to unrelated callers whose own tokens are
+    /// perfectly healthy: two concurrent requests miss the same key, the first client disconnects, and the
+    /// second fails through no fault of its own.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_IsolatesOneCallersWithdrawalFromTheSharedCreation()
@@ -665,12 +614,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>A value produced before an invalidation is delivered but not published.</summary>
-    /// <remarks>
-    /// The legacy idiom related an insert to nothing, so a clear issued while a load was in flight was simply
-    /// overwritten by that load a moment later - reinstating exactly the state the clear was issued to remove.
-    /// The waiting caller still receives the value, because it was produced correctly and is at least as fresh
-    /// as anything the cache could have offered; only the write is withheld.
-    /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_DeliversButDoesNotPublishAValueProducedBeforeAnInvalidation()
     {
@@ -707,11 +650,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>An eviction fences an in-flight creation even when the evicted key held nothing.</summary>
-    /// <remarks>
-    /// The invalidation count moves on every eviction, including one for a key that held no entry: an eviction
-    /// for an absent key still expresses the intent that whatever is under that key must go, and a creation
-    /// about to publish has to honour it. This is the arm a test driven only by populated keys would miss.
-    /// </remarks>
     [Fact]
     public async Task AnEvictionOfAnAbsentKey_StillFencesAnInFlightCreation()
     {
@@ -746,13 +684,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>A portal invalidation evicts the portal's own keys and the categories it cannot attribute.</summary>
-    /// <remarks>
-    /// The legacy cascade discovered its dependents by querying the database - one select for the portal's
-    /// tabs and two more per tab. None of those queries survives: what cannot be attributed to the portal from
-    /// the key alone, because a module-settings key carries only a module identifier, is evicted as a whole
-    /// tracked category instead. That is broader than the legacy walk and deliberately so, since a superfluous
-    /// eviction costs one re-read whereas a missed one serves stale data.
-    /// </remarks>
     [Fact]
     public void InvalidatePortal_EvictsThePortalsKeysAndTheCategoriesItCannotAttribute()
     {
@@ -804,11 +735,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>The portal dictionary is not swept as collateral by a portal invalidation.</summary>
     /// <remarks>
-    /// Its literal key begins with the portal category's prefix, so a shortest-first classification would file
-    /// it under the portal category and carry it off the day anyone sweeps that category. It is registered as a
-    /// category of its own and the vocabulary is sorted longest-first, which makes the misfiling impossible
-    /// rather than merely unlikely. Asserted through the category index because there is no other way to see
-    /// which category a key was filed under.
+    /// Its literal key begins with the portal category's prefix, so a shortest-first classification would
+    /// file it under the portal category and carry it off the day anyone sweeps that category. It is
+    /// registered as a category of its own and the vocabulary is sorted longest-first, which makes the
+    /// misfiling impossible rather than merely unlikely.
     /// </remarks>
     [Fact]
     public void TheCategoryVocabulary_FilesThePortalDictionaryUnderItsOwnCategory()
@@ -858,9 +788,9 @@ public sealed class MemoryCacheServiceTests
     /// <summary>A host invalidation reaches everything the adapter wrote, and empties both registries.</summary>
     /// <remarks>
     /// This is the only member that means "everything", and it is the only one that takes no argument -
-    /// precisely because minus one no longer means "every portal". A key belonging to no declared category is
-    /// included, since the tracked-key registry is what makes the sweep complete rather than the category
-    /// index.
+    /// precisely because minus one no longer means "every portal". A key belonging to no declared category
+    /// is included, since the tracked-key registry is what makes the sweep complete rather than the
+    /// category index.
     /// </remarks>
     [Fact]
     public void InvalidateHost_EvictsEverythingTheAdapterWroteAndLeavesTheRegistriesEmpty()
@@ -926,10 +856,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>The module invalidation reaches the tab's modules, its permissions and module settings.</summary>
     /// <remarks>
-    /// The module-settings category is an addition over the legacy single-tab clear, and a deliberate one: the
-    /// only legacy path that evicted module settings was the parameterless overload, which did it by querying
-    /// every module in the installation and has no counterpart on this contract. Without this line module
-    /// settings would never be invalidated at all.
+    /// The module-settings category is an addition over the legacy single-tab clear, and a deliberate one:
+    /// the only legacy path that evicted module settings was the parameterless overload, which did it by
+    /// querying every module in the installation and has no counterpart on this contract. Without this line
+    /// module settings would never be invalidated at all.
     /// </remarks>
     [Fact]
     public void InvalidateModules_EvictsTheTabsModulesItsPermissionsAndTheModuleSettingsCategory()
@@ -958,11 +888,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>Each single-key invalidation evicts exactly its own key.</summary>
-    /// <remarks>
-    /// The three members here replace legacy helpers that walked every tab in a portal purely to reach one
-    /// eviction. The argument of the module-permission member is a TAB identifier rather than a portal one,
-    /// which is the sort of detail that is easy to invert and impossible to notice without an assertion.
-    /// </remarks>
     [Fact]
     public void TheSingleKeyInvalidations_EvictExactlyTheirOwnKey()
     {
@@ -998,10 +923,6 @@ public sealed class MemoryCacheServiceTests
     }
 
     /// <summary>A blank account name is refused rather than composed into a key.</summary>
-    /// <remarks>
-    /// A blank name composes a key that addresses no account, so applying it would report success while
-    /// evicting nothing - the quietest possible way for a stale account entry to survive a change to it.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -1017,10 +938,9 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>An entry that goes away unobserved withdraws its own registration.</summary>
     /// <remarks>
-    /// Without the eviction callback the registry only ever shrank when somebody happened to ask for the very
-    /// key that had expired, so it accumulated the name of every key ever written and every category eviction
-    /// paid to walk them. The entry is removed through the STORE rather than through the adapter, which is the
-    /// only way to reach the callback path: an adapter eviction withdraws the registration itself.
+    /// Without the eviction callback the registry only ever shrank when somebody happened to ask for the
+    /// very key that had expired, so it accumulated the name of every key ever written and every category
+    /// eviction paid to walk them.
     /// </remarks>
     [Fact]
     public async Task AnEntryEvictedOutsideTheAdapter_WithdrawsItsOwnRegistration()
@@ -1081,20 +1001,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>The retirement primitive stops the work it retires, and cannot race its own release.</summary>
     /// <remarks>
-    /// <para>
     /// Retirement has three separable parts, and dropping any one of them is its own defect. It CANCELS the
     /// attempt's budget, so a factory observing its token stops rather than continuing to run unobserved -
-    /// without which every caller that timed out would leave another live factory behind it and the number of
-    /// concurrent factories for one key would be bounded by nothing. It MARKS the attempt abandoned, so a
-    /// factory that ignores its token and finishes later publishes to nobody - a replacement may already have
-    /// published a newer value, and an invalidation generation that never moved cannot detect that. And the
-    /// cancellation and the release take the same monitor, so a canceller can never reach a disposed source.
-    /// </para>
-    /// <para>
-    /// Reached by reflection because the type is a private nested implementation detail. Driving it directly is
-    /// the only way to assert these three separately; the end-to-end consequence is asserted in the fact
-    /// below, at the cost of the adapter's full thirty-second budget.
-    /// </para>
+    /// without which every caller that timed out would leave another live factory behind it and the number
+    /// of concurrent factories for one key would be bounded by nothing.
     /// </remarks>
     [Fact]
     public void TheRetirementPrimitive_CancelsTheWorkItRetiresAndSurvivesItsOwnRelease()
@@ -1153,26 +1063,10 @@ public sealed class MemoryCacheServiceTests
 
     /// <summary>A stalled creation is retired, publishes nothing, and the next caller starts afresh.</summary>
     /// <remarks>
-    /// <para>
-    /// THIS FACT TAKES THE ADAPTER'S FULL THIRTY-SECOND BUDGET, and that is deliberate rather than careless.
-    /// The budget is a private constant with no configuration hook - correctly, because a configurable one
-    /// would be a knob nothing needs - so the only honest way to reach the timeout path is to let it elapse.
-    /// What it buys is the whole retirement guarantee end to end: left unretired, one stalled load would be
-    /// joined by every later caller for that key, so a single unresponsive query would become a permanent
-    /// refusal to serve that key for the life of the process. Nothing shorter proves that.
-    /// </para>
-    /// <para>
-    /// The factory here OBSERVES its token and stops, which keeps the outcome deterministic. The other case -
-    /// a factory that ignores its token and returns a value after the retirement - is what the abandonment
-    /// flag exists for, and it is asserted in
-    /// <see cref="TheRetirementPrimitive_CancelsTheWorkItRetiresAndSurvivesItsOwnRelease"/> rather than here.
-    /// It cannot honestly be asserted end to end: the caller's wait and the creation's budget elapse at
-    /// essentially the same instant, so whether the late value arrives before or after the retirement is a
-    /// genuine race, and a test that asserted a winner would be asserting a coincidence. Both orderings are
-    /// correct - a value published at the moment of retirement is at least as fresh as anything the cache
-    /// held, and the flag's purpose is to stop it overwriting a REPLACEMENT's newer value, which by definition
-    /// does not exist yet at that instant.
-    /// </para>
+    /// The factory here OBSERVES its token and stops, which keeps the outcome deterministic. The other case
+    /// - a factory that ignores its token and returns a value after the retirement - is what the
+    /// abandonment flag exists for, and it is asserted in <see
+    /// cref="TheRetirementPrimitive_CancelsTheWorkItRetiresAndSurvivesItsOwnRelease"/> rather than here.
     /// </remarks>
     [Fact]
     public async Task GetOrCreateAsync_RetiresAStalledCreationAndLetsTheNextCallerStartAfresh()
@@ -1197,8 +1091,8 @@ public sealed class MemoryCacheServiceTests
                 catch (OperationCanceledException)
                 {
                     // Recorded and then rethrown: recording is the evidence that the retirement really did
-                    // cancel the work rather than merely stop waiting for it, and rethrowing is what a factory
-                    // that honours its token does.
+                    // cancel the work rather than merely stop waiting for it, and rethrowing is what a
+                    // factory that honours its token does.
                     tokenObservedCancelled.TrySetResult();
 
                     throw;
@@ -1213,16 +1107,7 @@ public sealed class MemoryCacheServiceTests
         Func<Task> awaitStalled = () => stalled;
 
         // THE TYPE IS THE CACHE'S OWN, NOT A BARE TimeoutException, and the distinction is the point rather
-        // than a detail. This fact was written when the adapter raised a plain TimeoutException; the store
-        // failure classifier then read any bare timeout in a chain as evidence the DATABASE was unreachable,
-        // so a value factory that ignored its token was reported to the caller as a dependency outage carrying
-        // a Retry-After hint - inviting a retry that fails identically and hiding the defect behind it.
-        // CacheProductionTimeoutException settles that by type instead of by message, and it deliberately does
-        // NOT derive from TimeoutException, because deriving would match every arm that was just narrowed and
-        // make the narrowing depend on arm order. Asserting the base type here would therefore assert exactly
-        // the conflation that was removed. The guarantee this fact exists for is unchanged and still asserted:
-        // a creation bound to no caller's lifetime is given a limit of its own, so no caller waits on it
-        // indefinitely - and the message checks below still prove no composed key crosses the boundary.
+        // than a detail.
         string message = (await awaitStalled.Should().ThrowAsync<CacheProductionTimeoutException>(
                 "a creation bound to no caller's lifetime needs a limit of its own, or a caller could wait on "
                 + "it indefinitely"))
@@ -1265,10 +1150,6 @@ public sealed class MemoryCacheServiceTests
     /// <summary>Builds an adapter over a bounded store of its own.</summary>
     /// <param name="multiplier">The configured performance multiplier.</param>
     /// <returns>The harness, which owns the store and must be disposed.</returns>
-    /// <remarks>
-    /// The store carries a size limit exactly as the production registration does, so a write that failed to
-    /// declare a size would be refused here as it would be there.
-    /// </remarks>
     private static CacheHarness NewHarness(int multiplier = DefaultMultiplier)
     {
         MemoryCache store = new(new MemoryCacheOptions { SizeLimit = 4096 });
@@ -1300,12 +1181,6 @@ public sealed class MemoryCacheServiceTests
     /// <summary>Reads the adapter's tracked-key registry.</summary>
     /// <param name="cache">The adapter under test.</param>
     /// <returns>The registry.</returns>
-    /// <remarks>
-    /// Private bookkeeping with no public projection, read here because the guarantees about it - an entry
-    /// that goes away withdraws itself, a host sweep leaves it empty - are guarantees about unbounded growth
-    /// and have no other observable consequence. Read without the adapter's monitor, which is safe because
-    /// every caller of this helper is single-threaded at the point it reads.
-    /// </remarks>
     private static ConcurrentDictionary<string, byte> TrackedKeysOf(ICacheService cache) =>
         (ConcurrentDictionary<string, byte>)typeof(MemoryCacheService)
             .GetField("_trackedKeys", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -1314,7 +1189,6 @@ public sealed class MemoryCacheServiceTests
     /// <summary>Reads the adapter's category index.</summary>
     /// <param name="cache">The adapter under test.</param>
     /// <returns>The index, keyed by category prefix.</returns>
-    /// <remarks>See the note on <see cref="TrackedKeysOf"/> for why private state is read here.</remarks>
     private static Dictionary<string, HashSet<string>> CategoryIndexOf(ICacheService cache) =>
         (Dictionary<string, HashSet<string>>)typeof(MemoryCacheService)
             .GetField("_keysByCategory", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -1326,8 +1200,8 @@ public sealed class MemoryCacheServiceTests
     /// <returns><see langword="true"/> when the condition held before the allowance elapsed.</returns>
     /// <remarks>
     /// Used only where the runtime dispatches work to the thread pool, so the alternative is not a shorter
-    /// test but a flaky one. The allowance is generous because it is only ever consumed when the assertion is
-    /// about to fail anyway.
+    /// test but a flaky one. The allowance is generous because it is only ever consumed when the assertion
+    /// is about to fail anyway.
     /// </remarks>
     private static async Task<bool> WaitUntilAsync(Func<bool> condition, TimeSpan allowance)
     {

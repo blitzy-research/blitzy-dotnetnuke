@@ -10,56 +10,34 @@ namespace DnnMigration.IntegrationTests.Api;
 
 /// <summary>
 /// Proves that the address a creation publishes in its <c>Location</c> header is the address the caller
-/// actually posted to, including the path base a tenant addressed beneath a shared host name is rebased onto.
+/// actually posted to, including the path base a tenant addressed beneath a shared host name is rebased
+/// onto.
 /// </summary>
 /// <remarks>
 /// <para>
 /// THE DEFECT THIS GUARDS. A child portal is addressed by a path segment beneath a shared host, and
-/// <c>TenantPathBaseMiddleware</c> moves that segment out of the routable path and into the path base before
-/// routing runs - it has to, or <c>/child/api/v1/portals</c> matches no route at all. The shared creation
-/// translator composed the location from the PATH alone, which under a rebased request is the PARENT's
-/// address. Every creation made beneath a child tenant therefore answered <c>201</c> with a correct body and a
-/// header naming a resource under the wrong tenant. The creating caller had no way to notice; only whoever
-/// followed the header did, and what they got was a route reaching a resource the parent does not own.
+/// <c>TenantPathBaseMiddleware</c> moves that segment out of the routable path and into the path base
+/// before routing runs - it has to, or <c>/child/api/v1/portals</c> matches no route at all.
 /// </para>
 /// <para>
-/// MEASURED ON THE TRANSLATOR RATHER THAN OVER HTTP, and deliberately so. Seven creation endpoints across six
-/// controllers publish their location through this one member, so the composition is a pure function of the
-/// request's path base and path and is measured where it is made - which is also the only way to exercise the
-/// encoding case, since a reserved character cannot be routed into a path base by a real request. The
-/// end-to-end half is asserted separately in
-/// <c>PortalApiTests.CreateBeneathAChildTenant_LocatesTheNewResourceAtTheChildsOwnAddress</c>, which posts a
-/// genuine request beneath a genuine child portal's segment and then FOLLOWS the header it received. Neither
-/// half substitutes for the other: this one covers every shape, that one covers the real pipeline.
-/// </para>
-/// <para>
-/// The same reasoning and the same shape are used by <see cref="DuplicateKeyMappingTests"/> and
-/// <see cref="TransportRefusalMappingTests"/> for the failure arms of the same translator.
+/// MEASURED ON THE TRANSLATOR RATHER THAN OVER HTTP, and deliberately so.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
 public sealed class CreatedLocationTests
 {
     /// <summary>
-    /// The location is the path base followed by the path followed by the new identifier, for a request with a
-    /// path base and for one without.
+    /// The location is the path base followed by the path followed by the new identifier, for a request
+    /// with a path base and for one without.
     /// </summary>
     /// <param name="pathBase">The path base the request arrived with.</param>
     /// <param name="path">The routable path the request arrived with.</param>
     /// <param name="expected">The address the header must carry.</param>
     /// <remarks>
-    /// <para>
-    /// The bare-host row is the regression guard rather than the interesting case: the overwhelming majority
-    /// of this API's traffic carries no path base, and a fix that composed one in would have prepended an
-    /// empty segment or a stray separator to every location in the API. It must produce exactly what it
-    /// produced before.
-    /// </para>
-    /// <para>
-    /// The trailing-separator row exists because a collection address may legitimately arrive with one, and
-    /// composing onto it unchanged would publish a doubled separator - an address that is not the member's.
-    /// The row with a path base AND a trailing separator is the combination of the two, which is where a fix
-    /// that trimmed only one half would fail.
-    /// </para>
+    /// The bare-host row is the regression guard rather than the interesting case: the overwhelming
+    /// majority of this API's traffic carries no path base, and a fix that composed one in would have
+    /// prepended an empty segment or a stray separator to every location in the API. It must produce
+    /// exactly what it produced before.
     /// </remarks>
     [Theory]
     [InlineData("", "/api/v1/portals", "/api/v1/portals/7")]
@@ -80,12 +58,6 @@ public sealed class CreatedLocationTests
     /// <summary>
     /// A path base carrying a character that must be escaped in a header reaches the caller escaped.
     /// </summary>
-    /// <remarks>
-    /// The request properties hold the DECODED path, so publishing them verbatim would put a raw space into a
-    /// header. Taking both halves in their URI form is what makes the header a valid reference; an alias may
-    /// legitimately carry a character requiring escape, and this is the only place the distinction between the
-    /// decoded and the URI form is observable.
-    /// </remarks>
     [Fact]
     public void AnEscapableCharacterInThePathBase_IsPublishedEscaped()
     {
@@ -96,13 +68,11 @@ public sealed class CreatedLocationTests
             "the location is written into a header, so it carries the URI form rather than the decoded one");
     }
 
-    /// <summary>
-    /// A failed outcome publishes no location at all, whatever the request was addressed at.
-    /// </summary>
+    /// <summary>A failed outcome publishes no location at all, whatever the request was addressed at.</summary>
     /// <remarks>
-    /// Asserted because the composition now reads two request properties instead of one, and a translator that
-    /// composed an address before deciding whether there was anything to locate would hand out a header for a
-    /// resource that was never created.
+    /// Asserted because the composition now reads two request properties instead of one, and a translator
+    /// that composed an address before deciding whether there was anything to locate would hand out a
+    /// header for a resource that was never created.
     /// </remarks>
     [Fact]
     public void AFailedCreation_PublishesNoLocation()
@@ -157,13 +127,7 @@ public sealed class CreatedLocationTests
         public int Id { get; set; }
     }
 
-    /// <summary>
-    /// A controller with no actions, existing only to give the translator a request to read.
-    /// </summary>
-    /// <remarks>
-    /// Declared here rather than shared with the neighbouring mapping suites, which each declare their own
-    /// doubles for the same reason: a shared test utility is one either suite could change under the other.
-    /// </remarks>
+    /// <summary>A controller with no actions, existing only to give the translator a request to read.</summary>
     private sealed class StubController : ControllerBase
     {
     }

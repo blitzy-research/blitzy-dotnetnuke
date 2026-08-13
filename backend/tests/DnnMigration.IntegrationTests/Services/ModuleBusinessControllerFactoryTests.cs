@@ -13,34 +13,11 @@ namespace DnnMigration.IntegrationTests.Services;
 /// through a real dependency-injection container.
 /// </summary>
 /// <remarks>
-/// <para>
-/// WHY THIS FILE EXISTS. The factory advertises content export and import, and this installation registers
-/// no business controller - correctly, because AAP section 0.2.2.2 places every bundled module out of scope,
-/// so there is no in-scope module whose controller could be registered and inventing one would ship dead
-/// production code. That left the advertised feature never once exercised along its working path: every
-/// existing test of export and import observed a refusal, and a refusal is what an empty registration set
-/// produces whether or not the resolution mechanism works at all. A mechanism that is only ever seen failing
-/// is a mechanism nobody has verified.
-/// </para>
-/// <para>
-/// WHAT MAKES THIS A REAL PROOF RATHER THAN A MOCK. Nothing here is substituted. The subject is the concrete
-/// <see cref="ModuleBusinessControllerFactory"/>; the container is a real
-/// <see cref="ServiceCollection"/> built into a real provider; the controller is a real class registered
-/// with <c>AddKeyedScoped</c> exactly as the composition root's own commentary documents; and the key is the
-/// stored controller name normalised by the factory's own rule. What is proven is therefore the whole
-/// closed-set path - stored name to registration key to resolved instance to contract type test to
-/// invocation - which is the path a deployment admitting a module would take.
-/// </para>
-/// <para>
 /// WHY THE PROOF LIVES HERE AND NOT IN THE INTEGRATION SUITE. The three capability contracts are nested
 /// inside the factory, which is <c>internal sealed</c>, so only this assembly can implement them: the
 /// infrastructure project grants internals visibility to this test project and to no other, and its project
 /// file states plainly that the integration project is excluded on purpose so that an integration test
-/// cannot bypass the composition it exists to exercise. Making the contracts public in order to reach them
-/// from there would widen a layer's published surface for the sake of a test, which is the opposite of what
-/// that bound is for. The integration suite instead pins the behaviour it CAN observe honestly: that a
-/// stored controller name the closed set does not cover is refused over HTTP and writes nothing.
-/// </para>
+/// cannot bypass the composition it exists to exercise.
 /// </remarks>
 [Trait("Category", "Integration")]
 public class ModuleBusinessControllerFactoryTests
@@ -49,14 +26,11 @@ public class ModuleBusinessControllerFactoryTests
     /// <remarks>
     /// Deliberately mixed-case and padded with white space at both ends. The legacy column was hand-entered
     /// in module manifests and matched case-insensitively, whereas keyed resolution compares keys with
-    /// ordinary string equality, so the factory normalises both sides through one method. Spelling the
-    /// stored name differently from the registration key is what proves that normalisation is applied to the
-    /// lookup rather than merely documented.
+    /// ordinary string equality, so the factory normalises both sides through one method.
     /// </remarks>
     private const string StoredControllerName = "  Measured.Modules.AnnouncementsController  ";
 
     /// <summary>The module instance the content operations name.</summary>
-    /// <remarks>Zero, because the module key is seeded at zero and must never be read as absent.</remarks>
     private const int ModuleId = 0;
 
     /// <summary>The principal a restore is attributed to.</summary>
@@ -104,9 +78,7 @@ public class ModuleBusinessControllerFactoryTests
         inert.Value.Should().Be(0);
     }
 
-    /// <summary>
-    /// A registered controller's content is exported verbatim.
-    /// </summary>
+    /// <summary>A registered controller's content is exported verbatim.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Export_ForARegisteredController_ReturnsThePayloadVerbatim()
@@ -121,15 +93,7 @@ public class ModuleBusinessControllerFactoryTests
         exported.Reason.Should().BeNull("a controller that answered needs no advisory");
     }
 
-    /// <summary>
-    /// A registered controller restores content, and the outcome is a bare success.
-    /// </summary>
-    /// <remarks>
-    /// THIS IS THE SUCCESS PATH THE ADVERTISED FEATURE DEPENDS ON, and it is the one the suite previously
-    /// never walked. The bare-success assertion is the load-bearing half: the module service commits its unit
-    /// of work, evicts the placement caches and writes an <c>Operation=Import</c> audit record on the strength
-    /// of a successful outcome, so success here must mean content actually arrived and nothing weaker.
-    /// </remarks>
+    /// <summary>A registered controller restores content, and the outcome is a bare success.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Import_ForARegisteredController_RestoresTheContentAndSucceedsWithNoAdvisory()
@@ -178,21 +142,6 @@ public class ModuleBusinessControllerFactoryTests
     /// <summary>
     /// Every state in which content could not be restored is a FAILURE, each carrying its own code.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// These four were previously successes carrying an advisory, and the shape was wrong for a measured
-    /// reason rather than a stylistic one: the module service reads a successful import as licence to commit,
-    /// to evict caches and to write an audit record saying content was imported. An installation whose closed
-    /// set did not cover the stored name therefore answered its caller 200 and recorded an import that had
-    /// not happened. Refusing makes that unreachable rather than leaving it to a caller to inspect an
-    /// advisory it is not obliged to read.
-    /// </para>
-    /// <para>
-    /// The codes stay distinct because an operator acts differently on each: an unregistered name is an
-    /// installation that needs code, an unsupported contract is a module that will never do this, a
-    /// declared-nothing module is a package question, and an empty payload is the document's problem.
-    /// </para>
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Import_WhenTheControllerCouldNotBeAsked_Fails()
@@ -270,12 +219,6 @@ public class ModuleBusinessControllerFactoryTests
     /// <summary>
     /// A controller whose own restore throws produces a failure whose detail quotes nothing it wrote.
     /// </summary>
-    /// <remarks>
-    /// The module is third-party code and its exception message can legitimately carry a connection string, a
-    /// path, a statement or the content itself, and the API edge publishes a failure's message verbatim as the
-    /// problem document's detail. So the message must be the factory's own fixed sentence, and the module's
-    /// explanation belongs in the log alone.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Import_WhenTheControllerThrows_FailsWithoutQuotingIt()
@@ -297,9 +240,7 @@ public class ModuleBusinessControllerFactoryTests
         outcome.Reason.Message.Should().Contain("has been recorded");
     }
 
-    /// <summary>
-    /// A stored name is matched case-insensitively and after trimming, as the legacy column was.
-    /// </summary>
+    /// <summary>A stored name is matched case-insensitively and after trimming, as the legacy column was.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Import_MatchesTheStoredNameCaseInsensitivelyAndTrimmed()
@@ -317,9 +258,7 @@ public class ModuleBusinessControllerFactoryTests
             outcome.Reason?.ToString() ?? "the stored name was hand-entered in a manifest and is folded");
     }
 
-    /// <summary>
-    /// A partial name matches nothing, so one module's behaviour can never answer for another's.
-    /// </summary>
+    /// <summary>A partial name matches nothing, so one module's behaviour can never answer for another's.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task Import_DoesNotMatchAPartialName()
@@ -339,16 +278,9 @@ public class ModuleBusinessControllerFactoryTests
             "normalisation folds case and trims; it never admits prefix or fuzzy matching");
     }
 
-    /// <summary>
-    /// Registers one controller under the normalised stored name, in a real container.
-    /// </summary>
+    /// <summary>Registers one controller under the normalised stored name, in a real container.</summary>
     /// <typeparam name="TController">The controller implementation to register.</typeparam>
     /// <returns>The built provider, which the caller disposes.</returns>
-    /// <remarks>
-    /// The registration is exactly the one the composition root documents for admitting a controller: a keyed
-    /// registration of <see cref="object"/> filed under the trimmed, lower-cased stored name. Scoped rather
-    /// than singleton, matching the production lifetime, so that a controller shares the caller's unit of work.
-    /// </remarks>
     private static ServiceProvider Register<TController>()
         where TController : class
     {
@@ -364,14 +296,7 @@ public class ModuleBusinessControllerFactoryTests
     private static ModuleBusinessControllerFactory Factory(IServiceProvider provider)
         => new(provider, NullLogger<ModuleBusinessControllerFactory>.Instance);
 
-    /// <summary>
-    /// A concrete business controller implementing all three lifecycle contracts.
-    /// </summary>
-    /// <remarks>
-    /// This is what a migrated module's companion class looks like: a plain class that implements the
-    /// contracts for the capabilities it has and nothing else. It records what it was handed so that the
-    /// arguments crossing the boundary can be asserted rather than assumed.
-    /// </remarks>
+    /// <summary>A concrete business controller implementing all three lifecycle contracts.</summary>
     private sealed class MeasuredController
         : ModuleBusinessControllerFactory.IModuleContentPortability,
           ModuleBusinessControllerFactory.IModuleSearchContribution,
@@ -431,14 +356,7 @@ public class ModuleBusinessControllerFactoryTests
             => Task.CompletedTask;
     }
 
-    /// <summary>
-    /// A registered controller implementing none of the three contracts.
-    /// </summary>
-    /// <remarks>
-    /// A real state rather than a contrived one: a module may register a companion class for its own reasons
-    /// while supporting no platform lifecycle contract, and the factory must then say the contract is not
-    /// supported instead of failing a cast.
-    /// </remarks>
+    /// <summary>A registered controller implementing none of the three contracts.</summary>
     private sealed class InertController
     {
     }

@@ -1,32 +1,3 @@
-//
-// Specification for the labelled-field wrapper.
-//
-//  NOTHING here is a ported test: the legacy tree contains zero automated tests of any kind, so every
-//  expectation was derived by reading the legacy markup and resource files. Every string fixture below is a
-//  VERBATIM resource value or markup attribute from `labelcontrol.ascx`, `helpbuttoncontrol.ascx`,
-//  `editroles.ascx`, `roles.ascx` and `EditRoles.ascx.resx`, all read as unmodified reference inputs.
-//  Asserting punctuation or markup handling against invented text would prove nothing about the screens
-//  actually being migrated.
-//
-//  This file is the only route by which the component and its template are type-checked. `tsconfig.app.json`
-//  declares `files: ["src/main.ts"]`, so the production build type-checks by import graph, and nothing
-//  outside this folder imports `FormFieldComponent` yet; `tsconfig.spec.json` includes `src/**/*.spec.ts`
-//  instead. That is why the suite renders the real template through the real component rather than asserting
-//  against the class in isolation - skip the render and the whole folder goes unverified under
-//  `strictTemplates`.
-//
-//  Harness: Karma with Jasmine, because the acceptance command is a Karma invocation. The component is
-//  standalone and is supplied through `imports`. `provideHttpClient()` is registered BEFORE
-//  `provideHttpClientTesting()`, because the testing function replaces the backend the first one installed.
-//  `verify()` in `afterEach` does double duty: this component performs no request and injects no service, so
-//  a passing `verify()` is a POSITIVE assertion that the presentational layer holds no data access. No
-//  coverage floor is asserted, because `karma.conf.js` declares none and inventing one would fail the gate on
-//  grounds nobody set.
-//
-//  `querySelector` returns `Element | null`, and that null is narrowed by the small throwing helpers below:
-//  nothing here uses a non-null assertion, a loose cast or a suppression comment.
-//
-
 import { Component, ViewChild } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
@@ -39,27 +10,20 @@ const LABEL_WITH_DECLARED_SUFFIX = 'Role Name:';
 const LABEL_WITHOUT_SUFFIX = 'Role Name';
 
 /**
- * `plRSVPCode.Text` verbatim. The colon is baked into the RESOURCE VALUE rather than declared as a suffix -
- * `editroles.ascx` declares `plRSVPCode` with no `Suffix` attribute at all - so this is the second of the
- * six legacy punctuation routes and must normalise identically to the first.
+ * `plRSVPCode.Text` verbatim. The colon is baked into the RESOURCE VALUE rather than declared as a suffix
+ * - `editroles.ascx` declares `plRSVPCode` with no `Suffix` attribute at all - so this is the second of
+ * the six legacy punctuation routes and must normalise identically to the first.
  */
 const LABEL_WITH_BAKED_COLON = 'RSVP Code:';
 
 const LABEL_WITH_BAKED_COLON_RESOLVED = 'RSVP Code';
 
-/**
- * `PublicRole.Text` verbatim. `editroles.ascx` declares `plIsPublic` with NO `Suffix`, so the question mark
- * is part of the wording rather than punctuation the control added: it carries meaning and is preserved.
- */
+/** `PublicRole.Text` verbatim. */
 const LABEL_WITH_QUESTION_MARK = 'Public Role?';
 
 const LABEL_WITH_QUESTION_MARK_SECOND = 'Auto Assignment?';
 
-/**
- * `BillingPeriod.Text` verbatim. The parenthetical is an instruction rather than decoration, which the
- * field's own help text confirms: `BillingPeriod.Help` documents entering a billing period as two fields
- * used in conjunction.
- */
+/** `BillingPeriod.Text` verbatim. */
 const LABEL_WITH_PARENTHESES = 'Billing Period (Every)';
 
 const LABEL_WITH_PARENTHESES_SECOND = 'Trial Period (Every)';
@@ -73,11 +37,7 @@ const HELP_TEXT = 'Enter the name of the role.';
 const HELP_FOR_COMPOSITE_FIELD =
   'These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month';
 
-/**
- * `valRoleName.Text` verbatim, break markup and all. All NINE validator entries in `EditRoles.ascx.resx`
- * open exactly like this, and 21 of the 33 `ErrorMessage` attributes across the in-scope markup do too:
- * interpolated without cleaning, a person would literally read the characters `<br>`.
- */
+/** `valRoleName.Text` verbatim, break markup and all. */
 const ERROR_WITH_LEADING_BREAK = '<br>You Must Enter a Valid Name';
 
 const ERROR_WITHOUT_LEADING_BREAK = 'You Must Enter a Valid Name';
@@ -86,26 +46,16 @@ const ERROR_FIRST_OF_PAIR = 'Service Fee Value Entered Is Not Valid';
 
 const ERROR_SECOND_OF_PAIR = 'Service Fee Must Be Greater Than or Equal to Zero';
 
-/**
- * `ProcessorWarning.Text` verbatim, truncated at a sentence boundary. The bold markup is real - this entry
- * sits in the very resource file this folder's legacy screen uses - so it is the fixture that proves markup
- * arriving in a message is shown as characters, not rendered.
- */
 const ERROR_WITH_BOLD_MARKUP = '<b>Warning:</b> You will need to configure the Payment Processor';
 
-/**
- * The shape of `ModuleHelp.Text`, which opens with a heading and a paragraph. Reduced to its structure
- * because the assertion is about the TAGS, not the prose.
- */
+/** The shape of `ModuleHelp.Text`, which opens with a heading and a paragraph. */
 const HELP_WITH_BLOCK_MARKUP = '<h1>About</h1><p>Body</p>';
 
 /**
  * Help text carrying a script element, modelled on the single most dangerous entry found across the 37
  * in-scope resource files: the `Advertising.Text` entry of
  * `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx` holds a live remote advertising script
- * block. Its tags are stored ESCAPED in the resource file, so a naive search of the sources reports none and
- * would wrongly clear the risk. The remote address is deliberately not reproduced - the element itself is
- * what is under test.
+ * block.
  */
 const HELP_WITH_SCRIPT = '<script src="pagead/show_ads.js"></script>Advertising';
 
@@ -127,10 +77,9 @@ function queryOrFail<T extends Element>(root: ParentNode, selector: string): T {
 }
 
 /**
- * The identifiers one ARIA reference attribute names, split the way ARIA defines.
- *
- * Split rather than compared as a string so that an expectation states WHICH regions are referenced and in
- * what order, without also asserting the exact spacing a consumer happened to write.
+ * The identifiers one ARIA reference attribute names, split the way ARIA defines. Split rather than
+ * compared as a string so that an expectation states WHICH regions are referenced and in what order,
+ * without also asserting the exact spacing a consumer happened to write.
  */
 function referencesOf(element: Element, attribute: string): readonly string[] {
   const value = element.getAttribute(attribute);
@@ -157,8 +106,8 @@ function collapsedText(element: Element): string {
 }
 
 /**
- * An element's text exactly as the DOM holds it, for the cases where a newline is the thing under test and
- * collapsing would erase it.
+ * An element's text exactly as the DOM holds it, for the cases where a newline is the thing under test
+ * and collapsing would erase it.
  */
 function rawText(element: Element): string {
   const content = element.textContent;
@@ -178,16 +127,16 @@ function attributeOrFail(element: Element, name: string): string {
 
 /**
  * Resolves an identifier reference within the fixture, through an attribute selector rather than an
- * identifier selector, so a value that would need escaping in a selector cannot turn a missing element into
- * a thrown syntax error and hide the real result.
+ * identifier selector, so a value that would need escaping in a selector cannot turn a missing element
+ * into a thrown syntax error and hide the real result.
  */
 function resolveIdReference(root: ParentNode, id: string): Element | null {
   return root.querySelector(`[id="${id}"]`);
 }
 
 /**
- * Splits a space-separated reference list into its individual identifiers, tolerating the double spaces and
- * leading whitespace a template can produce: an assertion about references should fail on a DANGLING
+ * Splits a space-separated reference list into its individual identifiers, tolerating the double spaces
+ * and leading whitespace a template can produce: an assertion about references should fail on a DANGLING
  * reference and never on incidental spacing.
  */
 function referenceList(value: string): readonly string[] {
@@ -214,11 +163,7 @@ function resolvedReferenceText(root: ParentNode, value: string): string {
     .trim();
 }
 
-/**
- * The component's five inputs, as an optional bundle. Mirrors the component's own declared types exactly -
- * notably that `error` accepts a single string OR a read-only list - so a widening of one and not the other
- * cannot pass unnoticed.
- */
+/** The component's five inputs, as an optional bundle. */
 interface FieldInputs {
   readonly label?: string;
   readonly for?: string;
@@ -227,11 +172,7 @@ interface FieldInputs {
   readonly error?: string | readonly string[] | null;
 }
 
-/**
- * Pushes inputs in through the component reference, then renders. This is the correct way to drive a
- * component that declares the on-push strategy: an input write marks the view for check, whereas assigning
- * to an instance field does not.
- */
+/** Pushes inputs in through the component reference, then renders. */
 function applyInputs(fixture: ComponentFixture<FormFieldComponent>, inputs: FieldInputs): void {
   if (inputs.label !== undefined) {
     fixture.componentRef.setInput('label', inputs.label);
@@ -256,18 +197,7 @@ function applyInputs(fixture: ComponentFixture<FormFieldComponent>, inputs: Fiel
   fixture.detectChanges();
 }
 
-/**
- * A host that projects real controls into the field.
- *
- * Test scaffolding rather than an application component, and the only way to exercise the slot: the
- * component renders no control of its own, and the legacy screens routinely put SEVERAL controls under one
- * label - `editroles.ascx` places a text box, a literal pair of non-breaking spaces and a drop-down list
- * under the single `plBillingPeriod` label.
- *
- * It deliberately uses the DEFAULT change-detection strategy, which is what makes it a valid probe of an
- * on-push child: a change here propagates into the child only through the input bindings, which is precisely
- * the path a real feature template uses.
- */
+/** A host that projects real controls into the field. */
 @Component({
   selector: 'app-form-field-host',
   standalone: true,
@@ -307,22 +237,17 @@ class FormFieldHostComponent {
   public frequencyName: string | null = null;
 
   /**
-   * The field instance, reached without a cast. Used by exactly one specification, which needs to write to
-   * an instance field in order to prove that writing to an instance field is NOT how a change reaches the
-   * screen.
+   * The field instance, reached without a cast. Used by exactly one specification, which needs to write
+   * to an instance field in order to prove that writing to an instance field is NOT how a change reaches
+   * the screen.
    */
   @ViewChild(FormFieldComponent) public field: FormFieldComponent | undefined = undefined;
 }
 
 /**
- * A second host that projects the OTHER control shapes the legacy screens used.
- *
- * `roles.ascx` is not a text-box-and-drop-down field: it puts a drop-down list, an EDIT HYPERLINK WRAPPING
- * AN IMAGE and an IMAGE BUTTON under one label. Those three shapes name themselves in three different ways -
- * an anchor from its contents, an image button from its alternative text, a drop-down list not at all - and
- * the component has to tell them apart before deciding whether to supply a fallback name.
- *
- * Every part is behind its own flag so each specification renders exactly the one shape it is about.
+ * A second host that projects the OTHER control shapes the legacy screens used. `roles.ascx` is not a
+ * text-box-and-drop-down field: it puts a drop-down list, an EDIT HYPERLINK WRAPPING AN IMAGE and an
+ * IMAGE BUTTON under one label.
  */
 @Component({
   selector: 'app-form-field-rich-host',
@@ -397,7 +322,6 @@ class FormFieldRichHostComponent {
   public switchText = 'Auto Assignment';
 }
 
-
 describe('FormFieldComponent', () => {
   /**
    * The mock HTTP backend, asserted empty after every specification. Injected even though nothing here
@@ -467,21 +391,11 @@ describe('FormFieldComponent', () => {
     return element;
   }
 
-  /**
-   * The field's caption, whichever element the component chose for it.
-   *
-   * Selects on the CLASS rather than on the element name, because the component renders the caption as a
-   * `<label for>` when the caller names a control and as a `<span>` when it does not - a `<label>` can only
-   * associate through `for` or by wrapping its control, and this component projects controls into a sibling
-   * element, so with no `for` a `<label>` would name nothing at all. Every assertion about the caption's
-   * WORDING, its `id` or its required marker holds in both forms, so those use this helper; the assertions
-   * about the element itself use {@link labelElementOf} and are stated per branch.
-   */
+  /** The field's caption, whichever element the component chose for it. */
   function captionOf(root: ParentNode): HTMLElement {
     return queryOrFail<HTMLElement>(root, '.form-field__label');
   }
 
-  /** The caption in its `<label>` form. Fails the test when the caption is not a label element. */
   function labelElementOf(root: ParentNode): HTMLLabelElement {
     return queryOrFail<HTMLLabelElement>(root, 'label.form-field__label');
   }
@@ -516,9 +430,6 @@ describe('FormFieldComponent', () => {
     fixture.detectChanges();
   }
 
-  // `labelcontrol.ascx` is a real `<label>` element, which is the whole mechanism by which the legacy
-  // control associated wording with a control, so the replacement must keep it.
-
   describe('the label', () => {
     it('renders a real label element when the caller names a control, which is how the legacy control associated wording', () => {
       const label = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID })));
@@ -530,18 +441,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('renders a SPAN when the caption names no control, because a label would label nothing', () => {
-      // ⚠ THIS CASE WAS INVERTED, AND THE INVERSION WAS A REPORTED DEFECT. The component emitted a
-      // `<label>` unconditionally, so three surfaces that use it for a caption with no associated
-      // control — the two read-only credential facts on the password screen, the group captions on
-      // the portal settings screen, and one caption on the module create screen — each emitted a
-      // label with no `for` and no nested control. The browser reports that as an error ("No label
-      // associated with a form field") and it is meaningless to assistive technology.
-      //
-      // LEGACY IS NOT THE AUTHORITY AGAINST THIS. `labelcontrol.ascx:L2` is a raw
-      // `<label id=label runat="server">` and NEITHER that markup NOR its code-behind ever sets `for`
-      // or `AssociatedControlID` — so every label the measured control produced was unassociated.
-      // Setting `for` when a control IS named already improves on the measurement; declining to emit
-      // a label when none is named is that same improvement carried to its conclusion.
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX }));
       const caption = captionOf(root);
 
@@ -561,13 +460,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('renders the caption as a span when the caller names NO control, so no label associates with nothing', () => {
-      // The accessibility correction this component owns. A `<label>` associates with a control in exactly
-      // two ways - through `for`, or by wrapping the control - and neither is available when the caller
-      // supplies no control id, because controls are projected into the sibling `.form-field__control`
-      // element rather than inside the caption. The `<label>` therefore named nothing, focused nothing and
-      // forwarded no click, and Chrome reports it as "No label associated with a form field". Measured on
-      // the built application, that was one dangling label on `/portals/new` (the "Portal Type" radio
-      // group) and one on `/modules/new` (the "Visibility" radio group).
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '' }));
       const caption = captionOf(root);
 
@@ -580,9 +472,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('switches the caption element when a control identifier arrives after the first render', () => {
-      // The `for` input is not fixed at construction: a caller may resolve a control id asynchronously, and
-      // the caption must become a real label at that point rather than staying a span for the rest of the
-      // field's life.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: '' });
 
       expect(captionOf(rootOf(fixture)).tagName.toLowerCase()).toBe('span');
@@ -596,11 +485,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('carries the published caption identifier in BOTH element forms, so no reference dangles', () => {
-      // Both `groupLabelledBy` and the per-control fallback point at whatever `labelId` publishes, so the
-      // rendered element must carry exactly that value in either form. The value itself legitimately changes
-      // with the control id - the component derives its identifier stem from the control it names, falling
-      // back to its own instance counter - so the assertion is against the published value at each point,
-      // never against a remembered one.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: '' });
 
       expect(attributeOrFail(captionOf(rootOf(fixture)), 'id'))
@@ -624,17 +508,8 @@ describe('FormFieldComponent', () => {
     });
 
     it('captions with a span INSTEAD when there is no control to name, so no label captions nothing', () => {
-      // ⚠ MIGRATION - a legacy markup defect reversed rather than reproduced. `LabelControl.vb:L292-L295`
-      // guards the `for` assignment with `If Not String.IsNullOrEmpty(ControlName)`, so the 5 of 186
-      // legacy declarations with no association rendered a `label` element captioning nothing. Six fields
-      // in this application are that case - three radio groups on the portal screens, one on the module
-      // form, and two read-only values on the password screen, which have no control at all - and
-      // reproducing the legacy shape made them the application's ONLY form-label diagnostic.
-      //
       // Nothing about the accessible name changes: the caption keeps the same class and the same id, the
-      // control group still points at it, and the per-control fallback still points at it. What changes is
-      // one computed property on six fields, `cursor`, and losing it is itself a correction - a pointer
-      // cursor on a caption that focuses nothing promises an interaction that does not exist.
+      // control group still points at it, and the per-control fallback still points at it.
       const caption = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX })));
 
       expect(caption.tagName.toLowerCase()).toBe('span');
@@ -686,11 +561,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('emits NO `for` attribute at all when no control identifier is supplied', () => {
-      // A measured legacy shape rather than a defensive nicety: `controlname` is absent on 5 of the 186
-      // in-scope `<dnn:label>` declarations, and `plRSVPCode` at `editroles.ascx` carries no resource key
-      // either. Rendering `for=""` would turn each of those into a reference that names nothing, so the
-      // attribute must be ABSENT and not merely empty - and because the caption is a `span` in that case,
-      // it is absent for the stronger reason that the element cannot carry one meaningfully.
       const caption = captionOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: '' })));
 
       expect(caption.hasAttribute('for'))
@@ -773,12 +643,6 @@ describe('FormFieldComponent', () => {
       expect(renderedLabel('Role Name :')).toBe(LABEL_WITHOUT_SUFFIX);
     });
   });
-
-
-  // MIGRATION: the message shape is WIDENED from a single string, and the widening is forced by measurement
-  // rather than chosen for convenience. There is also no validation summary anywhere in the in-scope
-  // screens, so this region is the only error surface the ported screens have: a message dropped here is a
-  // message nobody sees.
 
   describe('the validation messages', () => {
     it('render nothing at all while the field is valid', () => {
@@ -925,11 +789,6 @@ describe('FormFieldComponent', () => {
     });
   });
 
-  // `valRoleName.Text` in the resource file for this screen is literally '<br>You Must Enter a Valid Name'.
-  // All NINE validator entries in that file open the same way, and 21 of the 33 `ErrorMessage` attributes
-  // across the in-scope markup do too. The legacy control interpreted those characters as markup; a
-  // component that renders text must remove them.
-
   describe('legacy break markup', () => {
     function renderedMessage(message: string): string {
       return rawText(
@@ -1023,16 +882,6 @@ describe('FormFieldComponent', () => {
     });
   });
 
-
-  // MIGRATION: rendering every string as PLAIN TEXT is a security boundary rather than a stylistic
-  // preference. The decisive one is the `Advertising.Text` entry of
-  // `Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx`, which holds a live remote advertising
-  // script block whose tags are stored ESCAPED - so a naive search of the sources returns nothing and would
-  // wrongly clear the risk. The legacy application reached the same conclusion by hand at
-  // `Website/admin/Security/AccessDenied.ascx.vb`, which HTML-encodes its untrusted query-string message
-  // before display. These are the regression tests that stop anyone reintroducing a trusted-markup binding
-  // on any of the three text surfaces.
-
   describe('untrusted markup', () => {
     it('shows bold markup in a MESSAGE as characters and creates no element', () => {
       const root = rootOf(
@@ -1100,12 +949,7 @@ describe('FormFieldComponent', () => {
     });
 
     it('is NOT a descendant of the label element', () => {
-      // MIGRATION: the primary regression test for the first accessibility divergence. `labelcontrol.ascx`
-      // nests the affordance INSIDE the label - L3 to L5 sit between the opening tag on L2 and the closing
-      // tag on L7 - which is invalid, because a button may only be a label descendant when it IS the
-      // labelled control, and ambiguous, because a click anywhere in a label is forwarded to the control it
-      // names. The un-nested arrangement is not invented to fix that: the legacy codebase already ships it
-      // in `Website/controls/helpbuttoncontrol.ascx`.
+      // MIGRATION: the primary regression test for the first accessibility divergence.
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, help: HELP_TEXT }));
       const label = captionOf(root);
       const toggle = toggleOf(root);
@@ -1127,10 +971,7 @@ describe('FormFieldComponent', () => {
     });
 
     it('does NOT carry a negative tab index', () => {
-      // MIGRATION: the regression test for the second accessibility divergence. The legacy control withdraws
-      // the affordance from the tab order TWICE OVER - the link button at `labelcontrol.ascx` and the image
-      // nested inside it at L4 - and repeats the defect in two further controls, five declarations in all,
-      // so the legacy help was pointer-only.
+      // MIGRATION: the regression test for the second accessibility divergence.
       const toggle = toggleOf(rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, help: HELP_TEXT })));
 
       expect(toggle.getAttribute('tabindex'))
@@ -1228,9 +1069,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('uses NO raster image anywhere', () => {
-      // `labelcontrol.ascx` points at a 344-byte help image. The only static binary in scope is the favicon,
-      // so the glyph is an inline vector instead. Nothing is lost: the legacy image carried no alternative
-      // text, so it named nothing to begin with.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, help: HELP_TEXT });
 
       clickToggle(fixture);
@@ -1250,12 +1088,6 @@ describe('FormFieldComponent', () => {
         .toBe('false');
     });
   });
-
-
-  // Two independent proofs in the legacy sources: `labelcontrol.ascx` places a literal break element between
-  // the closing label tag on L7 and the panel on L9, so the panel was always below the label in normal flow,
-  // and the legacy stylesheet gives the corresponding class a one-pixel border over a filled background - a
-  // BOX. So this is a disclosure and never a tool tip, a pop-up or anything positioned out of flow.
 
   describe('the help region', () => {
     function revealedField(): HTMLElement {
@@ -1279,9 +1111,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('sits AFTER the label in document order', () => {
-      // The precise relationship is uncle-level - the label lives in the label row and the region is that
-      // row's own next sibling - which is the faithful translation of the legacy file where the panel on L9
-      // follows the closing label tag on L7.
       const root = revealedField();
       const position = captionOf(root).compareDocumentPosition(helpRegionOf(root));
 
@@ -1333,11 +1162,6 @@ describe('FormFieldComponent', () => {
         .toBeTrue();
     });
   });
-
-  // Measured in two files: `editroles.ascx` puts a text box, a literal pair of non-breaking spaces, a
-  // drop-down list and TWO compare validators under the single `plBillingPeriod` label repeats the shape for
-  // the trial period, and `roles.ascx` puts a drop-down list, an edit link and a delete image button under
-  // one label. `BillingPeriod.Help` states the intent outright.
 
   describe('projected content', () => {
     it('renders a single projected control, the common case', () => {
@@ -1395,10 +1219,7 @@ describe('FormFieldComponent', () => {
     });
 
     it('gives the SECOND control its own name reference, which a group cannot supply', () => {
-      // MIGRATION: the regression test for the third accessibility divergence. The legacy `ControlName`
-      // attribute names exactly one control and a label `for` can point at only one element, so the second
-      // control of every composite field above was UNLABELLED. A named group supplies useful context but
-      // does not name its descendants, so the component applies the visible label reference directly.
+      // MIGRATION: the regression test for the third accessibility divergence.
       const fixture = createHost();
 
       fixture.componentInstance.showFrequency = true;
@@ -1515,12 +1336,8 @@ describe('FormFieldComponent', () => {
     });
   });
 
-
   // The field-label fallback must be a LAST resort, and getting that wrong is worse than omitting it:
-  // overwriting a control's own name replaces something specific with something generic. The shapes below
-  // are the ones `roles.ascx` actually projects under a single label - a drop-down list, an edit hyperlink
-  // wrapping an image and a delete image button - plus the check box that carries its own wording, which 5
-  // of the 28 in-scope check-box declarations do.
+  // overwriting a control's own name replaces something specific with something generic.
 
   describe('projected controls that name themselves', () => {
     function nameReference(root: ParentNode, selector: string): string | null {
@@ -1624,9 +1441,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('names a MULTI-LINE text control, which can never name itself', () => {
-      // MIGRATION: rich-text editing is a documented functional reduction - the legacy editor provider is
-      // out of scope - so each of the 19 in-scope multi-line declarations becomes a plain multi-line control
-      // projected by the caller.
       const fixture = createRichHost();
 
       fixture.componentInstance.showTextarea = true;
@@ -1695,9 +1509,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('yields ownership when something else rewrites the reference after projection', () => {
-      // Simulates a directive or a caller writing the attribute itself once the control is in the document.
-      // From that point the explicit decision owns the control, so the component must stop reconciling it,
-      // or the more specific name would be overwritten.
       const fixture = createRichHost();
       const root = richRootOf(fixture);
       const select = queryOrFail<HTMLSelectElement>(root, 'select');
@@ -1737,21 +1548,7 @@ describe('FormFieldComponent', () => {
     });
   });
 
-  // MIGRATION: there is nothing to port here. The legacy screens expressed requiredness ONLY through
-  // `asp:RequiredFieldValidator` - 16 declarations across the in-scope screens, one of them `valRoleName` at
-  // `editroles.ascx` - which rendered nothing at all until a postback failed, and no visual required-marker
-  // convention exists anywhere in the legacy label markup. Being new, the marker must meet the current
-  // standard rather than the legacy one: the meaning cannot rest on a glyph and a colour alone.
-
   describe('the unavailable state', () => {
-    /*
-     * ⚠ THE STYLING FOR THIS STATE EXISTED AND WAS UNREACHABLE. The stylesheet declares a
-     * `:host(.form-field--disabled)` rule that mutes the label and shows a not-allowed cursor, but
-     * nothing ever set that class - the component contained no reference to a disabled state at all.
-     * A disabled field was measured rendering its label at the ordinary brand ink, bold, with
-     * `cursor: pointer`, indistinguishable from an enabled one; the only signal was the user agent's
-     * own 13x13 checkbox glyph, measuring roughly 1.38:1 against the surface.
-     */
     it('marks the host unavailable when the projected control is disabled', () => {
       const fixture = createHost();
 
@@ -1849,8 +1646,9 @@ describe('FormFieldComponent', () => {
 
   describe('the rendered structure', () => {
     /**
-     * Renders the field with EVERY optional part present - label, required marker, two projected controls,
-     * revealed help and two messages - so a prohibited element cannot hide behind an unrendered branch.
+     * Renders the field with EVERY optional part present - label, required marker, two projected
+     * controls, revealed help and two messages - so a prohibited element cannot hide behind an unrendered
+     * branch.
      */
     function fullyRenderedHost(): ComponentFixture<FormFieldHostComponent> {
       const fixture = createHost();
@@ -1901,9 +1699,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('emits NO non-breaking space', () => {
-      // MIGRATION: 70 literal non-breaking-space entities appear across the in-scope admin markup - a pair
-      // of them between the text box and the drop-down list at `editroles.ascx` and another pair. All are
-      // replaced by the stylesheet gap, which is adjustable and cannot be collapsed away.
       const root = hostRootOf(fullyRenderedHost());
 
       expect(rawText(root).includes('\u00a0'))
@@ -1948,9 +1743,6 @@ describe('FormFieldComponent', () => {
 
   describe('the component contract', () => {
     it('is standalone, which is the only reason it can be supplied through imports', () => {
-      // Both the testing module and the host above list it in `imports`. A component that was not standalone
-      // could not be supplied that way at all, so a successful render through either route is the proof - no
-      // metadata is inspected to obtain it.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX });
 
       expect(collapsedText(captionOf(rootOf(fixture)))).toBe(LABEL_WITHOUT_SUFFIX);
@@ -1980,9 +1772,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('is refreshed through its INPUTS and not by a write to an instance field', () => {
-      // This is what declaring the on-push strategy means, asserted behaviourally rather than by reading
-      // compiler metadata. A write straight to the instance marks nothing for check, so the view is skipped
-      // on the next pass; the same value arriving through the binding marks it and the marker appears.
       const fixture = createHost();
       const field = fixture.componentInstance.field;
 
@@ -2021,9 +1810,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('publishes the three region identifiers a caller may describe a control with', () => {
-      // A caller may prefer to describe ONE projected control rather than the whole group. The identifiers
-      // are derived from the control identifier, so they are predictable from a value the caller already
-      // holds; the generated NUMBER is deliberately not asserted, only that the references resolve.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID });
       const component = fixture.componentInstance;
 
@@ -2061,10 +1847,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('treats a value that arrives UNTYPED as absent rather than failing to render', () => {
-      // Every input is typed, so this cannot happen from a type-checked template. It can happen through the
-      // two paths that bypass the type system: a value that arrived as JSON and was typed optimistically,
-      // and a caller compiled against a different declaration. Rendering must continue, because a failure
-      // inside a template expression takes out the whole view.
       const fixture = createField({ label: LABEL_WITHOUT_SUFFIX, help: HELP_TEXT });
 
       fixture.componentRef.setInput('label', 42);
@@ -2082,9 +1864,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('renders through the real template, which is how this folder gets type-checked', () => {
-      // Stated as an assertion because it is easy to lose: nothing outside this folder imports the
-      // component, so the production build does not type-check it or its template. This suite compiles both
-      // under strict template checking, and only because it renders them.
       const root = rootOf(createField({ label: LABEL_WITHOUT_SUFFIX, for: CONTROL_ID }));
 
       expect(isAbsent(root, '.form-field')).toBeFalse();
@@ -2116,18 +1895,10 @@ describe('FormFieldComponent', () => {
   // ---------------------------------------------------------------------------
 
   describe('the failure state written onto projected controls', () => {
-    // ⚠ ARIA DESCRIPTIONS ARE NOT INHERITED. The composite group carries `aria-describedby` for the
-    // field as a whole, and that reference is announced when the group is entered - not when the control
-    // inside it is reached, which is the moment a person needs to be told what is wrong with the box they
-    // are sitting in. Runtime testing measured the consequence on the real account and profile forms:
-    // `aria-invalid`, `aria-describedby` and `aria-errormessage` were ALL null on every invalid control,
-    // so the error text was on screen with nothing connecting it to the control it was about, and the
-    // form was silently unsubmittable.
-    //
-    // All three attributes are asserted together because they only work together: `aria-errormessage` is
-    // ignored by assistive technology unless `aria-invalid` is set, and its support is uneven enough that
-    // the well-supported `aria-describedby` has to carry the same text for the readers that do not
-    // honour it.
+    // ⚠ ARIA DESCRIPTIONS ARE NOT INHERITED. The composite group carries `aria-describedby` for the field
+    // as a whole, and that reference is announced when the group is entered - not when the control inside
+    // it is reached, which is the moment a person needs to be told what is wrong with the box they are
+    // sitting in.
 
     it('marks the control invalid and points it at the message when a failure is reported', () => {
       const fixture = createHost();
@@ -2155,9 +1926,9 @@ describe('FormFieldComponent', () => {
 
       const control = queryOrFail<HTMLInputElement>(hostRootOf(fixture), 'input[type="text"]');
 
-      // Removed rather than set to "false": a control that is no longer in error is not making a
-      // statement about its validity, and a dangling reference to a region that has left the document is
-      // worse than no reference at all.
+      // Removed rather than set to "false": a control that is no longer in error is not making a statement
+      // about its validity, and a dangling reference to a region that has left the document is worse than
+      // no reference at all.
       expect(control.hasAttribute('aria-invalid')).toBeFalse();
       expect(control.hasAttribute('aria-errormessage')).toBeFalse();
       expect(control.hasAttribute('aria-describedby')).toBeFalse();
@@ -2202,9 +1973,6 @@ describe('FormFieldComponent', () => {
     });
 
     it('describes every control of a composite field, not just the first', () => {
-      // `editroles.ascx` L98-L115 puts a text box AND a drop-down list under one label, and the
-      // resource entry says so outright - 'These two fields are used in conjunction to enter a Billing
-      // Period'. A failure belongs to both halves.
       const fixture = createHost();
 
       fixture.componentInstance.showFrequency = true;
@@ -2280,27 +2048,12 @@ describe('FormFieldComponent', () => {
 
       const region = errorRegionOf(richRootOf(fixture));
 
-      // The consumer's statement stands - it may know something this component does not. The
-      // MESSAGE reference is contributed regardless, because seventy consumer templates in this
-      // application bind `aria-invalid` themselves and none binds `aria-errormessage`: withholding
-      // the reference wherever a consumer had set the state would penalise the careful ones.
+      // The consumer's statement stands - it may know something this component does not.
       expect(control.getAttribute('aria-invalid')).toBe('false');
       expect(control.getAttribute('aria-errormessage')).toBe(region.id);
       expect(referencesOf(control, 'aria-describedby')).toContain(region.id);
     });
 
-    // ⚠ THIS TRIO GUARDS A DEFECT MEASURED IN A REAL BROWSER, NOT A HYPOTHETICAL.
-    //
-    // Withdrawal used to be unconditional: whenever this field had no error of its own it called
-    // `removeAttribute('aria-errormessage')` on every projected control, whoever had written the
-    // attribute. The account creation screen writes it — both password boxes point at a GROUP error
-    // that screen renders, because the password rule spans two inputs and belongs to neither field,
-    // so each field's own error is permanently empty and the withdrawal branch ran on every check.
-    // Measured on the built application: `hasAttribute('aria-errormessage')` false on BOTH inputs,
-    // zero occurrences of `errormessage` anywhere in the accessibility tree, while the same screen's
-    // `aria-invalid` survived because that branch already asked who owned it. A declarative binding
-    // does not heal: Angular rewrites an attribute only when the bound value changes, so one removal
-    // stands for as long as the message does.
     it("never withdraws a message reference the consumer wrote for a rule this field does not own", () => {
       const fixture = createRichHost();
 
@@ -2352,16 +2105,13 @@ describe('FormFieldComponent', () => {
       fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
       fixture.detectChanges();
 
-      // `aria-errormessage` takes ONE identifier, so the two cannot both be named through it and a
-      // choice has to be made. The consumer's stands, for the same reason its `aria-invalid` stands:
-      // it may know something this component does not. Nothing is lost by the choice - this field's
-      // own message is still reached through `aria-describedby`, which takes a LIST and is additive,
-      // so a reader hears both.
+      // `aria-errormessage` takes ONE identifier, so the two cannot both be named through it and a choice
+      // has to be made. The consumer's stands, for the same reason its `aria-invalid` stands: it may know
+      // something this component does not.
       expect(control.getAttribute('aria-errormessage')).toBe('probe-group-rule');
       expect(referencesOf(control, 'aria-describedby'))
         .withContext("this field's own message is still described")
         .toContain(errorRegionOf(richRootOf(fixture)).id);
     });
   });
-
 });

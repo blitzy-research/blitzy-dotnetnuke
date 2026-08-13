@@ -1,20 +1,4 @@
-//
 // Specification for the rejected-submit focus affordance.
-//
-//  NOTHING here is a ported test: the legacy tree contains zero automated tests of any kind. Every
-//  expectation below was derived from what runtime testing measured on the migrated administration forms -
-//  a rejected submit re-rendered its messages and left focus exactly where it was, which on the account
-//  form meant focus stayed on a submit control below the fold while the messages appeared off-screen above
-//  it. The behaviour asserted here is the WCAG G139 technique for that situation.
-//
-//  The directive is exercised through a real host component and a real `formGroup`, never in isolation:
-//  its whole contract is "when a reactive form on this element rejects a submit, focus the first control
-//  the form is complaining about", and neither half of that is observable without both.
-//
-//  `provideHttpClient()` is registered BEFORE `provideHttpClientTesting()` because the testing function
-//  replaces the backend the first one installed. `verify()` in `afterEach` doubles as a positive assertion
-//  that this directive performs no network access.
-//
 
 import { Component } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';

@@ -1,96 +1,19 @@
 <!--
-  THE SCREEN THAT IMPORTS CONTENT INTO A MODULE. Replaces `Website/admin/Modules/import.ascx`, whose
-  seventeen content lines held a fixed-width positioning grid of two rows - a server folder picker
-  above a server file picker - followed by a paragraph containing two link buttons.
-
   MARKUP CONTRACT. The paired stylesheet states the class vocabulary this template may emit, and the
   constraint is binding rather than advisory: emulated view encapsulation rewrites every selector with
   this component's content attribute, so a class name that drifts does not error - it silently matches
-  nothing and the screen renders unstyled. The vocabulary is exactly `.module-import`,
-  `.module-import__form` and `.module-import__actions`, the direct analogue of the three names the
-  sibling transfer screen declares and its own stylesheet contains. Nothing below invents a fourth
-  name. Every control and every text node therefore carries NO class and takes its appearance from the
-  global form stylesheet, which is the correct outcome rather than a compromise: that stylesheet
-  already reaches a bare select, a bare file input and a bare button - including the focus ring and the
-  invalid state - so a class the component stylesheet does not know would look styled in the source and
-  be unstyled on the screen.
-
-  BINDING CONTRACT. Every member read below is declared by the paired class, and NO wording is authored
-  here. That class holds each string a person reads as a named constant, so a specification asserts the
-  rendered text against the same value the screen supplies instead of restating it and letting the two
-  drift. The strings are named in the annotations below purely as provenance. No length, no colour and
-  no spacing value appears anywhere in this file, and there is no inline styling of any kind.
-
-  MIGRATION: THE POSITIONING GRID WAS NOT A DATA GRID, SO NO TABULAR MARKUP IS EMITTED - no tabular
-    container, no row and no cell. `import.ascx:L4` opened a fixed-width positioning container carrying
-    the summary "Edit Links Design Table", a description of a completely different screen, because the
-    markup was copied from one. Tabular markup used for positioning announces rows and cells that are
-    not data, and a summary describing another screen is worse than none. Positioning is the
-    stylesheet's flow layout here and the fields are a real form. The measured in-scope ratio is 68
-    such positioning containers against 8 genuine record grids, so this is the ordinary case rather
-    than the exception, and the shared record-grid component is deliberately not used. The leading
-    break element at `L3` and the paragraph wrapper at `L14` go with it: both were vertical spacing
-    expressed as content, and spacing here is the stylesheet's own scale.
-
-  MIGRATION: BOTH FILESYSTEM PICKERS ARE DROPPED AND REPLACED BY A REAL UPLOAD, AND THE CHANGE IS
-    FORCED RATHER THAN CHOSEN. `import.ascx:L7` and `L11` listed folders and files that already had to
-    be sitting on the web server's own disk. `Import.ascx.vb:L72` seeded the folder list with a
-    placeholder whose stored value was a bare hyphen, `L73` filled it from the framework's folder
-    helper restricted to the read and write permission keys, `L76-L77` displayed the root folder -
-    whose stored path is the empty string - under a localised label, and `L184` opened the chosen
-    document from the portal's home directory. The migrated API exposes NO folder listing, NO file
-    listing, NO upload browse and NO disk-space resource, so there is nothing for either picker to
-    read. The folder field disappears outright, and with it its own label wording 'Folder', its
-    guidance wording 'Select the import folder' and the root-folder wording 'Root' - none of the three
-    is rendered anywhere below. The round-trip cascade at `L98-L117` goes with it, and so does the
-    defect inside it: its two independent match blocks each added unconditionally, so a document
-    satisfying both was offered twice under two identical labels. The picker below cannot grow that
-    defect, because the paired class collapses its options on the module identifier.
-
-  MIGRATION: LOCALISATION IS NOT PORTED. The wording below is taken from the resource VALUES and
-    authored in the paired class as English constants; no localisation lookup, no translation attribute
-    and no message-extraction marker appears here, and none of the 48 in-scope legacy localisation
-    calls is reproduced. The legacy presentational class names are likewise not reproduced - the three
-    this screen carried were purely visual and every one of them resolves to a token in the paired
-    stylesheet instead.
+  nothing and the screen renders unstyled.
 -->
 <section class="module-import">
   <!--
-    The page's single top-level heading, plus the one sentence carried across from this screen's help
-    resource entry. The title is 'Import Module', from `ControlTitle_importmodule.Text`; the shared
-    component declares it required, so it is always bound.
-
-    MIGRATION: THAT HELP RESOURCE VALUE IS UNTRUSTED MARKUP AND IS RE-AUTHORED AS TEXT. Its stored
-      value is a top-level heading element followed by a paragraph element. Across the in-scope
-      resource files 76 values carry a tag and four carry a script element - one of them a live,
-      remotely sourced advertising block in the portal settings resources, stored escaped so a naive
-      search clears it wrongly - so binding any resource value as markup would be an injection vector
-      rather than a formatting convenience. Its heading duplicated the screen title exactly, so ONLY
-      its sentence survives, and it survives as the supporting text this component renders as a REAL
-      paragraph outside the document outline. That is precisely why no second heading is emitted here:
-      this component already owns the page's only top-level heading. There is no raw-markup binding
-      and no sanitiser bypass anywhere in this file.
-
-    THE ACTION SLOT IS DELIBERATELY LEFT EMPTY. This component exposes one, and the confirming action
-    is the form's submit control: projecting it here would place it outside the form element and break
-    implicit submission. Keeping both actions at the foot of the form also matches where the legacy
-    screen put them, at `L14-L17`, directly beneath the fields.
-
-    No landmark element is emitted anywhere in this file. The application shell owns each of them
-    exactly once, and a second one here would compete with it.
+    THAT HELP RESOURCE VALUE IS UNTRUSTED MARKUP AND IS RE-AUTHORED AS TEXT. Its stored value is a
+    top-level heading element followed by a paragraph element.
   -->
   <app-page-header [title]="title" [subtitle]="subtitle" />
 
   <!--
-    One indicator at a time, and the order is the order the two waits actually occur in: the module
-    list is read when the screen opens, and only afterwards can an import be in flight. The busy signal
-    deliberately spans BOTH the document read and the request, because the read happens before the
-    request is issued and the store cannot know about it - without that, the screen would look idle for
-    the whole of a large document.
-
-    Each indicator is unmounted rather than hidden when its wait ends, so neither occupies space nor
-    lingers in the accessibility tree. The size is a NAME, not a measurement: the shared component
-    resolves it to a token, so no dimension is expressible from here.
+    One indicator at a time, and the order is the order the two waits actually occur in: the module list
+    is read when the screen opens, and only afterwards can an import be in flight.
   -->
   @if (loadingModules()) {
     <app-loading-spinner size="small" [label]="loadingModulesLabel" />
@@ -99,59 +22,31 @@
   }
 
   <!--
-    THE SUMMARY FAILURE SURFACE, AND IT IS DELIBERATELY NOT WRAPPED IN A CONDITION. The shared
-    component keeps its announcing region mounted at all times and guards the CONTENT inside itself, so
-    wrapping the element would create the region and its content in the same instant - which is exactly
-    the case assistive technology frequently fails to announce. While there is nothing to show the
-    region carries no border, no background and no padding of its own and resolves to zero height, so
-    keeping it mounted costs nothing visually.
-
-    It also OWNS the announcing semantics and the alert role; this file declares neither, and never
-    declares a second announcing region. The paired class binds a signal, so an explicit null is the
-    empty state - the API serialises absent members as present-and-null, so no truthiness test is used
-    anywhere in this file to decide whether a failure exists.
-
-    THE TWO FAILURE SURFACES ARE NEVER CONFLATED. This one carries the server's outcome - the
-    invalid-structure refusal, the wrong-type refusal, the not-portable refusal - together with its
-    per-field map and the reference an operator can quote. The sentence beside an individual control is
-    the shared field's own job, further down. No message is rendered in both.
-
-    MIGRATION: this surface has no legacy ancestor. There is not one validation-summary declaration in
-      the 39 in-scope screens, nor anywhere in either legacy tree, so it is a net addition rather than
-      a translation; the legacy analogue is the message renderer in a tree this migration excludes. The
-      announcing behaviour is net-new for the same reason: neither legacy tree contains a single
-      announcing attribute of any kind.
+    THE SUMMARY FAILURE SURFACE, AND IT IS DELIBERATELY NOT WRAPPED IN A CONDITION. The shared component
+    keeps its announcing region mounted at all times and guards the CONTENT inside itself, so wrapping
+    the element would create the region and its content in the same instant - which is exactly the case
+    assistive technology frequently fails to announce.
   -->
   <!--
     Both inputs are bound, and they are ORDERED. A failure carrying a problem document shows the
     server's own explanation; a failure carrying none — which is what a contract-violating `200`
     produces, because the decoders run downstream of the interceptor — shows the store's authored
-    summary instead. Before the second input existed a malformed picker listing left this screen with
-    no choices, no way to submit and no diagnostic anywhere.
+    summary instead.
   -->
   <app-error-banner [problem]="problem()" [fallbackMessage]="failureSummary()" />
 
   <!--
-    MIGRATION: THERE IS A FORM ELEMENT NOW, WHERE THERE WAS NONE. The legacy markup declared no form of
-      its own - the surrounding page supplied one and every control round-tripped through it - so the
-      submit control below is genuinely new, and with it keyboard submission from either field.
-
-    `novalidate` suppresses the browser's own validation bubble so it cannot compete with the shared
-    field's message region for the same failure. The requirement itself is carried by the reactive
-    validators the paired class declares and is shown by the field's own marker, so no native
-    requiredness attribute is added to either control.
+    THERE IS A FORM ELEMENT NOW, WHERE THERE WAS NONE. The legacy markup declared no form of its own -
+    the surrounding page supplied one and every control round-tripped through it - so the submit control
+    below is genuinely new, and with it keyboard submission from either field.
   -->
   <form class="module-import__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
     @if (hasModuleChoices()) {
       <!--
         MIGRATION: THE TARGET MODULE IS NOW CHOSEN ON THE SCREEN, AND THIS WHOLE FIELD IS NET-NEW. The
-          legacy screen had no module field at all: `Import.ascx.vb:L67-L68` read its target out of
-          band from a request value and parsed it with no guard, under a compilation setting that had
-          strict typing disabled, so any non-numeric input threw into the catch-all. The migrated
-          endpoint carries no identifier in its address - the target is a member of the request body -
-          and the route is likewise the bare address with no parameter, so nothing is bound into this
-          screen from the address and no parameter is invented to fake one. Choosing from the module
-          listing is the only mechanism left that does not oblige an operator to hand-edit an address.
+        legacy screen had no module field at all: `Import.ascx.vb:L67-L68` read its target out of band
+        from a request value and parsed it with no guard, under a compilation setting that had strict
+        typing disabled, so any non-numeric input threw into the catch-all.
       -->
       <app-form-field
         [label]="moduleFieldLabel"
@@ -160,54 +55,6 @@
         [help]="moduleFieldHelp"
         [error]="moduleError()"
       >
-        <!--
-          A bare select is correct here rather than a shortfall: the shared field renders no control of
-          its own and exposes an unnamed slot precisely so the caller projects the control it needs.
-          Its identifier matches the association above, which is what names it natively - so no
-          redundant accessible name is added that would compete with the visible label.
-
-          `[ngValue]` rather than `[value]`, and the distinction is load-bearing: the plain form
-          coerces the option to a string, whereas the control is typed to hold a number or nothing.
-
-          The options are tracked BY THE MODULE IDENTIFIER, which is a stable identity rather than a
-          position. That identifier column is seeded from zero, so ZERO NAMES A REAL MODULE and minus
-          one is a legitimate value as well - no truthiness test and no positional fallback is used to
-          key them, either of which would silently mishandle both.
-
-          ⚠ THE OPENING OPTION IS THE LEGACY PLACEHOLDER, AND IT REPLACES A CONTROL THAT OPENED WITH
-          NOTHING SELECTED AT ALL. An earlier revision of this template deliberately emitted no
-          placeholder, reasoning that no wording was published for one and that "nothing selected" was
-          the honest opening state. The measured result was a select reporting `selectedIndex` -1: the
-          collapsed control showed blank, arrowing off it jumped to the first module rather than
-          stepping from a known position, and no readable option named the state. `Import.ascx.vb:L72`
-          seeded exactly this wording at index 0 of this same screen's own picker, so the string is
-          carried across rather than invented, and it is held by the paired class like every other
-          string here. Its value is `null` - the value the control already held - so the requirement
-          below still reports an unmade choice, and re-selecting it is how a choice is retracted.
-
-          The change handler exists only so that a refusal recorded against the previous choice stops
-          being shown beside the new one; the value itself is written by the form directive.
-
-          The invalid state is carried on the CONTROL as well as in the message region, because the
-          region announces once, at the moment it appears - a reader arriving at this control later, or
-          returning to it, would otherwise find a field giving no indication of being in error. It is
-          bound only once the operator has engaged with the field, so an untouched field is never
-          pre-emptively marked wrong, and it changes no rendered pixel.
-
-        BOTH CONTROLS ARE LOCKED WHILE THE SCREEN IS BUSY, AND THE BINDING IS `attr.disabled` RATHER THAN
-        `disabled` FOR A REASON THAT IS NOT STYLISTIC. A reactive form's disabled state belongs to the
-        FormControl, and a disabled control is EXCLUDED from `form.value` and from `form.valid` — so
-        locking through the directive would make the paired class's validity gate report a form with no
-        module and no document as valid, and Angular additionally warns that the two mechanisms are being
-        mixed. Setting the DOM attribute leaves the control's own state untouched: the field stops
-        accepting input and stops being reachable by keyboard, while the form still knows what is in it.
-
-        WHY LOCK AT ALL, given the paired class now refuses a stale dispatch outright: refusing is
-        correctness, and this is the affordance. An operator who can still edit the fields during a read
-        has every reason to expect the edit to take effect, and it does not — the attempt is abandoned
-        instead, silently and correctly. Removing the ability to make that edit is what stops it being
-        offered in the first place, so the two work together rather than one substituting for the other.
-        -->
         <select
           [id]="moduleFieldId"
           formControlName="moduleId"
@@ -226,54 +73,21 @@
       </app-form-field>
 
       @if (moduleChoiceSummary() !== null) {
-        <!--
-          ⚠ THE COUNT IS WHAT MAKES THE PICKER'S COMPLETENESS VISIBLE RATHER THAN MERELY PROMISED, and
-          it exists because an earlier revision of this screen offered a set that could silently omit
-          every placement after the hundredth. The store now walks every page and refuses instead of
-          truncating, so a rendered picker is a COMPLETE picker; this line states the size of the set so
-          an operator can tell at a glance that the module they are looking for should be in it.
-
-          Deliberately NOT a live region, and deliberately not inside the field's message slot. It is
-          neither an error nor a change worth interrupting a reader for - it is standing context about
-          the control above - and putting it in the field's error slot would make an ordinary fact look
-          like a failure and would compete with the real refusal for the same region.
-
-          Interpolated plain text, like every other string this template renders. The wording is
-          composed by the paired class, so no sentence is authored in this file.
-        -->
         <p class="module-import__choice-summary">{{ moduleChoiceSummary() }}</p>
       }
     } @else if (!loadingModules()) {
       <!--
-        Shown in place of the picker when the tenant offers nothing to import into, rather than an
-        empty control the operator cannot use. Guarded on the read having finished, so an in-flight
-        listing shows the indicator above instead of claiming there is nothing.
+        Shown in place of the picker when the tenant offers nothing to import into, rather than an empty
+        control the operator cannot use. Guarded on the read having finished, so an in-flight listing
+        shows the indicator above instead of claiming there is nothing.
       -->
       <app-empty-state [message]="noModulesMessage" />
     }
 
     <!--
-      The document field. Its label is 'File' and its guidance is 'Select the import file', both taken
-      from this screen's resource values.
-
       MIGRATION: THE COLON IS NOT REPRODUCED. `import.ascx:L6` and `L10` both appended one through the
-        legacy label control's suffix attribute. The wording constant carries none and the shared field
-        normalises the punctuation, so a colon is never doubled and never authored twice.
-
-      MIGRATION: THE INLINE MESSAGE IS A HARD-CODED, UNLOCALISED LITERAL AND IT IS REPRODUCED VERBATIM.
-        `Import.ascx.vb:L157` passes the bare string 'Please specify the file to import' straight to the
-        message renderer - not a resource lookup, which is a defect in the legacy screen and is recorded
-        as one. It is emphatically NOT the sibling transfer screen's validation entry: no such key
-        exists among this screen's twelve resource entries. The requirement is also NARROWED to the
-        document alone, because the guard at `L145` stood in for both pickers and only one of them
-        survives. The wording never named a folder, so it needs no adjustment to say so.
-
-      The message arrives already resolved from the paired class, which owns the whole precedence chain
-      - the server's per-field message first, then the refusal that names this field, then this screen's
-      own requirement - and returns nothing at all rather than a blank string when the field has nothing
-      to say. That decision is deliberately NOT restated here: the legacy screen showed its message only
-      once a person had acted, and reproducing that condition in this file as well would put one rule in
-      two places and let the two disagree.
+      legacy label control's suffix attribute. The wording constant carries none and the shared field
+      normalises the punctuation, so a colon is never doubled and never authored twice.
     -->
     <app-form-field
       [label]="fileFieldLabel"
@@ -283,35 +97,8 @@
       [error]="fileError()"
     >
       <!--
-        MIGRATION: THIS NATIVE FILE CONTROL IS THE SINGLE DOCUMENTED EXCEPTION to the rule that a
-          feature template uses a shared component wherever one covers the need. The shared library is
-          closed at ten members and not one of them is a document picker, so the native control is used
-          - wrapped in the shared field, never loose - and NO eleventh shared component was created for
-          it. The two buttons at the foot of this form are the same exception for the same reason: the
-          closed set contains no button component either.
-
-        IT CARRIES NO FORM-CONTROL DIRECTIVE, AND THAT IS REQUIRED RATHER THAN AN OMISSION. A document
-        handle cannot be written back into a file control's value - the browser refuses it outright - so
-        the paired class records the choice from this change event and writes the control itself,
-        marking it dirty and touched as it does. Binding the control declaratively here would throw.
-
-        The suggested types are an AFFORDANCE, NOT VALIDATION. The legacy screen listed candidates
-        restricted to one extension; this carries that intent into the browser's own picker. It is a
-        hint a person can defeat, and the server adjudicates the document regardless - which is exactly
-        why no structure check, no type check and no parse of any kind happens on this screen. Nothing
-        below builds a multipart body, constructs a document object, serialises one, or creates an
-        object address for one: the paired class reads the document as text and the payload is plain
-        data.
-
-        Its identifier matches the association above, so the shared field's real label names it
-        natively and it is reachable and operable from the keyboard with no scripting. The global form
-        stylesheet gives it the focus ring and the invalid appearance, so it needs no class here and no
-        icon asset of any kind is referenced.
-
-        IT IS LOCKED WHILE THE SCREEN IS BUSY, through the DOM attribute for the same reason the module
-        picker above is - and here the reason is stronger still, because this control carries no form
-        directive at all: its value is written by the paired class from the change event, so the
-        directive-based disabled state was never available to it in the first place.
+        THIS NATIVE FILE CONTROL IS THE SINGLE DOCUMENTED EXCEPTION to the rule that a feature template
+        uses a shared component wherever one covers the need.
       -->
       <input
         [id]="fileFieldId"
@@ -326,15 +113,6 @@
       />
 
       <!--
-        The chosen document's own name, kept visible after the choice is made. The legacy screen showed
-        it persistently too, as the selected entry of its file picker, so this is visual continuity
-        rather than an addition - and unlike the control's own built-in text it is a real text node, so
-        it is reliably available to a reader and to a specification.
-
-        MIGRATION: THE NAME IS UNTRUSTED INPUT. It comes from the operator's own filesystem, it travels
-          on the request as descriptive metadata that no decision depends on, and it is interpolated -
-          so the framework escapes it. It is never resolved as a path and never bound as markup.
-
         Tested EXPLICITLY against null rather than for truthiness, in keeping with the rule that the
         empty string is data in this schema and never means "unset".
       -->
@@ -345,43 +123,12 @@
 
     <div class="module-import__actions">
       <!--
-        MIGRATION: BOTH ACTIONS ARE REAL BUTTONS. `import.ascx:L15-L16` declared them as link buttons,
-          which render as anchors - elements that navigate rather than act, are announced as links and
-          are not activated by the space key. As buttons they are properly operable from the keyboard,
-          and the change costs nothing visually: the legacy declared both with their border suppressed,
-          and the legacy stylesheet styled that class as underlined text rather than as a filled
-          control, so the appearance is the stylesheet's business and it has all it needs.
-
         MIGRATION: the single literal non-breaking space that separated them at the end of `L15` is not
-          reproduced. It was spacing expressed as content - one of 70 such entities in the in-scope
-          markup - and spacing here is the stylesheet's token-based gap, which is adjustable and cannot
-          be collapsed the way a run of literal whitespace can.
-
-        The confirming label is 'Import', from `cmdImport.Text`. It is disabled while anything is
-        outstanding and while there is no module to choose, and neither is a portability judgement: the
-        attempt is deliberately always allowed for a module that may not accept content, because the
-        server owns that answer and says so in words.
+        reproduced.
       -->
       <button type="submit" [disabled]="!canSubmit()"
           [attr.aria-busy]="busy() ? 'true' : null">{{ importActionLabel }}</button>
 
-      <!--
-        MIGRATION: `type="button"` IS THE FAITHFUL TRANSLATION OF THE LEGACY `causesvalidation="False"`,
-          which `import.ascx:L16` carries and which `L15` does not. Stated explicitly so this action can
-          never submit the form it sits in: its handler at `L127-L129` did nothing but redirect - no
-          read, no write, no validation - and the paired handler here does the same, touching neither
-          the form's validity nor its touched state. It abandons a chosen document silently, exactly as
-          the legacy action did.
-
-        MIGRATION: A FIFTH RESOURCE-KEY CONVENTION. `L16` names the key `cmdCancel`, yet no such entry
-          exists among this screen's twelve - it falls through to the shared global resource table,
-          where the value is 'Cancel'. That fall-through is a convention beyond the four previously
-          catalogued, and it is reported rather than assumed.
-
-        A button rather than a link because the paired class navigates through the router and does not
-        expose the routing directive to this template; a link would have to be declared, and declaring
-        one that is not available would not compile.
-      -->
       <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
     </div>
   </form>

@@ -1,266 +1,75 @@
 namespace DnnMigration.Application.Options;
 
-/// <summary>
-/// Portal-wide behavioural defaults for the migrated DotNetNuke administration surface.
-/// </summary>
+/// <summary>Portal-wide behavioural defaults for the migrated DotNetNuke administration surface.</summary>
 /// <remarks>
-/// <para>
-/// This type is a configuration record: a plain object with no dependency
-/// on the options, configuration, hosting or HTTP abstractions. It is
-/// declared here in the Application layer and bound by the Api layer, which is why nothing
-/// in this file reads configuration or registers itself with a service
-/// container. The Application layer's composition entry point deliberately accepts no
-/// configuration argument, so it could not bind this type even if that were wanted.
-/// </para>
-/// <para>
-/// It does state its own invariants, through <see cref="Validate"/>, which the Api layer calls
-/// as part of binding so that a misconfigured deployment fails while the host is starting. That
-/// method reaches nothing outside the base class library, so declaring it here costs the layer
-/// no dependency, and declaring each condition beside the value it governs is what keeps a
-/// single rule per setting instead of one per consumer.
-/// </para>
-/// <para>
-/// The three-way boundary. Portal-related state in this solution has three distinct homes,
-/// and conflating them is the easiest way to put a value in the wrong place:
-/// </para>
-/// <list type="bullet">
-///   <item>
-///     <description>
-///     Persisted per-portal configuration is a column on the <c>Portal</c> domain entity.
-///     The home directory actually stored for a given portal, the user-registration mode,
-///     the description and the keywords all belong there, because each varies per row.
-///     </description>
-///   </item>
-///   <item>
-///     <description>
-///     Per-request tenant facts belong to the scoped portal-context abstraction: the
-///     resolved portal id, portal name and alias, the administrator id, and the
-///     administrator and registered role identifiers. Each is established once per request
-///     while resolving the caller's tenant.
-///     </description>
-///   </item>
-///   <item>
-///     <description>
-///     Host-level behavioural defaults belong here, and only these: the pattern applied
-///     when a portal has no stored home directory, the administration template file name,
-///     and the two special role display names.
-///     </description>
-///   </item>
-/// </list>
-/// <para>
-/// The class is deliberately small. Every property below has measured read sites in the
-/// legacy source, cited on the property itself, and a value earns a place here only when
-/// migrated Application code genuinely reads it.
-/// </para>
-/// <para>
-/// Sources examined that yielded nothing. The legacy <c>Website/release.config</c>
-/// application-settings block spans L34-L55 and declares eleven active keys:
-/// <c>SiteSqlServer</c> (L36), <c>InstallTemplate</c> (L40), <c>AutoUpgrade</c> (L41),
-/// <c>UseInstallWizard</c> (L42), <c>InstallMemberRole</c> (L43), <c>ShowMissingKeys</c>
-/// (L44), <c>EnableWebFarmSupport</c> (L45), <c>EnableCachePersistence</c> (L46),
-/// <c>HostHeader</c> (L47), <c>RemoveAngleBrackets</c> (L49) and
-/// <c>PersistentCookieTimeout</c> (L51), alongside two further entries that are commented
-/// through. Not one is a candidate for this class: the connection string becomes a standard
-/// connection-string entry owned by the Api layer, four are installer and upgrade concerns,
-/// one is localisation debugging for a mechanism that is not carried forward, two are
-/// web-farm and cache-persistence concerns owned by Infrastructure, one drives URL
-/// rewriting, one scrubs Web Forms input, and the persistent-cookie timeout has no
-/// counterpart under stateless bearer tokens. The block is recorded here as read in full
-/// and deliberately empty-handed, so that a later reader can see it was examined rather
-/// than overlooked, and so this class is understood to rest only on the three measured
-/// legacy sites cited on its members.
-/// </para>
+/// Sources examined that yielded nothing.
 /// </remarks>
 public sealed class PortalOptions
 {
-    // MIGRATION: this class is where the excluded DotNetNuke.Common.Globals static module
-    // (2,704 lines at Library/Components/Shared/Globals.vb, reached by 111 files) is absorbed
-    // for portal defaults, as a few named replacements rather than a port of the module.
-
     // MIGRATION: Website/release.config application settings (L34-L55) were read in full and
     // yielded no property here; all eleven active keys are excluded or owned by another layer.
 
-    /// <summary>
-    /// Name of the configuration section this type is bound from.
-    /// </summary>
-    /// <remarks>
-    /// The Api layer performs the binding, reading
-    /// <c>configuration.GetSection(PortalOptions.SectionName)</c>. Because the standard
-    /// configuration providers treat a double underscore as a section separator, every
-    /// property below is overridable in a container through an environment variable of the
-    /// form <c>Portal__&lt;PropertyName&gt;</c> — for instance
-    /// <c>Portal__AdminTemplateFileName</c>. The section name itself is new work: the legacy
-    /// application had no equivalent grouping, because these values lived as compiled
-    /// constants and hard-coded literals rather than as configuration.
-    /// </remarks>
+    /// <summary>Name of the configuration section this type is bound from.</summary>
     public const string SectionName = "Portal";
 
-    // ------------------------------------------------------------------------
-    // Bounds and required shapes for the values above, held here beside the
-    // settings they constrain and const rather than configurable. Two of them are
-    // security controls rather than tidiness: a template file name is combined
-    // with a directory, and a home-directory format that loses its placeholder
-    // collapses every tenant into one directory. Enforcement lives in
-    // Api/Extensions/ServiceCollectionExtensions.cs and runs at startup.
-    // ------------------------------------------------------------------------
+    // Bounds and required shapes for the values above, held here beside the settings they constrain and
+    // const rather than configurable.
 
-    /// <summary>
-    /// The substitution placeholder <see cref="HomeDirectoryFormat"/> must
-    /// contain: <c>{0}</c>.
-    /// </summary>
+    /// <summary>The substitution placeholder <see cref="HomeDirectoryFormat"/> must contain: <c>{0}</c>.</summary>
     /// <remarks>
-    /// This is the single most consequential requirement in this type. The format
-    /// is expanded once per portal, and the placeholder is the only part of it
-    /// that differs between portals. A format without it expands to the same
-    /// string for every tenant, so every portal would read and write one shared
-    /// directory - a cross-tenant data exposure produced by a configuration
-    /// typo, with nothing in the running system to signal it. Startup refuses
-    /// such a value instead.
+    /// This is the single most consequential requirement in this type. The format is expanded once per
+    /// portal, and the placeholder is the only part of it that differs between portals.
     /// </remarks>
     public const string HomeDirectoryPortalPlaceholder = "{0}";
 
     /// <summary>
-    /// Longest acceptable <see cref="AdminTemplateFileName"/> or
-    /// <see cref="HomeDirectoryFormat"/> value: 260 characters.
+    /// Longest acceptable <see cref="AdminTemplateFileName"/> or <see cref="HomeDirectoryFormat"/> value:
+    /// 260 characters.
     /// </summary>
-    /// <remarks>
-    /// Both values become part of a file-system path, and 260 is the classic
-    /// maximum path length - generous for a single path segment or a short
-    /// relative format, and low enough that neither value can be used to build an
-    /// absurd path. It bounds length only; the separate checks that neither value
-    /// is rooted nor contains a parent-directory segment are what make them safe.
-    /// </remarks>
     public const int MaximumPathValueLength = 260;
 
     /// <summary>
-    /// The parent-directory segment that neither <see cref="AdminTemplateFileName"/>
-    /// nor <see cref="HomeDirectoryFormat"/> may contain: <c>..</c>.
+    /// The parent-directory segment that neither <see cref="AdminTemplateFileName"/> nor <see
+    /// cref="HomeDirectoryFormat"/> may contain: <c>..</c>.
     /// </summary>
-    /// <remarks>
-    /// Both values are combined with a directory the application owns, so a
-    /// parent-directory segment would let a configured value address a location
-    /// outside it. Rejecting the segment outright is simpler and safer than
-    /// attempting to normalise the result and then reason about where it landed.
-    /// </remarks>
     public const string ParentDirectorySegment = "..";
 
     /// <summary>
-    /// File name of the administration portal template, which is parsed for every newly
-    /// created portal in addition to the portal template the caller selected.
+    /// File name of the administration portal template, which is parsed for every newly created portal in
+    /// addition to the portal template the caller selected.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Legacy default preserved exactly: <c>admin.template</c>. Measured at
-    /// <c>Library/Components/Portal/PortalController.vb:L1082</c>, the call
-    /// <c>ParseTemplate(intPortalId, TemplatePath, "admin.template", AdministratorId, ...)</c>,
-    /// and at <c>L1370</c>, the comparison
-    /// <c>isAdminTemplate = (TemplateFile = "admin.template")</c>. Those are the only two
-    /// executable occurrences in the file; the third, at <c>L971</c>, is a documentation
-    /// comment. Do not substitute <c>L1360</c> or <c>L980</c> for those citations: they are the
-    /// declarations of <c>ParseTemplate</c> and <c>CreatePortal</c> respectively, not the sites
-    /// where the literal appears.
-    /// </para>
-    /// <para>
-    /// The value is load-bearing rather than cosmetic. Matching it selects a behavioural
-    /// branch that suppresses parsing of a template's &lt;settings&gt;, &lt;roles&gt;,
-    /// &lt;folders&gt; and &lt;files&gt; nodes, as the legacy comment at <c>L1379</c> states
-    /// and the guard at <c>L1380</c> implements. Changing it therefore changes which nodes of
-    /// a template are honoured, so it is surfaced as configuration purely to accommodate an
-    /// installation that renamed the file, never as a matter of preference.
-    /// </para>
-    /// <para>
-    /// This is the administration template alone. The per-portal template file is a property
-    /// of the create-portal request, chosen per call, and must not be added here.
-    /// </para>
+    /// The value is load-bearing rather than cosmetic. Matching it selects a behavioural branch that
+    /// suppresses parsing of a template's &lt;settings&gt;, &lt;roles&gt;, &lt;folders&gt; and
+    /// &lt;files&gt; nodes, as the legacy comment at <c>L1379</c> states and the guard at <c>L1380</c>
+    /// implements.
     /// </remarks>
     public string AdminTemplateFileName { get; set; } = "admin.template";
 
     /// <summary>
-    /// Format string yielding a portal's default home directory, applied only when the portal
-    /// has no home directory stored against it. The single <c>{0}</c> placeholder receives the
-    /// portal id.
+    /// Format string yielding a portal's default home directory, applied only when the portal has no home
+    /// directory stored against it. The single <c>{0}</c> placeholder receives the portal id.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Legacy default preserved exactly: <c>Portals/{0}</c>. Measured at
-    /// <c>Library/Components/Portal/PortalController.vb:L991-L992</c>, where
-    /// <c>If HomeDirectory = "" Then HomeDirectory = "Portals/" + intPortalId.ToString</c>.
-    /// L992 holds the only occurrence of that literal anywhere in the file.
-    /// </para>
-    /// <para>
-    /// Three characteristics of the legacy value are deliberate and must survive. The
-    /// separator is a forward slash, because the composed value is a web-relative path rather
-    /// than a physical one. There is no trailing slash, because the legacy call site appends
-    /// its own. And the default applies only when the stored value is empty, never as an
-    /// unconditional override of a portal that has its own directory.
-    /// </para>
-    /// <para>
-    /// Emptiness is the subtle part. In the legacy codebase the null sentinel for a string is
-    /// the empty string rather than a null reference: <c>Library/Components/Shared/Null.vb</c>
-    /// defines its <c>NullString</c> as <c>""</c>, and the reader at
-    /// <c>PortalController.vb:L105</c> funnels a database null through that sentinel, so the
-    /// legacy test at L991 only ever had to compare against <c>""</c>. Under nullable
-    /// reference types a stored value can now genuinely be null, so a caller must treat null
-    /// and the empty string identically when deciding whether to fall back to this format.
-    /// Preserving that equivalence is what keeps the migrated behaviour identical.
-    /// </para>
-    /// <para>
-    /// The home directory actually in force for a portal is a column on the <c>Portal</c>
-    /// domain entity, not a value on this class, and turning the resulting relative path into
-    /// a physical one is an Api or Infrastructure concern — the legacy code performed that
-    /// mapping separately at <c>L994</c>, combining the relative path with the application
-    /// path. Neither of those belongs here.
-    /// </para>
+    /// The home directory actually in force for a portal is a column on the <c>Portal</c> domain entity,
+    /// not a value on this class, and turning the resulting relative path into a physical one is an Api or
+    /// Infrastructure concern — the legacy code performed that mapping separately at <c>L994</c>, combining
+    /// the relative path with the application path. Neither of those belongs here.
     /// </remarks>
-    /// <example>
-    /// A caller substitutes the portal id at the point of use, which keeps the emptiness test
-    /// visible exactly where the legacy code had it and leaves the choice of culture with the
-    /// caller rather than with a configuration object:
-    /// <code>
-    /// string homeDirectory = portal.HomeDirectory;
-    /// if (string.IsNullOrEmpty(homeDirectory))
-    /// {
-    ///     homeDirectory = string.Format(
-    ///         CultureInfo.InvariantCulture,
-    ///         options.HomeDirectoryFormat,
-    ///         portal.PortalId);
-    /// }
-    /// </code>
-    /// </example>
     public string HomeDirectoryFormat { get; set; } = "Portals/{0}";
 
-    // MIGRATION: THE TWO SPECIAL ROLE NAMES USED TO BE SETTINGS HERE, AND THEY ARE NOT SETTINGS.
-    // UnauthenticatedRoleName and AllUsersRoleName were bound from Portal:UnauthenticatedRoleName and
-    // Portal:AllUsersRoleName, which let a deployment decide which stored role receives anonymous-caller
-    // and every-caller semantics - an authorization boundary expressed as a configuration string. They are
-    // now DnnMigration.Domain.Common.SpecialRoleNames.Unauthenticated and .AllUsers, immutable constants in
-    // the layer AAP sections 0.2.2.1 and 0.7.6 name for the replacement of the excluded Globals module.
-    // The column bound they were validated against is published there too, as
-    // SpecialRoleNames.RoleNameMaximumLength. Nothing in this type replaces them, and no key in the Portal
-    // section may reintroduce them: a value that changes who "All Users" means is a source change under
-    // review, not a deployment knob.
-
     /// <summary>
-    /// Reports every way in which the values bound onto this instance are unusable, so that a
-    /// misconfigured deployment fails while the host is starting rather than when the first
-    /// portal is created or the first permission is evaluated.
+    /// Reports every way in which the values bound onto this instance are unusable, so that a misconfigured
+    /// deployment fails while the host is starting rather than when the first portal is created or the
+    /// first permission is evaluated.
     /// </summary>
     /// <returns>
-    /// One message per failure, each naming the configuration path an operator has to change, or
-    /// an empty collection when the instance is usable.
+    /// One message per failure, each naming the configuration path an operator has to change, or an empty
+    /// collection when the instance is usable.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// Every failure is reported rather than only the first, because an operator fixing one setting
-    /// per restart is the outcome a single-failure result produces.
-    /// </para>
-    /// <para>
-    /// The path checks are deliberately narrow and are about CONFIGURATION, not about caller input.
-    /// Both path-shaped settings are composed into a web-relative location, so a rooted path, a
-    /// drive or UNC prefix, or a parent-directory segment in either of them would escape the
-    /// intended root for every portal at once. Validating the request-supplied home directory of an
-    /// individual portal is a separate concern and belongs to the portal request validators.
-    /// </para>
+    /// Every failure is reported rather than only the first, because an operator fixing one setting per
+    /// restart is the outcome a single-failure result produces.
     /// </remarks>
     public IReadOnlyList<string> Validate()
     {
@@ -321,47 +130,29 @@ public sealed class PortalOptions
 
         // No role-name validation, and none is missing. The two special role names are compiled-in domain
         // constants rather than settings, so there is no configured value to check for emptiness, for width
-        // against the Roles.RoleName column, or for collision with its partner. Removing the settings
-        // removed all three failure modes rather than continuing to guard against them.
+        // against the Roles.RoleName column, or for collision with its partner.
         return failures;
     }
 
     /// <summary>
-    /// Whether a value that must be a bare file name contains a directory separator or a
-    /// parent-directory segment.
+    /// Whether a value that must be a bare file name contains a directory separator or a parent-directory
+    /// segment.
     /// </summary>
     /// <param name="value">The configured value.</param>
     /// <returns><see langword="true"/> when the value navigates rather than naming.</returns>
-    /// <remarks>
-    /// Both separator forms are checked regardless of the host platform, because the value is
-    /// authored once in configuration and may be composed on Linux or Windows; accepting a
-    /// backslash on Linux merely defers the problem to a Windows deployment. This is the strict
-    /// check, applied only to <see cref="AdminTemplateFileName"/>: any separator at all disqualifies
-    /// a bare file name. <see cref="HomeDirectoryFormat"/> is a path and legitimately contains
-    /// separators, so it is checked by <see cref="ContainsParentSegment"/> instead.
-    /// </remarks>
     private static bool ContainsSeparatorOrParentSegment(string value) =>
         value.Contains('/', StringComparison.Ordinal)
         || value.Contains('\\', StringComparison.Ordinal)
         || ContainsParentSegment(value);
 
-    /// <summary>
-    /// Whether a configured path contains a parent-directory segment.
-    /// </summary>
+    /// <summary>Whether a configured path contains a parent-directory segment.</summary>
     /// <param name="value">The configured value.</param>
     /// <returns><see langword="true"/> when any segment is the parent-directory marker.</returns>
-    /// <remarks>
-    /// The comparison is per SEGMENT rather than a substring search, so a legitimate name that
-    /// merely contains two consecutive dots is not rejected while an actual traversal segment is.
-    /// Both separator forms split the value, for the platform reason recorded above.
-    /// </remarks>
     private static bool ContainsParentSegment(string value) =>
         value.Split(['/', '\\'], StringSplitOptions.None)
             .Any(segment => string.Equals(segment, ParentSegment, StringComparison.Ordinal));
 
-    /// <summary>
-    /// Whether a configured path fragment is rooted, drive-qualified or a UNC path.
-    /// </summary>
+    /// <summary>Whether a configured path fragment is rooted, drive-qualified or a UNC path.</summary>
     /// <param name="value">The configured value.</param>
     /// <returns><see langword="true"/> when the value is not purely relative.</returns>
     private static bool IsRootedOrQualified(string value) =>
@@ -369,27 +160,15 @@ public sealed class PortalOptions
         || value.StartsWith('\\')
         || value.Contains(':', StringComparison.Ordinal);
 
-    /// <summary>
-    /// Whether a configured path fragment ends with a directory separator.
-    /// </summary>
+    /// <summary>Whether a configured path fragment ends with a directory separator.</summary>
     /// <param name="value">The configured value.</param>
     /// <returns><see langword="true"/> when a separator would be doubled by the caller.</returns>
     private static bool EndsWithSeparator(string value) =>
         value.EndsWith('/') || value.EndsWith('\\');
 
-    /// <summary>
-    /// The placeholder <see cref="HomeDirectoryFormat"/> must contain, receiving the portal id.
-    /// </summary>
+    /// <summary>The placeholder <see cref="HomeDirectoryFormat"/> must contain, receiving the portal id.</summary>
     private const string PortalIdPlaceholder = "{0}";
 
-    /// <summary>
-    /// The parent-directory segment neither path-shaped setting may contain.
-    /// </summary>
+    /// <summary>The parent-directory segment neither path-shaped setting may contain.</summary>
     private const string ParentSegment = "..";
-
-    // MIGRATION: glbRoleSuperUserName ("Superuser", Globals.vb:L101) is deliberately not
-    // carried into this class, because host-level super-user administration is excluded from
-    // the migration scope. The numeric special role ids "-1", "-2", "-3" and "-4"
-    // (Globals.vb:L95-L98) are likewise excluded: identifier sentinels are a Domain concern,
-    // not host configuration, and exposing them here would invite them to be overridden.
 }

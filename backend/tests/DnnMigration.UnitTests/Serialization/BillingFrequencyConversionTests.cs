@@ -12,31 +12,10 @@ namespace DnnMigration.UnitTests.Serialization;
 /// writes the <c>char(1)</c> column, and the wire half that reads and writes the JSON code.
 /// </summary>
 /// <remarks>
-/// <para>
-/// <strong>Why the two halves are tested together.</strong> They are separate types in separate assemblies
-/// that happen to agree on the same vocabulary, and the defect they were both changed to resolve was a
-/// consequence of that split: the persistence half normalised an unrecognised stored character to
-/// <see cref="BillingFrequency.None"/> so that it would never reach the wire half, which refused to write
-/// anything undeclared. Reading fed writing, so an edit to a role's description rewrote a stored <c>'4'</c>
-/// as <c>'N'</c> and destroyed data AAP Rule T4 makes authoritative. Asserting one half in isolation cannot
-/// express that, because each was internally consistent.
-/// </para>
-/// <para>
-/// <strong>The vocabulary is closed where a caller can widen it and open where the database can.</strong>
-/// Both halves now carry an undeclared character rather than substituting for it, and the closed vocabulary
-/// is enforced on inbound REQUESTS by the <c>IsInEnum</c> rules on <c>CreateRoleRequest</c> and
-/// <c>UpdateRoleRequest</c>, which produce a field-level RFC 7807 failure rather than a bare
-/// deserialisation error. The characters exercised here are the ones every DotNetNuke installation ships:
-/// <c>'4'</c> on the Administrators role and <c>'0'</c> on the Registered Users role
-/// (<c>01.00.00.SqlDataProvider</c> L7192 and L7194).
-/// </para>
-/// <para>
 /// The persistence converter is <c>internal</c> to the Infrastructure assembly, so it is exercised here
-/// through the public JSON half plus the enumeration's own arithmetic, which is what the persistence half is
-/// built from: each member's value IS its code point, and that identity is the whole reason a lossless
-/// conversion is possible. The persistence half's behaviour against a real column is proven by the
-/// integration suites, which write and re-read the stored bytes.
-/// </para>
+/// through the public JSON half plus the enumeration's own arithmetic, which is what the persistence half
+/// is built from: each member's value IS its code point, and that identity is the whole reason a lossless
+/// conversion is possible.
 /// </remarks>
 public sealed class BillingFrequencyConversionTests
 {
@@ -52,11 +31,6 @@ public sealed class BillingFrequencyConversionTests
     ];
 
     /// <summary>Every declared member's value is the code point of its own legacy character.</summary>
-    /// <remarks>
-    /// This is the fact everything else here depends on. If a member were ever given an ordinal instead of
-    /// its code point, a lossless conversion would become impossible and both halves would silently begin
-    /// storing and emitting the wrong byte.
-    /// </remarks>
     [Fact]
     public void EveryDeclaredMember_CarriesTheCodePointOfItsOwnCharacter()
     {
@@ -96,15 +70,8 @@ public sealed class BillingFrequencyConversionTests
         Serialise(member).Should().Be(FormattableString.Invariant($"\"{code}\""));
     }
 
-    /// <summary>
-    /// A value carrying an undeclared character is written as that character rather than refused.
-    /// </summary>
+    /// <summary>A value carrying an undeclared character is written as that character rather than refused.</summary>
     /// <param name="code">The character the value carries.</param>
-    /// <remarks>
-    /// The outbound direction has to tolerate this or a single legacy row would fail the response that
-    /// contains it — and, worse, the persistence half would have to keep normalising to avoid the failure,
-    /// which is what destroyed the stored byte.
-    /// </remarks>
     [Theory]
     [InlineData('4')]
     [InlineData('0')]
@@ -132,12 +99,6 @@ public sealed class BillingFrequencyConversionTests
     /// wrote.
     /// </summary>
     /// <param name="code">The character to read.</param>
-    /// <remarks>
-    /// The same contract types and the same converter serve both directions, so a converter that emitted
-    /// <c>"4"</c> and refused to read it would leave the API unable to deserialise its own output. The
-    /// vocabulary a caller may submit is constrained by the role request validators instead, which report a
-    /// field-level failure rather than a bare deserialisation error.
-    /// </remarks>
     [Theory]
     [InlineData('4')]
     [InlineData('0')]

@@ -1,65 +1,9 @@
-// =============================================================================
-//  portal-form.component.scss - the tenant create-and-edit form
-// =============================================================================
-//
-//  One component serves two routes: /portals/new renders the creation form and
-//  /portals/:portalId the edit form. The template branches, so only ONE form element is
-//  ever in the document and every rule below applies to whichever one is present.
-//
-//  MARKUP CONTRACT - the nine hooks portal-form.component.html emits, and nothing else.
-//  Emulated view encapsulation rewrites each selector with this component's content
-//  attribute, so a class name that drifts does not fail the build: it silently matches
-//  nothing and the screen renders unstyled. The vocabulary is therefore fixed, and it was
-//  read off the template rather than assumed - the template carries no dynamic class
-//  binding at all, so this list is complete:
-//
-//      .portal-form            section    component root
-//      .portal-form__form      form       x2, one per mode
-//      .portal-form__section   fieldset   x3
-//      .portal-form__legend    legend     x3  - deliberately unstyled, see SECTIONS
-//      .portal-form__grid      div        x3  - the stack of fields
-//      .portal-form__choices   div        x1  - the portal-type radio group
-//      .portal-form__choice    span       xN
-//      .portal-form__note      p          x1  - creation mode only
-//      .portal-form__actions   div        x2
-//
-//  WHAT THIS FILE DOES NOT OWN. Four shared components are composed here - the page
-//  header, the failure banner, the busy indicator and the field wrapper - and this file
-//  only PLACES them. It never reaches inside one, so no piercing selector appears below
-//  and no importance escalation is needed: the global cascade runs tokens, reset, layout,
-//  tables, forms, and the form vocabulary therefore already has the last word over every
-//  bare element on this screen.
-//
-//  Three responsibilities in particular sit elsewhere and are NOT restated here:
-//
-//    * FOCUS. _reset.scss L264-L270 applies the shared focus-ring mixin to every anchor,
-//      button, input, select, textarea, summary and tabbable element, so every control on
-//      this screen already carries a visible keyboard ring on :focus-visible. Declaring
-//      one here would duplicate a global rule and invite drift.
-//    * THE LABEL-BESIDE-CONTROL PAIRING. form-field.component.scss makes each field a
-//      two-column grid - a fixed label track built from the shared label-measure token
-//      next to a fluid control track - at and above the medium step, and one stacked
-//      column below it. That IS the legacy label-cell-plus-control-cell row, and it
-//      belongs to the wrapper. Reproducing it here would mean reaching into a shared
-//      component, so the collapse this screen needs is inherited, not re-authored.
-//    * THE HELP PANEL. The same wrapper renders help text below its label on the shared
-//      hint background inside a hairline box - see annotation 3.
-// =============================================================================
+// Three responsibilities in particular sit elsewhere and are NOT restated here:
+// portal-form.component.scss - the tenant create-and-edit form.
 
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  ROOT
-// -----------------------------------------------------------------------------
-//  A row gap is the only thing separating the header, the failure banner and the form:
-//  the header and banner host elements carry no outer margin of their own, so nothing
-//  else would space them.
-//
-//  The three type declarations restate values the document body already sets, which is
-//  deliberate on two counts: it matches the root block of all three sibling portal
-//  screens, and it keeps the screen legible when it is mounted without the global
-//  stylesheet. The line height is the genuine override - the shared ramp is the relaxed
-//  reading measure, and an administrative form wants the tighter one.
+// ROOT
 .portal-form {
   display: grid;
   gap: var(--space-4);
@@ -68,150 +12,66 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FORM, AND ITS MEASURE
-// -----------------------------------------------------------------------------
-//  MIGRATION 1: THE LEGACY LAYOUT CONTAINERS BECOME A GRID, AND THEIR FIXED WIDTHS
-//  BECOME A CAPPED MEASURE. signup.ascx:L5-L6 opens a container declaring
-//  summary="Host Settings Design Table" - the tell that it carried layout, not data - and
-//  L10-L11 and L75-L76 nest two more, each describing itself the same way. None of the
-//  three survives, and this file emits no rule for that element type at all.
-//
-//  The cap is what preserves the proportion those fixed widths expressed. The outer
-//  container measured 560, each inner section 525, every label cell 150 and every box
-//  300. Capping the form at the small step and then subtracting the fieldset's own inline
-//  padding and border, the shared label track and the wrapper's column gap leaves a
-//  control track of 288 - measured in a browser, twelve pixels under the legacy box, so
-//  the legacy proportion is reproduced to within four per cent. Without a cap the form
-//  inherits the shell container's wide measure and the control track grows several times
-//  the legacy one, which is a worse reading of "preserve the screen" than a cap is.
-//
-//  The step is read through the breakpoint FUNCTION, not a query. _mixins.scss L215-L217
-//  sanctions exactly this use - "for the occasional rule that needs the raw value - a
-//  grid max-inline-size, say" - so the value still comes from the single shared scale and
-//  no width literal is authored here. Both sibling screens that render a form cap their
-//  form region the same way.
+// THE FORM, AND ITS MEASURE
+// 1: THE LEGACY LAYOUT CONTAINERS BECOME A GRID, AND THEIR FIXED WIDTHS BECOME A CAPPED MEASURE.
+// signup.ascx:L5-L6 opens a container declaring summary="Host Settings Design Table" - the tell that it
+// carried layout, not data - and L10-L11 and L75-L76 nest two more, each describing itself the same way.
 .portal-form__form {
   display: grid;
   gap: var(--space-4);
   max-inline-size: mx.breakpoint('sm');
 }
 
-// -----------------------------------------------------------------------------
-//  SECTIONS
-// -----------------------------------------------------------------------------
-//  MIGRATION 2: THE COLLAPSIBLE SECTION HEAD BECOMES A PLAIN FIELDSET AND LEGEND.
-//  signup.ascx:L8-L9 and L73-L74 declare a section-head control that named the container
-//  it collapsed. The shared component library is closed at ten members and that
-//  affordance is deliberately not one of them, so no eleventh member is introduced and no
-//  disclosure styling is hand-rolled: the grouping is carried by the semantics of a
-//  fieldset with a legend, which is what the template emits.
-//
-//  ONE DECLARATION ONLY, AND THE OMISSIONS ARE THE POINT. _forms.scss already gives every
-//  fieldset its hairline border, its corner radius, its padding and a trailing block
-//  margin. Restating any of that here would duplicate a global rule AND drift from every
-//  other fieldset in the workspace, since a local value and a shared value diverge the
-//  moment one of them is revised. Only the trailing margin is withdrawn: this form is a
-//  grid, so its row gap is the single owner of the distance between sections. Keeping
-//  both would separate the two sections by twice the intended step.
+// SECTIONS
+// ONE DECLARATION ONLY, AND THE OMISSIONS ARE THE POINT. _forms.scss already gives every fieldset its
+// hairline border, its corner radius, its padding and a trailing block margin.
 .portal-form__section {
   margin-block-end: 0;
 }
 
-//  .portal-form__legend CARRIES NO RULE ON PURPOSE. _forms.scss owns the legend element -
-//  its inline padding opens the gap in the fieldset border, and its size, weight and
-//  brand colour are the workspace's section-heading voice. A local override would be the
-//  same duplication the section rule above avoids.
-//
-//  MIGRATION: the divergence this accepts is recorded rather than hidden. The legacy
-//  section head rendered through the module-title class measured at the largest step in
-//  the ramp, at normal weight, in a neutral grey (default.css:L65-L71) - visibly heavier
-//  than the shared legend, which is the item-title size in bold brand colour. Design
-//  system compliance outranks legacy visual continuity, so the shared voice wins and the
-//  difference is reported for a designer rather than patched here.
+// MIGRATION: the divergence this accepts is recorded rather than hidden.
 
-// -----------------------------------------------------------------------------
-//  THE FIELD STACK
-// -----------------------------------------------------------------------------
-//  ONE COLUMN AT EVERY WIDTH, WHICH IS A MEASURED DECISION AND NOT A DEFAULT.
-//  signup.ascx puts exactly one field on each row - thirteen rows across the two
-//  sections, each a label cell beside its own control cell - so a second field column
-//  would not be a refinement of the legacy screen, it would be a different screen. It
-//  would also fight the wrapper: the wrapper's label track is a fixed measure, so halving
-//  the container leaves the control roughly a third of the legacy box, and the field that
-//  the legacy screen gave the most room becomes the most cramped.
-//
-//  The fluid track is declared rather than left implicit because a grid track's automatic
-//  minimum is its content: one unbroken host name in an alias field would otherwise push
-//  the column wider than the form and take the whole screen with it.
+// THE FIELD STACK
+// The fluid track is declared rather than left implicit because a grid track's automatic minimum is its
+// content: one unbroken host name in an alias field would otherwise push the column wider than the form and
+// take the whole screen with it.
 .portal-form__grid {
   display: grid;
   grid-template-columns: var(--grid-track-fluid);
   gap: var(--space-3);
 }
 
-//  The wrapper ships a trailing margin of its own, which is the right default for a form
-//  that simply stacks fields with no container rhythm. This stack supplies a row gap
-//  instead, so the wrapper's margin is withdrawn to leave ONE owner. Keeping both spaces
-//  fields by the sum of the two, and the last field in each section adds a dangling
-//  margin that makes the fieldset visibly deeper below its content than above it.
-//  Zeroing the margin on a child component's own host element is placement, which this
-//  file may do; the wrapper's interior is untouched. The floor on the inline size lets a
-//  long unbroken value shrink instead of overflowing the track.
+// The wrapper ships a trailing margin of its own, which is the right default for a form that simply stacks
+// fields with no container rhythm. This stack supplies a row gap instead, so the wrapper's margin is
+// withdrawn to leave ONE owner.
 .portal-form__grid > app-form-field {
   margin-block-end: 0;
   min-inline-size: 0;
 }
 
-// -----------------------------------------------------------------------------
-//  THE PORTAL-TYPE RADIO GROUP
-// -----------------------------------------------------------------------------
-//  HORIZONTAL, BECAUSE THE LEGACY CONTROL SAYS SO. signup.ascx:L33 declares the radio
-//  list with a horizontal repeat direction and its two options are single words. Wrapping
-//  is intrinsic, so the pair drops to two lines on a narrow viewport without this file
-//  authoring a breakpoint for it.
+// THE PORTAL-TYPE RADIO GROUP
 .portal-form__choices {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
 }
 
-//  Baseline alignment seats the control on the text baseline of its caption rather than
-//  centring it against the whole line box, which is what keeps a row of radios reading as
-//  one line of text.
 .portal-form__choice {
   display: flex;
   align-items: baseline;
   gap: var(--space-2);
 }
 
-//  _forms.scss styles a bare label as a FIELD CAPTION - block, bold, brand-coloured, with
-//  a trailing margin - which is correct for a field and wrong for the caption of one
-//  radio inside a group that already has its own caption. The legacy list carried the
-//  ordinary body class, not the item-title class, so bold brand colour is also a
-//  divergence from the original.
-//
-//  The shared vocabulary states this same intent itself, for a label that WRAPS its
-//  radio. This template makes the label a SIBLING of the input - which is what lets the
-//  caption point at the control by id - so that rule cannot match, and the intent is
-//  mirrored here instead. Reported as a gap in the shared vocabulary rather than patched
-//  there, because that file is not this one's to change. The colour is inherited rather
-//  than named because the token set exposes no plain body-text colour, and inheriting is
-//  therefore the only way to say "the surrounding text colour" without inventing a value.
+// _forms.scss styles a bare label as a FIELD CAPTION - block, bold, brand-coloured, with a trailing margin
+// - which is correct for a field and wrong for the caption of one radio inside a group that already has its
+// own caption.
 .portal-form__choice > label {
   margin-block-end: 0;
   font-weight: var(--font-weight-normal);
   color: inherit;
 }
 
-// -----------------------------------------------------------------------------
-//  COMMAND ROW
-// -----------------------------------------------------------------------------
-//  A real gap rather than the literal spacing characters the legacy markup used between
-//  its two commands at L113-L114, so the separation survives whitespace collapsing.
-//  Wrapping is intrinsic, so the cancel command drops below the submit command on a
-//  narrow viewport instead of overflowing. Centred across the row because the busy
-//  indicator is an inline flex box that joins this row while a save is in flight.
+// COMMAND ROW
 .portal-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -219,27 +79,14 @@
   align-items: center;
 }
 
-// -----------------------------------------------------------------------------
-//  CLOSING NOTE
-// -----------------------------------------------------------------------------
-//  _reset.scss leaves the browser's flow margins on paragraphs in place on purpose, so
-//  without this declaration the form's row gap and the paragraph's own margin would both
-//  apply and the note would sit further from the commands than any other pair on the
-//  screen. Size and colour are inherited deliberately: the legacy note carried the
-//  ordinary body class - the same size as its surroundings, with no colour override
-//  (default.css:L92-L97) - so restating either would be a divergence, not fidelity.
+// CLOSING NOTE
+// _reset.scss leaves the browser's flow margins on paragraphs in place on purpose, so without this
+// declaration the form's row gap and the paragraph's own margin would both apply and the note would sit
+// further from the commands than any other pair on the screen.
 .portal-form__note {
   margin-block: 0;
 }
 
-//  The statement rendered INSTEAD of either form when the address names no readable portal.
-//
-//  Given its own class rather than reusing `.portal-form__note` above, which exists to sit tight
-//  against the command row and inherits body size and colour for a legacy reason recorded there.
-//  This paragraph is the only thing on the screen, has no command to sit against and is not a
-//  footnote to anything, so it takes the muted supporting treatment every other screen gives a
-//  standing statement, and a comfortable measure so it does not run the full width of a desktop
-//  viewport.
 .portal-form__notice {
   max-inline-size: mx.breakpoint('md');
   margin-block: 0;
@@ -247,60 +94,8 @@
   font-size: var(--font-size-sm);
 }
 
-// =============================================================================
-//  MIGRATION - THE REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//
-//  MIGRATION 3: THE HELP PANEL IS REPRODUCED THROUGH TOKENS, AND NOT BY THIS FILE.
-//  The legacy help panel (default.css:L424-L439) is a hairline box on all FOUR sides -
-//  right, top, left and bottom, the last at L436 - with the smallest padding on every
-//  side, body-normal weight at the item-title size, and a pale yellow fill. Every one of
-//  those resolves to a token, and the fill in particular is already exposed as the shared
-//  hint-surface colour, so no literal is needed anywhere. The field wrapper consumes them
-//  and renders the panel below its label, so this screen inherits the treatment and adds
-//  nothing. Recorded because a reader of this file will look for it here.
-//
-//  MIGRATION 4: THE TWO LEGACY TYPE STYLES MAP ONTO THE SHARED SIZE RAMP, AND THE
-//  RELATIONSHIP BETWEEN THEM IS THE LOAD-BEARING PART. The item-title style used for
-//  every field caption measured at the item-title step in bold brand colour
-//  (default.css:L74-L80), while the text-box style used by all 138 admin boxes measured
-//  ONE STEP LARGER at normal weight (default.css:L123-L128). The ramp encodes that
-//  relationship, and both the caption and the control read it from there - the caption
-//  through the shared field wrapper, the control through the shared form vocabulary - so
-//  this file states neither and cannot desynchronise them.
-//
-//  MIGRATION 5: EVERY BREAKPOINT ON THIS SCREEN IS A NET ADDITION. Measured across both
-//  legacy stylesheets - 1,030 lines and 275 lines - the count of media queries is ZERO,
-//  so there is no responsive behaviour to preserve and no legacy figure to match. This
-//  file authors no query of its own: the one responsive behaviour the screen needs, the
-//  label-beside-control collapse, is inherited from the shared field wrapper, and
-//  everywhere else the layout reflows intrinsically by wrapping. The only shared scale
-//  value consumed here is the measure cap, read through the breakpoint function.
-//
-//  MIGRATION 6: CORNER RADIUS AND ELEVATION ARE NET ADDITIONS. Both legacy stylesheets
-//  contain ZERO corner-radius and ZERO shadow declarations - the original design is
-//  square-cornered and flat. This file introduces neither: the only rounding on the
-//  screen is the shared fieldset radius, and no elevation is applied at all. Both are
-//  therefore visual refinements owned by the shared vocabulary, and this screen adds no
-//  further deviation of its own.
-//
-//  MIGRATION 7: THE MARKUP SPACING WORKAROUND IS GONE. labelcontrol.ascx:L8 placed a
-//  literal line break between the caption and the help panel to separate them, which is
-//  spacing expressed as markup rather than as style. Spacing is now
-//  entirely a matter of style - the wrapper's own column gap between its caption row and
-//  its help text, and the row gaps in this file between everything else - so no markup
-//  element exists anywhere on this screen for the sole purpose of creating space.
-//
-//  MIGRATION 8: NO IMAGE ASSET IS REFERENCED. The legacy screen drew its two commands
-//  from image files (signup.ascx:L113-L114) and its help toggle from a third
-//  (labelcontrol.ascx:L4). All three are out of scope, the commands are now text buttons
-//  styled by the shared form vocabulary and the help toggle is an inline vector owned by
-//  the wrapper, so this file contains no asset reference of any kind.
-//
-//  MIGRATION 9: THE PANEL CONVENTION IS A NET ADDITION, AND THIS SCREEN DOES NOT USE IT.
-//  The legacy work-panel class has eight markup references across the in-scope screens
-//  and ZERO style declarations anywhere in the repository, so there was never a defined
-//  appearance to carry over. _layout.scss owns the bordered-surface convention that
-//  replaces it; this template composes fieldsets instead and declares no panel hook, so
-//  nothing is reproduced here.
-// =============================================================================
+// MIGRATION - THE REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// 3: THE HELP PANEL IS REPRODUCED THROUGH TOKENS, AND NOT BY THIS FILE. The legacy help panel
+// (default.css:L424-L439) is a hairline box on all FOUR sides right, top, left and bottom, the last at L436
+// - with the smallest padding on every side, body-normal weight at the item-title size, and a pale yellow
+// fill.

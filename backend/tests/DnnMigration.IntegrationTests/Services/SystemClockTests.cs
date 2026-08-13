@@ -7,26 +7,17 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Services;
 
-/// <summary>
-/// Pins the solution's only sanctioned system-clock boundary.
-/// </summary>
+/// <summary>Pins the solution's only sanctioned system-clock boundary.</summary>
 /// <remarks>
 /// <para>
-/// <strong>One property, and every time-dependent rule in the application depends on it.</strong> The clock is
-/// the single place the machine clock is read, which is what makes every expiry, effective date and audit
-/// stamp substitutable under test. That concentration is also what makes it worth pinning: a clock that
-/// reported LOCAL time would shift every date-only derivation by up to a day depending on the host's offset,
-/// and would do it silently, because a local reading is still a plausible-looking instant. The migration notes
-/// record the server-local-to-universal move as a deliberate divergence; this is the assertion that keeps the
-/// delivered code on the universal side of it.
+/// <strong>One property, and every time-dependent rule in the application depends on it.</strong> The clock
+/// is the single place the machine clock is read, which is what makes every expiry, effective date and
+/// audit stamp substitutable under test.
 /// </para>
 /// <para>
-/// <strong>Why the boundary is asserted through the container.</strong> Every consumer injects
-/// <see cref="IClock"/>, so what matters is not that <c>SystemClock</c> behaves but that the composed
-/// application resolves it, and resolves ONE of it. A per-request clock would still pass a behavioural test
-/// while allocating an instance per request for no benefit; a clock that cached its reading would report the
-/// moment the container was built for the life of the process, which is the failure mode that would make
-/// every expiry comparison in the application wrong in the same direction.
+/// <strong>Why the boundary is asserted through the container.</strong> Every consumer injects <see
+/// cref="IClock"/>, so what matters is not that <c>SystemClock</c> behaves but that the composed
+/// application resolves it, and resolves ONE of it.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -40,11 +31,6 @@ public sealed class SystemClockTests
     public SystemClockTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>The composed application resolves this implementation, once.</summary>
-    /// <remarks>
-    /// Singleton is asserted the way it is observable - two resolutions from two independent scopes yielding
-    /// the same reference - rather than by reading a registration descriptor, because the descriptor is what
-    /// was asked for and the reference is what the application gets.
-    /// </remarks>
     [Fact]
     public void TheComposedApplication_ResolvesOneSystemClock()
     {
@@ -67,12 +53,6 @@ public sealed class SystemClockTests
     }
 
     /// <summary>The reported instant is Coordinated Universal Time.</summary>
-    /// <remarks>
-    /// The kind is asserted rather than inferred from the value, because a local reading and a universal one
-    /// are indistinguishable by magnitude on a host whose offset is zero - which is exactly what a container
-    /// usually is. Asserting the kind is therefore the only assertion that would fail on a developer machine
-    /// AND in a container.
-    /// </remarks>
     [Fact]
     public void UtcNow_IsCoordinatedUniversalTime()
     {
@@ -85,11 +65,6 @@ public sealed class SystemClockTests
     }
 
     /// <summary>The reported instant lies between two readings taken either side of it.</summary>
-    /// <remarks>
-    /// This is what distinguishes a live reading from a fixed one: a clock that returned a constant, a
-    /// captured value, or a date-only value would fall outside a window this narrow. The window is bounded by
-    /// the test's own readings, so it needs no tolerance and no assumption about the host's accuracy.
-    /// </remarks>
     [Fact]
     public void UtcNow_LiesBetweenTwoReadingsTakenAroundIt()
     {
@@ -108,9 +83,9 @@ public sealed class SystemClockTests
     /// <summary>Each access reads afresh rather than returning a value fixed earlier.</summary>
     /// <remarks>
     /// The singleton lifetime makes this the failure that would matter most: an instance that captured its
-    /// reading once would report the moment the container was built for the remainder of the process, so every
-    /// expiry check in the application would compare against a fixed past. The delay is generous against the
-    /// coarsest system timer resolution, so the strict inequality is not a race.
+    /// reading once would report the moment the container was built for the remainder of the process, so
+    /// every expiry check in the application would compare against a fixed past. The delay is generous
+    /// against the coarsest system timer resolution, so the strict inequality is not a race.
     /// </remarks>
     [Fact]
     public async Task UtcNow_AdvancesBetweenAccesses()
@@ -130,9 +105,9 @@ public sealed class SystemClockTests
 
     /// <summary>The implementation holds no state, which is what makes the singleton safe.</summary>
     /// <remarks>
-    /// Asserted structurally because it is a structural guarantee. A field added here - a cached instant, an
-    /// injected collaborator, a time-zone - would either fix the reading or capture a shorter-lived service in
-    /// a singleton, and neither would fail any behavioural assertion above on the first call.
+    /// Asserted structurally because it is a structural guarantee. A field added here - a cached instant,
+    /// an injected collaborator, a time-zone - would either fix the reading or capture a shorter-lived
+    /// service in a singleton, and neither would fail any behavioural assertion above on the first call.
     /// </remarks>
     [Fact]
     public void TheImplementation_HoldsNoState()

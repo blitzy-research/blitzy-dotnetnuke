@@ -3,14 +3,7 @@ using FluentValidation;
 
 namespace DnnMigration.Application.Validation;
 
-/// <summary>
-/// Declares request-shape and bounded-work rules for a complete profile replacement.
-/// </summary>
-/// <remarks>
-/// Whether each definition identifier belongs to the addressed portal and the definition-specific value
-/// rules require store state and remain in <c>UserService</c>. The rules here ensure that malformed JSON
-/// cannot produce a null-reference fault or multiply that dynamic work through duplicates.
-/// </remarks>
+/// <summary>Declares request-shape and bounded-work rules for a complete profile replacement.</summary>
 public sealed class UserProfileDtoValidator : AbstractValidator<UserProfileDto>
 {
     private const int PropertyMaximum = 64;

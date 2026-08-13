@@ -15,29 +15,8 @@ namespace DnnMigration.IntegrationTests.Api;
 /// client mistake, by exercising the exception handler directly.
 /// </summary>
 /// <remarks>
-/// <para>
-/// This is asserted here rather than over HTTP for a reason that took a failing test to establish. The
-/// in-memory test host used by every other suite in this project does not enforce the request-body ceiling
-/// at all: a body of any size is handed to the application, so the refusal under test is never raised and
-/// the submission is instead answered by whatever application-level rule the oversized member happens to
-/// break. An end-to-end test therefore cannot distinguish the mapping being correct from the mapping being
-/// absent - it passed against the defect and against the fix alike, which makes it worse than no test.
-/// </para>
-/// <para>
-/// The mapping is consequently measured where it is actually made, on the handler's own public surface, with
-/// the exception the host raises constructed exactly as the host constructs it. What the end-to-end suites
-/// keep is the half they can measure honestly: the OpenAPI declaration of these statuses is asserted in
-/// <see cref="ResponseDeclarationContractTests"/>, and the pipeline's refusal of an oversized body was
-/// confirmed against a real host before this test was written - a live host answered 413 with this API's own
-/// problem taxonomy for bodies of 1.2, 1.5 and 2 MB while logging them below Error.
-/// </para>
-/// <para>
-/// Both directions are asserted. The status is taken FROM the exception rather than assumed, so a handler
-/// that hard-coded 413 would pass the oversize case and fail the framing case; and the level is asserted to
-/// be below Error, because the defect being guarded against was not only the wrong status but a server-fault
-/// log entry for an ordinary client mistake, which lets a caller submitting oversized bodies bury the error
-/// rate that real faults are alerted on.
-/// </para>
+/// The mapping is consequently measured where it is actually made, on the handler's own public surface,
+/// with the exception the host raises constructed exactly as the host constructs it.
 /// </remarks>
 [Trait("Category", "Integration")]
 public sealed class TransportRefusalMappingTests
@@ -51,8 +30,8 @@ public sealed class TransportRefusalMappingTests
         "The request could not be read. Check the request framing and headers, then submit it again.";
 
     /// <summary>
-    /// A host refusal is answered with the status the host settled on, explained without quoting the
-    /// host's own message, and recorded below Error.
+    /// A host refusal is answered with the status the host settled on, explained without quoting the host's
+    /// own message, and recorded below Error.
     /// </summary>
     /// <param name="hostStatus">The status the host put on its refusal.</param>
     /// <param name="expectedDetail">The explanation the caller must receive.</param>
@@ -104,10 +83,8 @@ public sealed class TransportRefusalMappingTests
                 return ValueTask.FromResult(true);
             });
 
-        // Answered "the store is unavailable" on purpose, which is the wrong answer for a transport refusal.
-        // The arm that classifies a store outage sits BELOW this one, so the host's status must survive the
-        // classifier saying yes; a handler that consulted the classifier first would answer 503 for an
-        // oversized body and fail here.
+        // Answered "the store is unavailable" on purpose, which is the wrong answer for a transport
+        // refusal.
         Mock<IStoreFailureClassifier> storeFailures = new(MockBehavior.Strict);
         storeFailures.Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception?>())).Returns(true);
 

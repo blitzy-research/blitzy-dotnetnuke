@@ -42,13 +42,10 @@
 #                                the API's permitted browser origin
 #     TLS_CERTIFICATE_DIRECTORY  host directory holding fullchain.pem and privkey.pem,
 #                                valid for DNN_PUBLIC_HOST
-# NOTHING inside a tracked file has to be edited. That is the correction this
-# revision makes: this overlay previously hard-coded dnn.example.com in the API's
-# AllowedHosts while the mounted server block hard-coded it in both server names,
-# and only the cross-origin origin was parameterised - so a deployment that set its
-# origin and nothing else got a redirect scoped to a name no browser sends, a
-# certificate that matched no server_name, and an API that host-filtered its own
-# traffic away. Every one of those required a source edit to avoid.
+# NOTHING inside a tracked file has to be edited. Every consumer of the public host
+# name derives it from the one variable, so a deployment cannot end up with a
+# redirect scoped to a name no browser sends, a certificate that matches no
+# server_name, or an API that host-filters its own traffic away.
 # =============================================================================
 version: '3.8'
 
@@ -58,17 +55,14 @@ services:
     # only on the internal network and no bearer credential can bypass the proxy by
     # addressing it directly.
     #
-    # MIGRATION: `ports: []` DOES NOT DO THIS, AND THIS FILE PREVIOUSLY CLAIMED IT DID.
-    #   The claim was that `ports` is a "last one wins" key and that an empty sequence
-    #   replaces the base sequence. Measured against the compose in use, list-valued
-    #   service keys MERGE by union, so an empty sequence contributes nothing and the
-    #   base file's 127.0.0.1:8080 publish survived the overlay untouched - the stated
-    #   security property simply did not hold, and nothing failed to say so. The
-    #   compose-spec `!reset` tag is what removes an inherited key; `!override` on the
-    #   front-end below is what REPLACES an inherited list rather than adding to it.
-    #   Both were verified by reading `docker compose config` for the overlaid project:
-    #   api publishes nothing, front end publishes 80 and 443 and not 4200, and the
-    #   base file on its own is unchanged.
+    # ⚠ `ports: []` WOULD NOT DO THIS. List-valued service keys MERGE by union in
+    #   the compose spec, so an empty sequence contributes nothing and the base file's
+    #   127.0.0.1:8080 publish would survive the overlay untouched, with nothing
+    #   failing to say so. `!reset` is what REMOVES an inherited key; `!override` on
+    #   the front end below is what REPLACES an inherited list rather than adding to
+    #   it. Both are verified by reading `docker compose config` for the overlaid
+    #   project: api publishes nothing, front end publishes 80 and 443 and not 4200,
+    #   and the base file on its own is unchanged.
     ports: !reset []
     environment:
       # Redirect plain HTTP to HTTPS inside the API as well, so a request that
@@ -93,16 +87,11 @@ services:
       # directly reachable caller as if it were the proxy.
       #
       # HOST FILTERING AND THE BROWSER ORIGIN, BOTH DERIVED FROM THE ONE PUBLIC HOST
-      # NAME. This is the correction: these two lines previously read
-      # `AllowedHosts: "dnn.example.com;localhost;127.0.0.1"` and
-      # `Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-https://dnn.example.com}`, so a
-      # deployment that set FRONTEND_ORIGIN - the documented workflow - moved its
-      # cross-origin policy and nothing else. Its real host stayed absent from the
-      # API's host filter, so every request was refused with 400 by a control nobody
-      # had configured wrongly, and the mounted server block's server_name still named
-      # the example, so the port-80 redirect never matched its browsers and the
-      # certificate matched no server. Deriving all of it from DNN_PUBLIC_HOST makes
-      # those three facts one fact.
+      # NAME, so the API's host filter, the mounted server block's server_name and the
+      # certificate cannot disagree. Configured independently they do: a deployment
+      # that moved only its cross-origin policy would leave its real host absent from
+      # the host filter, and every request would be refused with 400 by a control
+      # nobody had configured wrongly.
       #
       # The loopback entries are retained deliberately: the container's own HEALTHCHECK
       # addresses http://localhost:8080/health, and host filtering applies to it too -

@@ -10,33 +10,13 @@ namespace DnnMigration.Api.Authorization;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: replaces <c>UserController.GetCurrentUserInfo()</c> (<c>UserController.vb:L381</c>), which
-/// reached into ambient request state from anywhere in the call stack and returned a hollow object when
-/// nobody was signed in - so every caller had to know that an object with an identifier of -1 meant
-/// "absent". That sentinel is deliberately not carried forward: absence is carried by
-/// <see langword="null"/>, and neither -1 nor 0 is ever coalesced to null, because both are legitimate
-/// identifiers in this schema.
+/// MIGRATION: replaces <c>UserController.GetCurrentUserInfo()</c>, which reached into ambient request state
+/// from anywhere in the call stack and returned a hollow object when nobody was signed in - so every caller
+/// had to know that an object with an identifier of -1 meant "absent".
 /// </para>
 /// <para>
-/// <strong>Every member is synchronous and does no work worth mentioning.</strong> The legacy roles
-/// accessor (<c>UserInfo.vb:L261-269</c>) issued a database query on first read from inside a property
-/// getter, which made an innocuous-looking expression a hidden round trip. Nothing here performs I/O,
-/// blocks, fills a cache or logs. The claims are projected once, on first access, into an immutable
-/// snapshot, and every getter after that is a field read.
-/// </para>
-/// <para>
-/// <strong>Why the projection is lazy rather than done in the constructor.</strong> This service is
-/// scoped, and a scoped instance is created when it is first requested. Projecting in the constructor
-/// would bind the snapshot to whatever principal existed at that moment, so anything that resolved this
-/// service before the authentication middleware had run would be served an anonymous snapshot for the
-/// rest of the request - and would do so silently. Reading the principal on first access instead means the
-/// snapshot always reflects the authenticated principal, whatever the resolution order turns out to be.
-/// </para>
-/// <para>
-/// The claim names come from the shared vocabulary beside <see cref="ITokenService"/>, never from literals
-/// spelled here. A mis-spelled claim name would not fail to compile and would not throw: it would present
-/// as a caller who signs in successfully and then holds no permissions, which is indistinguishable from a
-/// genuine authorisation denial.
+/// <strong>Why the projection is lazy rather than done in the constructor.</strong> This service is scoped,
+/// and a scoped instance is created when it is first requested.
 /// </para>
 /// </remarks>
 internal sealed class CurrentUser : ICurrentUser

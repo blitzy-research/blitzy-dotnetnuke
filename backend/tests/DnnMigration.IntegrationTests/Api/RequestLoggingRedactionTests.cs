@@ -9,30 +9,12 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
 
-/// <summary>
-/// Covers what the per-request completion entry is allowed to contain (SEC-024).
-/// </summary>
+/// <summary>Covers what the per-request completion entry is allowed to contain ().</summary>
 /// <remarks>
-/// <para>
-/// THE ENTRY THIS SUITE INSPECTS IS THE ONLY ONE WRITTEN FOR EVERY REQUEST, which is what makes its content a
-/// security property rather than a matter of taste. It previously carried two things it must not. The RAW
-/// REQUEST PATH, whose route values are account, portal and module identifiers - and, for a mistyped address,
-/// arbitrary caller text. And the EXCEPTION OBJECT, which is the sharper of the two: a logging sink renders an
-/// exception argument as its message and full stack trace, so passing it reinstated, at information level and
-/// in a log whose retention and access the application does not control, precisely the detail the global
-/// exception handler takes care to redact before it reaches a caller.
-/// </para>
-/// <para>
 /// THE STAGE IS EXERCISED DIRECTLY RATHER THAN THROUGH A HOST, and deliberately. The property under test is
 /// what arguments the stage hands its logger, and the application configures a structured logging pipeline
-/// that owns its own providers - so a host-based fact would be asserting the sink's rendering as much as the
-/// stage's arguments, and could not observe the exception argument at all. Driving the stage with a fake
-/// logger observes exactly the two things that matter: the rendered message, and whether an exception object
-/// was passed.
-/// </para>
-/// <para>
-/// No database, no server and no fixture: this suite is deliberately independent of both.
-/// </para>
+/// that owns its own providers - so a host-based fact would be asserting the sink's rendering as much as
+/// the stage's arguments, and could not observe the exception argument at all.
 /// </remarks>
 [Trait("Category", "Integration")]
 public sealed class RequestLoggingRedactionTests
@@ -44,15 +26,11 @@ public sealed class RequestLoggingRedactionTests
     private const string ConcretePath = "/api/v1/portals/3/users/57";
 
     /// <summary>The value recorded in the route position when no endpoint was selected.</summary>
-    /// <remarks>
-    /// Stated as the same literal RequestLoggingContractTests states, because it is one observable value:
-    /// an operator filtering the log on unmatched requests filters on this exact text.
-    /// </remarks>
     private const string UnmatchedRouteTemplate = "(no matched endpoint)";
 
     /// <summary>
-    /// A completed request is described by its ROUTE TEMPLATE, and the identifiers it addressed do not reach
-    /// the entry.
+    /// A completed request is described by its ROUTE TEMPLATE, and the identifiers it addressed do not
+    /// reach the entry.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -80,8 +58,8 @@ public sealed class RequestLoggingRedactionTests
     }
 
     /// <summary>
-    /// A failed request records the failure's TYPE and nothing else about it: no message, no stack trace, and
-    /// no exception object for a sink to expand.
+    /// A failed request records the failure's TYPE and nothing else about it: no message, no stack trace,
+    /// and no exception object for a sink to expand.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -101,9 +79,8 @@ public sealed class RequestLoggingRedactionTests
         await act.Should().ThrowAsync<UnauthorizedAccessException>(
             "the stage records the outcome and re-throws, so the caller still receives the error response");
 
-        // The entry is written when the RESPONSE completes, not when the stage returns, which is how a status
-        // written by a later stage - the exception handler's, here - is the one recorded. In the composed
-        // pipeline the server raises this; a directly constructed context has to be completed by the test.
+        // The entry is written when the RESPONSE completes, not when the stage returns, which is how a
+        // status written by a later stage - the exception handler's, here - is the one recorded.
         await completion.RunCallbacksAsync();
 
         CapturedEntry entry = logger.Entries.Should().ContainSingle().Subject;
@@ -175,12 +152,6 @@ public sealed class RequestLoggingRedactionTests
     }
 
     /// <summary>A response feature that remembers its completion callbacks so a test can raise them.</summary>
-    /// <remarks>
-    /// The framework's default in-memory response feature accepts completion callbacks and never invokes them,
-    /// because nothing completes a response that no server is writing. The stage under test records its entry
-    /// from that callback - deliberately, so the status it reports is the one actually answered - so a fact
-    /// built on a bare context observed no entry at all and read as though the stage had stopped logging.
-    /// </remarks>
     private sealed class CompletionCapture : IHttpResponseFeature
     {
         private readonly List<Func<Task>> _callbacks = [];

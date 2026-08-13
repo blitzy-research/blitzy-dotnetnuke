@@ -1,98 +1,8 @@
 /**
- * Purges every store that holds session-scoped state, as one operation.
- *
- * ---------------------------------------------------------------------------------------------------
- * WHY THIS EXISTS
- *
- * Every store under `core/state/**` is registered `providedIn: 'root'`, so exactly ONE instance of
- * each serves the whole application and each one OUTLIVES every screen that reads it — and, more to
- * the point, outlives the SESSION it was populated for. A single-page application is not reloaded
- * between sign-outs: the same JavaScript context, the same injector and the same store instances carry
- * straight across from one account to the next.
- *
- * Four of those stores had a `reset()` written for exactly this moment, and NOTHING CALLED ANY OF
- * THEM. Signing out cleared the token and the identity projection and left everything else where it
- * was, so the next person to sign in on the same page load inherited, without any action on their
- * part:
- *
- * - the previous account's portal listing, selection, settings and host names;
- * - the previous account's user listing, the account they had open, that account's profile values and
- *   the tenant's membership policy;
- * - the previous account's roles, role groups and the user-to-role assignments joining named accounts
- *   to a named role;
- * - the previous account's module listing, the module they had open, its operator-authored settings
- *   bag, the tenant's page hierarchy, and the EXPORTED MODULE CONTENT — a serialised copy of a
- *   module's data, produced under the previous account's authority and held as a plain string;
- * - and the QUEUED NOTIFICATIONS, which are session content in their own right: a notice reads
- *   "Ann saved a role", naming a person and a record the next operator may have no sight of, and one
- *   that survived the boundary would be presented to them as though it were about their own work.
- *
- * That is one operator's tenant data readable by the next, which is the disclosure this service
- * closes.
- *
- * ---------------------------------------------------------------------------------------------------
- * WHY IT IS A SEPARATE SERVICE AND NOT A METHOD ON THE AUTH STORE
- *
- * The dependency direction. `core/state/auth.store.ts` is imported by the guards, the interceptor and
- * the shell, and the four domain stores are imported by the feature screens. NO DOMAIN STORE IMPORTS
- * THE AUTH STORE — verified, and the property is worth keeping, because a domain store that could
- * reach the auth store could also start making authorization decisions of its own.
- *
- * Putting the fan-out here preserves that. The graph is:
- *
- *     auth.store  ->  session-teardown.service  ->  { portal, user, role, module } stores
- *
- * one-way at every edge, so there is no cycle to break and no forward reference to arrange. The auth
- * store keeps its own state — it is the one store whose state IS the session — and delegates
- * everything else here.
- *
- * ---------------------------------------------------------------------------------------------------
- * WHAT IT DELIBERATELY DOES NOT DO
- *
- * - NO NAVIGATION. Where to send the browser after a session ends is a routing decision belonging to
- *   the caller that ended it; a purge that also navigated would make every caller inherit one
- *   opinion, and the interceptor's silent mid-request teardown does not want it.
- * - NO TOKEN HANDLING. `core/services/token-storage.service.ts` is the sole custodian and the auth
- *   store already clears it. A second clear here would be a second opinion about who owns the token.
- * - NO AUTH-STORE RESET. That would be the cycle. The auth store calls this, not the reverse.
- * - NO HTTP. Revocation belongs to the auth store's sign-out command, which issues it through
- *   `core/services/auth.service.ts`. This purges local state only, which is what lets it run on
- *   paths where the network has already failed.
- *
- * ---------------------------------------------------------------------------------------------------
- * ⚠⚠ WHY THIS IS THE ONE SESSION-BOUNDARY OWNER, AND WHAT WAS CONSOLIDATED INTO IT
- *
- * There were briefly THREE abstractions for one boundary. Two were live: this service, reached from
- * the bearer interceptor's terminal path and from the authentication store; and
- * `session-lifecycle.service.ts`, reached from the application shell's sign-out, which performed the
- * SAME five calls again in its own body. A third, `session.coordinator.ts`, was written to own the
- * boundary properly — it added a monotonic session GENERATION and recorded WHICH boundary had been
- * crossed — and it had ZERO production importers, so none of that ever executed.
- *
- * Three owners for one invariant is worse than one owner with a gap, and the drift was not
- * hypothetical: the lifecycle service cleared the notification queue and this service did not, so an
- * identical session ending left the application in two different states depending on which path
- * reached it, and a notice naming one operator's record was presented to the next. That is recorded
- * on {@link SessionTeardownService.notifications} because it is the concrete evidence for the rule.
- *
- * So the fan-out lives HERE, once. The coordinator's two genuinely useful ideas were folded in —
- * {@link SessionTeardownService.generation} and {@link SessionTeardownService.lastReason} — and the
- * file was deleted rather than left as a fourth opinion nobody called. The lifecycle service now
- * DELEGATES its discard to this member instead of repeating it, keeping only what is genuinely its
- * own: the revocation request and the authentication store's own reset, which this service must not
- * touch because the store calls this one.
- *
- * The one-way graph that makes it work:
- *
- *     auth.store ─────────────┐
- *     auth.interceptor ───────┼──► session-teardown ──► { portal, user, role, module } stores
- *     session-lifecycle ──────┘                     └─► notification service
- *     session-lifecycle ──► auth.store
- *
- * Nothing points back. A domain store that reached for this service would close a cycle through the
- * authentication store, which the injector refuses at runtime with NG0200 and no compiler catches —
- * which is why every store publishes a `reset()` for this service to call rather than enrolling
- * itself.
+ * Purges every store that holds session-scoped state, as one operation. WHY THIS EXISTS Every store under
+ * `core/state/**` is registered `providedIn: 'root'`, so exactly ONE instance of each serves the whole
+ * application and each one OUTLIVES every screen that reads it — and, more to the point, outlives the
+ * SESSION it was populated for.
  */
 import { Injectable, computed, inject, signal } from '@angular/core';
 
@@ -105,24 +15,8 @@ import { UserStore } from './user.store';
 import type { Signal } from '@angular/core';
 
 /**
- * Why a session boundary was crossed.
- *
- * Recorded so that a consumer — a specification most of all — can assert WHICH boundary was crossed
- * rather than only that the generation moved. The four members are the four events that cross one;
- * there is deliberately no fifth, because a boundary nobody has decided the handling for is not one
- * this service should silently accept.
- *
- * ⚠ THE REASON NEVER CHANGES WHAT IS DISCARDED. A partial discard would be a per-caller judgement
- * about which of another operator's rows are acceptable to leave on screen, and there is no safe
- * answer to that. That invariant is unchanged and unconditional: every member below discards
- * exactly the same footprint.
- *
- * ⚠ IT DOES DECIDE WHETHER THE OPERATOR IS TOLD, which is a statement about the queue this service
- * already owns rather than about the discard. Exactly one member — `renewalRefused` — describes a
- * boundary NOBODY ASKED FOR, and only that member raises {@link SESSION_ENDED_MESSAGE}. A sign-out
- * needs no explanation because the operator pressed it, a sign-in and a tenant change are both
- * outcomes of a deliberate act, and announcing any of the three would tell somebody something they
- * had just done.
+ * Why a session boundary was crossed. Recorded so that a consumer — a specification most of all — can
+ * assert WHICH boundary was crossed rather than only that the generation moved.
  */
 export type SessionResetReason =
   /** A sign-in established, or replaced, the identity. */
@@ -135,33 +29,15 @@ export type SessionResetReason =
   | 'tenantChanged';
 
 /**
- * What an operator is told when their session ends without their asking.
- *
- * ⚠ AUTHORED, WITH NO LEGACY COUNTERPART TO REPRODUCE. Forms authentication expired a cookie
- * silently — `Website/release.config:L147` declares
- * `<forms name=".DOTNETNUKE" protection="All" timeout="60" cookieless="UseCookies"/>` — and the next
- * request was simply redirected to the sign-in page with nothing said. There is therefore no resource
- * string to copy, and this sentence is recorded in `MIGRATION_NOTES.md` as a net addition rather than
- * as parity.
- *
- * ⚠ IT NAMES THE EVENT AND THE REMEDY, AND NAMES NO INTERNAL MACHINERY. Measured in a browser before
- * this constant existed, the sign-in screen presented the renewal's own problem document instead:
- * `"Unauthorized"` over `"The refresh token is not valid."` over a bare correlation identifier. Every
- * word of that is true and none of it is usable — it tells somebody who did nothing wrong that a
- * credential they never knew existed has been rejected. So the wording deliberately mentions neither
- * a token, nor a renewal, nor a status code.
- *
- * Exported so that the one production raise and every specification assert on the SAME string. A
- * specification spelling it again would pass while the application said something else.
+ * What an operator is told when their session ends without their asking. ⚠ AUTHORED, WITH NO LEGACY
+ * COUNTERPART TO REPRODUCE. Forms authentication expired a cookie silently —
+ * `Website/release.config:L147` declares `<forms name=".DOTNETNUKE" protection="All" timeout="60"
+ * cookieless="UseCookies"/>` — and the next request was simply redirected to the sign-in page with
+ * nothing said.
  */
 export const SESSION_ENDED_MESSAGE = 'Your session has ended. Please sign in again to continue.';
 
-/**
- * The single place a session's local footprint is discarded.
- *
- * Registered at the root so that the instance performing the purge is the same instance every screen
- * reads from; a component-provided copy would purge a store nobody was looking at.
- */
+/** The single place a session's local footprint is discarded. */
 @Injectable({ providedIn: 'root' })
 export class SessionTeardownService {
   private readonly portalStore = inject(PortalStore);
@@ -170,22 +46,8 @@ export class SessionTeardownService {
   private readonly moduleStore = inject(ModuleStore);
 
   /**
-   * The queued notices — cleared with the rest, and the surface an unasked-for ending is
-   * explained through.
-   *
-   * The second role follows from the first rather than being bolted onto it. This service already
-   * decides what happens to the notice queue at a session boundary, and it is the only participant
-   * that knows WHICH boundary was crossed, so it is the only one that can clear the queue and then
-   * leave exactly one notice standing in it. See {@link SessionTeardownService.purge} for the ordering
-   * that makes clearing and raising compatible, and {@link SESSION_ENDED_MESSAGE} for the wording.
-   *
-   * ⚠ THIS SERVICE AND `session-lifecycle.service.ts` MUST DISCARD THE SAME FOOTPRINT, and the queue
-   * is where they had drifted apart. Two entry points end a session: the operator pressing sign out,
-   * which runs the lifecycle service, and a renewal the server refuses, which runs this one from the
-   * transport layer. The lifecycle service cleared the queue and this one did not, so an identical
-   * session ending left an identical application in two different states — the notice survived a
-   * terminal refusal and was presented to whoever signed in next. Clearing it here makes the two
-   * paths equivalent, which is the only defensible relationship between them.
+   * The queued notices — cleared with the rest, and the surface an unasked-for ending is explained
+   * through. The second role follows from the first rather than being bolted onto it.
    */
   private readonly notifications = inject(NotificationService);
 
@@ -196,45 +58,19 @@ export class SessionTeardownService {
   private readonly _lastReason = signal<SessionResetReason | null>(null);
 
   /**
-   * The current session generation, counted from one.
-   *
-   * ⚠ MONOTONIC AND NEVER REWOUND, so one value identifies one session for the lifetime of the
-   * application. Work started under a generation can therefore be recognised as stale by comparing
-   * the value it captured against this one, which is a TOTAL test needing no knowledge of what
-   * happened in between — unlike "has anything changed?", which cannot distinguish two boundaries
-   * from none.
-   *
-   * It starts at ONE rather than zero so a consumer holding a captured value can express "no session
-   * has begun" as zero without needing a nullable field.
-   *
-   * ⚠ NOT THE TOKEN CUSTODIAN'S EPOCH, AND THE TWO ARE DELIBERATELY SEPARATE.
-   * `core/services/token-storage.service.ts` keeps its own generation, advanced by every store and
-   * clear, and that is the value the authentication store's own late-callback tests compare against —
-   * because those tests are about whether a CREDENTIAL is still current. This one counts LOCAL-STATE
-   * boundaries, which is what a consumer holding domain data needs. Collapsing them would tie a
-   * question about rows to a question about tokens.
-   *
-   * Read-only: only {@link SessionTeardownService.purge} moves it, so no consumer can invalidate
-   * everybody else's work.
+   * The current session generation, counted from one. ⚠ MONOTONIC AND NEVER REWOUND, so one value
+   * identifies one session for the lifetime of the application.
    */
   readonly generation: Signal<number> = this._generation.asReadonly();
 
   /** Why the most recent boundary was crossed, or `null` before the first one. */
   readonly lastReason: Signal<SessionResetReason | null> = this._lastReason.asReadonly();
 
-  /**
-   * Whether any boundary has been crossed since the application started.
-   *
-   * Derived rather than stored, so it cannot disagree with {@link lastReason}.
-   */
+  /** Whether any boundary has been crossed since the application started. */
   readonly hasEndedASession: Signal<boolean> = computed(() => this._lastReason() !== null);
 
   /**
    * Whether a captured generation is still the one in force.
-   *
-   * For a caller that began asynchronous work under one session and must decide, when the answer
-   * arrives, whether it still belongs to the session that asked. Compared with strict equality on a
-   * plain number: no magnitude test, no truthiness test and no tolerance.
    *
    * @param generation The value captured when the work began.
    * @returns True when no boundary has been crossed since.
@@ -247,46 +83,7 @@ export class SessionTeardownService {
    * Discards every session-scoped slice in every domain store, and cancels the requests that would
    * otherwise refill them.
    *
-   * Each store's own `reset()` releases its in-flight reads and writes BEFORE writing its slices back,
-   * which is the ordering that makes this effective at all: a response still in the air when the
-   * slices were cleared would arrive afterwards and repopulate precisely what had just been discarded.
-   * That failure is worse than performing no purge, because the stores look correctly emptied at the
-   * instant of sign-out and refill a moment later with nobody watching.
-   *
-   * ⚠ IDEMPOTENT, AND CALLED ON EVERY PATH THAT ENDS A SESSION — a deliberate sign-out, a refresh that
-   * could not be completed, and the adoption of a different account. Being safe to repeat is what
-   * allows those paths to overlap: a refresh failing at the same moment the operator presses sign out
-   * runs this twice, and the second run must be a no-op rather than a fault. Every `reset()` it calls
-   * writes fixed initial values and cancels handles it then nulls, so repetition changes nothing.
-   *
-   * Every store is purged unconditionally. There is no attempt to purge only the stores that hold
-   * something, because "does this store hold anything?" is a question with twenty-five different
-   * answers in one of them, and a purge that consulted them would eventually miss one.
-   *
-   * ⚠ ORDER IS PART OF THE CONTRACT, AND THE GENERATION MOVES FIRST. Anything that captured the
-   * generation before this call can then already tell that it is stale, so a late response cannot be
-   * mistaken for a fresh one even in the window before the stores have finished resetting. Each store
-   * cancels its own reads and writes as the first act of its own reset, which is why nothing is
-   * cancelled here directly — a store knows what it has outstanding and this file must not need to.
-   *
-   * ⚠ AND IT IS THE ONE PLACE AN UNASKED-FOR ENDING IS ANNOUNCED. Two entry points end a session
-   * without the operator asking, and both of them are already here: the bearer interceptor's terminal
-   * path, when a refused request could not be recovered by a renewal, and the authentication store's
-   * discard, when a renewal the navigation gate asked for was refused. Announcing from each of them
-   * instead would be two raises of one sentence, and a third path added later would silently join the
-   * silent majority. Announcing HERE makes it structural: any future caller that ends a session
-   * un-asked-for gets the explanation by construction, because the reason it must already pass is what
-   * selects it.
-   *
-   * The ORDER of the last three statements is load-bearing and is the reason they sit together.
-   * {@link NotificationService.clear} empties the queue AND the exemption set, so a notice raised
-   * before it would be discarded by it; and the shell sweeps transient notices on a completed
-   * navigation, so a notice that must outlive the navigation to the sign-in screen has to be exempted
-   * after it is queued. Hence clear, then raise, then exempt — never any other sequence.
-   *
-   * @param reason Which boundary was crossed. RECORDED and published through
-   * {@link SessionTeardownService.lastReason}; it does not change what is discarded, and it decides
-   * only whether {@link SESSION_ENDED_MESSAGE} is raised.
+   * @param reason Which boundary was crossed.
    * @returns The generation now in force, so a caller starting fresh work can capture it.
    */
   purge(reason: SessionResetReason): number {
@@ -298,25 +95,16 @@ export class SessionTeardownService {
     this.roleStore.reset();
     this.moduleStore.reset();
 
-    /*
-     * Last, and after the stores. A `reset()` publishes no notice of its own, so the order is not
-     * load-bearing for correctness — but clearing the queue first would leave a window in which a
-     * store's teardown could enqueue something that then outlived the purge, and closing that window
-     * costs nothing.
-     */
+    // Last, and after the stores. A `reset()` publishes no notice of its own, so the order is not
+    // load-bearing for correctness — but clearing the queue first would leave a window in which a store's
+    // teardown could enqueue something that then outlived the purge, and closing that window costs nothing.
     this.notifications.clear();
 
-    /*
-     * ⚠ SAY WHY, BUT ONLY FOR THE ENDING NOBODY ASKED FOR. Measured in a browser: the teardown itself
-     * was complete and correct — credential cleared, every domain slice emptied, the operator returned
-     * to the sign-in screen with no residue — and both live regions were EMPTY, so somebody mid-task
-     * was returned to a sign-in form with no account, no work and no explanation, and a non-visual
-     * operator had nothing at all to go on.
-     *
-     * `warning` and deliberately not `error`: nothing failed on the operator's part, they were simply
-     * away longer than a credential lives. The severity also buys the longer on-screen lifetime that a
-     * message read on ARRIVAL at another screen needs, rather than one read where it was raised.
-     */
+    // ⚠ SAY WHY, BUT ONLY FOR THE ENDING NOBODY ASKED FOR. Measured in a browser: the teardown itself was
+    // complete and correct — credential cleared, every domain slice emptied, the operator returned to the
+    // sign-in screen with no residue — and both live regions were EMPTY, so somebody mid-task was returned
+    // to a sign-in form with no account, no work and no explanation, and a non-visual operator had nothing
+    // at all to go on.
     if (reason === 'renewalRefused') {
       this.notifications.warning(SESSION_ENDED_MESSAGE);
       this.notifications.retainAcrossNavigation();

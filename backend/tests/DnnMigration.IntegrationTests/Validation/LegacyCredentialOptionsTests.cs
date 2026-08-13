@@ -8,26 +8,17 @@ namespace DnnMigration.IntegrationTests.Validation;
 /// <summary>Proves the package-free invariants of the legacy credential migration options.</summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: THESE FACTS WERE WRITTEN AGAINST A SECOND OPTIONS TYPE AND ARE RE-POINTED AT THE ONE THAT
-/// SURVIVED. Two independent revisions each introduced a settings type for the bounded legacy-credential
-/// window - one publicly reachable from the Application layer and validated by a host-side
-/// <c>IValidateOptions</c> registration, one internal to Infrastructure beside the verifier that consumes
-/// it and validated while <c>AddInfrastructure</c> runs. The internal one is kept: the section carries a
-/// deployment-supplied decryption key, so the type that holds it should not be reachable by anything that
-/// does not need it, and validating it during registration already fails the start-up in the same way a
-/// <c>ValidateOnStart</c> binding would. Every requirement the withdrawn type expressed is asserted here
-/// against the surviving one, including the two that only it checked - the absolute deadline and the
-/// Triple-DES key strength.
+/// THESE FACTS WERE WRITTEN AGAINST A SECOND OPTIONS TYPE AND ARE RE-POINTED AT THE ONE THAT SURVIVED. Two
+/// independent revisions each introduced a settings type for the bounded legacy-credential window - one
+/// publicly reachable from the Application layer and validated by a host-side <c>IValidateOptions</c>
+/// registration, one internal to Infrastructure beside the verifier that consumes it and validated while
+/// <c>AddInfrastructure</c> runs.
 /// </para>
 /// <para>
 /// The surviving validator reports the FIRST failure rather than a collection, so the "enabled needs both"
 /// fact is expressed as two facts. Splitting it is not a weakening: each requirement is now pinned
 /// independently, and a change that dropped either check would fail its own fact rather than merely
 /// reducing a count.
-/// </para>
-/// <para>
-/// The hexadecimal key below is test-vector material only. It is unrelated to every deployment and is
-/// intentionally obvious; production obtains its value exclusively from the deployment secret store.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -120,12 +111,6 @@ public sealed class LegacyCredentialOptionsTests
     }
 
     /// <summary>A degenerate Triple-DES key is refused even though its length and alphabet are correct.</summary>
-    /// <remarks>
-    /// The key below is a documented weak Triple-DES value: its three sub-keys are identical, which reduces
-    /// the cipher to single DES. It passes every shape check - forty-eight hexadecimal characters - so a
-    /// validator that stopped at shape would accept it, and the legacy machine-key material this option
-    /// carries is exactly the population most likely to contain a hand-written degenerate value.
-    /// </remarks>
     [Fact]
     public void EnabledState_RefusesADegenerateTripleDesKey()
     {

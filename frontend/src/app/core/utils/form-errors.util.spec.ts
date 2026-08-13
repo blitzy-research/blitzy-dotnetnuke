@@ -1,65 +1,4 @@
-//
-// Specification for the error-presentation helpers of the dnn-migration
-// administration front end.
-//
-// ---------------------------------------------------------------------------
 // WHY THIS SUITE EXISTS, AND WHY IT IS PLAIN JASMINE
-// ---------------------------------------------------------------------------
-// The module under test is a set of pure functions over immutable values. It takes
-// no dependency, issues no request and touches no browser API, so nothing here
-// needs a testing module, a fixture or a component harness, and importing one
-// would make the suite slower and its failures harder to read for no gain. Every
-// expectation below is a direct call.
-//
-// The suite also serves a structural purpose. `tsconfig.app.json` compiles by
-// IMPORT GRAPH - it declares `files: ["src/main.ts"]` and includes only
-// declaration files - so a utility that nothing imports yet is silently NOT
-// type-checked by a production build. `tsconfig.spec.json` includes
-// `src/**/*.spec.ts`, so this file is what puts the module under test into a gated
-// compile. A clean production build alone would prove nothing about it.
-//
-// ---------------------------------------------------------------------------
-// WHAT IS ACTUALLY AT RISK, MEASURED
-// ---------------------------------------------------------------------------
-// Three things, each of which the obvious implementation gets wrong:
-//
-//  1. LEGACY MESSAGE TEXT CARRIES EMBEDDED LINE-BREAK MARKUP, in three spellings.
-//     Across the 37 in-scope legacy administration resource files the escaped
-//     forms occur as `<br>` 73 times, `<br/>` 13 times and `<br />` twice, and the
-//     code-behinds add their own: Signup.ascx.vb:L193 prepends `"<br>"` INSIDE A
-//     PER-CHARACTER LOOP, L323 wraps the accumulation as
-//     `"<br>" & strMessage & "<br><br>"`, and User.ascx.vb:L187 prepends the
-//     other spelling. The API reproduces all of it byte for byte, so a naive
-//     display shows a person the characters `<br>`.
-//
-//  2. THE LEGACY NULL CONTRACT MAKES `null` AND `""` THE SAME VALUE.
-//     Null.vb:L71-L75 defines the string "absent" marker with a body of literally
-//     `Return ""`, and Signup.ascx.vb tests one variable for emptiness two
-//     different ways in one file - `= ""` at L227 and `= Null.NullString` at L315.
-//     Anything that treats them differently changes a branch outcome.
-//
-//  3. THREE NEIGHBOURING ENUMERATIONS USE THREE DIFFERENT SUCCESS CONVENTIONS.
-//     `UserCreateStatus.Success` is 13, the sign-in success outcome is 1 - spelled
-//     `LOGIN_SUCCESS` in the legacy source and `UserLoginStatus.Success` in the target
-//     enumeration, same value either way - and the legacy `UserValidStatus.VALID` is 0.
-//     A "zero means success" assumption is wrong two times out of three, and
-//     `UserCreateStatus.AddUser` at 0 is the "no error yet" seed rather than an outcome.
-//
-//  4. THE DISCRIMINATION GUARD IS ONLY AS SOUND AS THE SHAPE TEST IT DELEGATES TO.
-//     `isValidationProblemDetails` narrows an UNTRUSTED body, and it does so by
-//     calling `isProblemDetails` first so that the two guards cannot disagree about
-//     what a problem document is. That makes the delegated shape test part of this
-//     module's contract rather than someone else's detail: if it admits a document
-//     whose members carry the wrong types, this module hands a caller a narrowed
-//     value that lies, and the caller then reads a number as though it were a
-//     string. The block at (d2) below exercises the delegated test directly, and
-//     covers the two admissions - an empty per-field dictionary, and a DOM
-//     `ProgressEvent` - that `error.interceptor.ts` depends on and that must
-//     therefore survive any future tightening.
-//
-// The legacy tree shipped no automated tests of any kind, so there is no assertion
-// to port; every expectation below is derived from reading the source it cites.
-//
 
 import {
   ADVISORY_MESSAGE,
@@ -254,9 +193,8 @@ describe('form-errors.util', () => {
       expect(isValidationProblemDetails(body)).toBeTrue();
 
       if (isValidationProblemDetails(body)) {
-        // Reading `errors` without a presence test is the whole point of the
-        // narrowing, and bracket access is the only syntax the workspace permits
-        // on an index-signature member.
+        // Reading `errors` without a presence test is the whole point of the narrowing, and bracket access
+        // is the only syntax the workspace permits on an index-signature member.
         expect(body.errors['Email']).toEqual(['Required.']);
       }
     });
@@ -279,28 +217,12 @@ describe('form-errors.util', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // (d2) THE DELEGATED SHAPE TEST THE GUARD IS BUILT ON
-  //
-  // `isValidationProblemDetails` calls `isProblemDetails` before it looks at the
-  // per-field dictionary, so every judgement made here propagates into the guard
-  // above. The subject lives in `../models/problem-details.model`, which carries no
-  // spec of its own by design - it is a declarations file - so the module that
-  // DEPENDS on the predicate is where the predicate's behaviour is pinned.
-  //
-  // The question the predicate answers is deliberately asymmetric: absent members
-  // are fine, because RFC 7807 makes every member optional and the API genuinely
-  // emits subsets; a PRESENT member carrying the wrong type is not, because the
-  // narrowing then asserts a declaration the value does not satisfy and the caller
-  // reads it as though it did.
-  // -------------------------------------------------------------------------
+  // `isValidationProblemDetails` calls `isProblemDetails` before it looks at the per-field dictionary, so
+  // every judgement made here propagates into the guard above.
   describe('isProblemDetails - the delegated shape test', () => {
     const FALLBACK = 'The request could not be completed.';
 
-    // The read every consumer performs: gate on the predicate, then extract. Writing
-    // it once keeps the expectations below about the CALLER'S outcome rather than
-    // about the predicate's return value, which is the property that actually
-    // matters and the one that survives any future hardening of the extractors.
     const readGuarded = (body: unknown): string =>
       isProblemDetails(body) ? problemDetailsMessage(body, FALLBACK) : FALLBACK;
 
@@ -308,10 +230,6 @@ describe('form-errors.util', () => {
       isProblemDetails(body) ? problemDetailsFieldErrors(body) : {};
 
     it('refuses a well-typed member vouching for a malformed one', () => {
-      // The exact body that motivated the tightening. `status` is a number, so a
-      // test asking whether SOME member matched passed, narrowed to a shape
-      // declaring `detail?: string`, and the message extractor then called `.trim()`
-      // on the number 42.
       const body: unknown = { status: 400, detail: 42 };
 
       expect(isProblemDetails(body))
@@ -332,9 +250,9 @@ describe('form-errors.util', () => {
     });
 
     it('refuses a per-field dictionary that is null or an array', () => {
-      // `typeof null === 'object'` and `typeof [] === 'object'`, so neither is
-      // excluded by a type-of test alone. A document declaring `errors` while
-      // holding nothing iterable is what the interceptor would then walk.
+      // `typeof null === 'object'` and `typeof [] === 'object'`, so neither is excluded by a type-of test
+      // alone. A document declaring `errors` while holding nothing iterable is what the interceptor would
+      // then walk.
       expect(isProblemDetails({ title: 'Bad Request', errors: null })).toBeFalse();
       expect(isProblemDetails({ title: 'Bad Request', errors: [] })).toBeFalse();
       expect(isProblemDetails({ title: 'Bad Request', errors: ['Required.'] })).toBeFalse();
@@ -349,11 +267,9 @@ describe('form-errors.util', () => {
     });
 
     it('ADMITS an empty dictionary and counts it as a recognised member', () => {
-      // Load-bearing, not incidental. The API writes `errors: {}` whenever model
-      // state carries no entries, and `error.interceptor.ts` distinguishes "a
-      // per-field dictionary is present" from "anything renderable was reported" on
-      // exactly that basis. Tightening this away would silently change which branch
-      // a validation response takes.
+      // Load-bearing, not incidental. The API writes `errors: {}` whenever model state carries no entries,
+      // and `error.interceptor.ts` distinguishes "a per-field dictionary is present" from "anything
+      // renderable was reported" on exactly that basis.
       expect(isProblemDetails({ errors: {} })).toBeTrue();
       expect(isProblemDetails({ title: 'Bad Request', errors: {} })).toBeTrue();
       expect(isValidationProblemDetails({ status: 400, errors: {} })).toBeTrue();
@@ -361,10 +277,8 @@ describe('form-errors.util', () => {
     });
 
     it('ADMITS a value shaped like a DOM ProgressEvent', () => {
-      // Also load-bearing. A transport failure delivers a `ProgressEvent`, which
-      // carries a string `type` and none of the other standard members. That is why
-      // `error.interceptor.ts` resolves a status of zero BEFORE it reads the body;
-      // the ordering there depends on this admission rather than compensating for it.
+      // Also load-bearing. A transport failure delivers a `ProgressEvent`, which carries a string `type`
+      // and none of the other standard members.
       expect(isProblemDetails({ type: 'error' })).toBeTrue();
       expect(readGuarded({ type: 'error' })).toBe(FALLBACK);
     });
@@ -428,11 +342,6 @@ describe('form-errors.util', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // (e) THE TRACE IDENTIFIER IS SURFACED, AND ABSENCE IS SAFE
-  // (e) THE SUPPORT REFERENCE IS SURFACED, THE CORRELATION IDENTIFIER WINS,
-  //     AND ABSENCE IS SAFE
-  // -------------------------------------------------------------------------
   describe('problemSupportReference', () => {
     it('prefers the correlation identifier, which is the value the server can find', () => {
       const problem: ProblemDetails = {
@@ -476,27 +385,16 @@ describe('form-errors.util', () => {
   // -------------------------------------------------------------------------
   describe('problemSeverity', () => {
     it('presents a permission refusal as a WARNING, per the legacy YellowWarning', () => {
-      // AccessDenied.ascx.vb has no permission check; both of its branches - L43 for
-      // the query-string message and L45 for the localised default - use the warning
-      // message type.
       expect(problemSeverity(403)).toBe('warning');
     });
 
     it('presents a rate-limit refusal as INFORMATIONAL, quieter than the other refusals', () => {
-      // The quietest of the three severities, and the reason the informational member
-      // exists at all. Nothing was rejected on its merits and nothing is misconfigured -
-      // the caller is early, and the only action is to wait. This is also the single
-      // authority the shared error banner used to override with a local test of its own,
-      // which is how the same status came to be announced as a warning and painted as a
-      // calm notice on one screen.
       expect(problemSeverity(429)).toBe('info');
     });
 
     it('is the only classifier, so no surface may re-derive or override its answer', () => {
-      // The banner maps three severities onto three bands and tests no status itself, and
-      // the interceptor announces at whatever this returns. Both are asserted in their own
-      // specifications; what is asserted here is that the informational member is REACHABLE
-      // from a real status, because an unreachable member is what invited the override.
+      // The banner maps three severities onto three bands and tests no status itself, and the interceptor
+      // announces at whatever this returns.
       expect(problemSeverity(429)).toBe('info');
       expect(problemSeverity(403)).toBe('warning');
       expect(problemSeverity(500)).toBe('error');
@@ -530,10 +428,7 @@ describe('form-errors.util', () => {
 
   describe('isRefusalStatus', () => {
     it('reports every status at which the server refuses rather than fails', () => {
-      // The six the API actually refuses with. Declared beside the severity rule so a
-      // reader deciding how to treat a failure sees both classifications together, and
-      // exported so the response path consumes it rather than keeping a private copy -
-      // which is what made the interceptor look like a second classification authority.
+      // The six the API actually refuses with.
       for (const status of [400, 403, 404, 409, 422, 429]) {
         expect(isRefusalStatus(status))
           .withContext(`${status} is a refusal the operator provoked`)
@@ -564,9 +459,6 @@ describe('form-errors.util', () => {
     });
 
     it('is a DIFFERENT question from severity, and the two deliberately disagree', () => {
-      // A validation refusal and a conflict are refusals here while resolving to the error
-      // severity, on the measured legacy evidence. Deriving either rule from the other
-      // would force one of them to be wrong.
       expect(isRefusalStatus(400)).toBeTrue();
       expect(problemSeverity(400)).toBe('error');
       expect(isRefusalStatus(409)).toBeTrue();
@@ -634,9 +526,8 @@ describe('form-errors.util', () => {
     });
 
     it('STRIPS BEFORE TESTING FOR BLANKNESS, so a break-only detail cannot hide a title', () => {
-      // The reason this module re-expresses the precedence instead of delegating:
-      // a raw blankness test would select "<br>", strip it to nothing, and lose the
-      // title entirely.
+      // The reason this module re-expresses the precedence instead of delegating: a raw blankness test
+      // would select "<br>", strip it to nothing, and lose the title entirely.
       expect(problemMessage({ title: 'Conflict', detail: '<br>' }, 'fallback')).toBe('Conflict');
       expect(problemMessage({ title: 'Conflict', detail: '<br/> <br />' }, 'fallback')).toBe(
         'Conflict',
@@ -706,10 +597,6 @@ describe('form-errors.util', () => {
     });
 
     it('AGGREGATES two differently-prefixed keys that name the SAME field', () => {
-      // `$.portalName` and `request.PortalName` differ only by the prefix the server
-      // happened to attach and by casing, so both describe one control and both
-      // messages belong to it. Returning only one would hide a real failure from the
-      // person who has to fix it.
       expect(fieldErrorMessages(problem, 'portalName')).toEqual([
         'Could not be read.',
         'Portal Name Is Required.',
@@ -849,7 +736,6 @@ describe('form-errors.util', () => {
   // -------------------------------------------------------------------------
   describe('resolveVerificationPrompt', () => {
     it('refuses outright when the portal does not verify registration by code', () => {
-      // Login.ascx.vb:L184.
       const outcome = resolveVerificationPrompt({
         verificationVisible: false,
         verificationCode: null,
@@ -862,7 +748,6 @@ describe('form-errors.util', () => {
     });
 
     it('reveals the field and asks for a code on the first refusal', () => {
-      // Login.ascx.vb:L171-L175.
       const outcome = resolveVerificationPrompt({
         verificationVisible: false,
         verificationCode: null,
@@ -875,7 +760,6 @@ describe('form-errors.util', () => {
     });
 
     it('judges a submitted code as invalid once the field is already showing', () => {
-      // Login.ascx.vb:L177-L178.
       const outcome = resolveVerificationPrompt({
         verificationVisible: true,
         verificationCode: 'WRONG',
@@ -888,7 +772,6 @@ describe('form-errors.util', () => {
     });
 
     it('asks again, rather than judging, when nothing was submitted', () => {
-      // Login.ascx.vb:L180.
       expect(
         resolveVerificationPrompt({
           verificationVisible: true,
@@ -949,10 +832,6 @@ describe('form-errors.util', () => {
     });
 
     it('exposes exactly three codes, spelled as the API publishes them', () => {
-      // The legacy member names - EnterCode, InvalidCode, UserNotAuthorized - are the
-      // PROVENANCE of these three, not their wire spelling. A vocabulary keyed on the
-      // legacy names could never match a value taken off the wire, so each legacy
-      // spelling is asserted to resolve to nothing, alongside the code that does.
       expect(AUTH_FAILURE_CODES).toEqual([
         'auth.verification_required',
         'auth.verification_code_invalid',
@@ -981,10 +860,9 @@ describe('form-errors.util', () => {
     });
 
     it('folds a hyphen onto an underscore, exactly as the server does before publishing', () => {
-      // The services disagree about the separator inside a reason token, and the
-      // server declines to keep two spellings of one code, so it normalises before
-      // publishing. Doing it again here is idempotent and lets a caller pass a code
-      // quoted from a service as well as one read off the wire.
+      // The services disagree about the separator inside a reason token, and the server declines to keep
+      // two spellings of one code, so it normalises before publishing. Doing it again here is idempotent
+      // and lets a caller pass a code quoted from a service as well as one read off the wire.
       expect(failureCode({ type: 'urn:dnnmigration:error:user.create.duplicate-email' })).toBe(
         'user.create.duplicate_email',
       );
@@ -1002,9 +880,6 @@ describe('form-errors.util', () => {
     });
 
     it('reports null for a framework problem type, which is NOT an application code', () => {
-      // The framework writes a specification URL for a status it mapped without
-      // reaching an action. Treating that as a failure code would key a vocabulary on
-      // a documentation link.
       expect(failureCode({ type: 'https://tools.ietf.org/html/rfc9110#section-15.5.5' })).toBeNull();
       expect(failureCode({ type: 'about:blank' })).toBeNull();
     });
@@ -1039,9 +914,6 @@ describe('form-errors.util', () => {
   // -------------------------------------------------------------------------
   describe('password-change vocabulary', () => {
     it('carries the five codes that have legacy wording, in legacy ordinal order', () => {
-      // PasswordUpdateStatus.vb:L23-L32 declared eight members with no explicit
-      // values, so declaration order was the ordinal. Five of the eight map onto a
-      // code the service emits, and the order below is theirs: 1, 2, 3, 4, 5.
       expect([...PASSWORD_UPDATE_CODES]).toEqual([
         'user.password.missing',
         'user.password.not_different',
@@ -1074,10 +946,9 @@ describe('form-errors.util', () => {
     });
 
     it('words NONE of the three legacy outcomes that have no code', () => {
-      // Success is not a failure. The two question-and-answer outcomes have no
-      // counterpart because the password question requirement is not carried
-      // forward - the target hashes credentials one way, so there is no question to
-      // be wrong about. Their legacy wording is reproduced under no key at all.
+      // Success is not a failure. The two question-and-answer outcomes have no counterpart because the
+      // password question requirement is not carried forward - the target hashes credentials one way, so
+      // there is no question to be wrong about.
       expect(passwordUpdateMessage('Success')).toBeNull();
       expect(passwordUpdateMessage('InvalidPasswordAnswer')).toBeNull();
       expect(passwordUpdateMessage('InvalidPasswordQuestion')).toBeNull();
@@ -1114,10 +985,6 @@ describe('form-errors.util', () => {
     });
 
     it('proves the three success conventions differ, so zero never means success', () => {
-      // Read from the authoritative enumerations, which remain declared on the client
-      // as legacy contracts even though neither ever crossed the wire. Creation seeds
-      // at AddUser 0 and succeeds at 13; sign-in fails at 0 and succeeds at 1. Neither
-      // value is a failure code, which is why no vocabulary here is keyed on one.
       expect(UserCreateStatus.Success).toBe(13);
       expect(UserCreateStatus.AddUser).toBe(0);
       expect(UserCreateStatus.AddUserToPortal).toBe(17);
@@ -1134,9 +1001,6 @@ describe('form-errors.util', () => {
     });
 
     it('reproduces the legacy grouping of outcomes onto shared wording', () => {
-      // GetUserCreateStatus combined the name outcomes in one Case arm, and combined
-      // all four provider faults in another - which the server has taken one step
-      // further by emitting a single code for the latter.
       const nameTaken = userCreateMessage('user.create.username_already_exists');
 
       expect(userCreateMessage('user.create.duplicate_username')).toBe(nameTaken);
@@ -1144,10 +1008,6 @@ describe('form-errors.util', () => {
 
       const registrationError = userCreateMessage('user.create.provider_error');
 
-      // "Futher" is the measured spelling in `SharedResources.resx` line 301 and is
-      // reproduced verbatim: a discovered defect is annotated rather than repaired, and the
-      // operator must read the sentence they already know. See the note on
-      // `REGISTRATION_ERROR`.
       expect(registrationError).toBe(
         'An Unexpected Error Occurred During Registration. Please Contact The Portal ' +
           'Administrator For Futher Information.',
@@ -1217,9 +1077,9 @@ describe('form-errors.util', () => {
     });
 
     it('pins the exact text of every message assembled from concatenated parts', () => {
-      // Several of these are written as two joined literals to stay inside the
-      // workspace column limit. Joining is exactly where a space goes missing, so the
-      // full sentence is asserted character for character rather than by substring.
+      // Several of these are written as two joined literals to stay inside the workspace column limit.
+      // Joining is exactly where a space goes missing, so the full sentence is asserted character for
+      // character rather than by substring.
       expect(userCreateMessage('user.create.username_already_exists')).toBe(
         'A User Already Exists For the Username Specified. Please Register Again Using A Different Username.',
       );
@@ -1262,14 +1122,6 @@ describe('form-errors.util', () => {
   // -------------------------------------------------------------------------
   describe('conflict vocabulary', () => {
     it('carries the eleven codes a screen can act on, in publication order', () => {
-      // ⚠️ ELEVEN, AND TWO OF THEM ARE WORTH EXPLAINING. Nine of these have legacy
-      // wording behind them and are listed for that reason. `role_group.in_use` has NONE - the
-      // legacy screen deleted a role group without consulting the roles classified by it, so the
-      // refusal did not exist to be worded - and it is listed anyway because the server publishes
-      // it and an operator can act on it. Omitting it was not neutral: the code resolved to no
-      // conflict at all, so the role-listing screen kept a private copy of the wording keyed off
-      // the bare `409`, which is a second vocabulary living in a feature folder. The order is the
-      // publication order and is asserted as a sequence so a code cannot be appended silently.
       expect([...CONFLICT_CODES]).toEqual([
         'portal.alias_duplicate',
         'portal.alias_in_use.conflict',
@@ -1287,10 +1139,9 @@ describe('form-errors.util', () => {
     });
 
     it('recognises the group-in-use refusal and words the operator\'s next step', () => {
-      // The server publishes this on `DELETE /api/v1/role-groups/{roleGroupId}`; the `in_use`
-      // token in the code is what the shared status translator reads to answer `409`. The wording
-      // is authored rather than measured, and it says what the server's own detail does not: what
-      // to do next. Asserted verbatim, because a screen renders it verbatim.
+      // The server publishes this on `DELETE /api/v1/role-groups/{roleGroupId}`; the `in_use` token in the
+      // code is what the shared status translator reads to answer `409`. The wording is authored rather
+      // than measured, and it says what the server's own detail does not: what to do next.
       expect(isConflictCode('role_group.in_use')).toBeTrue();
       expect(conflictMessage('role_group.in_use')).toBe(
         'That role group still contains roles, so it was not removed. Move or delete its roles first.',
@@ -1298,9 +1149,6 @@ describe('form-errors.util', () => {
     });
 
     it('keeps the two role-group refusals apart', () => {
-      // They arrive at the same status from the same resource and mean opposite things: one says
-      // the name is taken, the other that the group is still doing its job. Collapsing them onto
-      // one message would tell an operator to rename a group they were trying to delete.
       expect(conflictMessage('role_group.in_use')).not.toBe(
         conflictMessage('role_group.name_duplicate'),
       );
@@ -1310,11 +1158,6 @@ describe('form-errors.util', () => {
     });
 
     it('tells the two portal-alias refusals apart by code and not by status', () => {
-      // MIGRATION 17: both alias refusals arrive as 409, so a screen that branched on the
-      // status alone would show the duplicate wording for the active-alias refusal. The
-      // predicates exist so that no screen has to write a code literal, and they are
-      // asserted against EACH OTHER rather than only against themselves: a pair that both
-      // answered true would be worse than useless.
       expect(isDuplicateAliasCode('portal.alias_duplicate')).toBeTrue();
       expect(isDuplicateAliasCode('portal.alias_in_use.conflict')).toBeFalse();
 
@@ -1332,9 +1175,6 @@ describe('form-errors.util', () => {
     });
 
     it('words the active-alias refusal, which has no legacy antecedent', () => {
-      // The legacy screen HID the affordance instead of refusing the request, so there is
-      // no resource key to be faithful to. The sentence must still name the recovery,
-      // because the refusal is actionable.
       const worded = conflictMessage('portal.alias_in_use.conflict') ?? '';
 
       expect(worded.length).toBeGreaterThan(0);
@@ -1380,12 +1220,6 @@ describe('form-errors.util', () => {
     });
 
     it('carries no key for the two legacy refusals the API cannot report', () => {
-      // The terser duplicate-alias wording collapses onto the same code as the
-      // actionable one, so only the actionable sentence survives. And the
-      // duplicate-page-name refusal has no code at all: the legacy guard belonged to
-      // the create path (ManageTabs.ascx.vb:L279 versus the edit branch at L304) and
-      // this API exposes no page create, so wording it would describe a refusal no
-      // request can elicit.
       const wording = Object.values(CONFLICT_MESSAGE);
 
       expect(wording).not.toContain('The Portal Alias already exists.');
@@ -1480,11 +1314,7 @@ describe('form-errors.util', () => {
     });
 
     it('preserves every legacy login ordinal under the renamed members', () => {
-      // This module no longer restates the login vocabulary - one definition, in
-      // auth.model.ts. What still has to hold is that the rename changed only the
-      // spellings: UserLoginStatus.vb:L23-L31 declares LOGIN_FAILURE 0, LOGIN_SUCCESS 1,
-      // LOGIN_SUPERUSER 2, LOGIN_USERLOCKEDOUT 3, LOGIN_USERNOTAPPROVED 4,
-      // LOGIN_INSECUREADMINPASSWORD 5 and LOGIN_INSECUREHOSTPASSWORD 6.
+      // This module no longer restates the login vocabulary - one definition, in auth.model.ts.
       expect(UserLoginStatus.Failure).toBe(0);
       expect(UserLoginStatus.Success).toBe(1);
       expect(UserLoginStatus.SuperUser).toBe(2);
@@ -1493,17 +1323,12 @@ describe('form-errors.util', () => {
       expect(UserLoginStatus.InsecureAdminPassword).toBe(5);
       expect(UserLoginStatus.InsecureHostPassword).toBe(6);
 
-      // The lockout defect at Login.ascx.vb:L187 is only visible once these two ordinals
-      // are known: 3 is not 0, so a lockout passed the legacy test.
       expect(UserLoginStatus.UserLockedOut).not.toBe(UserLoginStatus.Failure);
     });
 
     it('preserves every legacy creation ordinal on the authoritative enumeration', () => {
-      // This module no longer derives a vocabulary from the enumeration, because the
-      // vocabulary is now the failure codes the API publishes and those are not
-      // derivable from legacy member names. The enumeration itself is still a legacy
-      // contract worth pinning, and it is pinned directly here: eighteen members with
-      // explicit values 0 to 17 in declaration order.
+      // This module no longer derives a vocabulary from the enumeration, because the vocabulary is now the
+      // failure codes the API publishes and those are not derivable from legacy member names.
       const fromEnum = Object.values(UserCreateStatus).filter(
         (member): member is string => typeof member === 'string',
       );
@@ -1520,9 +1345,9 @@ describe('form-errors.util', () => {
     });
 
     it('keys every vocabulary on the published code, never on a legacy member name', () => {
-      // The single assertion that would have caught the defect these vocabularies
-      // carried. Every key of every table must be a code the server could publish:
-      // lower case, dot-separated, and free of the legacy PascalCase spelling.
+      // The single assertion that would have caught the defect these vocabularies carried. Every key of
+      // every table must be a code the server could publish: lower case, dot-separated, and free of the
+      // legacy PascalCase spelling.
       const keys = [
         ...AUTH_FAILURE_CODES,
         ...PASSWORD_UPDATE_CODES,

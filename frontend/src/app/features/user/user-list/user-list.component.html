@@ -1,126 +1,9 @@
 <!--
-  THE USER ACCOUNTS LISTING SCREEN — /users
-
-  MIGRATION: replaces the DotNetNuke Web Forms control pair `Website/admin/Users/users.ascx`
-  (83 lines, lower-case filename) and the code-behind `Users.ascx.vb` behind it. Every region
-  below is derived from MEASURED legacy markup rather than from a redesign, and every visible
-  string is the verbatim value of a legacy resource key, held as a constant on the paired
-  component and bound from there so the wording has exactly one home.
-
-  MARKUP CONTRACT. Emulated view encapsulation rewrites every class below with this
-  component's own content attribute, so a class name that drifts does not error — it silently
-  matches nothing and the region renders unstyled. The paired stylesheet expects exactly this
-  vocabulary:
-
-      .user-list__page-action
-      .user-list__policy-notice
-      .user-list__filter-disclosure
-      .user-list__row-mark
-      .user-list__row-mark-description
-      .user-list__absent-value
-      .user-list__failure
-      .user-list__failure-retry
-      .user-list__filters
-      .user-list__search
-      .user-list__search-field
-      .user-list__letters
-      .user-list__letter
-      .user-list__row-action
-      .user-list__row-action--danger
-      .user-list__action-label
-      .user-list__icon
-      .user-list__email
-
-  THIRTEEN names, and no element below carries a class outside that list.
-
-  THE HOST IS THE LAYOUT CONTAINER. Each region is a direct child of it and none declares an
-  outer margin of its own, so the paired stylesheet owns the vertical rhythm through `:host`
-  and never through a wrapper element invented here. This matches the sibling screen in the
-  same feature folder, `user/profile-definition-list`, rather than the wrapper-div form two of
-  the other listings use.
-
-  ⚠ NO SEMANTIC LANDMARK IS EMITTED HERE. `header`, `main`, `nav` and `footer` belong to
-  `app/layout/**`, which renders each exactly once; this template renders INSIDE the shell's
-  `main`, so repeating one would give the document two of a landmark that must be unique. That
-  is why the filter strip below takes `role="group"` rather than becoming a second navigation
-  landmark — the shared pagination component made the same choice for the same reason. No
-  heading is emitted either: `app-page-header` renders the screen's single `h1`, and a second
-  heading would either compete with it or skip a level.
-
-  ⚠ BUILT-IN CONTROL FLOW ONLY — `@if`, `@else` and `@for`, never `*ngIf`, `*ngFor` or
-  `*ngSwitch`, and the paired component imports no `CommonModule`. Every `@for` declares a
-  `track` expression.
-
-  ⚠ EVERY STRING IS INTERPOLATED PLAIN TEXT. Legacy resource values are untrusted markup —
-  across the 37 in-scope resource files 76 entries carry a raw HTML tag and one carries a live
-  script element, all stored XML-escaped so a naive search clears them wrongly. This
-  directory's own `ModuleHelp.Text` is itself HTML and is deliberately NOT rendered: the closed
-  ten-member component library has no surface for prose help, and re-authoring it as template
-  markup would be new content rather than a port. No raw-markup binding, no sanitiser bypass
-  and no trusted-markup wrapper appears anywhere in this file. Tenant-authored values reach
-  this screen — a profile property name, a display name, an address, an electronic-mail
-  address — and none of them may be treated as markup.
-
-  MIGRATION: NO LEGACY RASTER ASSET IS REFERENCED. The legacy screen drew nine of them —
-  `edit.gif`, `delete.gif`, `icon_securityroles_16px.gif`, `userOnline.gif`, `checked.gif`,
-  `unchecked.gif`, `icon_search_16px.gif`, `help.gif` and `add.gif`. Exactly one static binary
-  is in scope for this workspace, the favicon, so every glyph below is inline vector art
-  authored here and every state that used to be an image is announced text.
-
-  MIGRATION: the legacy screen opened with a 475-unit-wide LAYOUT table (`users.ascx` L3-L13)
-  whose single row held the search controls and whose second row was a 15-unit-tall spacer.
-  That is spacing expressed as markup, not structure — it carried no `summary`, no header cell
-  and no caption — so the filter region below is laid out with CSS and only `grdUsers` survives
-  as a real table, delegated to `app-data-table`. The `&nbsp;&nbsp;` separators the legacy
-  strip used (L17) become a gap declared in the paired stylesheet.
--->
-
-<!--
-  THE PAGE TITLE AND THE THREE PAGE-LEVEL ACTIONS.
-
-  `[title]` is a PROPERTY binding and must stay one. The input is declared required and the
-  component nulls `title` on its own host precisely so the value cannot leak out as the global
-  HTML attribute; written as a static attribute it would become a browser tooltip and never
-  reach the input at all.
-
-  MIGRATION: the three actions are the module actions measured at `Users.ascx.vb` L725-L732, in
-  their declared order, with the wording taken from the resource keys those lines name —
-  `AddContent.Action`, `UserSettings.Action` and `ManageProfile.Action`. They were
-  container-level affordances rendered by the legacy DotNetNuke chrome, which is why they
-  project into the page header rather than forming an in-page action bar.
-
-  MIGRATION: each is a real link carrying a typed route, replacing the `EditUrl()` and
-  `NavigateURL()` query-string URLs the legacy built by string substitution. `/settings/membership`
-  and `/settings/profile-definitions` are top-level routes rather than children of `users`,
-  because each configures the tenant and not one account. A route is a URL and not an import, so
-  linking to one is correct; no route is declared here — routing belongs to `app.routes.ts` and
-  to this feature's own route file.
-
-  ⚠ MIGRATION: THE FOURTH LEGACY ACTION IS DROPPED. `Users.ascx.vb` L613-L618 declared a
-  `DeleteUnAuthorized.Action` ("Delete Unauthorized Users") that dispatched into
-  `UserController.DeleteUnauthorizedUsers(PortalId)` — a BULK operation over every unauthorised
-  account in the tenant. No bulk-removal endpoint exists in the target API, so the action is
-  omitted outright rather than rendered disabled: a disabled control announces itself as a
-  command that is momentarily unavailable, which would be a false promise for a capability that
-  has no server behind it at all. A documented functional reduction.
+  `[title]` is a PROPERTY binding and must stay one. The input is declared required and the component
+  nulls `title` on its own host precisely so the value cannot leak out as the global HTML attribute;
+  written as a static attribute it would become a browser tooltip and never reach the input at all.
 -->
 <app-page-header [title]="pageTitle">
-  <!--
-    ALL THREE AFFORDANCES ARE GATED ON TENANT ADMINISTRATION, because all three destinations are.
-    `/users/new`, `/settings/membership` and `/settings/profile-definitions` each carry the
-    `PortalAdministrator` policy on its route declaration, so a caller without it is bounced to
-    the access-denied screen the moment the link is followed. Painting the link anyway would be a
-    false affordance — an offer the application has already decided to refuse.
-
-    ⚠ THE GATE IS THE SERVER'S OWN DETERMINATION, not a permission KEY and not a role NAME. The
-    four-key permission vocabulary (`VIEW`, `EDIT`, `READ`, `WRITE`) grants access to a MODULE or
-    a PAGE instance; it says nothing about who administers a tenant, and `EDIT` — which these
-    links previously asked for — is not the authority any of these routes consults.
-
-    STILL ADVISORY ONLY. Withholding a link withholds nothing but the link: the route guard
-    re-checks, the API re-authorises every request and answers 403, and its verdict is the only
-    authority. The gate reads `false` while the identity is unresolved, which fails closed.
-  -->
   @if (administersPortal()) {
     <a class="page-action user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
 
@@ -135,74 +18,16 @@
 </app-page-header>
 
 <!--
-  THE INLINE FAILURE SURFACE.
-
-  Gated on an explicit `!== null` comparison rather than on truthiness, in keeping with the rule
-  this screen applies throughout: in this schema minus one and zero are legitimate identifiers
-  rather than synonyms for absence — tenant keys seed at minus one, role, page and module keys
-  seed at zero, and minus one is simultaneously the legacy marker for a missing integer — so
-  truthiness is never a safe stand-in for presence anywhere in this template.
-
-  The banner takes ONE input and does the rest itself: it derives its own severity from the
-  status, renders the per-field message map as a summary, shows the server's support reference
-  and carries its own live region. So nothing here iterates the error map, nothing renders the
-  trace identifier and no `aria-live` attribute is written by this file. The paired component
-  narrows the bound value to READ failures only — a failed removal is reported through the
-  notification service instead, because the legacy screen reported one as a transient module
-  message rather than as a permanent surface.
-
-  ⚠ MIGRATION — DL-12: THIS SURFACE HAS NO LEGACY ANCESTOR AND IS REPORTED AS NET-NEW.
-  `asp:ValidationSummary` occurs ZERO times across the entire `Website/` tree, so the "validation
-  summary rendering path" cited as this component's source is VACUOUS — the same family of
-  finding as the vacuous Telerik, COM-interop and `On Error GoTo` exclusions. The nearest legacy
-  equivalent was the skin's own module-message strip, which lives in an excluded tree. No
-  predecessor was hunted for and none is claimed.
-
-  The retry affordance is likewise net-new, and it exists because the paired component declares a
-  reload command documented as belonging beside a failed listing — a transient fault then costs a
-  press rather than a navigation. Its wording is authored directly; no legacy resource key covers
-  it. It is disabled while a request is already in flight so a second cannot be queued behind the
-  first.
--->
-<!--
-  THE POLICY DEGRADATION DISCLOSURE — #5.
-
-  The tenant's account policy decides two things on this screen: how many accounts a page holds and
-  which of the nine optional columns are shown. Both have a documented fallback on the paired class,
-  so a policy that cannot be read costs a preference rather than a listing — which is why it is NOT
-  reported through the failure surface below. That surface used to carry it, and the result was an
-  assertive "Not Found" banner with a retry command sitting above two hundred and fifty-one
-  perfectly healthy accounts, reporting a failure of the listing that had not happened.
-
-  ⚠ NOT AN ALERT AND NOT A LIVE REGION, for the same reason it is not a banner. This is a statement
-  about what is on screen, not the outcome of anything the reader did, and it is not a fault they can
-  act on from here. It is a plain paragraph placed between the header and the search bar, where a
-  reader moving through the document in order meets it before the controls whose behaviour it
-  qualifies. It is deliberately NOT silent: a listing quietly showing ten rows a page when the
-  tenant asked for fifty is the same defect in a quieter voice.
+  Gated on an explicit `!== null` comparison rather than on truthiness, in keeping with the rule this
+  screen applies throughout: in this schema minus one and zero are legitimate identifiers rather than
+  synonyms for absence — tenant keys seed at minus one, role, page and module keys seed at zero, and
+  minus one is simultaneously the legacy marker for a missing integer — so truthiness is never a safe
+  stand-in for presence anywhere in this template.
 -->
 @if (policyDegraded()) {
   <p class="user-list__policy-notice">{{ policyDegradedNotice }}</p>
 }
 
-<!--
-  Both inputs are bound, and they are ORDERED rather than alternatives. A failure that carries a
-  problem document shows the server's own explanation; a failure that carries none — which is what
-  a contract-violating `200` produces, because the decoders run downstream of the interceptor —
-  shows the store's authored summary instead. Before the second input existed, that class of
-  failure rendered nothing at all and the grid simply stayed empty with no diagnostic anywhere.
-
-  ⚠ THE BANNER IS MOUNTED UNCONDITIONALLY, WHICH IS THE SECOND HALF OF THAT SAME CORRECTION. An
-  earlier revision gated it on the problem document alone, which made a document-less failure
-  unreachable; gating it on the UNION of the two inputs fixed which failures were reported and left
-  the region itself being created with its first message, which is the case screen readers announce
-  least reliably. The element is therefore always in the document and only its contents change. The
-  shared component satisfies that safely: its own `@if` sits INSIDE the region, the region declares
-  no padding, border or background, and both inputs default to null, so an empty banner paints
-  nothing and occupies no height. `hasReadFailure` — the union — remains, and now governs only the
-  VISIBLE recovery chrome below, which is what it should have governed all along: a `Try again` for
-  a failure that has not happened is an offer with no referent.
--->
 <app-error-banner [problem]="readFailure()" [fallbackMessage]="readFailureSummary()" />
 
 @if (hasReadFailure()) {
@@ -218,47 +43,11 @@
   </div>
 }
 
-<!--
-  THE SEARCH BAR — `users.ascx` L3-L13, rendered as a layout row rather than as a table.
-
-  The legacy row held three controls in one flexible cell: a text box (L7), a drop-down list of
-  search axes (L8) and an image button that ran the query (L9). All three survive; only the table
-  that positioned them does not.
-
-  ⚠ THE LABEL "Search:" IS NOT WRITTEN HERE, AND ITS ABSENCE IS DELIBERATE. `Search.Text` is the
-  wording of `lblSearch` (`users.ascx` L5), and `app-search-input` already paints exactly that
-  wording as its own `for`-associated label. Writing it again beside the control would put two
-  labels on one field and read the words twice to a screen reader. The constant survives on the
-  paired component so the resource provenance of that wording stays recorded in one place.
-
-  ⚠ THE SEARCH BUTTON IS NOT WRITTEN HERE EITHER. The legacy `btnSearch` image button becomes the
-  shared control's own submit affordance, which is a real `<button>` carrying visible text and an
-  inline vector glyph, reachable by keyboard and answering both Enter and Space natively. The
-  legacy shared label control withdrew its own affordances from the tab order with a negative tab
-  index (`Website/controls/labelcontrol.ascx` L3-L4, defect D11); nothing here is withdrawn.
--->
+<!-- THE SEARCH BAR — `users.ascx` L3-L13, rendered as a layout row rather than as a table. -->
 <div class="user-list__filters">
-    <!--
-      ⚠ THE SECTION HEADING, CLIPPED FROM THE PAINTED PAGE. Measured before it existed: `<main>`
-      exposed exactly ONE heading on this screen - the page title - so a reader navigating by
-      heading could not move between the controls that narrow the list and the list itself. This
-      names the first of those two regions. It is clipped rather than shown because the region is
-      already obvious to anyone who can see it and a visible heading would add furniture the
-      legacy screen never had; the records region needs no counterpart because the grid carries
-      its own accessible name in a real `<caption>`.
-    -->
     <h2 data-visually-hidden>Filter Accounts</h2>
 
-  <!--
-    The free-text filter. A shared component rather than a bare input, so the control keeps its
-    label association and owns its own debounce and its own emission funnel.
-
-    MIGRATION: the match is a STARTS-WITH and the wildcard belongs to the server. `Users.ascx.vb`
-    L269, L271 and L274 each appended a single trailing `%` before handing the text to the
-    provider, and the target endpoint reproduces that appending — so the term travels raw and
-    nothing here escapes, trims, case-folds or decorates it. The placeholder promises neither a
-    starts-with nor a contains test, because the matching rule is the server's to state.
-  -->
+  <!-- The free-text filter. -->
   <app-search-input
     class="user-list__search"
     [placeholder]="searchPlaceholder"
@@ -266,80 +55,16 @@
   />
 
   <!--
-    THE SEARCH AXIS — `ddlSearchType`, `users.ascx` L8.
-
-    ⚠ THIS IS THE ONE JUSTIFIED BARE CONTROL ON THIS SCREEN. The closed shared library holds
-    exactly nine components — page-header, form-field, loading-spinner, pagination, data-table,
-    search-input, confirm-dialog, error-banner, empty-state — plus the `hasPermission` directive
-    as its tenth member, and NONE of them covers a native selector. The design-system rule
-    forbids a bare control only where a shared component covers the need, so a native `select`
-    inside the labelled-field component's content slot is the compliant composition rather than a
-    workaround. The shared search control's surface is deliberately NOT widened for this single
-    consumer and no eleventh shared member is introduced.
-
-    ⚠ THE FIELD SUPPLIES A NAME THE LEGACY CONTROL NEVER HAD. `users.ascx` L8 declared
-    `ddlSearchType` with no associated label of any kind and the resource file supplies no key for
-    it, so the legacy selector reached assistive technology unnamed. The wording is therefore
-    authored on the paired component and the field carries it, which is an accessibility addition
-    with no visual counterpart in the legacy screen. The `for`/`id` pair is what makes the
-    association real; the field owns the label element and this template owns only the control.
-
-    MIGRATION: changing the axis RE-QUERIES NOTHING, and that is parity rather than an omission.
-    The legacy drop-down declared no auto-post-back, so a new selection had no effect at all until
-    the search button was pressed; `Users.ascx.vb` L586 read `ddlSearchType.SelectedItem.Value` at
-    query time. The change handler therefore records the axis and dispatches nothing.
+    ⚠ THIS IS THE ONE JUSTIFIED BARE CONTROL ON THIS SCREEN. The shared components are page-header,
+    form-field, loading-spinner, pagination, data-table, search-input, confirm-dialog, error-banner and
+    empty-state, and NONE of them covers a native selector.
   -->
   <app-form-field
     class="user-list__search-field"
     [label]="searchFieldCaption"
     [for]="searchFieldControlId"
   >
-    <!--
-      MIGRATION: the entries are in the legacy `Items.Add` order — `Users.ascx.vb` L577 adds the
-      account name, L578 adds the electronic-mail address, then L579-L582 adds one entry per
-      tenant-declared profile property exactly as `GetPropertyDefinitionsByPortal` returned it.
-      `Items.Insert` is never used, so the two account fields lead rather than being spliced in
-      afterwards. The declarations arrive already resolved on the paired component's derived view;
-      nothing is fetched from this template.
-
-      Each label falls back to the raw property name when the resource file supplies no wording
-      for it, which reproduces `AddSearchItem` (L205-L218) and is what keeps this axis an OPEN
-      SET: a tenant may declare any property, and one the label map does not know is labelled with
-      its own name rather than rejected. The value is transmitted verbatim — never validated,
-      never case-folded, never checked against a fixed list.
-
-      ⚠ TRACKED BY THE ENTRY'S OWN COMPOSITE KEY, AND EACH OF THE THREE REJECTED ALTERNATIVES IS
-      REJECTED FOR A DIFFERENT MEASURED REASON.
-
-      `track option.value` would raise a DUPLICATED-KEY error on a real tenant configuration: a
-      profile property declared literally as `Username` or `Email` collides with one of the two
-      account fields, and the paired component preserves that legacy quirk rather than
-      de-duplicating it — the legacy switch tested the account field first, so the account field
-      wins.
-
-      `track option` — object identity — was what this template used, and it was WRONG in a way
-      only the console showed. The entries come from a `computed()` over a derived store slice, so
-      a fresh array of fresh objects is produced whenever the declared properties are re-read;
-      identity therefore changes without the list changing, and Angular re-created the entire
-      collection and reported NG0956. Measured before the change: 6 occurrences over collections
-      of 4, 4 and 2 entries.
-
-      `track $index` would be stable but would reuse a row for a DIFFERENT axis whenever the
-      declarations change, which is exactly the reuse `track` exists to prevent.
-
-      The key the component carries is the entry's ordinal joined to its value with the unit
-      separator, so it is unique even under the duplicate-name configuration and unchanged across
-      recomputation. It is composed in the component rather than concatenated here, because a
-      template expression that builds a key runs on every change-detection pass.
-
-      The value is a string because the DOM requires one. Selection is bound by EQUALITY against
-      the axis the component actually holds, so the control and the query cannot disagree.
-    -->
-    <!--
-      NOT DISABLED WHILE A REQUEST IS IN FLIGHT, deliberately. Changing the axis dispatches
-      nothing — see above — so there is nothing for a guard to protect, and the legacy selector was
-      never disabled at any point in its lifecycle. Withholding it would be invented behaviour.
-    -->
+    <!-- NOT DISABLED WHILE A REQUEST IS IN FLIGHT, deliberately. -->
     <select [id]="searchFieldControlId" (change)="onSearchFieldChange($event)">
       @for (option of searchFieldOptions(); track option.trackKey) {
         <option [value]="option.value" [selected]="option.value === searchField()">
@@ -350,89 +75,11 @@
   </app-form-field>
 </div>
 
-<!--
-  THE FIRST-LETTER FILTER STRIP — `users.ascx` L14-L20.
-
-  Rendered here rather than delegated: none of the nine shared components covers a first-letter
-  filter and the shared grid exposes no slot for one.
-
-  A GROUP ROLE WITH AN ACCESSIBLE NAME, NEVER A NAVIGATION LANDMARK. The application shell renders
-  the single navigation landmark, and a second one on every list screen would announce a duplicate
-  to anyone navigating by landmark — which is the same decision the shared pagination component
-  records for itself. The legacy panel carried no name of any kind (L14), so a screen reader met
-  twenty-seven unexplained links; naming the group costs nothing visually and the wording is
-  authored on the paired component because the resource file supplies no key for it.
-
-  WHERE THE STRIP SITS is the paired stylesheet's business. The legacy panel declared
-  `HorizontalAlign="Center"` (L14) and nothing else about its placement is expressed here.
-
-  ⚠ MIGRATION: TWENTY-SEVEN ENTRIES, NOT THE LEGACY TWENTY-NINE. `CreateLetterSearch`
-  (`Users.ascx.vb` L304-L316) assembled its list in four steps — the twenty-six letters from the
-  local `Filter.Text` value, then the global "All" entry at L308, then a signed-in entry at L309
-  and an unauthorised entry at L310. The last TWO are dropped: `Users.ascx.vb` L258-L263 answered
-  both from unpaged readers that took no page coordinate, one of them from session tracking and a
-  scheduled purge this migration does not carry forward, and the target API serves neither. An
-  entry that quietly returned the unfiltered page would be worse than its absence, because it
-  would answer a different question than the one asked. Two documented functional reductions.
-  There is no "0-9" entry either — `Filter.Text` is a pure twenty-six-letter list.
-
-  ⚠ MIGRATION: THE CLEARING ENTRY STAYS AFTER Z RATHER THAN MOVING TO THE FRONT. L308 APPENDS the
-  "All" entry to the letters, so the legacy strip read A to Z and then that entry. Leading with it
-  would read better to a modern eye and is exactly the kind of opportunistic improvement the
-  migration discipline forbids, so the measured order is preserved. Selecting it asks the server
-  for everything rather than sending the word "All" as a filter, and the paired component owns
-  that mapping.
-
-  BUTTONS AND NOT LINKS, because selecting an entry changes client state and no address. The
-  legacy entries were hyperlinks only because the filter round-tripped through the query string
-  (`FilterURL`, `Users.ascx.vb` L446-L456); an anchor with nowhere to go would be a worse
-  translation than a button that does what the control does. Their LINK-LIKE APPEARANCE is
-  preserved — `users.ascx` L16 gives each entry `CssClass="CommandButton"` and
-  `Website/Portals/_default/default.css` L450-L453 declares `A.CommandButton:link` as underlined
-  `#003366` — and that is the paired stylesheet's concern, expressed through the token vocabulary
-  rather than as a colour value in this markup.
-
-  EITHER AFFORDANCE RETURNS TO THE FIRST PAGE. `users.ascx` L16 called `FilterURL` with a literal
-  page argument of `"1"`, and the store's search commands return to page index nought for exactly
-  that reason, so the reset is inherited rather than restated here.
-
-  MIGRATION: THE APPLIED ENTRY IS ANNOUNCED, WHICH THE LEGACY STRIP DID NOT DO. Every legacy
-  entry rendered identically whatever was applied (`users.ascx` L16), so the strip never reported
-  its own state — an operator could not tell from it which letter they were looking at, and a
-  reader was given twenty-seven controls with no indication that one of them was in force.
-
-  This template previously carried that as a REPORTED GAP, on the grounds that the letter in
-  force "lives inside the store's search discriminator and is not re-published on the screen's
-  surface". That was a description of a missing predicate on the paired class rather than a limit
-  of anything: the store publishes its search, the sibling portal listing already derives exactly
-  this state from its own equivalent, and the class now exposes `isFilterApplied`. The gap is
-  closed rather than reported.
-
-  ⚠ THE STATE IS CARRIED BY MORE THAN COLOUR. `aria-pressed` reaches assistive technology, and
-  the paired stylesheet gives the applied entry a WEIGHT change alongside its tint, so an
-  operator who cannot distinguish the two colours still has a cue. Both are token-driven; no
-  colour value appears in this markup.
-
-  ⚠ U-M4 — THE POINTER TARGET WAS THE SMALLEST IN THE CONSOLE AND IS NOW AT THE COMFORTABLE
-  MINIMUM. This note used to DEFER the shortfall for designer review, on the grounds that the
-  measured legacy affordance was a bare inline text link — `default.css` L442-L447 declares
-  `.CommandButton` with nothing but a font family, an eleven-pixel size and a normal weight, no
-  padding, no dimension and no minimum — and that enlarging the target would change the strip's
-  density and wrapping. The measurement that closed the deferral was the size itself: the entry for
-  the letter I was THREE units wide by fourteen tall, which is not a density trade-off but an
-  affordance a finger cannot land on. The floor is applied in the paired stylesheet, the density
-  consequence is accepted and documented there, and the entry's glyph, ink, underline and type step
-  are all unchanged — so the legacy APPEARANCE the surrounding rules preserve is preserved. Nothing
-  in this template constrains the size; the size is a stylesheet concern and is settled there.
--->
 <div class="user-list__letters" role="group" [attr.aria-label]="filterStripLabel">
   <!--
-    Each letter carries an accessible name that says what pressing it does, because "A" alone
-    tells a reader moving between twenty-seven controls nothing — and the name CONTAINS the
-    visible character, which is what keeps a spoken command matching what is seen. The clearing
-    entry is named by its own visible word instead, so no attribute is emitted for it: an
-    `aria-label` identical to the visible text is noise, and "…by first letter All" would be
-    false.
+    Each letter carries an accessible name that says what pressing it does, because "A" alone tells a
+    reader moving between twenty-seven controls nothing — and the name CONTAINS the visible character,
+    which is what keeps a spoken command matching what is seen.
   -->
   @for (affordance of filterAffordances; track affordance) {
     <button
@@ -448,113 +95,28 @@
 </div>
 
 <!--
-  THE FILTER-IN-FORCE DISCLOSURE — U-M12, and the half of #7 nothing else could close.
-
-  The strip above announces the entry in force through `aria-pressed`, and it truthfully announces
-  NONE while a free-text term, an electronic-mail prefix or a profile-property prefix is filtering
-  the listing — no entry on the strip is what is in force. Truthful silence still leaves an operator
-  unable to distinguish a filtered listing from an unfiltered one, because both show nothing pressed.
-
-  It also names the axis THE LISTING IS FILTERED ON, which is not necessarily the axis showing in the
-  selector: changing the selector applies nothing until a search is run, faithfully to a legacy
-  drop-down that declared no auto-post-back. So an operator who has just changed it sees this still
-  naming the previous axis, and can tell their selection is not yet in force — a fact that had no
-  surface on this screen at all.
-
-  ⚠ NOT A LIVE REGION AND NOT AN ALERT. Every state it describes is the direct result of a query the
-  reader themselves ran, and the grid below is already announced by the shared table; announcing this
-  as well would read the same event twice. The paired class resolves it to null for every state the
-  strip already announces, so the two surfaces never state one fact between them.
+  The strip above announces the entry in force through `aria-pressed`, and it truthfully announces NONE
+  while a free-text term, an electronic-mail prefix or a profile-property prefix is filtering the
+  listing — no entry on the strip is what is in force.
 -->
 @if (filterDisclosure(); as disclosure) {
   <p class="user-list__filter-disclosure">{{ disclosure }}</p>
 }
 
 <!--
-  THE GRID — `asp:datagrid` named `grdUsers` (`users.ascx` L22-L81).
-
-  The thirteen columns, their order, their alignment and their per-column widths are assembled by
-  the paired component and arrive through ONE input, so this template states the data and not the
-  shape of it. Three of them are row commands and ten carry account facts; four of the ten are
-  hidden by default because the tenant's account policy hides them.
-
-  THE ACCESSIBLE NAME ARRIVES BY PROJECTION AND SUPPLYING IT IS THIS SCREEN'S OBLIGATION. The
-  shared grid renders the `caption` element itself, already clipped from the painted page by the
-  shared table stylesheet and present in the accessibility tree, and projects into it through the
-  `dataTableCaption` slot — so what is written below is the element carrying that attribute. A
-  literal `caption` element must NOT be written here: it would be projected INSIDE the grid's own
-  caption, which is not conforming markup. Left unprojected the grid falls back to a generic name,
-  which its own specification calls a floor and not a licence.
-
   MIGRATION: the legacy grid carried NO caption and no `summary` attribute at all, and there is no
   caption rule anywhere in the 1030-line legacy stylesheet, so the caption is a net accessibility
-  addition at zero visual cost and no `summary` attribute is emitted. Column scope is likewise
-  net-new and is the grid's own concern: it renders `th scope="col"` for every heading.
-
-  ⚠ THE WAITING AND EMPTY STATES ARE DELEGATED, AND THE DELEGATION IS A COMPILE-TIME FACT. The
-  shared grid renders the shared progress indicator and the shared empty state itself, in a single
-  spanning row, and lets waiting win over empty — so the waiting flag is passed through and
-  neither component is rendered again here. Neither is even in the paired component's imports, so
-  writing one would not compile. No custom empty wording is supplied either: the legacy grid
-  showed no empty message at all, so the shared default is the closest thing to parity available,
-  and the legacy `.DNNEmptyPane` affordance it replaces declared nothing but `width: 0px`
-  (`default.css` L959-L962).
-
-  ⚠ NO SORT BINDING AND NO COLUMN IS SORTABLE. `users.ascx` L22-L23 declares no `AllowSorting`,
-  no column declares a `SortExpression` and the code-behind holds no sort handler, so the legacy
-  grid could not be reordered. Binding the ordering inputs or handling the ordering output would
-  offer a capability the screen never had, so neither appears and the ordering the server chooses
-  applies.
-
-  ⚠ ROW ACTIVATION IS NOT BOUND. The legacy grid declared a selected-item style (L28) but no
-  select command and no selection handler, so that style was unreachable and no row was ever
-  selectable. Every action this screen offers is an explicit control inside a row, so activating a
-  row itself would be an affordance the legacy never had.
-
-  ⚠ NO ZEBRA STRIPING, AND ITS ABSENCE IS DELIBERATE. `users.ascx` L25 and L26 give the item style
-  and the alternating item style the SAME class, `Normal`, so alternate rows were never tinted.
-  The legacy `.DataGrid_AlternatingItem` rule that would have tinted them declares red text on
-  white (`default.css` L131-L138) and is a legacy DEFECT that is deliberately not reproduced;
-  `.DataGrid_SelectedItem` is dead CSS with zero markup references tree-wide. L23 also sets
-  `GridLines="None"`, so no cell carries a rule and none is added.
-
-  ⚠ MIGRATION: FOURTEEN LEGACY COLUMNS RESOLVE TO THIRTEEN. `users.ascx` L35-L39 declared an
-  unlabelled template column holding a single unconditional `~/images/userOnline.gif` image whose
-  visibility came from `Users.ascx.vb` L702. It carried no heading, no alternative text and no
-  information a heading could announce, and users-online is out of scope with no endpoint serving
-  it, so it is not reproduced. A documented functional reduction — the row contract does carry a
-  signed-in flag, so this is a scope decision rather than a data limitation.
+  addition at zero visual cost and no `summary` attribute is emitted.
 -->
-<!--
-  THE NO-QUERY NOTICE, rendered ABOVE the grid and only while no query has been issued.
-
-  ⚠ IT EXISTS BECAUSE THE SHARED GRID'S EMPTY STATE WOULD OTHERWISE STATE A FALSEHOOD. That state
-  reports that nothing was FOUND; in this state nothing was LOOKED FOR, because the tenant's
-  `Display_Mode` selects the no-query view — which `Users.ascx.vb` L266 expressed by excluding the
-  bare marker `"None"` from every branch of `BindData`, leaving `grdUsers.DataSource` assigned
-  `Nothing`. That is also the mode `UserModuleBase.vb` L126-L130 defaulted an absent setting to, so
-  it is the state every unconfigured tenant opens in.
-
-  MIGRATION: the legacy showed no message at all here, so this is a net addition. It is authored
-  rather than recovered, it names the two affordances that resolve it using the wording those
-  controls actually carry, and it costs no visual change to any other state — it is not rendered
-  once a query has been issued, whatever that query returned.
-
-  A PARAGRAPH RATHER THAN THE SHARED EMPTY STATE. The shared component emits its own heading and
-  documents that it assumes no surrounding table or list, and the grid already renders one inside
-  its own body; a second would put two competing empty statements on one screen. It carries the
-  polite live role so a reader who reached the screen with assistive technology is told why the
-  grid below is bare, rather than being read an empty table.
--->
+<!-- MIGRATION: the legacy showed no message at all here, so this is a net addition. -->
 @if (noQueryIssued()) {
   <p class="user-list__notice" role="status" aria-live="polite">{{ noQueryNotice }}</p>
 }
 
 <!--
-  `[sortBy]` is handed a COLUMN KEY, not the endpoint's field name: the grid compares it against a column
-  key to decide which heading announces itself sorted, and the component projects the store's field name
-  back through its own map to produce it. Both inputs are read from the store, so a heading can never
-  announce an order whose request failed.
+  `[sortBy]` is handed a COLUMN KEY, not the endpoint's field name: the grid compares it against a
+  column key to decide which heading announces itself sorted, and the component projects the store's
+  field name back through its own map to produce it.
 -->
 <app-data-table
   [columns]="columns()"
@@ -569,41 +131,9 @@
 </app-data-table>
 
 <!--
-  THE PAGER — `dnn:pagingcontrol` named `ctlPagingControl` (`users.ascx` L83).
-
-  ⚠ A SIBLING BELOW THE GRID, NEVER A FOOTER ROW INSIDE IT. `users.ascx` L82 emitted two line
-  breaks and L83 declared the paging control AFTER the closing grid tag, so the pager was never
-  part of the table. The two line breaks become a spacing token in the paired stylesheet.
-
-  ⚠ NO ARITHMETIC APPEARS HERE. The legacy screen ran BOTH page bases at once — `Users.ascx.vb`
-  L51 seeded a one-based `CurrentPage` while every provider call passed `CurrentPage - 1` (L265,
-  L269, L271, L274) — and the single reconciliation now lives inside the shared pagination
-  component, whose `page` input is zero-based, whose displayed number is derived internally and
-  whose change output emits a zero-based index. Both ends of these bindings are therefore already
-  on the wire's base; adding one here would show the wrong page number and request the wrong page.
-
-  The index REPORTED BY THE SERVER is bound rather than the index this screen last asked for, so
-  the pager can never claim to be on a page whose request failed. The applied page SIZE is bound
-  for the same reason and is never a constant here: `Users.ascx.vb` L114-L119 read it from the
-  tenant's records-per-page setting, so it was never a constant in the legacy screen either.
-
-  ⚠ MOUNTED UNCONDITIONALLY, AND THE TENANT'S PREFERENCE IS NO LONGER A GATE ON IT. The shared
-  component decides its own shape - the range summary alone when everything fits on one page, the
-  summary plus the steps when it does not - and a wrapper condition here could only ever remove
-  the summary, which is the one on-screen confirmation of how many accounts a filter matched.
-  Runtime testing measured that loss on every list screen.
-
-  MIGRATION: this restores the legacy USERS behaviour exactly, which the previous guard had
-  broken. `Users.ascx.vb` L278-L280 narrowed the pager's visibility to `PageSize < TotalRecords`
-  ONLY when the tenant had asked for suppression, and the genuine `Display_SuppressPager` setting
-  defaults to `False` (`Library/Components/Users/UserModuleBase.vb` L131-L133) - so on a default
-  tenant the legacy guard NEVER RAN and the legacy pager, status cell and all
-  (`Library/Controls/PagingControl.vb` L153-L161), stayed on screen for a single page. The store
-  still publishes `pagerWarranted` for the tenant that does set the flag; see the note there.
-
-  ⚠ MOUNTED WHENEVER THERE IS A COUNT TO STATE, not whenever there is a page to step to. The shared
-  control decides its own shape and the guard here only keeps an empty custom element out of a
-  zero-result document, where the empty state already says what happened in words.
+  ⚠ A SIBLING BELOW THE GRID, NEVER A FOOTER ROW INSIDE IT. `users.ascx` L82 emitted two line breaks and
+  L83 declared the paging control AFTER the closing grid tag, so the pager was never part of the table.
+  The two line breaks become a spacing token in the paired stylesheet.
 -->
 @if (hasResults()) {
   <app-pagination
@@ -615,32 +145,7 @@
   />
 }
 
-<!--
-  THE REMOVAL CONFIRMATION.
-
-  PRESENCE IN THE DOCUMENT IS WHAT "OPEN" MEANS — the dialogue exposes no visibility input, so this
-  guard is what shows it and removing it from the document is what closes it. Gated on an explicit
-  `!== null` comparison for the same reason as the failure surface above.
-
-  MIGRATION: THE CONFIRMATION IS A REAL DIALOGUE. `Users.ascx.vb` L522-L524 attached the
-  confirmation as a JavaScript string on the delete command column —
-  `imageColumn.OnClickJS = Localization.GetString("DeleteItem")` — which the framework emitted as a
-  browser confirmation prompt. The message is that same resource value, resolved through the
-  three-level fall-through to `SharedResources.resx`, and it is passed EXPLICITLY so the
-  correspondence stays visible even though the component's own default happens to be identical.
-  The affirmative wording is the legacy `Delete.Text`.
-
-  THE FEATURE OWNS THE FLOW; THE DIALOGUE ONLY ASKS. The focus trap, the Escape key, focus capture
-  and restore, the alert-dialogue role and the rest of the ARIA wiring are the dialogue's own and
-  none of it is reimplemented here. `[title]` is left to the component's own default because this
-  screen's component publishes no title constant, so binding one would invent wording no resource
-  key supplies. `[danger]` is a property binding rather than a bare attribute, so the boolean
-  reaches the input as a boolean.
-
-  The wording makes no claim about permanence, deliberately: `UserController.DeleteUser` was called
-  with a soft-delete argument (`Users.ascx.vb` L654), so language asserting that the action cannot
-  be undone would be false here.
--->
+<!-- THE REMOVAL CONFIRMATION. -->
 @if (pendingRemoval() !== null) {
   <app-confirm-dialog
     [message]="deleteConfirmMessage"
@@ -652,80 +157,13 @@
 }
 
 <!--
-  ══════════════════════════════════════════════════════════════════════════════════════════════
-  THE SEVEN CELL AND COMMAND TEMPLATES.
-
-  These are REAL cell templates, never control flow: `@if` and `@for` are the only branching and
-  repetition used in this file. Each is handed to the shared grid inside a column descriptor and
-  rendered by the grid in the matching cell, through the grid's own template outlet.
-
-  ⚠ THEY MUST STAY AT THE TOP LEVEL OF THIS TEMPLATE. The paired component captures all seven with
-  STATIC view queries so that the column set can be assembled in its initialisation hook, and a
-  static query only resolves a template that belongs to the component's own view. Moved inside an
-  `@if` or an `@for` — each of which creates an embedded view — they would resolve to nothing and
-  the column set would fail to build. The component fails loudly and by name in that case rather
-  than rendering a silently wrong grid.
-
-  A template variable's type cannot be declared on a bare `ng-template`, so `row` is typed
-  dynamically here and the grid's cell-context type is what documents it: the row is an account
-  listing item. Every member reached below exists on that contract.
-
-  ⚠ THE ROW COMMANDS ARE GATED ON TENANT ADMINISTRATION, and the vocabulary matters. Both commands
-  address routes and endpoints declared under the `PortalAdministrator` POLICY, so the fact that
-  decides them is the one the server itself decides: `isSuperUser` or the API's own
-  `isPortalAdministrator`, re-exposed by the authentication store as `administersCurrentPortal`.
-
-  It is NOT the four-key permission vocabulary. `VIEW`, `EDIT`, `READ` and `WRITE` are PERSISTED
-  grants over a module or page INSTANCE, carried in `ModulePermissions` and `TabPermissions`;
-  `EDIT` — which these commands previously asked for — grants editing of a page's content and is
-  consulted by nothing on the account-administration path. The two vocabularies are closed and
-  non-interchangeable, and the earlier reading conflated them.
-
-  It is also NOT a role NAME. Tenant administration is conferred by `Portals.AdministratorRoleId`,
-  the designated role is renameable through the role screens, and more than one role may administer
-  a tenant — so matching the literal "Administrators" was wrong three ways at once.
-
-  STILL ADVISORY ONLY: gating withholds an affordance and enforces nothing. The route guard
-  re-checks on navigation, the API re-authorises every request and answers 403 whether or not a
-  control was ever painted, and the gate reads `false` on an unresolved identity, which fails
-  closed. The sibling role listing gates its page actions the same way and for the same reason.
-  ══════════════════════════════════════════════════════════════════════════════════════════════
--->
-
-<!--
-  ROW COMMAND ONE — EDIT. Legacy `dnn:imagecommandcolumn CommandName="Edit"` with `EditMode="URL"`
-  and `KeyField="UserID"` (`users.ascx` L32), which drew `~/images/edit.gif` and navigated to a
-  query URL built by substituting the row's key into an already-rendered link (`Users.ascx.vb`
-  L530). It is a real link carrying typed route segments, so the browser can open it in a new tab
-  and assistive technology announces it as a link rather than as a graphic.
-
   THE TARGET IS PRECOMPUTED, NOT ASSEMBLED HERE. A router link is compared by IDENTITY, so an array
-  rebuilt on every change-detection pass is a new reference every time and the router re-parses a
-  target that has not changed, once per row, on every pass — which defeats push change detection
-  outright. The paired component builds the map once per page and this template indexes it.
-
-  SENTINEL DISCIPLINE. The identifier is used exactly as received and is NEVER tested for
-  truthiness, for positivity or against minus one. This schema makes every such test wrong
-  somewhere: tenant keys seed at minus one, role, page and module keys seed at zero, and minus one
-  is simultaneously the legacy marker for a missing integer.
-
-  THE ACCESSIBLE NAME NAMES THE ACCOUNT. "Edit" repeated once per row tells a reader moving between
-  links nothing about which account they are on, so the name carries the account name — and it
-  CONTAINS the visible word, which is what keeps a spoken command matching what is seen. The glyph
-  is inline vector art hidden from the accessibility tree so it cannot compete with the text as a
-  naming source, and marked unfocusable so it can never become a stray tab stop. It declares no
-  width or height, so the stylesheet sizes it and it scales with the surrounding typography, and it
-  is stroked in `currentColor` so no colour value is hardcoded in markup.
+  rebuilt on every change-detection pass is a new reference every time and the router re-parses a target
+  that has not changed, once per row, on every pass — which defeats push change detection outright.
 -->
 <!--
-  ⚠ GATED ON THE SERVER'S ADMINISTRATION VERDICT, NOT ON THE PERSISTED `EDIT` KEY.
-  `UsersController.cs:L492-L493` declares the `PortalAdministrator` policy on
-  `PUT /users/{userId}`. The key this control used to name is a grant held against module and
-  tab records and cannot express that policy; see `administersPortal` in the paired component
-  for why the two vocabularies are not interchangeable and why no key arm belongs here.
-
-  Withheld by not rendering. A row whose edit command is absent simply has one fewer command,
-  which is what the shared table's projected-template contract already supports.
+  Withheld by not rendering. A row whose edit command is absent simply has one fewer command, which is
+  what the shared table's projected-template contract already supports.
 -->
 <ng-template #editCommand let-row>
   @if (administersPortal()) {
@@ -754,42 +192,8 @@
 </ng-template>
 
 <!--
-  ROW COMMAND TWO — DELETE. Legacy `dnn:imagecommandcolumn commandname="Delete"` (`users.ascx`
-  L33), an image button that post-backed into `grdUsers_DeleteCommand` (`Users.ascx.vb` L646-L669).
-
-  A BUTTON AND NOT A LINK, because removing an account changes state and no address. It opens the
-  shared confirmation dialogue above rather than acting immediately, and it is disabled while a
-  write is already in flight — the legacy screen post-backed, so the reader could not press twice.
-
-  ⚠ THE TWO PROTECTED ACCOUNTS KEEP THEIR PROTECTION. `grdUsers_ItemDataBound` L693-L694 HID this
-  command when the account was the tenant's DESIGNATED ADMINISTRATOR, and when it was both the
-  signed-in caller's OWN account AND an installation administrator. Both facts are reachable and
-  both are honoured: `canRemove` on the paired component reproduces that predicate line for line,
-  reading the designated administrator from the tenant's own record and the caller's identifier
-  from the authentication store — AND it consults `canDelete`, the server's own per-row verdict,
-  first. That flag is the wider rule (it withholds every installation administrator, not only one
-  that is also the caller) and it is what the endpoint actually enforces, so a row it refuses is
-  never rendered a destructive command at all. Neither is a feature's private state — the authentication store
-  and the portal store are CORE state, which every feature may inject; nothing here imports from
-  another feature.
-
-  Withholding the command rather than letting the server refuse it is deliberate. A refusal
-  arrives only after the operator has confirmed a deletion and waited, and it arrives on the two
-  accounts where a mistaken attempt is most alarming. Until the tenant's record has been read the
-  guard withholds nothing, so the read never removes a capability while it is in flight.
-
-  MIGRATION: the legacy delete image carried no alternative text, so it reached assistive technology
-  as an unnamed control that destroyed a record. It is named here, and the name carries the account.
-
-  ⚠ GATED ON THE SERVER'S ADMINISTRATION VERDICT, NOT ON THE PERSISTED `EDIT` KEY.
-  `UsersController.cs:L540-L541` declares the `PortalAdministrator` policy on
-  `DELETE /users/{userId}`. Gating a destructive command on a module grant was the sharpest form
-  of the vocabulary error: an `EDIT` grant on one unrelated module offered account removal to a
-  caller the endpoint refuses. See `administersPortal` in the paired component.
-
-  The in-flight `disabled` binding is a different concern and stays: it prevents a second press
-  while a write is settling, which is about timing rather than authority. Authority is expressed
-  by not rendering the control at all.
+  ROW COMMAND TWO — DELETE. Legacy `dnn:imagecommandcolumn commandname="Delete"`, an image button that
+  post-backed into `grdUsers_DeleteCommand`.
 -->
 <ng-template #deleteCommand let-row>
   @if (administersPortal() && canRemove(row)) {
@@ -822,44 +226,6 @@
   }
 </ng-template>
 
-<!--
-  ROW COMMAND THREE — MANAGE ROLES. Legacy `dnn:imagecommandcolumn CommandName="UserRoles"` with
-  `EditMode="URL"` (`users.ascx` L34), which drew `~/images/icon_securityroles_16px.gif`. The
-  wording is keyed by the legacy COMMAND NAME rather than by anything visible — `Users.ascx.vb` L550
-  used `imageColumn.CommandName` as the resource key — which is why it reads "Manage Roles" and not
-  "User Roles".
-
-  ⚠ MIGRATION — THE ACCOUNT TRAVELS WITH THE COMMAND (DL-8, previously a documented reduction).
-  `Users.ascx.vb` L542 navigated to `NavigateURL(TabId, "User Roles", "UserId=KEYFIELD", …)`, a
-  PER-ACCOUNT role screen, and the screen it reached served TWO MODES from one page keyed by either a
-  role or an account (`SecurityRoles.ascx.vb` L413-L418).
-
-  This command used to navigate to the bare role listing and DISCARD the row's account, which was
-  recorded here as an accepted reduction. It is no longer one: an operator asking "what does this
-  person hold" was shown every role in the tenant, with the account they had just chosen nowhere on
-  screen. The account now travels as a QUERY PARAMETER on the same address, and the role listing
-  narrows itself to that account's memberships.
-
-  ⚠ NO NEW ROUTE IS INTRODUCED, and none may be. The target's route set is closed, and the only
-  membership route in it is `/roles/:roleId/users`, keyed by ROLE. A query parameter on an address
-  that already exists carries the account without adding to that set — which is also how the legacy
-  did it, since `UserId=KEYFIELD` was itself a query argument rather than a distinct page.
-
-  A route is a URL and not an import: nothing in this feature imports from `features/role/`, and the
-  target is a plain string constant plus a per-row parameter object on the paired component.
-
-  THE ACCESSIBLE NAME STILL CARRIES THE ACCOUNT, because without it a page of accounts presents a
-  column of identical links and a reader cannot tell which row they are on. It names the ROW the
-  control belongs to, not the destination; the reduced destination is documented above rather than
-  encoded in the wording, because inventing wording that described the role listing would depart
-  from the legacy resource value this command is required to keep.
-
-  MIGRATION: offered unconditionally. `Users.ascx.vb` L536-L537 hid it while the screen was being
-  shown from the installation-wide menu, a hosting distinction with no counterpart in the target —
-  there is one account listing, scoped to the tenant the request resolves to, and no host-level
-  administration is in scope. It is not permission-gated either: reaching a listing is not itself a
-  mutation, which is the same reading applied to the two settings links in the page header.
--->
 <ng-template #manageRolesCommand let-row>
   <a
     class="user-list__row-action"
@@ -888,30 +254,9 @@
 </ng-template>
 
 <!--
-  THE ELECTRONIC-MAIL CELL — `users.ascx` L56-L61, `DisplayEmail(Membership.Email)`.
-
-  ⚠ MIGRATION: THE LINK TARGET IS BOUND, NEVER CONCATENATED INTO MARKUP. `HtmlUtils.FormatEmail`
-  (`Library/Components/Shared/HtmlUtils.vb` L89-L102) built an anchor element around the STORED
-  VALUE as a string and returned it for a label control to emit, which is a script-injection vector
-  for any address containing markup. Here the address and the link target travel separately on a
-  value the paired component precomputed: the target is bound so the framework's URL sanitiser sees
-  it, and the address itself is interpolated and therefore escaped.
-
-  BOTH BRANCHES ARE THE LEGACY BRANCHES. `HtmlUtils.vb` L94 tested for the mailbox separator and L97
-  returned the value UNCHANGED when it was absent, so a stored value that is not an address renders
-  as plain text in the legacy screen and in this one. A blank value renders as nothing at all. The
-  guard is an explicit `!== null` comparison on the precomputed target rather than a truthiness test
-  on the address.
-
   ⚠ MIGRATION: `Globals.CloakText` IS NOT PORTED. It converted every character of the address to a
   numeric code and rebuilt the markup at run time through `document.write` inside an injected script
-  element, as obfuscation against address harvesters. Reproducing it would require writing raw markup
-  into the document, which this workspace forbids outright, and it never protected an address from a
-  client that executes script. A documented functional reduction.
-
-  The precomputed cell is read from the memoised map rather than bound through a `@let` declaration,
-  because no `@let` appears anywhere in this workspace and a memoised signal read is a version check.
-  Each read below is that check plus one property lookup.
+  element, as obfuscation against address harvesters.
 -->
 <ng-template #emailCell let-row>
   @if (emailCells()[row.userId].mailto !== null) {
@@ -923,102 +268,27 @@
   }
 </ng-template>
 
-<!--
-  THE CREATION INSTANT — `users.ascx` L62-L67, `DisplayDate(Membership.CreatedDate)`.
-
-  ⚠ THE DATE-AND-TIME SHAPE IS REQUESTED EXPLICITLY. `DisplayDate` (`Users.ascx.vb` L400) rendered
-  the instant with the plain general format — a short date AND a long time — whereas the shared pipe
-  defaults to a short date alone, so omitting the argument would silently drop the time this cell
-  used to show.
-
-  ⚠ AN ABSENT INSTANT RENDERS BLANK, AND THAT IS PARITY RATHER THAN A DIVERGENCE. `Users.ascx.vb`
-  L399-L403 already returned the empty string when the value was the legacy null-date marker. That
-  marker is the minimum representable date rather than a null and it SURVIVES ON THE WIRE, so a cell
-  that simply printed what arrived would show a first-of-January date in year one and read as a real,
-  wildly wrong instant. The shared pipe answers the marker, an absent value and an unparseable value
-  alike with empty text, which reproduces the legacy outcome exactly. No placeholder wording is
-  substituted: the legacy cell was blank, so this one is blank.
-
-  A template column rather than a bound one, because a pipe cannot run in the grid's bound-text
-  column — the grid imports no pipe of its own, and this template compiles in the context of the
-  screen's own component, which declares it.
--->
+<!-- THE CREATION INSTANT — `users.ascx` L62-L67, `DisplayDate(Membership.CreatedDate)`. -->
 <ng-template #createdDateCell let-row>
   {{ row.createdDate | dateDisplay: 'datetime' }}
 </ng-template>
 
 <!--
   THE LAST SIGN-IN INSTANT — `users.ascx` L68-L73, `DisplayDate(Membership.LastLoginDate)`. The same
-  formatter, the same explicit shape and the same blank-for-absent behaviour as the cell above, for
-  the same measured reasons. An account that has never signed in carries the null-date marker, so
-  this cell is blank far more often than the one above and rendering the marker would be visible
-  nonsense on every such row.
+  formatter, the same explicit shape and the same blank-for-absent behaviour as the cell above, for the
+  same measured reasons.
 -->
 <ng-template #lastLoginCell let-row>
   {{ row.lastLoginDate | dateDisplay: 'datetime' }}
 </ng-template>
 
-<!--
-  THE AUTHORISATION FLAG — `users.ascx` L74-L79.
-
-  ⚠ MIGRATION: A GENUINE ACCESSIBILITY GAIN, AND THE ONLY ONE ON THIS SCREEN WORTH CLAIMING. The
-  legacy cell painted a PAIR of images with opposite visibility — `~/images/checked.gif` shown when
-  the flag was true and `~/images/unchecked.gif` when it was false — and NEITHER carried
-  `AlternateText`, so both states reached assistive technology as an unnamed graphic. One cell of
-  announced text replaces the pair, which is the first time a screen reader can report this state,
-  and the state is then carried by a word rather than by an image alone.
-
-  ⚠ MIGRATION: THE OPTION-STRICT COERCION IS MADE EXPLICIT. The legacy markup chose between the two
-  images by evaluating `Membership.Approved=true` and `Membership.Approved=false`, comparing a
-  strongly-typed boolean against UNQUOTED boolean literals. That compiled only because the
-  administration pages were built with strict type checking switched off — `Website/release.config`
-  L125 declares `<compilation debug="false" strict="false">` — while the class library was built with
-  it on. The flag is a boolean here and the shared pipe compares it by identity against `true`.
-
-  `false` IS DATA ON THIS CONTRACT, NOT AN ABSENCE, so it renders as the negative word rather than as
-  a blank cell — exactly as the legacy cross did. The value is never coerced, negated, defaulted or
-  read for truthiness, which is what the legacy absent-boolean marker being itself `False`
-  (`Library/Components/Shared/Null.vb` L76-L80) would otherwise have made ambiguous.
--->
+<!-- THE AUTHORISATION FLAG — `users.ascx` L74-L79. -->
 <ng-template #approvedCell let-row>
   {{ row.isApproved | yesNo }}
   <!--
-    ⚠ U-M1 — THE LOCK-OUT QUALIFIER. The approval word above answers a different question from
-    lock-out, and both are true facts, but an operator reads this column to decide whether an account
-    can be used — and for a locked-out account the honest answer is no while the word above says
-    `Yes`. Measured on this tenant: eleven of two hundred and fifty-three accounts are locked out and
-    every one rendered an unqualified `Yes`, so only the thirty-four UNAPPROVED accounts were
-    findable at all.
-
-    The approval word is untouched and no column is added, so the tenant's `Column_Authorized` gate
-    still governs both facts together. Lock-out was legacy-visible on the per-account panel only
-    (`Website/admin/Users/Membership.ascx`, hosted beside the editor at `manageusers.ascx` L59-L63,
-    which carried the unlock command) — so the capability is legacy and only its discoverability here
-    is new.
-
-    ⚠ TWO ELEMENTS AND NOT ONE, for the same reason every other anomaly mark in this console uses
-    two: the short word is what fits a grid cell, and the sentence beside it is what makes the short
-    word unambiguous to a reader who meets it without the column heading. The sentence is clipped
-    from the painted page by the shared table stylesheet and is present in the accessibility tree.
-
-    ⚠ `isLockedOut` IS COMPARED AGAINST `true` EXPLICITLY, never read for truthiness. `false` is data
-    on this contract, and the legacy absent-boolean marker was itself `False`
-    (`Library/Components/Shared/Null.vb` L76-L80) — so a truthiness test here would be the same
-    ambiguity the approval cell above documents at length.
-
-    THE TWO SIBLING FLAGS ON THIS CONTRACT ARE DELIBERATELY NOT RENDERED, AND THE REASONS ARE
-    MEASURED RATHER THAN ASSUMED.
-      * `isSuperUser` is `false` on ALL two hundred and fifty-three rows, and structurally must be: a
-        host account is not portal-scoped, so a PORTAL listing can never contain one. The one host
-        account on this installation does not appear here. A mark for it would be presentation that
-        can never paint, and the fact is already load-bearing where it matters — the removal command
-        consults it per row.
-      * `isOnline` is `false` on all two hundred and fifty-three rows as well, and it cannot be
-        trusted even when it is not: the tracking it derives from is swept by a scheduled purge job
-        that this migration intentionally omits
-        (`Library/Components/Users/Users Online/PurgeUsersOnline.vb` L44, recorded as an intentional
-        omission in the plan's exclusion analysis). A presence indicator that can go stale and never
-        be corrected is worse than no indicator, because an operator would act on it.
+    ⚠ U-M1 — THE LOCK-OUT QUALIFIER. The approval word above answers a different question from lock-out,
+    and both are true facts, but an operator reads this column to decide whether an account can be used
+    — and for a locked-out account the honest answer is no while the word above says `Yes`.
   -->
   @if (row.isLockedOut === true) {
     <span class="user-list__row-mark" aria-hidden="true">{{ lockedOutQualifier }}</span>
@@ -1027,22 +297,9 @@
 </ng-template>
 
 <!--
-  THE POSTAL ADDRESS CELL — U-M2. `users.ascx` L44-L49, `Profile.Street`.
-
-  ⚠ WHY THIS IS A TEMPLATE COLUMN NOW AND WAS A FORMATTED-TEXT ONE BEFORE. A formatted-text column
-  emits one string; an absent value has to emit a painted mark AND a hidden explanation of it, which
-  is two elements. The change of kind is the whole mechanism of the fix — the formatter it replaced
-  is still on the paired class and still used for the present case.
-
-  ⚠ THE ABSENCE IS REAL AND WAS MEASURED BEFORE BEING PRESENTED. Across all two hundred and
-  fifty-three accounts `address` is null — on the DETAIL endpoint as well as on the listing — so
-  nothing is being dropped in projection and there is no value to recover: the profile answers were
-  simply never recorded. An empty cell is therefore truthful. What it is not is DISTINGUISHABLE from a
-  cell that failed to render, and two of the nine columns rendering nothing on every row is exactly
-  what a broken grid looks like.
-
-  The mark is an em dash rather than a word, because no address can be spelled that way whereas
-  "None" or "N/A" are both things a person could type into a free-text profile field.
+  ⚠ WHY THIS IS A TEMPLATE COLUMN NOW AND WAS A FORMATTED-TEXT ONE BEFORE. A formatted-text column emits
+  one string; an absent value has to emit a painted mark AND a hidden explanation of it, which is two
+  elements.
 -->
 <ng-template #addressCell let-row>
   @if (isAddressAbsent(row)) {
@@ -1054,14 +311,9 @@
 </ng-template>
 
 <!--
-  THE TELEPHONE CELL — U-M2. `users.ascx` L50-L55, `Profile.Telephone`. Measured absent on every one
-  of the two hundred and fifty-three accounts, exactly as the address is, and marked on the same
-  terms.
-
-  MIGRATION — the legacy defect this cell corrects is recorded on the paired class rather than
-  repeated here: the legacy markup applied the electronic-mail formatter to the telephone number, so a
-  number containing an "@" would have been wrapped in a `mailto:` link. The value is rendered as plain
-  text here, which is a deliberate divergence rather than a silent fix.
+  MIGRATION — the legacy defect this cell corrects is recorded on the paired class rather than repeated
+  here: the legacy markup applied the electronic-mail formatter to the telephone number, so a number
+  containing an "@" would have been wrapped in a `mailto:` link.
 -->
 <ng-template #telephoneCell let-row>
   @if (isTelephoneAbsent(row)) {

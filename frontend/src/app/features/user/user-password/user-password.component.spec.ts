@@ -1,87 +1,3 @@
-/**
- * Specification for `UserPasswordComponent` — the Angular 19 replacement for
- * `Website/admin/Users/Password.ascx` on route `/users/:userId/password`.
- *
- * ---------------------------------------------------------------------------
- * WHY THIS FILE CARRIES MORE WEIGHT THAN A NORMAL SPECIFICATION
- * ---------------------------------------------------------------------------
- *
- * `tsconfig.app.json` declares `files: ["src/main.ts"]` and type-checks by IMPORT
- * GRAPH, so a component that nothing imports is silently absent from the build's
- * program. `tsconfig.spec.json` declares `include: ["src/**\/*.spec.ts",
- * "src/**\/*.d.ts"]` and NO `files` array, so every specification is in the program
- * unconditionally. Until a route or a parent imports the component, THIS FILE IS THE
- * ONLY GATED COMPILE ROUTE for `user-password.component.ts` — it is the type-check as
- * much as it is the test.
- *
- * ---------------------------------------------------------------------------
- * PROVENANCE: EVERY ASSERTION HERE IS NET-NEW
- * ---------------------------------------------------------------------------
- *
- * The legacy tree contains ZERO automated tests of any kind — no test project, no
- * fixture, no assertion anywhere under `Library/` or `Website/`. Nothing was ported
- * into this file; every expectation below was derived by reading the legacy source and
- * its resource files, and each is cited to the line it came from.
- *
- * The measured sources are `Website/admin/Users/Password.ascx.vb` (workflow and the
- * order of its rules), `Website/admin/Users/Password.ascx` (markup, field set and two
- * accessibility defects), `Library/Components/Users/UserController.vb` (the policy
- * predicate), `Library/Components/Users/Membership/PasswordUpdateStatus.vb` (the
- * outcome vocabulary), `Website/App_GlobalResources/SharedResources.resx` and
- * `Website/admin/Users/App_LocalResources/Password.ascx.resx` (wording),
- * `Library/Components/Shared/Null.vb` (the sentinels) and `Website/release.config`
- * (the policy settings).
- *
- * ---------------------------------------------------------------------------
- * NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT
- * ---------------------------------------------------------------------------
- *
- * The project's rules document reports its own absence rather than any content, under
- * every query shape. ZERO files enter scope on rule grounds. No rule is invented here
- * and the absence is not treated as licence to lower the bar: the binding substitute
- * set is the Minimal Change Clause (domain-logic preservation, data-model fidelity,
- * behavioural equivalence, functional parity with MATCHING validation rules and
- * EQUIVALENT messages, code organisation derived from discovered patterns, and
- * migration annotation), the enterprise baseline, the non-functional requirements, and
- * the frontend test gate.
- *
- * ---------------------------------------------------------------------------
- * HARNESS RULES OBSERVED HERE, AND WHY
- * ---------------------------------------------------------------------------
- *
- * Karma with Jasmine, never Jest: the mandated gate command passes `--browsers`, which
- * is a Karma option, so a Jest suite would make the mandated command invalid. Jest,
- * Vitest and the testing-library family are absent from the pinned dependency set and
- * are unimportable in any case.
- *
- * `provideHttpClient()` is registered BEFORE `provideHttpClientTesting()`. Reversing
- * the two is the commonest false green in an Angular 19 suite: the real backend wins
- * the registration and the controller then observes nothing, so a specification that
- * asserts on requests passes while asserting on an empty set. The superseded
- * module-based testing imports for the HTTP client and the router are not used at all,
- * nor is a declarations array; everything arrives through a provider function, and
- * routing through `provideRouter([])`.
- *
- * `verify()` and `destroy()` both run after every case. Jasmine's random order is the
- * Karma default and is deliberately kept, so nothing here may leak between cases. That
- * matters concretely on this screen: the confirmation is a native `<dialog>`, whose
- * top-layer and inert state belong to the whole Karma document rather than to one
- * fixture, so a dialog left promoted would change how a later case sees the page.
- *
- * Module scope holds only frozen constants and pure functions. There is no mutable
- * module-level state of any kind, which is what makes order-independence structural
- * rather than merely observed.
- *
- * URLs are asserted RELATIVE. The workspace's test target declares no file
- * replacements, so a specification compiles against the PRODUCTION configuration,
- * whose API base is the relative `/api/v1` that the reverse proxy requires. An
- * absolute host is never expected, and the configuration module is never imported.
- *
- * Appearance is never asserted: no computed geometry, no colours, no animation, no
- * stylesheet content. Structure and ARIA are asserted instead, because those are the
- * contract, while computed geometry in a headless browser is not.
- */
-
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
@@ -99,18 +15,7 @@ import {
 } from '../../../core/utils/form-errors.util';
 import { UserPasswordComponent } from './user-password.component';
 
-// ---------------------------------------------------------------------------
 // THE ADDRESSES
-// ---------------------------------------------------------------------------
-//
-// Composed here rather than imported, so that a change to the endpoint map is caught
-// by this file instead of being silently agreed with. Every one is RELATIVE.
-//
-// MIGRATION: THE WRITE IS A POST, AND THERE ARE TWO OF THEM. The legacy screen ran one
-// routine for every caller; the API separates the operations by authorisation, so the
-// change and the reset are distinct endpoints and the component chooses between them
-// from the caller's relationship to the account rather than from which button was
-// pressed.
 
 const USERS_PATH = '/api/v1/users';
 
@@ -126,24 +31,9 @@ function resetUrl(userId: number): string {
   return `${accountUrl(userId)}/password-reset`;
 }
 
-// ---------------------------------------------------------------------------
 // THE MEASURED POLICY
-// ---------------------------------------------------------------------------
-//
-// `Website/release.config` L242 declares `minRequiredPasswordLength="7"` and L243
-// declares `minRequiredNonalphanumericCharacters="0"`.
-//
-// `UserController.ValidatePassword` (L1067-L1091) applies three rules, and only the
-// first can ever fire. The length rule refuses a value shorter than the minimum. The
-// non-alphanumeric rule counts matches of `[^0-9a-zA-Z]` and refuses a count BELOW the
-// configured minimum — with zero configured, a count can never fall below it, so THE
-// RULE IS VACUOUS. The strength-expression rule runs only when an expression is
-// configured, and `passwordStrengthRegularExpression` appears nowhere in the
-// configuration (zero occurrences), so it never runs.
-//
-// The single active rule is therefore length >= 7, and the cases below pin exactly
-// that. Tightening a credential policy during a migration locks out the accounts it
-// was migrating, so the vacuous rule is proved vacuous rather than quietly revived.
+// `UserController.ValidatePassword` applies three rules, and only the first can ever fire. The length rule
+// refuses a value shorter than the minimum.
 
 const MINIMUM_LENGTH = 7;
 
@@ -157,13 +47,9 @@ const SEVEN_CHARACTER_PASSWORD = 'Seven12';
 const PURELY_ALPHANUMERIC_PASSWORD = 'Alphanumeric123';
 
 /**
- * Twenty-five characters — past the legacy markup ceiling of twenty.
- *
- * MIGRATION: the legacy `maxlength="20"` on `Password.ascx` L35, L39 and L43 mirrored
- * the legacy STORAGE width and was never a policy rule, so it is deliberately not
- * reproduced as one. The cases below assert that the typing ceiling is still DECLARED
- * as an attribute and that a value past twenty is NOT refused by validation. The
- * number twenty is never asserted as a policy message, because it never was one.
+ * Twenty-five characters — past the legacy markup ceiling of twenty. MIGRATION: the legacy
+ * `maxlength="20"` on `Password.ascx` L35, L39 and L43 mirrored the legacy STORAGE width and was never a
+ * policy rule, so it is deliberately not reproduced as one.
  */
 const TWENTY_FIVE_CHARACTER_PASSWORD = 'TwentyFiveCharacterPass25';
 
@@ -176,26 +62,18 @@ const OTHER_REPLACEMENT = 'Different2';
 /** The credential in force on the self-service path. Obviously synthetic. */
 const CREDENTIAL_IN_FORCE = 'InForce1';
 
-// ---------------------------------------------------------------------------
 // THE MEASURED WORDING
-// ---------------------------------------------------------------------------
-//
-// Transcribed from the legacy resource files, which are what a person actually saw:
-// where the markup's fallback `text` attribute and the resource value disagree, the
-// resource value is authoritative.
-//
-// The two properties that are easy to lose in transcription are called out because
-// both are load-bearing: several of these strings carry NO trailing full stop, and two
-// carry a DOUBLE space between sentences.
+// The two properties that are easy to lose in transcription are called out because both are load-bearing:
+// several of these strings carry NO trailing full stop, and two carry a DOUBLE space between sentences.
 
-/** `SharedResources.resx` -> `PasswordMismatch.Text`. No trailing full stop. */
+/** `SharedResources.resx` -> `PasswordMismatch.Text`. */
 const LEGACY_MISMATCH = 'The Password and Confirmation Passwords do not match';
 
 /** `SharedResources.resx` -> `PasswordMissing.Text`. */
 const LEGACY_MISSING =
   'You must provide your current password in order to change the password.';
 
-/** `SharedResources.resx` -> `PasswordNotDifferent.Text`. DOUBLE space, no trailing full stop. */
+/** `SharedResources.resx` -> `PasswordNotDifferent.Text`. */
 const LEGACY_NOT_DIFFERENT =
   'The new password is the same as the old password.  Please enter a different password';
 
@@ -203,7 +81,7 @@ const LEGACY_NOT_DIFFERENT =
 const LEGACY_RESET_FAILED =
   'There was an error setting the password. The password has not been changed.';
 
-/** `SharedResources.resx` -> `PasswordInvalid.Text`. DOUBLE space. */
+/** `SharedResources.resx` -> `PasswordInvalid.Text`. */
 const LEGACY_PASSWORD_INVALID =
   'You must enter a valid password.  Please check with the Portal Administrator if you ' +
   'do not know the password requirements.';
@@ -214,24 +92,13 @@ const LEGACY_INVALID_ANSWER = 'Password Answer must be provided';
 /** `SharedResources.resx` -> `InvalidPasswordQuestion.Text`. */
 const LEGACY_INVALID_QUESTION = 'Password Question must be provided';
 
-/**
- * `SharedResources.resx` -> `PasswordChanged.Text`.
- *
- * This is the wording for the SUCCESS outcome. There is deliberately no `Success.Text`
- * key anywhere in the legacy resources — searching for one returns nothing — so this
- * is the only wording the success path can honestly carry.
- */
+/** `SharedResources.resx` -> `PasswordChanged.Text`. */
 const LEGACY_PASSWORD_CHANGED = 'The password has been reset.';
 
 /**
- * `SharedResources.resx` -> `InvalidPassword.Text`, with its two replacement tokens
- * resolved from the measured configuration: `[PasswordLength]` becomes 7 and
- * `[NoneAlphabet]` becomes 0.
- *
- * `InvalidPassword.Text` and `PasswordInvalid.Text` are DISTINCT KEYS with distinct
- * wording. This one is the authored policy statement the screen shows beside the field;
- * the other is the outcome vocabulary's entry. Conflating them would put the wrong
- * sentence on the screen, so both are pinned separately.
+ * `SharedResources.resx` -> `InvalidPassword.Text`, with its two replacement tokens resolved from the
+ * measured configuration: `[PasswordLength]` becomes 7 and `[NoneAlphabet]` becomes 0.
+ * `InvalidPassword.Text` and `PasswordInvalid.Text` are DISTINCT KEYS with distinct wording.
  */
 const LEGACY_POLICY_STATEMENT =
   'The password specified is invalid.  Please specify a valid password.  Passwords ' +
@@ -246,11 +113,9 @@ const LEGACY_FORCED_EXPIRY =
   'The Portal Administrator has required you to change your password, before you can log in.';
 
 /**
- * `Password.ascx.resx` -> `plLastChanged.Text`.
- *
- * The markup's fallback at `Password.ascx` L15 reads 'Password last Changed:' with a
- * lower-case 'last'; the resource file overrode it at run time, so the resource
- * capitalisation is what a person actually saw and is what is reproduced.
+ * `Password.ascx.resx` -> `plLastChanged.Text`. The markup's fallback at `Password.ascx` L15 reads
+ * 'Password last Changed:' with a lower-case 'last'; the resource file overrode it at run time, so the
+ * resource capitalisation is what a person actually saw and is what is reproduced.
  */
 const LAST_CHANGED_LABEL = 'Password Last Changed:';
 
@@ -266,15 +131,7 @@ const RESET_HEADING = 'Reset Password';
 /** The confirmation's dismissal label, which the shared dialog hardcodes. */
 const DISMISS_LABEL = 'Cancel';
 
-// ---------------------------------------------------------------------------
 // THE SENTINELS
-// ---------------------------------------------------------------------------
-//
-// `Library/Components/Shared/Null.vb` L41-L45 defines the legacy null vocabulary:
-// `NullDate` is `Date.MinValue`, `NullInteger` is -1 and `NullString` is the EMPTY
-// STRING rather than a null. The API serialises with its ignore condition set to never,
-// so a field arrives PRESENT AND POSSIBLY NULL and is never simply omitted — which is
-// why the cases below send explicit nulls rather than absent keys.
 
 /** The date sentinel exactly as it arrives on the wire. */
 const NULL_DATE_ON_THE_WIRE = '0001-01-01T00:00:00';
@@ -282,12 +139,7 @@ const NULL_DATE_ON_THE_WIRE = '0001-01-01T00:00:00';
 /** The integer sentinel, which on this screen is also a REAL account identifier. */
 const NULL_INTEGER = -1;
 
-// ---------------------------------------------------------------------------
 // THE CONTROLS
-// ---------------------------------------------------------------------------
-//
-// Element identifiers, which are also the values the surrounding labels associate
-// with. Frozen, because module scope holds nothing mutable.
 
 const CONTROL_ID = Object.freeze({
   currentPassword: 'currentPassword',
@@ -303,12 +155,8 @@ const EVERY_CONTROL_ID: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Claims a confirmation must never make.
- *
- * A confirmation justifies gating an action; it is not a licence to overstate what the
- * action does. Resetting a credential is entirely reversible — another reset replaces
- * it — so none of these may appear. The only legacy strings that promise irreversibility
- * belong to the recycle bin, which is not ported.
+ * Claims a confirmation must never make. A confirmation justifies gating an action; it is not a licence
+ * to overstate what the action does.
  */
 const FORBIDDEN_OVERCLAIMS: readonly string[] = Object.freeze([
   'cannot be undone',
@@ -318,22 +166,7 @@ const FORBIDDEN_OVERCLAIMS: readonly string[] = Object.freeze([
   'you will not be able to recover',
 ]);
 
-// ---------------------------------------------------------------------------
 // NARROWING, WITHOUT ASSERTIONS
-// ---------------------------------------------------------------------------
-//
-// The workspace forbids `any`, the non-null operator, the suppression comments and
-// type assertions — in specifications as much as in production code, because a
-// specification that lies to the compiler cannot be trusted to be checking anything.
-//
-// These helpers THROW on a contract break, which is deliberate. A throw produces a
-// named, readable failure that says which selector was missing. The alternative
-// idiom — assert not-null, then return early when it is null — lets every remaining
-// assertion in the case silently not run, so the case still reports green having
-// checked almost nothing.
-//
-// Absence is deliberately NOT routed through these helpers: a case that asserts
-// something is gone keeps the raw query result and asserts it is null.
 
 /**
  * Resolves a selector that MUST match, or throws naming it.
@@ -353,8 +186,7 @@ function requireElement(root: ParentNode, selector: string): Element {
 }
 
 /**
- * Resolves a selector that MUST match an input, narrowing by construction rather than
- * by assertion.
+ * Resolves a selector that MUST match an input, narrowing by construction rather than by assertion.
  *
  * @param root The node to search within.
  * @param selector The CSS selector to resolve.
@@ -381,14 +213,8 @@ function textOf(node: Element | null): string {
 }
 
 /**
- * Collapses every run of whitespace to a single space.
- *
- * Used to compare authored wording with the measured legacy wording. Two of the legacy
- * strings separate their sentences with a DOUBLE space, and HTML collapses whitespace
- * runs when it renders, so a single-spaced string and its double-spaced original are
- * INDISTINGUISHABLE on screen. Comparing collapsed forms therefore tests the property
- * that actually matters to a reader — the words and their order — while the exact
- * authored bytes are pinned separately, so a genuine wording change still fails.
+ * Collapses every run of whitespace to a single space. Used to compare authored wording with the measured
+ * legacy wording.
  *
  * @param text The text to normalise.
  * @returns The text with every whitespace run reduced to one space.
@@ -427,10 +253,6 @@ function problemDocument(
 
 /**
  * Builds an account of the shape the read endpoint returns.
- *
- * Every field is supplied explicitly, because the API never omits one: its serialiser
- * is configured to emit nulls rather than to skip them, so a fixture that left a key
- * out would be testing a payload the server cannot produce.
  *
  * @param userId The account identifier.
  * @param overrides The fields this case cares about.
@@ -478,29 +300,22 @@ describe('UserPasswordComponent', () => {
 
     httpMock = TestBed.inject(HttpTestingController);
 
-    // The stored session outlives a single injector, so it is cleared before every
-    // case as well as after one. Without this, a case that seated an administrator
-    // could hand that identity to whichever case Jasmine happens to run next.
+    // The stored session outlives a single injector, so it is cleared before every case as well as after
+    // one. Without this, a case that seated an administrator could hand that identity to whichever case
+    // Jasmine happens to run next.
     TestBed.inject(TokenStorageService).clear();
 
     notifySpy = spyOn(TestBed.inject(NotificationService), 'notify').and.callThrough();
 
-    // Created but NOT rendered: the account identifier is a REQUIRED signal input, and
-    // rendering before it is bound would throw rather than answer. Each case binds it
-    // through `arrive`, which is also where the read is satisfied.
+    // Created but NOT rendered: the account identifier is a REQUIRED signal input, and rendering before it
+    // is bound would throw rather than answer. Each case binds it through `arrive`, which is also where the
+    // read is satisfied.
     fixture = TestBed.createComponent(UserPasswordComponent);
   });
 
   afterEach(() => {
-    // Unsatisfied or unexpected traffic fails the case. This is what proves that a
-    // dismissed confirmation sends NOTHING, rather than merely proving that the case
-    // did not look.
     httpMock.verify();
 
-    // Teardown is mandatory here, not merely tidy. The confirmation is a native
-    // `<dialog>`; its top-layer and inert state belong to the Karma document rather
-    // than to this fixture, so a dialog left promoted would be visible to a later case
-    // under Jasmine's random ordering.
     fixture.destroy();
     TestBed.inject(TokenStorageService).clear();
   });
@@ -561,13 +376,9 @@ describe('UserPasswordComponent', () => {
   }
 
   /**
-   * A control offered by the confirmation, matched by CONTAINMENT rather than by equality.
-   *
-   * The shared confirmation renders a severity glyph inside its agreeing control, so that
-   * control's text is the glyph followed by the label. Severity is deliberately never
-   * carried by colour alone there, and asserting exact equality would be asserting that
-   * the glyph is absent — that is, asserting appearance, and demanding the removal of an
-   * accessibility affordance to boot.
+   * A control offered by the confirmation, matched by CONTAINMENT rather than by equality. The shared
+   * confirmation renders a severity glyph inside its agreeing control, so that control's text is the
+   * glyph followed by the label.
    */
   function dialogButtonLabelled(label: string): HTMLButtonElement | null {
     const found = buttons().find(
@@ -623,21 +434,9 @@ describe('UserPasswordComponent', () => {
   }
 
   /**
-   * Seats the caller's identity.
-   *
-   * The identity is read from the stored session rather than fetched, so seating it is
-   * what decides `isAdmin` and `isSelf` — and therefore which of the two operations the
-   * screen resolves to. The expiry is a FIXED literal: reading the clock in a
-   * specification makes it depend on when it runs, and the session store gates
-   * expiry through an explicit call rather than through this field.
-   *
-   * ⚠ ADMINISTRATION IS STATED, NEVER INFERRED FROM THE ROLE LIST. The screen reads the
-   * store's `administersCurrentPortal`, which is the host flag OR the API's own derived
-   * `isPortalAdministrator`, and consults no role name at all — administration is conferred
-   * by `Portals.AdministratorRoleId`, the designated role is renameable, and a role of the
-   * same name may belong to another tenant. The `roles` argument therefore carries the
-   * caller's role names as DATA and decides nothing; a case that needs administration
-   * passes the third argument.
+   * Seats the caller's identity. The identity is read from the stored session rather than fetched, so
+   * seating it is what decides `isAdmin` and `isSelf` — and therefore which of the two operations the
+   * screen resolves to.
    *
    * @param userId The caller's own account key.
    * @param roles The caller's role names, which decide nothing here.
@@ -666,14 +465,7 @@ describe('UserPasswordComponent', () => {
     });
   }
 
-  /**
-   * Binds the account identifier and satisfies the read the screen issues on arrival.
-   *
-   * The identifier is bound through `setInput` rather than by assigning the field,
-   * because the component is change-detected on push and reads the identifier as a
-   * signal: `setInput` is what marks the view dirty, and every case that uses this
-   * helper then goes on to assert that the DOM actually changed.
-   */
+  /** Binds the account identifier and satisfies the read the screen issues on arrival. */
   function arrive(held: UserDetail, routeValue?: string): void {
     fixture.componentRef.setInput('userId', routeValue ?? String(held.userId));
     fixture.detectChanges();
@@ -704,12 +496,9 @@ describe('UserPasswordComponent', () => {
   }
 
   /**
-   * Satisfies the re-read the screen issues after a successful write.
-   *
-   * A successful write is followed by a fresh read, so that the dates the screen shows
-   * reflect what the write did rather than what was true before it. Leaving it
-   * unsatisfied would fail teardown, which is exactly the guard that keeps this
-   * behaviour from being lost by accident.
+   * Satisfies the re-read the screen issues after a successful write. A successful write is followed by a
+   * fresh read, so that the dates the screen shows reflect what the write did rather than what was true
+   * before it.
    */
   function settleAfterWrite(userId: number): void {
     expectRequest('GET', accountUrl(userId), 'the account re-read').flush({
@@ -732,24 +521,6 @@ describe('UserPasswordComponent', () => {
 
   describe('the unsaved-entry probe this screen registers', () => {
     it('reports a typed credential, so a reload cannot discard it in silence', () => {
-      /*
-       * ⚠ THIS SCREEN'S ROUTE DECLARES `unsavedChangesGuard`, AND THE DECLARATION USED TO BE
-       * ANSWERED BY REFLECTION over the component's fields. That sweep is gone - it made
-       * `@angular/forms` reachable from the eager import graph of an application whose every form
-       * screen is lazily loaded - so this screen registers a probe of its own. A screen declaring
-       * the gate without one is not merely unprotected: it LOOKS protected in the route table, and
-       * the guard reads it as clean.
-       *
-       * ⚠ THIS IS THE SCREEN WHERE LOST ENTRY IS LEAST RECOVERABLE. Every control here is a
-       * credential field, so it is excluded from browser form restoration and from any password
-       * manager's autofill of a previous value: what is lost is lost outright, and all three boxes
-       * have to be re-typed. That makes the warning worth more here than on a screen a reload would
-       * repopulate.
-       *
-       * ⚠ NO CREDENTIAL IS READ BY THE PROBE, ONLY WHETHER ONE WAS TYPED, which is asserted by
-       * driving a real value through and then checking a boolean rather than a value. `isDirty()` is
-       * the guard's own public surface, so this asserts through the very call the guard makes.
-       */
       const tracker = TestBed.inject(UnsavedChangesTracker);
 
       arriveAsSelf();
@@ -808,11 +579,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('accepts a purely alphanumeric replacement, because that rule cannot fire', () => {
-      // THE VACUOUS-RULE PROOF, and the assertion that stops a later reader "helpfully"
-      // reviving a rule the legacy system never enforced. The legacy predicate counted
-      // matches of `[^0-9a-zA-Z]` and refused a count BELOW the configured minimum of
-      // zero, which no count can be. A value containing not one such character is
-      // therefore acceptable, and must stay acceptable.
+      // THE VACUOUS-RULE PROOF, and the assertion that stops a later reader "helpfully" reviving a rule the
+      // legacy system never enforced. The legacy predicate counted matches of `[^0-9a-zA-Z]` and refused a
+      // count BELOW the configured minimum of zero, which no count can be.
       arriveAsSelf();
       enter(CONTROL_ID.currentPassword, CREDENTIAL_IN_FORCE);
       enter(CONTROL_ID.newPassword, PURELY_ALPHANUMERIC_PASSWORD);
@@ -867,9 +636,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('states the policy in the measured wording, with its tokens resolved', () => {
-      // `InvalidPassword.Text` carries `[PasswordLength]` and `[NoneAlphabet]`
-      // replacement tokens. Both are resolved from the measured configuration, and the
-      // authored sentence keeps the resource file's DOUBLE spaces.
       arriveAsSelf();
       enter(CONTROL_ID.newPassword, SIX_CHARACTER_PASSWORD);
       enter(CONTROL_ID.confirmPassword, SIX_CHARACTER_PASSWORD);
@@ -949,18 +715,7 @@ describe('UserPasswordComponent', () => {
     });
   });
 
-  // =========================================================================
-  // C. THE ADMINISTRATOR GATE ON THE CREDENTIAL IN FORCE
-  // =========================================================================
-  //
-  // The single most consequential behavioural rule on this screen, and the one the
-  // legacy code was internally inconsistent about.
-  //
-  // `Password.ascx.vb` L150-L152 gates DISPLAY on `IsAdmin And Not IsUser`, hiding the
-  // credential-in-force row only for an administrator acting on somebody else. But
-  // L284 and L290 gate ENFORCEMENT on `Not IsAdmin` ALONE. The two predicates differ
-  // for exactly one caller: an administrator acting on their OWN account, who was shown
-  // the control and then excused both rules that read it.
+  // C. THE ADMINISTRATOR GATE ON THE CREDENTIAL IN FORCE.
 
   describe('the administrator gate on the credential in force', () => {
     it('hides the credential in force from an administrator acting on another account', () => {
@@ -1016,9 +771,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('shows the credential in force to an administrator acting on their own account', () => {
-      // THE DISPLAY HALF OF THE LEGACY INCONSISTENCY, REPRODUCED FAITHFULLY. L150's
-      // predicate is `IsAdmin And Not IsUser`; this caller IS the user, so the
-      // conjunction is false and the row stays visible.
       arriveAsAdministratorOfOwnAccount(account(7));
 
       expect(query(`#${CONTROL_ID.currentPassword}`))
@@ -1027,19 +779,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('still enforces the credential in force for that administrator', () => {
-      // THE ENFORCEMENT HALF, AND THE ONE PLACE THE TARGET DELIBERATELY DEPARTS FROM
-      // THE LEGACY SCREEN. L284 and L290 are gated on `Not IsAdmin`, so the legacy code
-      // excused this caller from both rules. That excusal is UNREACHABLE here rather
-      // than merely unwise: this caller is the account holder, so the operation is a
-      // CHANGE, and the API's change contract requires the credential in force with no
-      // exception for the caller's role. Excusing the rule would not admit the request;
-      // it would only move the identical refusal from beside the control to a round trip
-      // away. The target therefore gates enforcement on the OPERATION, which reproduces
-      // the OUTCOME the system as a whole produces.
-      //
-      // The divergence is annotated in the component and reported, never absorbed
-      // silently, and the assertion below pins the behaviour that actually ships rather
-      // than a legacy branch that can no longer be reached.
+      // The divergence is annotated in the component and reported, never absorbed silently, and the
+      // assertion below pins the behaviour that actually ships rather than a legacy branch that can no
+      // longer be reached.
       arriveAsAdministratorOfOwnAccount(account(7));
       enter(CONTROL_ID.newPassword, REPLACEMENT);
       enter(CONTROL_ID.confirmPassword, REPLACEMENT);
@@ -1073,38 +815,9 @@ describe('UserPasswordComponent', () => {
     });
   });
 
-  // =========================================================================
-  // D. THE MEASURED ORDER OF THE PRE-FLIGHT RULES
-  // =========================================================================
-  //
-  // `cmdUpdate_Click` evaluates four rules and every arm `Exit Sub`s, so exactly ONE
-  // message was ever shown and the FIRST failure won:
-  //
-  //   L272  new <> confirm                       -> PasswordMismatch
-  //   L278  Not ValidatePassword(new)            -> PasswordInvalid
-  //   L284  Not IsAdmin And old = ""             -> PasswordMissing
-  //   L290  Not IsAdmin And new = old            -> PasswordNotDifferent
-  //   L300  ChangePassword returned False        -> PasswordResetFailed, else Success
-  //
-  // The order is counter-intuitive in one place and that place is asserted directly.
+  // D. THE MEASURED ORDER OF THE PRE-FLIGHT RULES.
 
   describe('the operation gate the route\u2019s union policy makes necessary', () => {
-    /*
-     * ⚠ WHY A SECOND GATE EXISTS BEHIND AN ALREADY-GUARDED ROUTE. `/users/:userId/password`
-     * declares `AccountOwnerOrPortalAdministrator`, and it must: this screen posts to TWO
-     * endpoints with two different policies - `POST {userId}/password` admits the account holder
-     * alone and `POST {userId}/password-reset` a tenant administrator alone. A previous revision
-     * declared the route ownership-only, reasoning from the change endpoint alone, and the
-     * consequence was not a tightening but a hole: the reset had no address anywhere in the
-     * application, so an administrator had no way to intervene on a locked-out account.
-     *
-     * Admitting a UNION means one of the two admitted callers can arrive at the operation that is
-     * not theirs. The route cannot tell them apart, because which operation is planned depends on
-     * whether the caller IS the account on screen - a fact the route does not evaluate. So the
-     * screen decides, and it decides FAIL-CLOSED: a reset is offered only to a caller whose
-     * identity has resolved AND says they administer the tenant.
-     */
-
     it('offers the change to the account holder, who needs no administration for it', () => {
       arriveAsSelf(account(7));
       fillValidChange();
@@ -1125,14 +838,10 @@ describe('UserPasswordComponent', () => {
     });
 
     it('withholds the reset from a caller who is neither the holder nor an administrator', () => {
-      /*
-       * ⚠ THE COMBINATION THE ROUTE'S GUARD ALREADY REFUSES, ASSERTED HERE ANYWAY. This case is
-       * unreachable through the guarded route, and that is exactly why it is pinned: the gate must
-       * answer for every input rather than only for the inputs the router happens to deliver, so
-       * that a future route change cannot make the screen offer a credential replacement the
-       * server is certain to refuse. Depending on the router for this would put the whole
-       * guarantee in a file this component does not own.
-       */
+      // ⚠ THE COMBINATION THE ROUTE'S GUARD ALREADY REFUSES, ASSERTED HERE ANYWAY. This case is unreachable
+      // through the guarded route, and that is exactly why it is pinned: the gate must answer for every
+      // input rather than only for the inputs the router happens to deliver, so that a future route change
+      // cannot make the screen offer a credential replacement the server is certain to refuse.
       seatIdentity(4, ['Registered Users']);
       arrive(account(7));
       enter(CONTROL_ID.newPassword, REPLACEMENT);
@@ -1147,10 +856,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('withholds the reset while the caller\u2019s identity is unresolved', () => {
-      // FAIL-CLOSED RATHER THAN OPTIMISTIC. No session is seated, so `administersCurrentPortal`
-      // reads false and the planned operation is a reset - the same withholding as above, reached
-      // for a different reason. Offering an action that comes back refused is worse than offering
-      // it a moment late, and this one replaces a credential.
+      // FAIL-CLOSED RATHER THAN OPTIMISTIC. No session is seated, so `administersCurrentPortal` reads false
+      // and the planned operation is a reset - the same withholding as above, reached for a different
+      // reason.
       arrive(account(7));
       enter(CONTROL_ID.newPassword, REPLACEMENT);
       enter(CONTROL_ID.confirmPassword, REPLACEMENT);
@@ -1161,9 +869,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('does not withhold the change from an administrator acting on their own account', () => {
-      // The gate keys on the OPERATION, not on the caller's role, so the administrator who is also
-      // the account holder plans a CHANGE and is offered it - which is what the change endpoint's
-      // own ownership policy admits them to.
+      // The gate keys on the OPERATION, not on the caller's role, so the administrator who is also the
+      // account holder plans a CHANGE and is offered it - which is what the change endpoint's own ownership
+      // policy admits them to.
       arriveAsAdministratorOfOwnAccount(account(7));
       fillValidChange();
 
@@ -1173,11 +881,9 @@ describe('UserPasswordComponent', () => {
 
   describe('the order of the pre-flight rules', () => {
     it('reports the mismatch BEFORE the policy when a value breaks both', () => {
-      // THE ASSERTION THAT PINS THE ORDER. A six-character value that also fails to
-      // match its confirmation breaks L272 and L278 at once. L272 ran first and exited,
-      // so the mismatch is what a person saw — never the policy statement. Reversing
-      // these two would be an invisible change in every other case and a wrong message
-      // in this one.
+      // THE ASSERTION THAT PINS THE ORDER. A six-character value that also fails to match its confirmation
+      // breaks L272 and L278 at once. L272 ran first and exited, so the mismatch is what a person saw —
+      // never the policy statement.
       arriveAsSelf();
       enter(CONTROL_ID.currentPassword, CREDENTIAL_IN_FORCE);
       enter(CONTROL_ID.newPassword, SIX_CHARACTER_PASSWORD);
@@ -1242,20 +948,16 @@ describe('UserPasswordComponent', () => {
       expect(inlineMessages()).toContain(shipped);
       expect(outstandingRequestCount()).toBe(0);
 
-      // The measured original separates its two sentences with a DOUBLE space and carries
-      // NO trailing full stop. The shipped wording keeps the words, the order and the
-      // absent full stop, and collapses only the double space — which HTML would have
-      // collapsed anyway when it rendered, so the two are indistinguishable on screen.
-      // Both properties are asserted, so a genuine wording change still fails here.
+      // The measured original separates its two sentences with a DOUBLE space and carries NO trailing full
+      // stop.
       expect(LEGACY_NOT_DIFFERENT).toContain('old password.  Please');
       expect(collapseWhitespace(shipped)).toBe(collapseWhitespace(LEGACY_NOT_DIFFERENT));
       expect(shipped.endsWith('.')).withContext('no trailing stop, as measured').toBeFalse();
     });
 
     it('does not apply the must-differ rule to an administrative reset', () => {
-      // L290 was gated, and the gate follows the operation: a reset carries no
-      // credential in force to differ from, so the rule is off for exactly the caller
-      // whose control is not rendered.
+      // L290 was gated, and the gate follows the operation: a reset carries no credential in force to
+      // differ from, so the rule is off for exactly the caller whose control is not rendered.
       arriveAsAdministrator(account(7));
       enter(CONTROL_ID.newPassword, REPLACEMENT);
       enter(CONTROL_ID.confirmPassword, REPLACEMENT);
@@ -1295,9 +997,6 @@ describe('UserPasswordComponent', () => {
 
       const write = expectRequest('POST', changeUrl(7), 'the credential change');
 
-      // RELATIVE, and asserted as such. The reverse proxy forwards `/api/` to the API
-      // container, so an absolute host would make the browser bypass the proxy, turn
-      // every call cross-origin, and fail end to end while every build step passed.
       expect(write.request.url).toBe('/api/v1/users/7/password');
       expect(write.request.url.startsWith('/'))
         .withContext('no scheme, no host, no port')
@@ -1312,9 +1011,9 @@ describe('UserPasswordComponent', () => {
       expect(body?.newPassword).toBe(REPLACEMENT);
       expect(body?.confirmPassword).toBe(REPLACEMENT);
 
-      // The request carries the four agreed members and NOTHING ELSE. A body that
-      // quietly grew a member would be a contract change nobody asked for, and on a
-      // credential endpoint it would be a disclosure risk as well.
+      // The request carries the four agreed members and NOTHING ELSE. A body that quietly grew a member
+      // would be a contract change nobody asked for, and on a credential endpoint it would be a disclosure
+      // risk as well.
       expect(Object.keys(body ?? {}).sort()).toEqual([
         'confirmPassword',
         'currentPassword',
@@ -1408,29 +1107,11 @@ describe('UserPasswordComponent', () => {
     });
   });
 
-  // =========================================================================
-  // F. THE OUTCOME VOCABULARY
-  // =========================================================================
-  //
-  // `PasswordUpdateStatus.vb` L23-L32 declares eight members and assigns NO explicit
-  // values, so each member's ordinal is nothing more than its position in the
-  // declaration. An ordinal that means whatever the declaration order happens to be is
-  // not a contract, so the target keys on STRING codes and the cases below prove that
-  // an ordinal is NOT accepted as a key.
-  //
-  // The eight legacy members land as follows:
-  //
-  //   Success                 -> not a failure at all; the component's own wording
-  //   PasswordMissing         -> user.password.missing
-  //   PasswordNotDifferent    -> user.password.not_different
-  //   PasswordResetFailed     -> user.password.reset_failed
-  //   PasswordInvalid         -> user.password.invalid
-  //   PasswordMismatch        -> user.password.mismatch
-  //   InvalidPasswordAnswer   -> UNREACHABLE, and absent by design
-  //   InvalidPasswordQuestion -> UNREACHABLE, and absent by design
-  //
-  // The vocabulary type is deliberately NOT declared in the user model, so nothing
-  // here imports a type that does not exist.
+  // The legacy outcome vocabulary lands here as `user.password.missing`, `.not_different`,
+  // `.reset_failed`, `.invalid` and `.mismatch`. `Success` is not a failure and carries the component's
+  // own wording, and the two password-question outcomes are unreachable and absent by design. The
+  // vocabulary type is deliberately NOT declared in the user model, so nothing here imports a type that
+  // does not exist.
 
   describe('the outcome vocabulary', () => {
     it('carries the measured wording for every reachable failure', () => {
@@ -1440,13 +1121,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('keeps the wording of the two double-spaced entries equivalent to the measured text', () => {
-      // MIGRATION: A WHITESPACE-ONLY DIVERGENCE, REPORTED RATHER THAN ABSORBED. Two of
-      // the measured resource strings separate their sentences with a DOUBLE space, and
-      // the authored vocabulary uses a single space. HTML collapses whitespace runs when
-      // it renders, so the two forms are indistinguishable to a reader and the
-      // requirement for EQUIVALENT messages is met. The words, their order and — crucially
-      // — the ABSENT trailing full stops are unchanged, and those are asserted below,
-      // so a genuine wording change still fails this case.
+      // MIGRATION: A WHITESPACE-ONLY DIVERGENCE, REPORTED RATHER THAN ABSORBED. Two of the measured
+      // resource strings separate their sentences with a DOUBLE space, and the authored vocabulary uses a
+      // single space.
       expect(collapseWhitespace(PASSWORD_UPDATE_MESSAGE['user.password.not_different'])).toBe(
         collapseWhitespace(LEGACY_NOT_DIFFERENT),
       );
@@ -1486,30 +1163,18 @@ describe('UserPasswordComponent', () => {
     });
 
     it('treats success as an outcome rather than as a failure code', () => {
-      // There is no `Success.Text` key anywhere in the legacy resources; the success
-      // wording comes from `PasswordChanged.Text`. So success is not a member of the
-      // failure vocabulary, and asking for it as one answers nothing.
       expect(passwordUpdateMessage('user.password.success')).toBeNull();
 
-      // Widened to strings deliberately. The vocabulary is typed as a tuple of its five
-      // literal codes, so asking whether it contains a success code is rejected by the
-      // COMPILER rather than merely answered false at run time — which is a stronger
-      // guarantee than this assertion, and the reason the assertion has to widen in
-      // order to be expressible at all.
+      // Widened to strings deliberately.
       expect(PASSWORD_UPDATE_CODES.map((code) => String(code))).not.toContain(
         'user.password.success',
       );
     });
 
     it('declares no code for the question-and-answer outcomes, because they are unreachable', () => {
-      // ASSERTED BY ABSENCE, which is the only honest way to assert unreachability
-      // without inventing a path to it. `InvalidPasswordAnswer` and
-      // `InvalidPasswordQuestion` were raised by the legacy question-and-answer panel.
-      // The measured configuration sets `requiresQuestionAndAnswer="false"`, the
-      // question-and-answer store is not carried forward, and a reset requires no
-      // answer, so no request this screen can make can produce either outcome. Their
-      // measured wording is recorded here for provenance and is deliberately absent
-      // from the shipped vocabulary.
+      // ASSERTED BY ABSENCE, which is the only honest way to assert unreachability without inventing a path
+      // to it. `InvalidPasswordAnswer` and `InvalidPasswordQuestion` were raised by the legacy
+      // question-and-answer panel.
       const everyMessage = PASSWORD_UPDATE_CODES.map((code) => PASSWORD_UPDATE_MESSAGE[code]);
 
       expect(everyMessage).not.toContain(LEGACY_INVALID_ANSWER);
@@ -1549,26 +1214,16 @@ describe('UserPasswordComponent', () => {
   // =========================================================================
 
   /**
-   * The measured label as the shared field actually renders it.
-   *
-   * MIGRATION: THE LEGACY TRAILING COLON IS DROPPED, AND THAT IS THE SHARED FIELD'S
-   * DOING RATHER THAN THIS SCREEN'S. Every legacy label carried one — `plLastChanged` is
-   * 'Password Last Changed:' in the resource file — because the legacy control emitted
-   * the caption and the colon together as literal text. The shared field strips a
-   * trailing colon so that the caption it contributes to a control's accessible name is
-   * a name rather than a name plus punctuation, which an assistive technology would
-   * otherwise announce. The wording is unchanged; only the punctuation is.
+   * The measured label as the shared field actually renders it. MIGRATION: THE LEGACY TRAILING COLON IS
+   * DROPPED, AND THAT IS THE SHARED FIELD'S DOING RATHER THAN THIS SCREEN'S. Every legacy label carried
+   * one — `plLastChanged` is 'Password Last Changed:' in the resource file — because the legacy control
+   * emitted the caption and the colon together as literal text.
    */
   function renderedLabel(measured: string): string {
     return measured.replace(/\s*:$/, '');
   }
 
-  /**
-   * The value shown by the field carrying a given label.
-   *
-   * Located by its label rather than by position, so that reordering the two read-only
-   * fields does not silently re-point these assertions at the wrong one.
-   */
+  /** The value shown by the field carrying a given label. */
   function statedValue(label: string): string {
     const caption = renderedLabel(label);
 
@@ -1583,15 +1238,9 @@ describe('UserPasswordComponent', () => {
 
   describe('the sentinels', () => {
     it('shows nothing at all for the null-date sentinel', () => {
-      // `Null.vb` L41 defines `NullDate` as `Date.MinValue`, which crosses the wire as
-      // `0001-01-01T00:00:00`. It is a sentinel meaning "never", not a date in the year
-      // one, so rendering it as `01/01/0001` would present the absence of a fact as a
-      // fact about the first of January.
-      //
-      // For LAST CHANGED this is PARITY rather than a divergence: the legacy display
-      // helper already answered with the empty string for the null date, so an empty
-      // field is exactly what a person saw. It is asserted, and it is NOT reported as a
-      // behavioural difference, because it is not one.
+      // For LAST CHANGED this is PARITY rather than a divergence: the legacy display helper already
+      // answered with the empty string for the null date, so an empty field is exactly what a person saw.
+      // It is asserted, and it is NOT reported as a behavioural difference, because it is not one.
       arrive(account(7, { lastPasswordChangeDate: NULL_DATE_ON_THE_WIRE }));
 
       const stated = statedValue(LAST_CHANGED_LABEL);
@@ -1602,23 +1251,15 @@ describe('UserPasswordComponent', () => {
     });
 
     it('shows nothing for an explicitly null date', () => {
-      // The API serialises with its ignore condition set to never, so a null arrives as
-      // a PRESENT member holding null rather than as an absent one. That is the shape
-      // this case sends.
       arrive(account(7, { lastPasswordChangeDate: null }));
 
       expect(statedValue(LAST_CHANGED_LABEL)).toBe('');
     });
 
     it('refuses a payload whose date member is missing entirely', () => {
-      // THE "PRESENT BUT POSSIBLY NULL, NEVER OMITTED" GUARANTEE, ENFORCED RATHER THAN
-      // ASSUMED. The API serialises with its ignore condition set to never, so every
-      // member is always on the wire and a null is expressed as a null. The transport
-      // decodes against that contract before the screen ever sees a value, so an omitted
-      // member is REFUSED at the boundary rather than rendered as a guess.
-      //
-      // This is a stronger outcome than degrading to an empty field: the screen presents
-      // nothing at all rather than presenting an absence as though it were a fact.
+      // THE "PRESENT BUT POSSIBLY NULL, NEVER OMITTED" GUARANTEE, ENFORCED RATHER THAN ASSUMED. The API
+      // serialises with its ignore condition set to never, so every member is always on the wire and a null
+      // is expressed as a null.
       arrive(account(7, { lastPasswordChangeDate: undefined }));
 
       expect(query('.user-password__summary'))
@@ -1630,10 +1271,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('refuses a date it cannot read, so the words Invalid Date are unreachable', () => {
-      // `new Date('nonsense')` formats as `Invalid Date`, and putting that on a screen
-      // tells a person about the implementation rather than about their account. The
-      // decoder makes it structurally unreachable: an unreadable date never becomes a
-      // value the renderer could format, so there is no formatting path to get wrong.
       arrive(account(7, { lastPasswordChangeDate: 'not-a-date-at-all' }));
 
       const rendered = textOf(host());
@@ -1647,10 +1284,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('shows the measured no-expiry wording rather than a bare zero', () => {
-      // The legacy screen resolved three branches for this field, of which only two are
-      // representable: a forced change, and 'Password does not Expire'. A configured
-      // expiry of ZERO MEANT "never expires", so a bare `0` must never appear in its
-      // place.
       arrive(account(7, { mustChangePassword: false }));
 
       const stated = statedValue(EXPIRES_LABEL);
@@ -1666,13 +1299,8 @@ describe('UserPasswordComponent', () => {
     });
 
     it('treats a zero account identifier as a real address', () => {
-      // DEFENSIVE, AND THE NUANCE IS WORTH STATING. `Users.UserID` is `IDENTITY(1,1)`,
-      // so zero is not a naturally occurring account identifier in this schema. It is
-      // handled as a real value anyway, because the alternative idioms all fail on data
-      // this schema DOES produce: a truthiness test treats zero as absent, a
-      // greater-than-zero test rejects it outright, and a null-coalescing default to -1
-      // collides with `NullInteger`, which is itself the seed of `Portals.PortalID` and
-      // therefore a legitimate identifier elsewhere in the same database.
+      // DEFENSIVE, AND THE NUANCE IS WORTH STATING. `Users.UserID` is `IDENTITY(1,1)`, so zero is not a
+      // naturally occurring account identifier in this schema.
       seatIdentity(99, ['Administrators'], true);
       arrive(account(0));
 
@@ -1728,14 +1356,6 @@ describe('UserPasswordComponent', () => {
     });
   });
 
-  // =========================================================================
-  // H. THE CONFIRMATION THAT GATES AN ADMINISTRATIVE RESET
-  // =========================================================================
-  //
-  // The shared confirmation exposes NO visibility input: presence in the document IS
-  // open, because it promotes a native `<dialog>` modally as soon as it is mounted.
-  // Every case below therefore asserts on presence and absence rather than on a flag.
-
   describe('the confirmation that gates an administrative reset', () => {
     function requestReset(held: UserDetail = account(7)): void {
       arriveAsAdministrator(held);
@@ -1766,10 +1386,9 @@ describe('UserPasswordComponent', () => {
         .withContext('asking is not doing')
         .toBe(0);
 
-      // Dismissed before leaving, deliberately. The confirmation promotes a NATIVE
-      // dialog, whose top-layer and inert state belong to the Karma document rather than
-      // to this fixture, so a case that walked away from an open one would leave the
-      // whole page modal for whichever case Jasmine ran next.
+      // Dismissed before leaving, deliberately. The confirmation promotes a NATIVE dialog, whose top-layer
+      // and inert state belong to the Karma document rather than to this fixture, so a case that walked
+      // away from an open one would leave the whole page modal for whichever case Jasmine ran next.
       answerDialog(DISMISS_LABEL);
 
       expect(query('app-confirm-dialog')).withContext('left closed').toBeNull();
@@ -1782,10 +1401,9 @@ describe('UserPasswordComponent', () => {
 
       expect(message).withContext('the account is named').toContain('ada.lovelace');
 
-      // A confirmation justifies gating an action; it does not license overstating it.
-      // Resetting a credential is reversible — another reset replaces it — and the only
-      // legacy wording promising irreversibility belongs to the recycle bin, which is
-      // not ported.
+      // A confirmation justifies gating an action; it does not license overstating it. Resetting a
+      // credential is reversible — another reset replaces it — and the only legacy wording promising
+      // irreversibility belongs to the recycle bin, which is not ported.
       for (const overclaim of FORBIDDEN_OVERCLAIMS) {
         expect(message.toLowerCase())
           .withContext(`the confirmation does not claim "${overclaim}"`)
@@ -1825,9 +1443,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('can be asked again after being dismissed', () => {
-      // The proof that the gating signal is cleared on BOTH paths. The shared
-      // confirmation carries an emit-once guard for its own lifetime, so a signal left
-      // set would leave the dialog mounted-but-spent and it could never be reopened.
       requestReset();
       answerDialog(DISMISS_LABEL);
 
@@ -1846,10 +1461,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('offers only non-submitting controls, so neither can post the form', () => {
-      // The legacy screen marked its non-committing controls to not cause validation.
-      // The equivalent here is that neither of the confirmation's controls is a submit
-      // control, so dismissing cannot submit the form and agreeing goes through the
-      // component rather than through a second form submission.
       requestReset();
 
       const offered = buttons().filter((candidate) =>
@@ -1899,16 +1510,6 @@ describe('UserPasswordComponent', () => {
 
   describe('structure and accessibility', () => {
     it('wraps every credential control in a field and associates its label', () => {
-      // THE ASSERTION THAT PINS THE FIX FOR THE LEGACY LABEL DEFECT. `Password.ascx` L86
-      // declared `controlname="lblQuetxtEditQuestionstion"` — a mangled identifier left
-      // behind by a botched find-and-replace, naming no control that exists. The shared
-      // label control's markup carries no `for` of its own; the server resolved one from
-      // that name, so the page emitted a `for` pointing at nothing, and clicking the
-      // label focused nothing.
-      //
-      // Here every association is asserted to resolve to a control that is really in the
-      // document, which is a defect of that class made impossible rather than merely
-      // avoided.
       arriveAsSelf(account(7));
 
       for (const controlId of EVERY_CONTROL_ID) {
@@ -1964,10 +1565,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('captions each read-only fact with the measured wording, less the legacy colon', () => {
-      // The wording is the resource file's; the trailing colon is not carried across,
-      // because the caption contributes to a control's accessible name and punctuation
-      // announced as part of a name is noise. The divergence is punctuation only, and it
-      // is pinned here so it stays punctuation only.
+      // The wording is the resource file's; the trailing colon is not carried across, because the caption
+      // contributes to a control's accessible name and punctuation announced as part of a name is noise.
+      // The divergence is punctuation only, and it is pinned here so it stays punctuation only.
       arriveAsSelf(account(7));
 
       const captions = queryAll('.form-field__label').map((node) => textOf(node));
@@ -1996,23 +1596,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('captions its one section with the operation the submit will actually perform', () => {
-      /*
-       * ⚠ ONE SECTION, NOT TWO, AND THIS ASSERTION IS THE POINT RATHER THAN THE COUNT. This test
-       * previously required BOTH captions to be present, which is the structure that produced the
-       * defect: a section captioned "Change Password" held the credential boxes, a second captioned
-       * "Reset Password" held a sentence and no control at all, and the single command at the foot of
-       * the form read "Reset Password". An administrator setting a replacement for another account
-       * therefore read a caption naming an operation they cannot perform - the change endpoint is
-       * restricted to the account holder - directly above the boxes their own operation needs.
-       *
-       * Exactly one operation is authorised for any caller and target, so exactly one caption is
-       * correct, and the wrong one must be ABSENT rather than merely deprioritised. Both directions are
-       * asserted, because a caption hard-wired to either operation would pass a one-sided test.
-       *
-       * MIGRATION: caption and command share one resource key per panel in the legacy markup -
-       * `Password.ascx` L30 and L46 both `ChangePassword`, L53 and L69 both `ResetPassword` - so
-       * agreement between the two is the legacy contract, not a new refinement.
-       */
       arriveAsAdministrator(account(7));
 
       const adminGroups = queryAll('.user-password__group');
@@ -2058,18 +1641,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('puts no interactive control out of the keyboard order', () => {
-      // REVERSING THE SECOND LEGACY DEFECT. The legacy section head placed its expand
-      // and collapse affordance in `sectionheadcontrol.ascx` L3 with `tabIndex="-1"`,
-      // so the only control that could reveal a collapsed section was unreachable by
-      // keyboard. Nothing on this screen may repeat that.
-      //
-      // ⚠ THE SWEEP NAMES INTERACTIVE ELEMENTS, AND IT USED TO INCLUDE `[tabindex]` OUTRIGHT. That
-      // caught a case the rule was never about: a negative index on a non-interactive element withdraws
-      // nothing, since such an element was never keyboard-reachable, and grants only deliberate focus by
-      // script. The shared outcome banner carries one for exactly that purpose - a screen brings a server
-      // refusal to a reader who pressed a control below the fold - so including it made this suite reject
-      // an accessibility GAIN in the name of an accessibility rule. Every genuinely operable element is
-      // still swept, which is the whole of what the legacy defect was.
+      // REVERSING THE SECOND LEGACY DEFECT. The legacy section head placed its expand and collapse
+      // affordance in `sectionheadcontrol.ascx` L3 with `tabIndex="-1"`, so the only control that could
+      // reveal a collapsed section was unreachable by keyboard. Nothing on this screen may repeat that.
       arriveAsAdministrator(account(7));
 
       for (const element of queryAll(
@@ -2093,10 +1667,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('does not duplicate the ARIA the shared components already own', () => {
-      // The error surface, the progress indicator and the confirmation each carry their
-      // own role and live-region semantics. A wrapper that added a second role or a
-      // second live region around them would make an assistive technology announce the
-      // same thing twice.
       arriveAsAdministrator(account(7));
       enter(CONTROL_ID.newPassword, REPLACEMENT);
       enter(CONTROL_ID.confirmPassword, REPLACEMENT);
@@ -2156,12 +1726,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('lets the error surface decide how loudly to speak, and does not overrule it', () => {
-      // The shared surface derives its own severity, and it reads a refusal of AUTHORITY
-      // as a warning rather than as a fault. That matches the measured legacy behaviour:
-      // the access-denied control used the yellow warning treatment in BOTH of its
-      // branches. So this case asserts the surface is rendered and that the calm
-      // treatment is the one chosen — it does not demand a danger treatment, because
-      // demanding one would contradict the measured legacy presentation.
       refuse(
         403,
         'Forbidden',
@@ -2188,9 +1752,9 @@ describe('UserPasswordComponent', () => {
     });
 
     it('pins a per-field refusal to the control the server named', () => {
-      // The keys are .NET model-state names, so they arrive in PascalCase rather than
-      // camelCase. Bracket access is used because index-signature access by dot notation
-      // is disallowed by this workspace's compiler settings.
+      // The keys are .NET model-state names, so they arrive in PascalCase rather than camelCase. Bracket
+      // access is used because index-signature access by dot notation is disallowed by this workspace's
+      // compiler settings.
       const errors: Readonly<Record<string, readonly string[]>> = {
         NewPassword: ['That replacement does not meet this site policy.'],
       };
@@ -2259,9 +1823,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('shows a progress indicator while the write is in flight, and withdraws it after', () => {
-      // Driven by HOLDING THE REQUEST OPEN rather than by any timer. A timer would make
-      // the case depend on wall-clock scheduling; holding the request open makes the
-      // in-flight window exactly as long as the assertions inside it need.
       arriveAsSelf(account(7));
       fillValidChange();
       press(CHANGE_HEADING);
@@ -2352,21 +1913,6 @@ describe('UserPasswordComponent', () => {
     });
   });
 
-  // =========================================================================
-  // K. THE MANDATORY VISIT: WHEN THIS SCREEN IS THE ONLY ONE THE SERVER ALLOWS
-  // =========================================================================
-  //
-  // A caller whose account carries an outstanding credential change is refused nearly
-  // every read the console performs. Measured against the running API for such a
-  // session: `GET api/v1/users/{id}`, `.../services`, `api/v1/users/settings`,
-  // `api/v1/portals` and `api/v1/modules` each answered 403 with
-  // `auth.remediation_required`, while `POST api/v1/users/{id}/password` was reachable.
-  //
-  // So this screen is simultaneously MANDATORY and, as it stood, unusable: it read the
-  // account it was refused, gated its whole populated view on that account, and disabled
-  // its submit affordance until the account arrived. The caller was shown a heading, a
-  // refusal and nothing to act on.
-
   describe('the mandatory-remediation visit', () => {
     /** Seats a caller who owes a mandatory credential change on their own account. */
     function seatRemediatingIdentity(userId: number): void {
@@ -2395,9 +1941,6 @@ describe('UserPasswordComponent', () => {
     /**
      * Arrives on the screen as a remediating caller.
      *
-     * Deliberately satisfies NO account read, because the point of the case is that none is
-     * issued. `httpMock.verify()` in teardown is what turns that into an assertion.
-     *
      * @param userId The account, which is also the caller.
      */
     function arriveRemediating(userId = 7): void {
@@ -2410,8 +1953,8 @@ describe('UserPasswordComponent', () => {
       arriveRemediating(7);
 
       // Counted rather than asserted through `expectNone`, which throws and therefore records no
-      // expectation of its own: the emptiness of what `match` returns IS the claim. The predicate names
-      // the one address the API refuses in this state, so the teardown's `verify()` still guards the rest.
+      // expectation of its own: the emptiness of what `match` returns IS the claim. The predicate names the
+      // one address the API refuses in this state, so the teardown's `verify()` still guards the rest.
       expect(httpMock.match(accountUrl(7)))
         .withContext('the account read the API refuses in this state is never attempted')
         .toEqual([]);
@@ -2451,11 +1994,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('still withholds the form when a read was issued and did not decode', () => {
-      // ⚠ THE TWO ABSENCES ARE NOT THE SAME AND THIS PINS THE DIFFERENCE. Above, the account
-      // is absent because it was never asked for, and the form is presented. Here a read was
-      // issued and answered with a payload that breaks the contract, so nothing is known about
-      // the account and the form stays withheld. Collapsing the two would present a form over
-      // an account the screen failed to read.
       arrive(account(7, { lastPasswordChangeDate: undefined }));
 
       expect(query(`#${CONTROL_ID.newPassword}`)).toBeNull();
@@ -2463,17 +2001,6 @@ describe('UserPasswordComponent', () => {
     });
 
     it('clears the advisory locally and returns to the root once the change is written', async () => {
-      // ⚠ WITHOUT THIS THE JOURNEY NEVER ENDS. The advisory is carried in the held session, so
-      // the server stops refusing the moment the credential changes while the client goes on
-      // believing remediation is outstanding — and the root redirect goes on resolving back to
-      // this screen.
-      //
-      // ⚠ AND NO RENEWAL IS ATTEMPTED, WHICH IS THE SUBSTANCE OF THIS CASE. Renewing was tried
-      // first and is unfixably wrong: the change endpoint revokes every refresh token the
-      // account holds, so `POST api/v1/auth/refresh` answers 401, the store treats a refused
-      // renewal as a session that is over, and the caller is signed out seconds after doing
-      // exactly what the server demanded. Observed end to end in a browser. `expectNone` below
-      // is what keeps that regression from returning.
       const router = TestBed.inject(Router);
       const navigate = spyOn(router, 'navigateByUrl').and.resolveTo(true);
 
@@ -2490,10 +2017,9 @@ describe('UserPasswordComponent', () => {
 
       httpMock.expectNone('/api/v1/auth/refresh');
 
-      // ⚠ AND NOW THE DECLINED READ IS ISSUED, which is the other half of the same rule. The
-      // advisory is gone from the held session, so the condition that suppressed the account
-      // read no longer holds and the screen asks for the details it had been refused. The
-      // suppression is a reaction to the server's current answer, not a permanent state.
+      // ⚠ AND NOW THE DECLINED READ IS ISSUED, which is the other half of the same rule. The advisory is
+      // gone from the held session, so the condition that suppressed the account read no longer holds and
+      // the screen asks for the details it had been refused.
       expectRequest('GET', accountUrl(7), 'the read the screen had been declining').flush({
         data: account(7),
         meta: null,
@@ -2504,20 +2030,16 @@ describe('UserPasswordComponent', () => {
         .withContext('and the two summary rows appear as soon as they are readable')
         .not.toBeNull();
 
-      // THE ROOT, NOT A SCREEN. Naming a screen here would put the both-advisories-outstanding
-      // precedence in a second place; the root redirect owns that decision alone.
-      // ⚠ REPLACES: a completed credential change must not sit in BACK history, and the
-      // unsaved-changes gate reads this flag to recognise an application-initiated departure.
+      // THE ROOT, NOT A SCREEN. Naming a screen here would put the both-advisories-outstanding precedence
+      // in a second place; the root redirect owns that decision alone. ⚠ REPLACES: a completed credential
+      // change must not sit in BACK history, and the unsaved-changes gate reads this flag to recognise an
+      // application-initiated departure.
       expect(navigate)
         .withContext('the caller is handed to the root, which decides where remediation leads next')
         .toHaveBeenCalledWith('/', { replaceUrl: true });
     });
 
     it('leaves a profile completion outstanding when the account owes both', async () => {
-      // Clearing the satisfied advisory and ONLY the satisfied one is what lets the root move the
-      // caller on to the profile screen rather than back to this one. Clearing both would skip a
-      // completion the server still requires, and the caller would meet a refusal on the landing
-      // instead of the screen that clears it.
       const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
       const storage = TestBed.inject(TokenStorageService);
 
@@ -2553,10 +2075,10 @@ describe('UserPasswordComponent', () => {
     });
 
     it('concludes nothing after an ADMINISTRATIVE reset, which clears no advisory of the caller\u2019s own', async () => {
-      // An administrator who owes their own credential change cannot reach this path anyway —
-      // the server's allowance requires the route's account to BE the caller — but the guard is
-      // stated at this end too, because clearing an advisory here would assert something the
-      // server never reported about the administrator's own account.
+      // An administrator who owes their own credential change cannot reach this path anyway — the server's
+      // allowance requires the route's account to BE the caller — but the guard is stated at this end too,
+      // because clearing an advisory here would assert something the server never reported about the
+      // administrator's own account.
       const router = TestBed.inject(Router);
       const navigate = spyOn(router, 'navigateByUrl').and.resolveTo(true);
 

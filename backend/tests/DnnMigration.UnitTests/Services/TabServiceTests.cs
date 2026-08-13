@@ -19,22 +19,10 @@ namespace DnnMigration.UnitTests.Services;
 /// hierarchy traversal that renumbers a portal's pages.
 /// </summary>
 /// <remarks>
-/// <para>
 /// WHY THIS CLASS EXISTS AND WHY IT IS NARROW. The page service is otherwise covered end to end by
-/// <c>DnnMigration.IntegrationTests.Api.TabApiTests</c>, which exercises the whole update path against a real
-/// database - so duplicating the ordering, ancestry and cache behaviour here would add maintenance cost
-/// without adding assurance. Two things that suite genuinely cannot see are asserted here instead. The blank
-/// name is refused by the request validator BEFORE the service is reached on the HTTP path, so only a direct
-/// call can prove the service's own guard still holds for a caller that bypasses the pipeline. And the audit
-/// record is emitted to a sink the integration host does not capture, so only a substituted sink can prove
-/// what it contains.
-/// </para>
-/// <para>
-/// MIGRATION: the record is the target's replacement for the legacy event-log entry typed
-/// <c>EventLogType.TAB_UPDATED</c> (<c>EventLogController.vb</c>, among the forty-three members declared at
-/// L38-L77). The legacy store is out of scope, so the event name is preserved and the record travels through
-/// a package-neutral sink instead.
-/// </para>
+/// <c>DnnMigration.IntegrationTests.Api.TabApiTests</c>, which exercises the whole update path against a
+/// real database - so duplicating the ordering, ancestry and cache behaviour here would add maintenance
+/// cost without adding assurance. Two things that suite genuinely cannot see are asserted here instead.
 /// </remarks>
 public class TabServiceTests
 {
@@ -44,9 +32,7 @@ public class TabServiceTests
 
     private const string TabName = "Measured Page";
 
-    /// <summary>
-    /// The service refuses to be constructed without every collaborator it depends on.
-    /// </summary>
+    /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -93,20 +79,9 @@ public class TabServiceTests
         });
     }
 
-    /// <summary>
-    /// A page name that is absent, empty or whitespace-only is refused, and nothing is written.
-    /// </summary>
+    /// <summary>A page name that is absent, empty or whitespace-only is refused, and nothing is written.</summary>
     /// <param name="submittedName">The name to submit.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: <c>managetabs.ascx</c> L36-L37 declares a required-field validator over the page-name box,
-    /// and a required-field validator fails on an empty and a whitespace-only value just as it does on an
-    /// absent one - so none of these three submissions could reach the legacy controller. The empty case is
-    /// the one that regressed: an earlier revision accepted it as "the legacy no-text value arriving
-    /// explicitly", which was not a value the legacy screen could produce. A page with no name cannot be
-    /// picked out of a navigation menu or a page list, so accepting one produced a page an operator could
-    /// create and then not find.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -194,16 +169,10 @@ public class TabServiceTests
     }
 
     /// <summary>
-    /// A committed page update records the legacy TAB_UPDATED event with the tenant, the page and the acting
-    /// account, and carries no free-text field.
+    /// A committed page update records the legacy TAB_UPDATED event with the tenant, the page and the
+    /// acting account, and carries no free-text field.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The absence assertions are as deliberate as the presence ones. The description, keywords and head text
-    /// are caller-supplied free text of unbounded interest and up to five hundred characters each; a trail is
-    /// not a change log of every field, and carrying them would make every page edit write half a kilobyte of
-    /// prose into the log.
-    /// </remarks>
     [Fact]
     public async Task UpdateTab_RecordsTheLegacyTabUpdatedEvent()
     {
@@ -245,24 +214,6 @@ public class TabServiceTests
     /// plain updates.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// THIS PINS A CORRECTION OF THIS SOLUTION'S OWN STATED POSITION, NOT JUST OF ITS CODE. Every page change
-    /// was recorded as TAB_UPDATED, and the audit catalogue asserted in a comment that
-    /// TAB_SENT_TO_RECYCLE_BIN and TAB_RESTORED could never be raised here because they had no committed
-    /// boundary - the page surface being narrow, and the legacy recycle-bin page being out of scope. That
-    /// reasoning located the operation by the legacy PAGE that performed it rather than by the state
-    /// TRANSITION it made. Recycling and restoring are not separate operations in this solution: both are
-    /// carried on the update request as its delete flag, which the mapper assigns, so the narrow PUT IS the
-    /// boundary and both events have a real producer.
-    /// </para>
-    /// <para>
-    /// The cost of the mislabel was that the two questions a page trail is asked most often - who took this
-    /// page down, and who put it back - could not be answered from it, because a removal and a title change
-    /// looked identical. Both names are verbatim legacy members: TAB_SENT_TO_RECYCLE_BIN
-    /// (TabController.vb:L840 and L952) and TAB_RESTORED (RecycleBin.ascx.vb:L280).
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task UpdateTab_RecordsTheRecycleAndRestoreTransitionsUnderTheirOwnNames()
     {
@@ -302,15 +253,10 @@ public class TabServiceTests
     }
 
     /// <summary>
-    /// Repeating the delete flag a page already carries is recorded as a revision, because no state changed.
+    /// Repeating the delete flag a page already carries is recorded as a revision, because no state
+    /// changed.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The narrowing matters as much as the two records above. Keying the event name on the NEW value rather
-    /// than on a transition would make every ordinary save of an already-recycled page read as a fresh
-    /// recycling, which trades one false reading for another and inflates any count taken from the trail. This
-    /// is the assertion that forbids it.
-    /// </remarks>
     [Fact]
     public async Task UpdateTab_RecordsARevisionWhenTheDeleteFlagIsUnchanged()
     {
@@ -330,14 +276,8 @@ public class TabServiceTests
         record.Properties["Operation"].Should().Be("Revise");
     }
 
-    /// <summary>
-    /// A page change retains neither the current nor the former caller-authored name.
-    /// </summary>
+    /// <summary>A page change retains neither the current nor the former caller-authored name.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The page identifier is the durable attribution. Copying either name into the independently retained
-    /// logging store would create a second access, retention and deletion lifecycle for caller-authored text.
-    /// </remarks>
     [Fact]
     public async Task UpdateTab_DoesNotRetainCurrentOrFormerNames()
     {
@@ -361,9 +301,7 @@ public class TabServiceTests
         unchangedRecord.Properties.Should().NotContainKey("PreviousTabName");
     }
 
-    /// <summary>
-    /// An unauthenticated caller leaves the actor absent rather than having one fabricated.
-    /// </summary>
+    /// <summary>An unauthenticated caller leaves the actor absent rather than having one fabricated.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateTab_LeavesTheActorAbsentForAnUnauthenticatedCaller()
@@ -378,9 +316,7 @@ public class TabServiceTests
         record.ActorUserId.Should().BeNull();
     }
 
-    /// <summary>
-    /// An unknown page is refused without emitting a record.
-    /// </summary>
+    /// <summary>An unknown page is refused without emitting a record.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdateTab_WhenUnknown_RecordsNothing()
@@ -396,9 +332,7 @@ public class TabServiceTests
         harness.AuditRecords.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Builds an update request that changes nothing the assertions depend on.
-    /// </summary>
+    /// <summary>Builds an update request that changes nothing the assertions depend on.</summary>
     /// <returns>A well-formed update request.</returns>
     private static UpdateTabRequest ValidRequest() => new()
     {
@@ -410,9 +344,7 @@ public class TabServiceTests
         IsDeleted = false,
     };
 
-    /// <summary>
-    /// Assembles the service over recording doubles, exposing the stored page as mutable state.
-    /// </summary>
+    /// <summary>Assembles the service over recording doubles, exposing the stored page as mutable state.</summary>
     private sealed class Harness
     {
         private Harness()
@@ -439,11 +371,6 @@ public class TabServiceTests
             Audit = new Mock<IAuditSink>(MockBehavior.Loose);
 
             // EVERY PAGE IS PERMITTED BY DEFAULT, so the suites below stay about the behaviour they name.
-            // The listing narrows its rows to the pages the caller may act on, and the permission service
-            // answers an administrator with every page it was asked about - which is the caller these suites
-            // describe. Returning the whole set here reproduces that answer, so a case about ordering or
-            // hierarchy is not silently also a case about permissions. The narrowing itself is asserted by
-            // the cases that override this setup explicitly.
             Permissions
                 .Setup(service => service.ListTabsWithPermissionAsync(
                     It.IsAny<int>(),
@@ -458,7 +385,6 @@ public class TabServiceTests
                     PermissionKey ___,
                     CancellationToken ____) =>
                     Result<IReadOnlyList<int>>.Success(tabIds.ToList()));
-
 
             Audit
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
@@ -531,22 +457,8 @@ public class TabServiceTests
         public static Harness Ready() => new();
     }
 
-    /// <summary>
-    /// A hierarchy deeper than a stored page path can express is answered rather than overflowing.
-    /// </summary>
+    /// <summary>A hierarchy deeper than a stored page path can express is answered rather than overflowing.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// <para>
-    /// The traversal that renumbers a portal's pages once recursed one frame per level of a hierarchy whose
-    /// depth is set by stored data, so a deep enough tree ended the process rather than the request. It is now
-    /// an explicit stack with a depth bound, and this asserts the bound is reported to the caller.
-    /// </para>
-    /// <para>
-    /// Built in memory through the mocked repository, which is the only practical way to reach a hierarchy
-    /// thousands of levels deep: proving the same property over HTTP would need thousands of create calls to
-    /// assert something that has nothing to do with transport.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task UpdateTab_OnAHierarchyDeeperThanThePathCanHold_AnswersRatherThanOverflowing()
     {
@@ -564,14 +476,12 @@ public class TabServiceTests
             "a caller is told the hierarchy is too deep, not handed a server fault");
     }
 
-    /// <summary>
-    /// A hierarchy at the deepest representable level is renumbered successfully.
-    /// </summary>
+    /// <summary>A hierarchy at the deepest representable level is renumbered successfully.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The companion to the test above, and the one that keeps the depth limit honest: a limit that refused a
-    /// hierarchy the column can hold would be a new restriction on callers rather than a statement of what is
-    /// storable. The chain here is exactly as deep as the path column permits.
+    /// The companion to the test above, and the one that keeps the depth limit honest: a limit that refused
+    /// a hierarchy the column can hold would be a new restriction on callers rather than a statement of
+    /// what is storable. The chain here is exactly as deep as the path column permits.
     /// </remarks>
     [Fact]
     public async Task UpdateTab_OnTheDeepestRepresentableHierarchy_Succeeds()
@@ -597,9 +507,7 @@ public class TabServiceTests
     /// The two running counters assign each page's order in visitation sequence, so the traversal ORDER is
     /// load-bearing rather than cosmetic: any reordering silently renumbers every page in the portal. The
     /// hierarchy below is deliberately branched rather than a chain, because a chain has only one possible
-    /// traversal and would pass under breadth-first ordering too - it cannot tell the two apart. The
-    /// expectation is stated as the full path sequence, which pins depth-first descent and sibling order
-    /// together.
+    /// traversal and would pass under breadth-first ordering too - it cannot tell the two apart.
     /// </remarks>
     [Fact]
     public async Task UpdateTab_AssignsOrderInDepthFirstPreOrder()
@@ -648,21 +556,10 @@ public class TabServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: <c>ModuleSettings.ascx.vb:L214-L219</c> left the page selector populated and ENABLED for a
-    /// caller in the administrators role and DISABLED it for everyone else - "tab administrators can only
-    /// manage their own tab" - re-applying the same rule on postback at <c>L332-L338</c> so a disabled control
-    /// could not be reached by replaying the form. A tab administrator therefore never chose a page from a
-    /// portal-wide list; the page was the one they had arrived on, which was ambient request state this
-    /// solution does not have. Offering that caller the pages it holds EDIT on is the equivalent that survives
-    /// the loss of that ambient state, and it is strictly narrower than the list the legacy rendered.
-    /// </para>
-    /// <para>
     /// ORDER IS ASSERTED AS WELL AS MEMBERSHIP. A page's position is meaningful only relative to the parent
     /// that precedes it, so filtering must remove rows without re-ordering the ones that remain. A filter
-    /// implemented by re-querying the permitted identifiers would satisfy a membership assertion and silently
-    /// lose the navigation order.
-    /// </para>
+    /// implemented by re-querying the permitted identifiers would satisfy a membership assertion and
+    /// silently lose the navigation order.
     /// </remarks>
     [Fact]
     public async Task GetTabs_NarrowsTheRowsToThePagesTheCallerMayActOn()
@@ -698,9 +595,8 @@ public class TabServiceTests
     /// <remarks>
     /// ⚠ THE ORDERING IS THE CORRECTNESS ARGUMENT, NOT AN OPTIMISATION. The entry is keyed by tenant alone.
     /// Narrowing before the write would store one caller's permitted subset under a key every caller reads,
-    /// and the next caller - including the tenant's administrator - would be served that subset as though it
-    /// were the tenant's page set. This case is the only thing standing between that and a reviewer's memory:
-    /// it asserts the two values differ, and asserts which of them is the full one.
+    /// and the next caller - including the tenant's administrator - would be served that subset as though
+    /// it were the tenant's page set.
     /// </remarks>
     [Fact]
     public async Task GetTabs_CachesTheWholeTenantAndNarrowsOnlyWhatItReturns()
@@ -727,15 +623,8 @@ public class TabServiceTests
             "the cached entry is the TENANT's page set, not this caller's permitted subset");
     }
 
-    /// <summary>
-    /// An unresolvable permission state withholds every row rather than offering them all.
-    /// </summary>
+    /// <summary>An unresolvable permission state withholds every row rather than offering them all.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// FAIL-CLOSED, BECAUSE THIS LISTING IS A SET OF CHOICES. A page offered as a placement target that the
-    /// create action would then refuse is worse than no target offered: the caller fills the form and the
-    /// submission is rejected. Failing open would also make an availability problem read as a permission grant.
-    /// </remarks>
     [Fact]
     public async Task GetTabs_WithhholdsEveryRowWhenThePermissionStateCannotBeResolved()
     {
@@ -757,15 +646,7 @@ public class TabServiceTests
         outcome.Value.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Assembles a page service over a whole in-memory page set, for the traversal assertions.
-    /// </summary>
-    /// <remarks>
-    /// Kept separate from <see cref="Harness"/> rather than folded into it. That one answers the listing with
-    /// exactly the page under test, which is what keeps the name and audit assertions about those two
-    /// behaviours; these need a real hierarchy, answered consistently by both the listing and the
-    /// parent-identifier read, and merging the two would make each assertion depend on setup the other needs.
-    /// </remarks>
+    /// <summary>Assembles a page service over a whole in-memory page set, for the traversal assertions.</summary>
     private sealed class HierarchyHarness
     {
         private HierarchyHarness(List<Tab> tabs)
@@ -790,9 +671,6 @@ public class TabServiceTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(false);
 
-            // Answered from the same in-memory set the listing is answered from, so a hierarchy built by one
-            // of the factories below is self-consistent: a page that has children here is a page that has
-            // children in the listing the traversal walks.
             Tabs.Setup(repository => repository.ListParentTabIdsAsync(
                     It.IsAny<int?>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((int? portalId, CancellationToken _) => AllTabs
@@ -811,9 +689,9 @@ public class TabServiceTests
                     HomeDirectory = "Portals/0",
                 });
 
-            // The listing refuses an unknown tenant before it reads anything, so a harness whose portal does
-            // not "exist" answers a not-found failure and every listing case would measure that instead of what
-            // it names.
+            // The listing refuses an unknown tenant before it reads anything, so a harness whose portal
+            // does not "exist" answers a not-found failure and every listing case would measure that
+            // instead of what it names.
             Portals.Setup(repository => repository.ExistsAsync(
                     It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(true);
@@ -824,11 +702,9 @@ public class TabServiceTests
             Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
             Cache = new Mock<ICacheService>(MockBehavior.Loose);
 
-            // A PASS-THROUGH THAT RECORDS. The real cache would answer from its entry; this one always invokes
-            // the factory and keeps the value the factory produced, which is what lets a case assert WHAT WAS
-            // CACHED as distinct from what was returned. That distinction is the whole point of the ordering
-            // under test: the entry is keyed by tenant alone, so it must hold the tenant's rows and nothing
-            // caller-specific.
+            // A PASS-THROUGH THAT RECORDS. The real cache would answer from its entry; this one always
+            // invokes the factory and keeps the value the factory produced, which is what lets a case
+            // assert WHAT WAS CACHED as distinct from what was returned.
             Cache.Setup(cache => cache.GetOrCreateAsync(
                     It.IsAny<string>(),
                     It.IsAny<Func<CancellationToken, Task<IReadOnlyList<TabListItemDto>>>>(),
@@ -846,11 +722,6 @@ public class TabServiceTests
                 });
 
             // EVERY PAGE IS PERMITTED BY DEFAULT, so the suites below stay about the behaviour they name.
-            // The listing narrows its rows to the pages the caller may act on, and the permission service
-            // answers an administrator with every page it was asked about - which is the caller these suites
-            // describe. Returning the whole set here reproduces that answer, so a case about ordering or
-            // hierarchy is not silently also a case about permissions. The narrowing itself is asserted by
-            // the cases that override this setup explicitly.
             Permissions
                 .Setup(service => service.ListTabsWithPermissionAsync(
                     It.IsAny<int>(),
@@ -914,9 +785,7 @@ public class TabServiceTests
             return new HierarchyHarness(tabs);
         }
 
-        /// <summary>
-        /// A portal whose pages branch, so that depth-first and breadth-first traversals differ.
-        /// </summary>
+        /// <summary>A portal whose pages branch, so that depth-first and breadth-first traversals differ.</summary>
         /// <returns>The assembled harness.</returns>
         internal static HierarchyHarness WithBranchedPortal() => new(
         [

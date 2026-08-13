@@ -1,135 +1,11 @@
-// =============================================================================
-//  COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
-//
-//  This stylesheet is reached through `styleUrl` on its paired component, so it
-//  is compiled by `ng build` and by `ng test`, ships inside this screen's lazy
-//  chunk, and IS measured against the `anyComponentStyle` budget that
-//  `angular.json` caps at 8 kB as an ERROR. All three companions exist:
-//
-//      module-settings.component.ts       present
-//      module-settings.component.html     present
-//      module-settings.component.spec.ts  present
-//
-//  The screen this styles is the route /modules/:moduleId/settings, declared as a
-//  `loadComponent` entry in `src/app/app.routes.ts`.
-//
-//  THE MARKUP CONTRACT. Every selector below is rewritten by emulated view
-//  encapsulation with the component's own content attribute, so a class name
-//  that drifts does not error — it silently matches nothing and the screen
-//  renders unstyled. The template emits exactly this vocabulary, and every
-//  entry below was checked against the template rather than assumed:
-//
-//      .module-settings
-//      .module-settings__intro
-//      .module-settings__section
-//      .module-settings__section--nested
-//      .module-settings__toggle
-//      .module-settings__toggle--ruled
-//      .module-settings__body
-//      .module-settings__fields
-//      .module-settings__choices
-//      .module-settings__slot
-//      .module-settings__actions
-//
-//  ⚠ FOUR ENTRIES LEFT THIS LIST WITH THE FIELD SYSTEM, and three more that were
-//  never in it. `__field`, `__field--stacked`, `__control` and `__label` are gone,
-//  along with `__messages`, and the template no longer emits any of them: every
-//  field is an `app-form-field`, and the variant classes it takes —
-//  `form-field--inline`, `form-field--multiline`, `form-field--stacked` — belong to
-//  the shared component's own stylesheet and must NOT be declared here. A rule
-//  written for one of those names in this file would be scoped to this component and
-//  would not reach the shared component's shadowed internals anyway.
-//  WHAT THE SCREEN CONSUMES. The workspace carries nine shared components — page
-//  header, data table, pagination, form field, search input, confirm dialog,
-//  error banner, loading spinner and empty state — plus the `hasPermission`
-//  directive, `core/config/api-endpoints.ts` and the wire models under
-//  `core/models/`. It also carries `core/services/module.service.ts`,
-//  `core/services/tab.service.ts`, `core/services/notification.service.ts` and
-//  the signal store at `core/state/module.store.ts`, and the component is a
-//  ROUTED screen: it resolves its own module from the `moduleId` route input
-//  through that store, so its data arrives from the store's signals rather than
-//  from a host. The presentation inputs it still declares are an override seam
-//  for a host that wants to pin a value, and every one of them falls through to
-//  the store when nothing is pinned — which is also what the router assigning
-//  `undefined` to a name the route cannot supply has to mean.
-//
-//  Nothing below depends on which of those two sources a value came from: this
-//  file styles the rendered structure only, and the structure is identical
-//  either way.
-// =============================================================================
-//  module-settings.component.scss
-//  Per-instance module settings screen — the `loadComponent` route
-//  'modules/:moduleId/settings' in src/app/app.routes.ts. No route guard is
-//  attached: this workspace carries no guard, and element-level gating is the
-//  `hasPermission` directive's job rather than the router's.
-// =============================================================================
-//
-//  WHAT THIS FILE OWNS, AND THE MUCH LARGER SET IT DOES NOT
-//  --------------------------------------------------------
-//  Angular view encapsulation already scopes every selector below, so the
-//  surface is deliberately flat: one block class, its element classes, two
-//  modifiers, and no descendant chain deeper than a single class. No selector
-//  pierces encapsulation, and none reaches into a shared component — the shared
-//  set owns its own appearance and this file only places it.
-//
-//  The global layer already supplies almost all of this screen's presentation,
-//  and every rule below was written only after confirming the global layer does
-//  NOT already provide it:
-//    _forms.scss    the section grouping box and its title, every label, every
-//                   text, choice and multi-line control, the buttons, and the
-//                   invalid / disabled / read-only / help states
-//    _reset.scss    the element baseline, the leading-hairline rule element, and
-//                   the focus ring on every natively focusable element
-//    _layout.scss   the page shell, the width-capped column, the content region
-//                   and the bordered panel
-//  What is left — and all that is left — is the arrangement BETWEEN those parts:
-//  the section nesting and its indent, the disclosure head, the field grid, the
-//  control rows and the command row. Nothing here restates a global rule.
-//
-//  LOADING THE SHARED ABSTRACTIONS — DEPTH DERIVED, NOT COPIED
-//  ----------------------------------------------------------
-//  The workspace configures no Sass load path: angular.json declares no
-//  stylePreprocessorOptions and tsconfig.json declares no baseUrl or path
-//  mapping, so every load is relative and a path off by one directory fails the
-//  build outright. Counted from this file:
-//        .            features/module/module-settings/
-//        ..           features/module/
-//        ../..        features/
-//        ../../..     app/
-//        ../../../..  src/            <- styles/ lives here
-//  Four levels, which the shared mixin partial's own verified path listing and
-//  the same-depth sibling screen in this feature folder both independently
-//  confirm.
-//
-//  Sass modules are per-file and never ambient: a load in the global stylesheet
-//  makes nothing visible here, so this file loads the mixin partial itself. The
-//  token partial is deliberately NOT loaded — tokens are custom properties that
-//  the global cascade already supplies, they are referenced through var() with
-//  no compile-time dependency, and loading that partial would emit a second
-//  document-root block into this component's scoped bundle. The four
-//  CSS-emitting partials are not loaded either, for the same reason: each would
-//  duplicate the entire global layer inside this one component and consume the
-//  four-kilobyte per-component style budget several times over.
+// COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+// ⚠ FOUR ENTRIES LEFT THIS LIST WITH THE FIELD SYSTEM, and three more that were never in it.
 @use '../../../../styles/mixins' as mx;
 
-// -----------------------------------------------------------------------------
-//  ROOT
-// -----------------------------------------------------------------------------
-//  Both selectors carry the same flow so the rhythm holds whether the sections
-//  sit directly on the host or inside one wrapper element. The host needs a
-//  box-generating display regardless: a custom element is inline by default and
-//  would not contain its block-level children correctly.
-//
-//  Type is set once here and inherited by every region below rather than
-//  restated per rule, which keeps the component self-sufficient — without it a
-//  heading or a control would fall back to the user agent's own serif default.
-//
-//  No colour is declared. The token vocabulary is closed at nine colours and
-//  deliberately contains no base-ink member; body text inherits the user agent
-//  default, which is exactly what the legacy body rule and its Normal text class
-//  did — both declared family, size and weight and no colour at all. Inheriting
-//  reproduces the measured legacy rendering without a palette entry that would
-//  merely restate a browser default.
+// ROOT
+// No colour is declared. The token vocabulary is closed at nine colours and deliberately contains no
+// base-ink member; body text inherits the user agent default, which is exactly what the legacy body rule
+// and its Normal text class did — both declared family, size and weight and no colour at all.
 :host,
 .module-settings {
   display: grid;
@@ -139,18 +15,8 @@
   line-height: var(--line-height-tight);
 }
 
-// -----------------------------------------------------------------------------
-//  SECTION DESCRIPTION
-// -----------------------------------------------------------------------------
-//  The three explanatory paragraphs that introduce the module, page and
-//  module-specific groups. Capped to a readable measure: the breakpoint helper
-//  read for a raw width is the sanctioned use of that function — what is barred
-//  is writing a media feature query by hand — and it is the only width source
-//  available, because the token vocabulary declares no measure token at all.
-//
-//  The looser line height is used here and only here. This is the one place on
-//  the screen that carries running prose rather than a label, a value or a
-//  command, and prose needs the extra leading to stay readable.
+// SECTION DESCRIPTION
+// The three explanatory paragraphs that introduce the module, page and module-specific groups.
 .module-settings__intro {
   margin-block: 0 var(--space-3);
   max-inline-size: mx.breakpoint('sm');
@@ -174,52 +40,12 @@
   gap: var(--space-2);
 }
 
-// MIGRATION: the legacy screen indented each nested group with a dedicated empty
-// spacer cell of twenty-five units, one per top-level group. That spacer has no
-// target equivalent — an empty presentational cell exists only to push its
-// neighbour across — so the indent is expressed as a leading margin on the
-// nested group itself, resolved to the sixth spacing step as the nearest member
-// of the declared scale. A margin rather than an inset because the legacy spacer
-// sat OUTSIDE the group it displaced, so a margin indents the group together
-// with its boundary exactly as the spacer did.
 .module-settings__section--nested {
   margin-inline-start: var(--space-6);
 }
 
-// -----------------------------------------------------------------------------
-//  DISCLOSURE HEAD
-// -----------------------------------------------------------------------------
-// MIGRATION: the seven heads carried cssclass="Head", the outer wrapper carried
-// class="Settings", the twenty-one label cells carried class="SubHead" and the
-// two horizontal choice groups carried cssclass="NormalTextBox". None of those
-// legacy class names is carried forward. The head is a semantic, keyboard
-// reachable element styled from tokens, and the legacy names appear nowhere in
-// this workspace.
-//
-// MIGRATION: this rule corrects a real legacy accessibility defect rather than
-// reproducing it. The legacy head rendered its toggle as an image button with an
-// explicitly negative tab index inside a plain division element, carrying no
-// expanded-state attribute — so the control that opened and closed four
-// initially-collapsed sections could not be reached by keyboard at all and
-// announced no state. The target head is natively focusable, carries the
-// expanded state, and takes a visible ring.
-//
-//  THERE IS DELIBERATELY NO DISPLAY DECLARATION HERE, and that omission is
-//  load-bearing. A disclosure summary is a list-item box, and its native
-//  triangle is the marker of that box: changing the display to flex or grid
-//  silently deletes the triangle in every engine that draws one. The triangle is
-//  the disclosure affordance, it is free, it inherits this rule's colour, and
-//  the only ways to replace it would be a referenced image — no raster asset is
-//  in scope and the referencing function is barred — or template markup this
-//  file does not own. So the native marker is kept and the display is left
-//  exactly as the element declares it.
-//
-//  The rule is written to hold whether the template renders the head as a
-//  disclosure summary or as a heading-wrapped button. A single class outweighs
-//  the global bare-element button rule, so the chrome that rule applies — a
-//  filled surface, a brand boundary and a horizontal inset — is neutralised back
-//  to a flat heading here. `transparent` and `0` are permitted literals and need
-//  no token.
+// DISCLOSURE HEAD
+// This rule corrects a real legacy accessibility defect rather than reproducing it.
 .module-settings__toggle {
   inline-size: var(--size-full);
   text-align: start;
@@ -236,124 +62,38 @@
 
   cursor: pointer;
 
-  // MIGRATION: the colour change is INSTANTANEOUS, and that is the compliant and
-  // the faithful outcome at once. The legacy stylesheets declare transition,
-  // animation and keyframe rules zero times each, so there is no motion to carry
-  // forward; the shared mixin surface exports no motion member and no
-  // reduced-motion guard; and a component may not author that guard itself,
-  // because raw media feature queries belong to the mixin partial alone. An
-  // unguarded transition would impose movement on a reader who has asked their
-  // system for less. Reported as a gap in the shared surface, not worked around.
-  //
-  // MIGRATION: the hover-capability guard cannot be expressed here either, for
-  // the same reason — the shared surface exposes no such mixin. The global form
-  // layer records the identical gap on its own control and button rules, so this
-  // follows an established, documented pattern rather than inventing one. The
-  // exposure is bounded to a single inherited colour change that a real tap
-  // immediately supersedes with the focus ring, so the consequence is cosmetic
-  // and self-correcting.
-  //
-  // Guarded on the two unavailable attributes rather than on `:enabled`, and the
-  // choice is forced rather than stylistic. This file documents above that the
-  // target template may render this head either as a native disclosure summary or
-  // as a heading-wrapped button, and `:enabled` matches NEITHER a `<summary>` nor
-  // any element outside the form-control set — so an `:enabled:hover` rule here
-  // would silently resolve to no hover at all on one of the two shapes the
-  // template is free to choose. The attribute form matches both, and it also
-  // covers `<button disabled>`, because a disabled button carries the `[disabled]`
-  // attribute as well as matching the pseudo-class.
   &:not([disabled]):not([aria-disabled='true']):hover {
     color: var(--color-primary-hover);
   }
 
-  // ⚠ NO FOCUS RING IS DECLARED HERE, AND THAT IS THE CORRECTION RATHER THAN THE
-  // OVERSIGHT. `_reset.scss` applies the very same `focus-ring` mixin to `a`, `button`,
-  // `input`, `select`, `textarea`, `summary` and every positively tab-indexed element,
-  // so this head is rung by the element baseline whichever of the two shapes the template
-  // settles on - and it settles on `<button>` at all seven sites. Including the mixin here
-  // as well emitted a byte-for-byte duplicate of a rule already in the stylesheet: the
-  // LARGEST rule in this file, 288 bytes of it, for no rendered difference whatsoever.
-  //
-  // The rationale it carried was that keeping the include beside the head's own chrome
-  // stops a future edit detaching the indicator. It does not: the ring is not this file's
-  // to detach. Nothing below suppresses an outline, and a component that genuinely needed
-  // its own ring - one drawn on a wrapper rather than on the focusable element - would
-  // include the mixin for THAT element rather than restate it for this one.
-
-  // ---------------------------------------------------------------------------
-  //  PRESS AND UNAVAILABLE — the two states this head previously had no
-  //  treatment for. Every selector below carries the same element-agnostic
-  //  attribute guard as the hover above, for the same reason: the template may
-  //  settle on a `<summary>`, and a pseudo-class from the form-control set would
-  //  quietly not apply to it.
-  // ---------------------------------------------------------------------------
-
-  // Press. The fill is the vocabulary's press signal, and the radius is included
-  // deliberately rather than inherited: this rule sets `border: 0` and
-  // `padding-inline: 0` above, so the head spans the full inline size of its
-  // section, and an unrounded tint across that whole width reads as a selected row
-  // in a grid rather than as a control being pressed. The radius contains it.
   &:not([disabled]):not([aria-disabled='true']):active {
     background-color: var(--color-selected);
     border-radius: var(--radius-sm);
   }
 
-  // Unavailable, native form. Matched by attribute rather than by `:disabled` so a
-  // non-button shape is covered too. The muted ink clears 4.5:1 against the
-  // section surface unaided, and the cursor is the second, non-colour cue.
   &[disabled] {
     color: var(--color-text-muted);
     cursor: not-allowed;
   }
 
-  // Unavailable, ARIA form — stays focusable and in the tab order so a keyboard
-  // user can still reach it and hear it announced as unavailable. No `cursor` and
-  // no `:hover` hold, matching the global layer: an element receiving no pointer
-  // events resolves no cursor and can never be a hit-test target.
-  //
-  // CONSUMER OBLIGATION — `pointer-events` guards the pointer only. CSS cannot
-  // suppress keyboard activation, so the component setting `aria-disabled` MUST
-  // also guard the click, Enter and Space paths; on a `<summary>` it must
-  // additionally prevent the native toggle, which no CSS property can inhibit.
-  // Where focusability is not required, prefer native `disabled` on a button.
+  // Unavailable, ARIA form — stays focusable and in the tab order so a keyboard user can still reach it and
+  // hear it announced as unavailable. No `cursor` and no `:hover` hold, matching the global layer: an
+  // element receiving no pointer events resolves no cursor and can never be a hit-test target.
   &[aria-disabled='true'] {
     color: var(--color-text-muted);
     pointer-events: none;
   }
 }
 
-// MIGRATION: the legacy head control emitted a separate no-shade rule element
-// beneath itself whenever its include-rule flag was set, and that flag was set
-// on exactly the three top-level heads. The rule is reproduced as a trailing
-// hairline on those three heads instead of as a separate element, from the
-// border tokens and in the same ink the element baseline gives a standalone
-// rule, so the two are indistinguishable. Carried by a modifier on the head
-// itself rather than by a descendant chain, so the template marks the three
-// heads that had the flag and no other selector has to know the nesting.
 .module-settings__toggle--ruled {
   border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
   padding-block-end: var(--space-2);
 }
 
-// -----------------------------------------------------------------------------
-//  THE THREE VERTICAL STACKS
-// -----------------------------------------------------------------------------
-//  A section's body, the field grid inside it, and the injected module-specific
-//  group. All three are the same thing — a single column at the section rhythm —
-//  and all three were declared separately with byte-for-byte identical bodies.
-//
-// ⚠ ONE RULE RATHER THAN THREE, AND A SELECTOR LIST RATHER THAN A MIXIN. A mixin
-// would read better and would emit exactly the same three copies, because a mixin
-// inlines; only a shared selector states the shared appearance once. Each of the
-// three keeps its own documented place below, describing what it is and carrying
-// whatever is particular to it, so nothing about this file's structure is lost.
-//
-// MIGRATION: the nine legacy layout tables that arranged this screen produce no
-// rule of any kind here — this component emits none of that element family and
-// this file styles none of it. That they were layout scaffolding rather than data
-// is settled by their own summary attributes: eight carried one, and three of
-// those eight are wrong or copy-pasted, two pairs of unrelated groups sharing a
-// single description between them. Grid replaces them.
+// THE THREE VERTICAL STACKS
+// A section's body, the field grid inside it, and the injected module-specific group. All three are the
+// same thing — a single column at the section rhythm — and all three were declared separately with
+// byte-for-byte identical bodies.
 .module-settings__body,
 .module-settings__fields,
 .module-settings__slot {
@@ -361,55 +101,12 @@
   gap: var(--space-3);
 }
 
-// -----------------------------------------------------------------------------
-//  THE FIELD SYSTEM THIS FILE NO LONGER OWNS
-// -----------------------------------------------------------------------------
-//  Five rules stood here - `__field`, `__field--stacked`, `__control`, `__messages`
-//  and `__label` - and with them roughly a hundred and fifty lines of reasoning
-//  about label tracks, measured legacy cell widths, a capped `minmax` bound and a
-//  message region's flex basis. All five are withdrawn. This screen composes every
-//  one of its fields through the shared `app-form-field` primitive, which owns the
-//  two-column arrangement, the responsive step, the label measure, the help
-//  disclosure and the assertive message region - and owns them once, for the whole
-//  application, instead of once here and once there.
-//
-//  ⚠ THE MEASURED DEFECT THAT USED TO LIVE HERE CANNOT RECUR, AND IT IS WORTH
-//  RECORDING WHY RATHER THAN JUST DELETING IT. The retired `__field` rule sized its
-//  label track with a bare `auto`, which has no upper bound; the help sentence sits
-//  INSIDE the caption; so at exactly 768px a 519.81px sentence sized the track and
-//  starved the control beside it - `input#module-settings-moduleTitle` rendered
-//  18.00 x 25px with its right edge at 770 against a client width of 768, the only
-//  overflow on any form screen in the application. It was clean at 767 and clean at
-//  1023, so nothing but a measurement at the exact step would ever have found it.
-//  That is the whole argument against a parallel field system: the bound had to be
-//  discovered and fixed HERE after being discovered and fixed in the shared
-//  component, and a second copy is a second place for it to be missing.
-//
-//  ⚠ ONE DELIBERATE VISUAL CHANGE. The retired rule capped its label track with
-//  `--field-label-inline-size-wide`, the 200px the legacy screen used on thirteen of
-//  its twenty-one label cells; the shared component uses `--field-label-inline-size`,
-//  the measured 150px, which is the value every other form surface in the
-//  application resolves against. The captions on this screen therefore align with
-//  the captions on every other screen instead of with a bound only this screen used.
-//  Design-system compliance outranks per-screen legacy fidelity, the help sentence
-//  still wraps inside the caption rather than pushing the control out of the row, and
-//  the change is recorded in MIGRATION_NOTES.md.
+// THE FIELD SYSTEM THIS FILE NO LONGER OWNS
+// Five rules stood here - `__field`, `__field--stacked`, `__control`, `__messages` and `__label` - and with
+// them roughly a hundred and fifty lines of reasoning about label tracks, measured legacy cell widths, a
+// capped `minmax` bound and a message region's flex basis. All five are withdrawn.
 
-// -----------------------------------------------------------------------------
-//  THE DECLARED-PERMISSION ADVISORY
-// -----------------------------------------------------------------------------
-//  The read-only list of keys the module's definition declares, rendered beneath
-//  the inherit switch. Presented at the same scale and in the same muted ink as
-//  the hint text directly above it, because it is advisory in exactly the same
-//  sense: it explains the field rather than participating in it, and giving it
-//  label weight would advertise a control that does not exist.
-//
-//  MIGRATION: the legacy screen carried this vocabulary as the column heads of an
-//  embedded permission grid. No grid is styled here - the grids of this
-//  application belong to the shared grid component - so the keys are laid out as
-//  a wrapping row of chips. The chip fill is the same selected-row token the
-//  legacy grid used for its own highlighted state, which keeps the borrowed
-//  vocabulary visually related to the grid it came from without reproducing one.
+// THE DECLARED-PERMISSION ADVISORY
 .module-settings__declared-permissions {
   display: flex;
   flex-wrap: wrap;
@@ -431,11 +128,6 @@
   color: var(--color-primary);
 }
 
-// MIGRATION: the surviving visibility choice group rendered horizontally in the
-// legacy screen and still does, but as a wrapping flex row rather than as a single
-// non-wrapping line. The row gap is the tighter step and the column gap the looser
-// one, which keeps the options distinguishable from one another when the row
-// wraps. The individual option labels are styled by the global form layer.
 .module-settings__choices {
   display: flex;
   flex-wrap: wrap;
@@ -443,13 +135,9 @@
   gap: var(--space-2) var(--space-4);
 }
 
-// -----------------------------------------------------------------------------
-//  INJECTED MODULE-SPECIFIC GROUP
-// -----------------------------------------------------------------------------
-//  The successor to the legacy panel that hosted each module's own settings
-//  control. Only flow and rhythm are declared: what is placed inside owns its own
-//  appearance, and this file must not presume it. Declared with the two stacks
-//  above, because only flow and rhythm are what those three have in common.
+// INJECTED MODULE-SPECIFIC GROUP
+// The successor to the legacy panel that hosted each module's own settings control. Only flow and rhythm
+// are declared: what is placed inside owns its own appearance, and this file must not presume it.
 
 // -----------------------------------------------------------------------------
 //  COMMAND ROW
@@ -548,90 +236,14 @@
   margin-block-start: var(--space-4);
 }
 
-// -----------------------------------------------------------------------------
-//  HIDDEN-ATTRIBUTE GUARD
-// -----------------------------------------------------------------------------
-//  Every block above is given a grid or a flex display value, and an author
-//  display value defeats the user-agent rule that gives the hidden attribute its
-//  effect. A group the template marks hidden would therefore stay on screen. The
-//  two rules below restore the attribute's meaning for this component's own
-//  elements, and for the component's own element when a parent marks it hidden.
-//
-//  This hides nothing by itself; it only honours a decision the template has
-//  already stated. A collapsed group whose toggle reports itself not expanded
-//  must also leave the accessibility tree, or the reported state contradicts what
-//  assistive technology can actually reach — so removing it is the correct
-//  behaviour here rather than a lapse of the rule against hiding announced
-//  content, which concerns content that carries no such author instruction.
-//
-//  Both forms are scoped to this component, so neither can reach inside a shared
-//  component and override an appearance this file does not own. Written once as a
-//  selector list rather than per block, which holds the emitted weight to ONE short
-//  rule instead of one per display declaration - and to one rather than the two it
-//  used to be, since the two selectors carried the identical single declaration.
-//
-// MIGRATION: the legacy screen had no equivalent and needed none. Its collapsible
-// groups were server-rendered panels whose visibility was decided before any
-// markup reached the browser, so there was no client-held hidden state to honour.
-// Net-new, and required by either of the two disclosure affordances the target
-// template may choose: a native disclosure group hides its own content, but a
-// toggle paired with a separately marked panel relies entirely on this guard.
 :host([hidden]),
 :host [hidden] {
   display: none;
 }
 
-// =============================================================================
-//  NET ADDITIONS AND DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
-// =============================================================================
-//
-// MIGRATION: every spacing value above resolves to the shared four-unit scale,
-// and that scale is itself a net addition — the legacy stylesheet has no spacing
-// system, only ad-hoc values with no intermediate step. The corner and elevation
-// scales are net additions for the same reason, and this screen uses NEITHER:
-// the legacy design is square-cornered and flat, both properties occurring zero
-// times across its one thousand and thirty lines, so no rounding and no shadow
-// is introduced. An intentional visual refinement that alters no behaviour.
-//
-// MIGRATION: the three near-identical legacy font stacks are consolidated into
-// the single base family token. No family name is written in this file; only the
-// token is referenced.
-//
-// MIGRATION: the legacy colour, border and alignment controls are absent because
-// the update contract deliberately does not bind those server-rendering fields.
-// Keeping them in this form would present edits the API silently discarded. None
-// becomes a token or is interpolated into a declaration.
-//
-// MIGRATION: rich text editing is not carried forward. The two multi-line
-// entries are plain multi-line controls, because the legacy editor provider is
-// out of scope. A deliberate functional reduction, not an oversight.
-//
-// MIGRATION: no data grid is styled here. The genuine grids of this application
-// are owned by the dedicated shared grid component and the global grid partial;
-// this screen has none, and its permissions region is a shared component that
-// owns its own appearance.
-// =============================================================================
-
-// -----------------------------------------------------------------------------
-//  THE SECTION HEADINGS
-// -----------------------------------------------------------------------------
-//  Each disclosure toggle is wrapped in a real heading so this screen's seven
-//  sections appear in the document outline. Before this, the screen exposed exactly
-//  ONE heading inside the main region - the page title - so a reader navigating by
-//  heading could reach the page and then nothing, and had to walk every control of
-//  every section to move between them. The toggle's own identifier was already
-//  named for a heading, which is what the markup had always intended.
-//
-//  LEVELS FOLLOW THE NESTING, not the reading order: the three outer sections are
-//  level two and the four sections nested inside them are level three, so no level
-//  is skipped and a child is never announced as its parent's sibling.
-//
-//  ⚠ THIS RULE IS WHAT MAKES THE CHANGE INVISIBLE, and it is the whole reason the
-//  class exists. A heading element carries a UA font size, a bold weight and a block
-//  margin, none of which these toggles were painted with; the wrapper collapses all
-//  three so the button renders exactly where and how it did before. The heading is
-//  added for the outline, never for the appearance - the button below keeps every
-//  one of its own visual states, including the pressed tint and the focus ring.
+// THE SECTION HEADINGS
+// Each disclosure toggle is wrapped in a real heading so this screen's seven sections appear in the
+// document outline.
 .module-settings__section-heading {
   margin: 0;
   font: inherit;
@@ -639,22 +251,9 @@
   letter-spacing: inherit;
 }
 
-//  THE STORED-SETTINGS DISCLOSURE
-// A definition list, because that is exactly what the data is: a name paired with
-// the value recorded against it. A table would claim a second axis this data does
-// not have, and a list of paragraphs would lose the pairing.
-// The VALUE measure is the load-bearing declaration here. The column admits 2000
-// characters and a real module in the measured data stores 750 of them, so the
-// value must wrap and must break inside an unbroken token: a setting value is
-// arbitrary text and is frequently a path, an identifier or serialised content
-// with no spaces in it at all. Without `anywhere` a single long token would push
-// the panel wider than its container and scroll the screen sideways - the same
-// defect, and the same remedy, as the alias cell on the portals listing.
-// `anywhere` rather than `break-word` deliberately: only `anywhere` reduces the
-// element's min-content contribution, which is what actually stops an unbroken
-// token from widening the ancestor. `break-word` breaks the line but leaves the
-// intrinsic width unchanged, so it would look correct until the container had to
-// shrink.
+// THE STORED-SETTINGS DISCLOSURE A definition list, because that is exactly what the data is: a name paired
+// with the value recorded against it. A table would claim a second axis this data does not have, and a list
+// of paragraphs would lose the pairing.
 .module-settings__stored {
   margin: var(--space-2) 0 0;
 }
@@ -664,10 +263,6 @@
   font-weight: var(--font-weight-bold);
   overflow-wrap: anywhere;
 }
-// The scope reads as an aside to the name it follows, so it is not emphasised and
-// not coloured as a value. It carries the one fact that decides whether an
-// operator should care: whether the value follows the module everywhere or belongs
-// to this placement alone.
 .module-settings__stored-scope {
   font-weight: var(--font-weight-normal);
   font-style: italic;
@@ -681,18 +276,11 @@
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-// The explicit "none recorded" statement. Muted, because it reports an absence
-// rather than a problem, and the vocabulary measures this ink above the text
-// contrast threshold on the page background.
 .module-settings__stored-empty {
   margin: var(--space-2) 0 0;
   color: var(--color-text-muted);
   line-height: var(--line-height-base);
 }
-// The blank-heading disclosure. Muted ink and the dense supporting step, because it
-// is a STATEMENT about an accepted value and not a refusal - the danger ink would
-// tell the operator their entry was rejected when it is perfectly valid and will be
-// saved. Deliberately outside the message container, which is where refusals live.
 .module-settings__notice {
   margin: var(--space-1) 0 0;
   max-inline-size: mx.breakpoint('md');

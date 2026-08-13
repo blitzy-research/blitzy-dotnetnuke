@@ -8,30 +8,11 @@ using Xunit;
 
 namespace DnnMigration.IntegrationTests.Infrastructure;
 
-// THE CONCRETE READINESS PROBE IS THE SUBJECT OF THIS FILE. Every fact below runs
-// DnnMigration.Infrastructure.HealthChecks.DatabaseHealthCheck itself. The type is internal sealed, and
-// the owning project grants this assembly - and only this assembly - internals visibility for exactly
-// this purpose; the justification is written next to that item in
-// backend/src/DnnMigration.Infrastructure/DnnMigration.Infrastructure.csproj.
-//
-// NO FACT HERE REACHES A DATABASE, and none needs to. The probe's own behaviour is entirely a matter of
-// which of its three outcomes it selects, and each outcome is reachable without a reachable instance:
-// the absent-configuration verdict is decided before any connection is constructed, the cancellation
-// path is decided by an already-signalled token, and the unavailable verdict is reached by a connection
-// string the provider itself refuses to parse. Whether a real instance can be opened is settled by the
-// integration suite, which is where a dependency on a running SQL Server belongs.
-//
-// THE FILTER THESE FACTS EXIST TO PIN was added because the probe converted the CALLER'S OWN
-// cancellation into an unhealthy verdict. Two things followed. A probe deadline, or the host shutting
-// down, published a spurious database outage - and both the container HEALTHCHECK and the compose
-// dependency read this signal, so a shutdown could be recorded by whatever was watching as a database
-// failure. And the cancellation contract was broken: the infrastructure that supplies the token
-// distinguishes "we stopped asking" from "we asked and the answer was no" by whether cancellation
-// surfaces, and swallowing it collapsed the two.
+// NO FACT HERE REACHES A DATABASE, and none needs to.
 
 /// <summary>
-/// Facts covering the SQL Server readiness probe's three outcomes, and in particular the boundary
-/// between a probe the caller abandoned and a database that could not be reached.
+/// Facts covering the SQL Server readiness probe's three outcomes, and in particular the boundary between a
+/// probe the caller abandoned and a database that could not be reached.
 /// </summary>
 [Trait("Category", "Integration")]
 public sealed class DatabaseHealthCheckTests
@@ -79,8 +60,8 @@ public sealed class DatabaseHealthCheckTests
     }
 
     /// <summary>
-    /// A cancelled token PROPAGATES as cancellation and is not converted into a verdict, because a probe the
-    /// caller abandoned has established nothing about the database.
+    /// A cancelled token PROPAGATES as cancellation and is not converted into a verdict, because a probe
+    /// the caller abandoned has established nothing about the database.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
@@ -108,10 +89,9 @@ public sealed class DatabaseHealthCheckTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The counterpart to the cancellation fact, and together with it the whole of the discrimination the
-    /// filter performs: the filter reads nothing but the token, so a driver-level connect timeout - which is
-    /// cancellation-SHAPED yet leaves the caller's token unsignalled - takes this same path by construction.
-    /// An escaping fault here would break the endpoint itself and take the frontend that waits on it down
-    /// with it, which is why only cancellation is ever raised.
+    /// filter performs: the filter reads nothing but the token, so a driver-level connect timeout - which
+    /// is cancellation-SHAPED yet leaves the caller's token unsignalled - takes this same path by
+    /// construction.
     /// </remarks>
     [Fact]
     public async Task CheckHealth_WhenTheStoreCannotBeReached_ReportsUnhealthyAndCarriesTheError()
@@ -125,10 +105,7 @@ public sealed class DatabaseHealthCheckTests
 
         // The RAISED ERROR IS DELIBERATELY NOT ATTACHED. A provider's own message for an unreachable
         // instance routinely names the server, the database and sometimes the login, and the framework's
-        // health reporting renders whatever it is given. What identifies the failure instead is its type
-        // name, carried as a data entry that no response writer emits - enough to tell a socket refusal
-        // from a login refusal from a malformed configured value, and incapable of carrying an address or
-        // a credential.
+        // health reporting renders whatever it is given.
         result.Exception.Should().BeNull();
         result.Data.Should().ContainKey("failureKind");
         result.Data["failureKind"].Should().BeOfType<string>()
@@ -162,21 +139,12 @@ public sealed class DatabaseHealthCheckTests
         result.Status.Should().Be(HealthStatus.Unhealthy);
     }
 
-    /// <summary>
-    /// Builds the probe over a configuration carrying the one key it reads.
-    /// </summary>
+    /// <summary>Builds the probe over a configuration carrying the one key it reads.</summary>
     /// <param name="connectionString">
     /// The value to publish under <c>ConnectionStrings:Default</c>, or <see langword="null"/> to publish no
     /// value at all - which is the state a container is in before its environment is complete.
     /// </param>
     /// <returns>A probe reading that configuration.</returns>
-    /// <remarks>
-    /// The seam is the ABSTRACTION rather than a built configuration root, and deliberately: this project's
-    /// manifest carries no configuration-provider package, only what flows from the layer under test, so
-    /// binding an in-memory provider here would mean adding a dependency to assert a value the probe reads
-    /// through one indexer. The double reproduces exactly the path <c>GetConnectionString</c> takes - the
-    /// <c>ConnectionStrings</c> section, then the named key - so the production call is unmodified.
-    /// </remarks>
     private static DatabaseHealthCheck CheckWith(string? connectionString)
     {
         var section = new Mock<IConfigurationSection>(MockBehavior.Loose);
@@ -185,9 +153,6 @@ public sealed class DatabaseHealthCheckTests
         var configuration = new Mock<IConfiguration>(MockBehavior.Strict);
         configuration.Setup(c => c.GetSection("ConnectionStrings")).Returns(section.Object);
 
-        // MIGRATION: the probe gained a logger when the raised error stopped being attached to the result.
-        // The classification it writes is asserted by the suite that owns that behaviour; here the logger
-        // exists only so the constructor is satisfiable, which is why a plain no-op double is correct.
         return new DatabaseHealthCheck(configuration.Object, NullLogger<DatabaseHealthCheck>.Instance);
     }
 

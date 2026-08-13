@@ -9,22 +9,9 @@ namespace DnnMigration.IntegrationTests.Infrastructure;
 /// Guards the response-header policy the reverse proxy states in <c>docker/security-headers.conf</c>.
 /// </summary>
 /// <remarks>
-/// <para>
 /// INFO-02. The administration console's document advertised <c>ROBOTS: INDEX, FOLLOW</c> - the legacy
-/// portal's own declaration, carried forward verbatim - while nothing this deployment serves has an audience
-/// a crawler represents. The exclusion is now stated where it reaches every served path, as
-/// <c>X-Robots-Tag: noindex, nofollow</c> in the shared snippet, rather than as a meta element that only an
-/// HTML parser reaching this one document would ever read.
-/// </para>
-/// <para>
-/// THESE FACTS READ THE FILE AN OPERATOR SHIPS. The snippet is linked into this project as an embedded
-/// resource from <c>docker/</c>, not copied, so a header removed from the deployment artefact cannot leave a
-/// green test behind. They are unit-shaped on purpose - no daemon, no container, no network - because what
-/// they protect is the DECLARATION. The complementary evidence that the declaration actually travels on a
-/// response is a runtime probe against the built image, which is recorded with the checkpoint rather than
-/// here, since a fact requiring a daemon would be skipped in exactly the environments where a silent
-/// regression matters most.
-/// </para>
+/// portal's own declaration, carried forward verbatim - while nothing this deployment serves has an
+/// audience a crawler represents.
 /// </remarks>
 [Trait("Category", "Integration")]
 public sealed class ResponseHeaderPolicyTests
@@ -75,15 +62,12 @@ public sealed class ResponseHeaderPolicyTests
             "so the links must not be walked either");
     }
 
-    /// <summary>
-    /// Every declared header carries <c>always</c>.
-    /// </summary>
+    /// <summary>Every declared header carries <c>always</c>.</summary>
     /// <remarks>
     /// This is the mechanism the crawler exclusion depends on, so it is asserted rather than assumed.
     /// Without <c>always</c> nginx emits an <c>add_header</c> only on 2xx, 204, 301, 302, 303, 304, 307 and
-    /// 308 - so the 401 the API proxy returns to an unauthenticated crawler, the 404 for a missing asset and
-    /// the 503 the gateway synthesises would all travel with no policy at all. A header that is absent from
-    /// precisely the responses an anonymous fetch receives is not a policy.
+    /// 308 - so the 401 the API proxy returns to an unauthenticated crawler, the 404 for a missing asset
+    /// and the 503 the gateway synthesises would all travel with no policy at all.
     /// </remarks>
     [Fact]
     public void EveryDeclaredHeaderIsEmittedOnEveryResponseStatus()
@@ -107,9 +91,7 @@ public sealed class ResponseHeaderPolicyTests
             "headers would be missing from the 401, 404 and 503 responses an anonymous request receives");
     }
 
-    /// <summary>
-    /// Reads the deployment's own snippet out of this assembly.
-    /// </summary>
+    /// <summary>Reads the deployment's own snippet out of this assembly.</summary>
     /// <returns>The snippet's text.</returns>
     /// <exception cref="InvalidOperationException">The linked resource is missing from the build.</exception>
     private static string ReadSnippet()

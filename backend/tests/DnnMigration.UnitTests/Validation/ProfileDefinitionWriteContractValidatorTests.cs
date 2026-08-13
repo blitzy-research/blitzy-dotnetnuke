@@ -1,65 +1,3 @@
-// MIGRATION: this suite is the parity proof for
-// Application/Validation/CreateProfilePropertyDefinitionRequestValidator.cs and
-// Application/Validation/UpdateProfilePropertyDefinitionRequestValidator.cs. Its subject is not "do the
-// validators reject bad input" but "do they enforce exactly the rule set the legacy profile-definition editor
-// enforced, and no more, and do they enforce it IDENTICALLY on both verbs". Every assertion names the legacy
-// declaration or the schema statement it reproduces, and the boundary lengths are asserted on both sides
-// rather than sampled, because an off-by-one in a width rule is the defect a length test exists to catch.
-//
-// MIGRATION: every shared rule is asserted against BOTH validators rather than against one of them. The two
-// verbs bind two request types because the terminal procedures honour different member sets, and the risk a
-// split introduces is precisely that a rule holds on one verb and not the other - a caller could then bypass
-// it by choosing the other verb. Asserting once per validator is what makes that impossible to regress
-// silently, and it is why almost every test below carries two lambdas rather than one.
-//
-// MIGRATION: the legacy declarations, measured rather than assumed. Website/admin/Users/
-// EditProfileDefinition.ascx declares ZERO validators of any kind: its whole field set is one
-// <dnn:propertyeditorcontrol id="Properties"> at L23, a reflective editor from the excluded control library
-// that renders its validators from ATTRIBUTES on the object being edited. The authoritative declarations are
-// therefore on Library/Components/Users/Profile/ProfilePropertyDefinition.vb, and there are exactly three:
-//   PropertyCategory L193  <Required(True), SortOrder(2)>
-//   PropertyName     L228  <Required(True), IsReadOnly(True), SortOrder(0),
-//                           RegularExpressionValidator("^[a-zA-Z0-9._%\-+']+$")>
-//   ViewOrder        L300  <Required(True), SortOrder(8)>
-// Every other member - DataType L91, DefaultValue L109, Length L141, Required L264, ValidationExpression
-// L282, Visible L318, Visibility L336 - carries a sort order and nothing else. The tests below account for
-// all three declarations and, in the ABSENCES section, for every member that must remain unconstrained.
-//
-// MIGRATION: the two widened columns are the load-bearing part of this file. ValidationExpression was
-// created nvarchar(100) (03.02.03:L1074) and widened to nvarchar(2000) by 04.03.05:L17; DefaultValue was
-// created nvarchar(50) (03.02.03:L1069) and widened to ntext by 04.05.00:L1593. A rule taking the CREATING
-// width would refuse values that any database upgraded past those scripts already stores, so this suite
-// asserts 2000 as a hard boundary and asserts that the default value is bounded by nothing at all. Those
-// two tests are the reason the suite exists as a parity proof rather than as a smoke test.
-//
-// MIGRATION: the MEMBER CENSUS tests at the foot of this file are the direct proof that the write contracts
-// advertise only what the procedures honour. They assert the exact public member set of each request against
-// the parameter list of the procedure behind it, so a member re-added to either contract without a procedure
-// that writes it fails here by name.
-//
-// THIS SUITE IS NOW THE ONLY PROFILE-DEFINITION VALIDATOR SUITE, AND IT CARRIES EVERY ASSERTION THE DELETED
-// ONE DID. A sibling file used to run twenty-five tests against the validator declared for the RESPONSE
-// projection, ProfilePropertyDefinitionDto. No controller action binds that type - both write verbs bind the
-// two request contracts asserted here - so assembly scanning made that validator resolvable without making it
-// reachable, and its tests reported confidence in rules no request path applied. It was deleted rather than
-// annotated. Nothing was lost, and the mapping is exhaustive:
-//   * name presence, width and pattern; category presence and width; expression width; the
-//     report-only-the-presence-failure and report-only-the-length-failure orderings; the both-rules cascade;
-//     the append-order affordance; the unconstrained data type, length and default value - all present below,
-//     and asserted on BOTH verbs rather than on one type;
-//   * its negative data-type and negative length refusals had NO legacy counterpart. The authoritative
-//     declarations listed above give those two members a sort order and nothing else, so the write contracts
-//     correctly carry no numeric rule; the -1 rows on DataType_CarriesNoRule and Length_CarriesNoRule pin
-//     that deliberately. A numeric guard added later must therefore change those tests knowingly rather than
-//     discover them by surprise;
-//   * its visibility-range refusal governed a member the write contracts do not publish and the terminal
-//     schema does not carry as a column at all. NeitherWriteContract_AdvertisesAMemberItCannotHonour is the
-//     stronger statement of the same fact: the value cannot be submitted, so no rule about it is needed;
-//   * its no-bound-identifier assertions covered PortalId and PropertyDefinitionId, which arrive from the
-//     route. The same census test proves neither contract publishes them, which again supersedes a rule.
-// That the rules really run on the request path - the one thing no unit suite can show - is proven by
-// ProfileDefinitionWrites_AreValidatedByTheValidatorResolvedForEachVerb in
-// backend/tests/DnnMigration.IntegrationTests/Api/RequestValidationContractTests.cs.
 using System.Reflection;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Application.Validation;
@@ -70,25 +8,16 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Proves rule-for-rule parity between the two profile-definition write validators and the three declarative
-/// validators the legacy property editor rendered from
-/// <c>Library/Components/Users/Profile/ProfilePropertyDefinition.vb</c>, together with the terminal widths of
-/// the columns that store the payload - and proves that the two validators agree with each other.
+/// Proves rule-for-rule parity between the two profile-definition write validators and the three
+/// declarative validators the legacy property editor rendered from
+/// <c>Library/Components/Users/Profile/ProfilePropertyDefinition.vb</c>, together with the terminal widths
+/// of the columns that store the payload - and proves that the two validators agree with each other.
 /// </summary>
 /// <remarks>
-/// <para>
-/// Both halves of every failure are asserted, never just the fact of failure. The property name becomes the
-/// key and the message the value in the <c>errors</c> dictionary of the RFC 7807 payload a client consumes,
-/// so a test that checked only <see cref="ValidationResult.IsValid"/> would prove a rule fires without
-/// proving it reports what a caller can act on.
-/// </para>
-/// <para>
 /// MIGRATION: the two verbs no longer share one projection type, so the round-trip concern that shaped the
-/// previous suite has changed rather than disappeared. A caller still reads a definition, edits one field and
-/// sends it back, but it now sends back a narrower shape whose surplus members the deserialiser ignores.
-/// Several tests below therefore still assert that values the API itself emits - a view order of -1, a
-/// data-type key from the excluded lookup - are not refused, because that round trip has to keep working.
-/// </para>
+/// previous suite has changed rather than disappeared. A caller still reads a definition, edits one field
+/// and sends it back, but it now sends back a narrower shape whose surplus members the deserialiser
+/// ignores.
 /// </remarks>
 public class ProfileDefinitionWriteContractValidatorTests
 {
@@ -140,8 +69,8 @@ public class ProfileDefinitionWriteContractValidatorTests
     private readonly UpdateProfilePropertyDefinitionRequestValidator _update = new();
 
     /// <summary>
-    /// Builds the minimum create request the legacy editor would have accepted: the two required strings and
-    /// nothing else supplied.
+    /// Builds the minimum create request the legacy editor would have accepted: the two required strings
+    /// and nothing else supplied.
     /// </summary>
     /// <param name="mutate">Applied to the baseline so a test changes exactly one field.</param>
     /// <returns>A create request.</returns>
@@ -312,24 +241,13 @@ public class ProfileDefinitionWriteContractValidatorTests
     // PropertyName - Required(True) + RegularExpressionValidator + column width
     // ------------------------------------------------------------------------
 
-    /// <summary>
-    /// The property name is required on BOTH verbs, reproducing <c>Required(True)</c> at L228.
-    /// </summary>
+    /// <summary>The property name is required on BOTH verbs, reproducing <c>Required(True)</c> at L228.</summary>
     /// <param name="propertyName">The submitted name.</param>
     /// <remarks>
-    /// <para>
     /// A whitespace-only name is treated as absent. That is a documented narrowing rather than a
     /// reproduction: the legacy required rule trimmed before testing, so it too refused a name of spaces,
     /// but the name is also the key a profile value is addressed by and the column is uniquely indexed, so
     /// admitting whitespace would create a key nobody can type.
-    /// </para>
-    /// <para>
-    /// MIGRATION: requiring the name on the UPDATE verb is not a copy of the create rule. The terminal
-    /// procedure <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) assigns
-    /// <c>PropertyName = @PropertyName</c>, so an omitted name on that path would blank a <c>NOT NULL</c>
-    /// column. The <c>IsReadOnly(True)</c> attribute the legacy class carries is a rendering hint to the
-    /// reflective editor, not a statement that the store refuses the write.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData("")]
@@ -387,14 +305,14 @@ public class ProfileDefinitionWriteContractValidatorTests
     }
 
     /// <summary>
-    /// Every character class the legacy pattern admits is accepted on both verbs, so the pattern was carried
-    /// across rather than approximated.
+    /// Every character class the legacy pattern admits is accepted on both verbs, so the pattern was
+    /// carried across rather than approximated.
     /// </summary>
     /// <param name="propertyName">A name built only from admitted characters.</param>
     /// <remarks>
     /// The pattern is <c>^[a-zA-Z0-9._%\-+']+$</c>: letters, digits, dot, underscore, percent, hyphen, plus
-    /// and apostrophe. The hyphen and the apostrophe matter in practice - real installations carry names such
-    /// as <c>Address-2</c> - and the apostrophe is the one that a naive tightening would drop first.
+    /// and apostrophe. The hyphen and the apostrophe matter in practice - real installations carry names
+    /// such as <c>Address-2</c> - and the apostrophe is the one that a naive tightening would drop first.
     /// </remarks>
     [Theory]
     [InlineData("City")]
@@ -412,8 +330,8 @@ public class ProfileDefinitionWriteContractValidatorTests
             update => update.PropertyName = propertyName);
 
     /// <summary>
-    /// A character outside the legacy pattern is refused with the pattern message on both verbs, and a space
-    /// is the case that matters most because it is the one a caller is likeliest to try.
+    /// A character outside the legacy pattern is refused with the pattern message on both verbs, and a
+    /// space is the case that matters most because it is the one a caller is likeliest to try.
     /// </summary>
     /// <param name="propertyName">A name carrying a refused character.</param>
     [Theory]
@@ -454,9 +372,7 @@ public class ProfileDefinitionWriteContractValidatorTests
     // PropertyCategory - Required(True) + column width
     // ------------------------------------------------------------------------
 
-    /// <summary>
-    /// The property category is required on both verbs, reproducing <c>Required(True)</c> at L193.
-    /// </summary>
+    /// <summary>The property category is required on both verbs, reproducing <c>Required(True)</c> at L193.</summary>
     /// <param name="propertyCategory">The submitted category.</param>
     [Theory]
     [InlineData("")]
@@ -501,12 +417,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// editor was a free-text box and installations invent their own.
     /// </summary>
     /// <param name="propertyCategory">A heading outside the shipped four.</param>
-    /// <remarks>
-    /// The shipped definitions use Name, Address, Contact Info and Preferences. A closed list would refuse
-    /// every heading an administrator added, and no legacy declaration constrained the value - note in
-    /// particular that a space is admitted here, unlike in the property name, because only the name carried
-    /// a pattern.
-    /// </remarks>
     [Theory]
     [InlineData("Contact Info")]
     [InlineData("Employment History")]
@@ -527,8 +437,9 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// <param name="accepted">Whether that length is within the ceiling.</param>
     /// <remarks>
     /// The terminal column remains <c>nvarchar(2000)</c> for immutable-schema compatibility. New writes are
-    /// intentionally narrower because tenant-authored expressions are compiled and evaluated against profile
-    /// values; 512 characters, the bounded collection size and the matching timeout together limit that work.
+    /// intentionally narrower because tenant-authored expressions are compiled and evaluated against
+    /// profile values; 512 characters, the bounded collection size and the matching timeout together limit
+    /// that work.
     /// </remarks>
     [Theory]
     [InlineData(100, true)]
@@ -573,11 +484,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// The expression is not itself parsed as a regular expression, and a syntactically invalid one is
     /// accepted on both verbs.
     /// </summary>
-    /// <remarks>
-    /// The stored expression is a rule applied to PROFILE INPUT later, not a rule about this field, and no
-    /// legacy declaration compiled it. Compiling it here would also hand an unauthenticated caller a way to
-    /// spend server time on a pathological pattern.
-    /// </remarks>
     [Fact]
     public void ValidationExpression_IsNotItselfCompiled()
         => ShouldAcceptBoth(
@@ -592,11 +498,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// The default value carries NO length rule on either verb, because its column was widened from
     /// <c>nvarchar(50)</c> to <c>ntext</c>.
     /// </summary>
-    /// <remarks>
-    /// A rule of 50 would refuse values that any database upgraded past <c>04.05.00.SqlDataProvider</c>
-    /// already stores, so a value comfortably past both the old width and the expression's ceiling is
-    /// asserted as acceptable.
-    /// </remarks>
     [Fact]
     public void DefaultValue_IsBoundedByNothingOnBothVerbs()
     {
@@ -614,11 +515,8 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// <param name="viewOrder">The submitted order.</param>
     /// <remarks>
     /// The terminal create procedure branches on <c>IF @vieworder = -1</c> (<c>04.06.00:L1112</c>) and
-    /// substitutes the current maximum order plus one, so -1 is the only way a caller can say "append to the
-    /// end". A lower-bound rule would remove that, which is why this test names the value explicitly. The
-    /// terminal UPDATE procedure carries no such branch and stores -1 verbatim; that difference belongs to
-    /// the procedures and changes nothing about the rules, because a bound would refuse a value the store
-    /// accepts on either path.
+    /// substitutes the current maximum order plus one, so -1 is the only way a caller can say "append to
+    /// the end". A lower-bound rule would remove that, which is why this test names the value explicitly.
     /// </remarks>
     [Theory]
     [InlineData(-1)]
@@ -631,8 +529,8 @@ public class ProfileDefinitionWriteContractValidatorTests
             update => update.ViewOrder = viewOrder);
 
     /// <summary>
-    /// The data-type key carries NO rule on either verb, because it references the excluded lookup subsystem
-    /// and no set exists here to test membership of.
+    /// The data-type key carries NO rule on either verb, because it references the excluded lookup
+    /// subsystem and no set exists here to test membership of.
     /// </summary>
     /// <param name="dataType">The submitted key.</param>
     [Theory]
@@ -645,8 +543,8 @@ public class ProfileDefinitionWriteContractValidatorTests
             update => update.DataType = dataType);
 
     /// <summary>
-    /// The length carries no rule on either verb, and zero in particular is accepted because it legitimately
-    /// means "unbounded" for a text property and is the column's own default.
+    /// The length carries no rule on either verb, and zero in particular is accepted because it
+    /// legitimately means "unbounded" for a text property and is the column's own default.
     /// </summary>
     /// <param name="length">The submitted length.</param>
     [Theory]
@@ -663,11 +561,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// uses are accepted.
     /// </summary>
     /// <param name="moduleDefId">The submitted module-definition key.</param>
-    /// <remarks>
-    /// The column is nullable in the terminal schema and the legacy class seeded the member with the -1
-    /// null-integer sentinel, so neither a negative nor a zero value means "unset" in a way this layer could
-    /// correctly refuse. Whether the key names a row is a question about stored state.
-    /// </remarks>
     [Theory]
     [InlineData(null)]
     [InlineData(0)]
@@ -680,10 +573,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// A submission that breaks both string rules reports BOTH members on both verbs, because class-level
     /// cascade continues.
     /// </summary>
-    /// <remarks>
-    /// One round trip has to surface every bad field. A caller forced to discover them one at a time would
-    /// make several requests to learn what one response could have told it.
-    /// </remarks>
     [Fact]
     public void ASubmissionBreakingBothStringRules_ReportsBoth()
     {
@@ -727,9 +616,7 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// <remarks>
     /// <c>AddPropertyDefinition</c> (<c>04.06.00:L1101</c>) declares eleven parameters: <c>@PortalId</c>,
     /// which arrives from the route or from the resolved tenant rather than from the body, plus the ten
-    /// asserted here. A member added to this contract without a procedure parameter that writes it would be
-    /// a member the boundary advertises and the store ignores, which is the defect this census exists to
-    /// prevent recurring.
+    /// asserted here.
     /// </remarks>
     [Fact]
     public void TheCreateContract_CarriesExactlyTheMembersTheInsertProcedureWrites()
@@ -749,16 +636,9 @@ public class ProfileDefinitionWriteContractValidatorTests
             });
 
     /// <summary>
-    /// The update contract carries EXACTLY the nine body members the terminal update procedure declares, and
-    /// in particular carries NO module-definition key.
+    /// The update contract carries EXACTLY the nine body members the terminal update procedure declares,
+    /// and in particular carries NO module-definition key.
     /// </summary>
-    /// <remarks>
-    /// <c>UpdatePropertyDefinition</c> (<c>04.05.00:L1685</c>) declares ten parameters:
-    /// <c>@PropertyDefinitionId</c>, which arrives from the route, plus the nine asserted here. It declares
-    /// no <c>@ModuleDefId</c> and its <c>UPDATE ... SET</c> list does not name the column, so a caller that
-    /// submitted one previously had it silently discarded. That is exactly why the two verbs cannot share one
-    /// request type.
-    /// </remarks>
     [Fact]
     public void TheUpdateContract_CarriesExactlyTheMembersTheUpdateProcedureWrites()
         => MemberNamesOf<UpdateProfilePropertyDefinitionRequest>().Should().BeEquivalentTo(
@@ -779,13 +659,6 @@ public class ProfileDefinitionWriteContractValidatorTests
     /// Neither write contract advertises a member that arrives from the route, is assigned by the store, or
     /// is not a column on the table at all.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: both verbs previously bound the response projection, which carried
-    /// <c>PropertyDefinitionId</c>, <c>PortalId</c> and <c>Visibility</c>. The first two arrive from the
-    /// route and the third is not a column on <c>ProfilePropertyDefinition</c> at any point in the 88-script
-    /// chain, so all three were advertised and ignored. This test is the standing proof that none of them has
-    /// been re-added.
-    /// </remarks>
     [Fact]
     public void NeitherWriteContract_AdvertisesAMemberItCannotHonour()
     {

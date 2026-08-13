@@ -1,101 +1,3 @@
-// MIGRATION: this service replaces Library/Components/Users/UserController.vb, all 1,372 lines of
-// which were Shared (static) members reached without an instance, together with the business rules
-// that lived in the nine admin code-behinds under Website/admin/Users/. Every member below is an
-// instance method reached through an injected interface.
-//
-// MIGRATION: the by-reference status idiom is gone. UserController.vb:L156 (create), L200 (delete),
-// L433 (credential retrieval) and L638 (membership read) each mutated an argument and returned a
-// status, so one call produced two answers that no single type tied together. Every member here
-// returns a result: the persisted value on success, a code and a message on an expected failure.
-//
-// MIGRATION: nothing on this service returns, echoes, logs or reconstructs a credential. The legacy
-// reset at UserController.vb:L906 assigned the provider's answer onto the account and returned it, so
-// a clear-text credential travelled back to the caller; the retrieval member at L433 existed solely to
-// hand one out. Neither is reproduced, and the recovery question-and-answer pair that guarded
-// retrieval is omitted with them.
-//
-// MIGRATION: the legacy credential store was reversible - the membership provider was registered with
-// passwordFormat="Encrypted" and enablePasswordRetrieval="true" at Website/release.config:L236-L246,
-// with the key that decrypts every stored credential committed to source control at L89-L93. The
-// target hashes one way through the domain-owned hashing abstraction. During an explicitly enabled
-// migration window, the authentication service uses an isolated verifier to check the bounded legacy
-// membership representation and immediately replaces an accepted value with BCrypt. Administrative
-// reset on this service remains the fallback for unverifiable rows and for accounts that do not sign
-// in before that verifier is disabled.
-//
-// MIGRATION: the legacy password policy is preserved verbatim rather than tightened - minimum length
-// seven, no required non-alphanumeric characters, no question-and-answer requirement and electronic
-// mail uniqueness not enforced. Tightening a policy during a migration locks out existing account
-// holders, so any hardening is a separate, explicit decision.
-//
-// MIGRATION: the mail notifications the legacy switches controlled are dropped with the excluded mail
-// subsystem, which is why the notify flags on the request contracts are accepted and unused. The
-// deletion audit entry UserController.vb:L240 wrote survives as the API layer's structured request
-// log rather than as a row in the excluded event-log store.
-//
-// MIGRATION: the ambient caller accessor is gone. GetCurrentUserInfo at UserController.vb:L381 read the
-// acting account out of per-request state - HttpContext.Current.Items("UserInfo"), falling back to
-// Thread.CurrentPrincipal.Identity when there was no request at all - and, on every miss, returned a
-// NEWLY CONSTRUCTED empty account rather than nothing. That never-null contract is deliberately not
-// carried forward: it made "nobody is signed in" indistinguishable from "an account with no identifier",
-// so a caller that forgot to test the identifier silently operated as an anonymous ghost. The acting
-// caller arrives here through the injected ICurrentUser abstraction, which reports absence as absence,
-// and every member takes the identifiers it acts on as explicit arguments.
-//
-// MIGRATION: the ambient TENANT accessor is gone with it, and no PortalSettings type appears anywhere on
-// this service. The legacy delete reached PortalController.GetCurrentPortalSettings at
-// UserController.vb:L237 purely to label its audit entry, and that accessor read
-// HttpContext.Current.Items("PortalSettings") - a mutable per-request composite whose ActiveTab callers
-// could reassign mid-request. Every member here takes portalId as its first argument, so the tenant a
-// write lands in is fixed by the call rather than by whatever the request pipeline last stored. No type
-// from the presentation stack is reachable from this project at all: the layer graph gives Application a
-// reference to Domain only, so the ambient accessor could not be restated here even by accident.
-//
-// MIGRATION: nine further legacy members are deliberately absent, and the omissions are recorded here
-// rather than left to be discovered by their absence:
-// MIGRATION:  - DeleteUsers L273 and DeleteUnauthorizedUsers L293, the bulk sweeps. A reachable
-// MIGRATION:    "remove every account in this tenant" operation is a defect rather than a feature, and
-// MIGRATION:    neither has an endpoint in the target API. Deletion is one account per call.
-// MIGRATION:  - SetAuthCookie L919, whose body is EMPTY in this checkout. It wrote a forms-authentication
-// MIGRATION:    cookie, which has no counterpart under bearer authentication; sign-in and token issue
-// MIGRATION:    belong to the authentication and token contracts.
-// MIGRATION:  - GeneratePassword L314 and L330. A generated credential has to be transmitted to be
-// MIGRATION:    useful, which reintroduces exactly the disclosure that dropping retrieval removed.
-// MIGRATION:  - GetUserCreateStatus L598, the status-to-message map. Its wording came from the excluded
-// MIGRATION:    localisation mechanism; the status becomes a stable failure code on the result and the
-// MIGRATION:    wording is authored in the client.
-// MIGRATION:  - GetUserMembership L638. It was a Sub that mutated the account it was handed, so it
-// MIGRATION:    reported nothing at all; the membership facts it fetched are materialised on the account
-// MIGRATION:    by the repository read path instead.
-// MIGRATION:  - GetOnlineUsers L415, excluded with the users-online subsystem and its purge job, and
-// MIGRATION:    GetSuperUsers L1331, excluded with host-level administration.
-// MIGRATION:  - UpdateDisplayNames L1259, a bulk maintenance sweep with no endpoint.
-// MIGRATION:  - GetUserCountByPortal L582, omitted as redundant rather than excluded: the paged envelope
-// MIGRATION:    the listing member returns already carries the tenant-wide total, so a second member
-// MIGRATION:    answering the same question from a different query would be a second source of truth for
-// MIGRATION:    one number.
-// MIGRATION: The hydration and provider-synchronisation switches go with them - isHydrated, hydrateRoles,
-// MIGRATION: ProgressiveHydration, SynchronizeUsers and AddToMembershipProvider - because the shape of a
-// MIGRATION: response is settled by its data transfer object here, never by a caller-supplied switch.
-//
-// MIGRATION: the caching MEMBERS are dropped while the caching itself is not. GetCachedUser L350,
-// SettingsKey L924, GetCacheKey L1310 and CacheKey L1315 have no counterpart, because a cache key is an
-// implementation detail rather than part of an account service's surface. The 15 measured caching call
-// sites are served by the domain-owned caching abstraction, invoked inside the members below, and the two
-// stateful controller properties that configured the legacy type before a call - DisplayFormat L1210 and
-// PortalId L1219 - are gone with them. This service holds no mutable state of any kind.
-//
-// MIGRATION: THE OPTION STRICT ASYMMETRY IS RESOLVED TOWARDS THE STRICTER SIDE. The class library was
-// compiled with Option Strict ON (Library/DotNetNuke.Library.vbproj:L24 - note that L23 is OptionExplicit,
-// so a citation of L23 for Option Strict is off by one), but the admin code-behinds this service absorbs
-// its rules from were compiled with strict="false" (Website/release.config:L125) and could therefore rely
-// on late binding and implicit narrowing that C# rejects outright. Every such conversion is made explicit
-// here: text arriving from a stored setting is parsed with an invariant culture and an explicit fallback
-// rather than coerced, so a value the legacy screen would have silently collapsed to 0 or "" is either
-// parsed or refused. The read helpers at the foot of this file are where that happens, and the coercions
-// whose result could differ from the legacy one are itemised in MIGRATION_NOTES.md. This is also why the
-// nine code-behinds are treated as reference inputs for endpoint and screen semantics rather than as
-// candidates for line-by-line translation.
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.RegularExpressions;
@@ -115,9 +17,9 @@ using DnnMigration.Domain.Enums;
 namespace DnnMigration.Application.Services;
 
 /// <summary>
-/// Orchestrates accounts within a tenant: the account list and its filters, the account record itself,
-/// the credential transitions an administrator performs, the tenant-wide membership settings, and the
-/// profile property definitions together with the values accounts hold for them.
+/// Orchestrates accounts within a tenant: the account list and its filters, the account record itself, the
+/// credential transitions an administrator performs, the tenant-wide membership settings, and the profile
+/// property definitions together with the values accounts hold for them.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -126,46 +28,33 @@ namespace DnnMigration.Application.Services;
 /// reaches another tenant's accounts.
 /// </para>
 /// <para>
-/// Account columns, credential state, role membership and profile values are four separate concerns
-/// with four separate write paths. An ordinary column edit therefore cannot reinstate a locked account,
-/// approve an unapproved one or grant a role as a side effect.
+/// Account columns, credential state, role membership and profile values are four separate concerns with
+/// four separate write paths. An ordinary column edit therefore cannot reinstate a locked account, approve
+/// an unapproved one or grant a role as a side effect.
 /// </para>
 /// </remarks>
 public sealed class UserService : IUserService
 {
     /// <summary>Resource kind published on an audit record describing an account.</summary>
-    /// <remarks>
-    /// Spelled as the domain entity's own type name, so a reader of the trail can go from a record
-    /// straight to the type that produced it.
-    /// </remarks>
     private const string UserResourceType = "User";
 
     /// <summary>
-    /// Reported when more than one search filter is supplied, or when only one half of the
-    /// profile-property pair is supplied.
+    /// Reported when more than one search filter is supplied, or when only one half of the profile-property
+    /// pair is supplied.
     /// </summary>
     /// <remarks>
-    /// The token deliberately reads <c>filter-invalid</c> rather than <c>filter-conflict</c>, and matches the
-    /// name <c>PermissionService</c> already uses for the same situation. What this reports is a malformed
-    /// query string: the caller must change the request, and no amount of retrying or re-reading resource
-    /// state will help. A <c>conflict</c> token would be folded onto <c>409 Conflict</c> by the status
-    /// translator - which exists so that <see cref="PersistenceConflictCode"/>, a genuine optimistic-concurrency
-    /// failure, is reported as one - leaving a client unable to tell a request it must correct from a write
-    /// another caller won and which is worth retrying.
+    /// The token deliberately reads <c>filter-invalid</c> rather than <c>filter-conflict</c>, and matches
+    /// the name <c>PermissionService</c> already uses for the same situation. What this reports is a
+    /// malformed query string: the caller must change the request, and no amount of retrying or re-reading
+    /// resource state will help.
     /// </remarks>
     private const string ListFilterInvalidCode = "user.list.filter-invalid";
 
-    /// <summary>
-    /// Reported when the named profile property is not defined for the tenant.
-    /// </summary>
+    /// <summary>Reported when the named profile property is not defined for the tenant.</summary>
     private const string ListUnknownProfilePropertyCode = "user.list.unknown-profile-property";
 
     /// <summary>
-    /// Reported when a caller names an ordering the account listing cannot apply. Every ordering falls
-    /// into that category: the page is selected by the database under a fixed order, and three of the ten
-    /// columns the legacy grid bound live in the external membership store rather than in this database,
-    /// so no consistent caller-chosen ordering exists to offer. <c>SortableFields.Users</c> records the
-    /// measurement.
+    /// Reported when a caller names an ordering the account listing cannot apply.
     /// </summary>
     private const string ListSortUnsupportedCode = "user.list.sort-unsupported";
 
@@ -173,126 +62,78 @@ public sealed class UserService : IUserService
     /// Reported when a caller names an ordering the account picker cannot apply, which is any name other
     /// than the two captions a choice carries.
     /// </summary>
-    /// <remarks>
-    /// A code of its own rather than a reuse of <see cref="ListSortUnsupportedCode"/>, because the two
-    /// collections admit different sets and a client correcting a request needs to know which set it was
-    /// measured against. <c>SortableFields.UserChoices</c> is the set.
-    /// </remarks>
     private const string ChoiceSortUnsupportedCode = "user.choices.sort-unsupported";
 
-    /// <summary>
-    /// Reported when no such account exists within the tenant.
-    /// </summary>
+    /// <summary>Reported when no such account exists within the tenant.</summary>
     private const string NotFoundCode = "user.not-found";
 
-    /// <summary>
-    /// Reported when the account name is already taken somewhere in the installation.
-    /// </summary>
+    /// <summary>Reported when the account name is already taken somewhere in the installation.</summary>
     private const string CreateUsernameAlreadyExistsCode = "user.create.username-already-exists";
 
-    /// <summary>
-    /// Reported when the account name already holds a membership of this tenant.
-    /// </summary>
+    /// <summary>Reported when the account name already holds a membership of this tenant.</summary>
     private const string CreateUserAlreadyRegisteredCode = "user.create.user-already-registered";
 
-    /// <summary>
-    /// Reported when the credential store already holds a credential for the account name.
-    /// </summary>
+    /// <summary>Reported when the credential store already holds a credential for the account name.</summary>
     /// <remarks>
-    /// MIGRATION: the legacy creation status carried both this member and
-    /// <see cref="CreateUsernameAlreadyExistsCode"/> because two different checks produced them - the
-    /// application's own pre-check, and the membership provider's own duplicate detection. That
-    /// distinction is preserved: the pre-check reports the former, the credential store the latter.
+    /// The legacy creation status carried both this member and <see
+    /// cref="CreateUsernameAlreadyExistsCode"/> because two different checks produced them - the
+    /// application's own pre-check, and the membership provider's own duplicate detection. That distinction
+    /// is preserved: the pre-check reports the former, the credential store the latter.
     /// </remarks>
     private const string CreateDuplicateUsernameCode = "user.create.duplicate-username";
 
     /// <summary>
-    /// Reported when the electronic-mail address is already in use and the deployment requires
-    /// addresses to be unique.
+    /// Reported when the electronic-mail address is already in use and the deployment requires addresses to
+    /// be unique.
     /// </summary>
     private const string CreateDuplicateEmailCode = "user.create.duplicate-email";
 
-    /// <summary>
-    /// Reported when the submitted account name cannot be used.
-    /// </summary>
+    /// <summary>Reported when the submitted account name cannot be used.</summary>
     private const string CreateInvalidUsernameCode = "user.create.invalid-username";
 
-    /// <summary>
-    /// Reported when the submitted electronic-mail address cannot be used.
-    /// </summary>
+    /// <summary>Reported when the submitted electronic-mail address cannot be used.</summary>
     private const string CreateInvalidEmailCode = "user.create.invalid-email";
 
-    /// <summary>
-    /// Reported when the submitted credential does not satisfy the configured policy.
-    /// </summary>
+    /// <summary>Reported when the submitted credential does not satisfy the configured policy.</summary>
     private const string CreateInvalidPasswordCode = "user.create.invalid-password";
 
-    /// <summary>
-    /// Reported when the submitted credential and its confirmation differ.
-    /// </summary>
+    /// <summary>Reported when the submitted credential and its confirmation differ.</summary>
     private const string CreatePasswordMismatchCode = "user.create.password-mismatch";
 
-    /// <summary>
-    /// Reported when the tenant the account is being created in does not exist.
-    /// </summary>
+    /// <summary>Reported when the tenant the account is being created in does not exist.</summary>
     private const string CreatePortalAssignmentFailedCode = "user.create.portal-assignment-failed";
 
-    /// <summary>
-    /// Reported when the credential store could not be written.
-    /// </summary>
+    /// <summary>Reported when the credential store could not be written.</summary>
     private const string CreateProviderErrorCode = "user.create.provider-error";
 
-    /// <summary>
-    /// Reported when a concurrent edit changed the row first.
-    /// </summary>
+    /// <summary>Reported when a concurrent edit changed the row first.</summary>
     private const string PersistenceConflictCode = "persistence.conflict";
 
-    /// <summary>
-    /// Reported when the account is the tenant's designated administrator.
-    /// </summary>
+    /// <summary>Reported when the account is the tenant's designated administrator.</summary>
     private const string DeleteAdministratorProtectedCode = "user.delete.administrator-protected";
 
-    /// <summary>
-    /// Reported when the account is a host-level account and beyond tenant administration.
-    /// </summary>
+    /// <summary>Reported when the account is a host-level account and beyond tenant administration.</summary>
     private const string DeleteSuperUserProtectedCode = "user.delete.superuser-protected";
 
-    /// <summary>
-    /// Reported when a credential the operation requires was not supplied.
-    /// </summary>
+    /// <summary>Reported when a credential the operation requires was not supplied.</summary>
     private const string PasswordMissingCode = "user.password.missing";
 
-    /// <summary>
-    /// Reported when the submitted credential does not satisfy the configured policy.
-    /// </summary>
+    /// <summary>Reported when the submitted credential does not satisfy the configured policy.</summary>
     private const string PasswordInvalidCode = "user.password.invalid";
 
-    /// <summary>
-    /// Reported when the submitted credential and its confirmation differ.
-    /// </summary>
+    /// <summary>Reported when the submitted credential and its confirmation differ.</summary>
     private const string PasswordMismatchCode = "user.password.mismatch";
 
-    /// <summary>
-    /// Reported when the submitted credential is the one already stored.
-    /// </summary>
+    /// <summary>Reported when the submitted credential is the one already stored.</summary>
     private const string PasswordNotDifferentCode = "user.password.not-different";
 
-    /// <summary>
-    /// Reported when the credential store refused the write.
-    /// </summary>
+    /// <summary>Reported when the credential store refused the write.</summary>
     private const string PasswordResetFailedCode = "user.password.reset-failed";
 
     /// <summary>
     /// Reported when the credential changed between this request reading it and replacing it, so the
     /// replacement was refused rather than applied over the newer value.
     /// </summary>
-    /// <remarks>
-    /// Its reason token ends in <c>superseded</c>, which the Api edge classifies as a conflict and answers
-    /// <c>409</c>. That is the honest reading: the request is well formed and the STATE of the resource
-    /// declines it, and repeating the identical request against the current state either succeeds or refuses
-    /// for a reason the caller can then act on. A 400 would tell the caller to correct a request that had
-    /// nothing wrong with it, and a 500 would describe a fault where the store worked exactly as intended.
-    /// </remarks>
     private const string PasswordSupersededCode = "user.password.superseded";
 
     /// <summary>
@@ -300,17 +141,9 @@ public sealed class UserService : IUserService
     /// operation itself was abandoned rather than completed with the sessions left alive.
     /// </summary>
     /// <remarks>
-    /// <para>
     /// Its reason token ends in <c>store_unavailable</c>, which the Api edge classifies as a dependency
-    /// failure and answers <c>503</c>. That is the honest reading: the request was valid and the refusal
-    /// is temporary, so a caller may retry it. Reporting it as a bad request would invite an administrator
-    /// to change the request, and reporting success would tell them an account had been locked out of its
-    /// sessions when it had not.
-    /// </para>
-    /// <para>
-    /// The three operations that can report it are the credential change, the withdrawal of an approval and
-    /// the deletion of an account - the same three the token contract names.
-    /// </para>
+    /// failure and answers <c>503</c>. That is the honest reading: the request was valid and the refusal is
+    /// temporary, so a caller may retry it.
     /// </remarks>
     private const string SessionRevocationFailedCode = "user.session.revocation_store_unavailable";
 
@@ -326,39 +159,25 @@ public sealed class UserService : IUserService
     /// </remarks>
     private const string CredentialRemovalFailedCode = "user.credential.removal_store_unavailable";
 
-    /// <summary>
-    /// Reported when a self-service change presents the wrong current credential.
-    /// </summary>
+    /// <summary>Reported when a self-service change presents the wrong current credential.</summary>
     private const string PasswordCurrentIncorrectCode = "user.password.current-incorrect";
 
-    /// <summary>
-    /// Reported when the deployment has administrative reset switched off.
-    /// </summary>
+    /// <summary>Reported when the deployment has administrative reset switched off.</summary>
     private const string PasswordResetNotEnabledCode = "user.password.reset-not-enabled";
 
-    /// <summary>
-    /// Reported for an unrecognised operation discriminator.
-    /// </summary>
+    /// <summary>Reported for an unrecognised operation discriminator.</summary>
     private const string PasswordUnsupportedOperationCode = "user.password.unsupported-operation";
 
-    /// <summary>
-    /// Reported when the account is not currently locked.
-    /// </summary>
+    /// <summary>Reported when the account is not currently locked.</summary>
     private const string UnlockNotLockedCode = "user.unlock.not-locked";
 
-    /// <summary>
-    /// Reported when an administrator invokes a membership transition on their own account.
-    /// </summary>
+    /// <summary>Reported when an administrator invokes a membership transition on their own account.</summary>
     private const string MembershipSelfForbiddenCode = "user.membership.self-forbidden";
 
-    /// <summary>
-    /// Reported when a caller asks to change a credential that is not their own.
-    /// </summary>
+    /// <summary>Reported when a caller asks to change a credential that is not their own.</summary>
     /// <remarks>
     /// A change is proof of possession of the current credential and is therefore the account owner's
-    /// operation. An administrator acting on another account uses the reset operation instead. The reason
-    /// token classifies as 403 rather than 400, because the request is well formed and the caller simply may
-    /// not make it.
+    /// operation. An administrator acting on another account uses the reset operation instead.
     /// </remarks>
     private const string PasswordChangeSelfOnlyForbiddenCode = "user.password.change-self-only-forbidden";
 
@@ -367,24 +186,18 @@ public sealed class UserService : IUserService
     /// </summary>
     /// <remarks>
     /// This is the check that keeps the reset operation from being a way around the change operation's
-    /// current-credential requirement. Without it the owner of an account - who legitimately passes the route
-    /// policy - could set a new credential without presenting the old one.
+    /// current-credential requirement. Without it the owner of an account - who legitimately passes the
+    /// route policy - could set a new credential without presenting the old one.
     /// </remarks>
     private const string PasswordResetForbiddenCode = "user.password.reset-forbidden";
 
-    /// <summary>
-    /// Reported when the account is already in the requested approval state.
-    /// </summary>
+    /// <summary>Reported when the account is already in the requested approval state.</summary>
     private const string ApprovalUnchangedCode = "user.approval.unchanged";
 
-    /// <summary>
-    /// Reported when the account already carries the forced-change flag.
-    /// </summary>
+    /// <summary>Reported when the account already carries the forced-change flag.</summary>
     private const string PasswordChangeAlreadyRequiredCode = "user.password.change-already-required";
 
-    /// <summary>
-    /// Reported when the tenant has no settings source to write membership settings to.
-    /// </summary>
+    /// <summary>Reported when the tenant has no settings source to write membership settings to.</summary>
     private const string MembershipSettingsSourceMissingCode = "user.membership-settings.storage-conflict";
 
     /// <summary>Reported when a membership redirect names a page outside the addressed portal.</summary>
@@ -395,49 +208,34 @@ public sealed class UserService : IUserService
     /// electronic-mail validation expression cannot be compiled.
     /// </summary>
     /// <remarks>
-    /// The Api edge maps a code ending in a bare noun to 400, which is the answer a caller that submitted an
-    /// out-of-range value deserves; the declarative validator answers the same condition with a field-level
-    /// problem document when the request came through the pipeline.
+    /// The Api edge maps a code ending in a bare noun to 400, which is the answer a caller that submitted
+    /// an out-of-range value deserves; the declarative validator answers the same condition with a
+    /// field-level problem document when the request came through the pipeline.
     /// </remarks>
     private const string MembershipSettingsInvalidCode = "user.membership-settings.invalid";
 
-    /// <summary>
-    /// Reported when a membership-settings redirect member names a page the tenant does not own.
-    /// </summary>
+    /// <summary>Reported when a membership-settings redirect member names a page the tenant does not own.</summary>
     /// <remarks>
     /// MIGRATION: a second revision reported the same condition as <c>redirect.not-found</c> from a helper
-    /// that took the READ projection. That helper could never run - no endpoint binds the read shape - so the
-    /// code it reported was unreachable and both are withdrawn in favour of this one. Missing pages, host
-    /// pages and pages owned by another tenant deliberately share this single answer, so that a caller cannot
-    /// use the settings surface to enumerate another tenant's page keys. Its de-duplication of repeated page
-    /// identifiers was worth keeping and is grafted onto the surviving check.
+    /// that took the READ projection. That helper could never run - no endpoint binds the read shape - so
+    /// the code it reported was unreachable and both are withdrawn in favour of this one.
     /// </remarks>
     private const string MembershipSettingsRedirectNotInPortalCode =
         "user.membership-settings.redirect_not_in_portal";
 
-    /// <summary>
-    /// Reported when the configured display-name format expands beyond the stored account column.
-    /// </summary>
+    /// <summary>Reported when the configured display-name format expands beyond the stored account column.</summary>
     private const string DisplayNameTooLongCode = "user.display-name.too-long";
 
-    /// <summary>
-    /// Reported when a submitted profile set names a property the tenant does not define.
-    /// </summary>
+    /// <summary>Reported when a submitted profile set names a property the tenant does not define.</summary>
     private const string ProfileUnknownPropertyCode = "user.profile.unknown-property";
 
-    /// <summary>
-    /// Reported when a property marked as required carries no value.
-    /// </summary>
+    /// <summary>Reported when a property marked as required carries no value.</summary>
     private const string ProfileRequiredPropertyMissingCode = "user.profile.required-property-missing";
 
-    /// <summary>
-    /// Reported when a value exceeds the length its definition declares.
-    /// </summary>
+    /// <summary>Reported when a value exceeds the length its definition declares.</summary>
     private const string ProfileValueTooLongCode = "user.profile.value-too-long";
 
-    /// <summary>
-    /// Reported when a value fails the validation expression its definition declares.
-    /// </summary>
+    /// <summary>Reported when a value fails the validation expression its definition declares.</summary>
     private const string ProfilePropertyValidationFailedCode = "user.profile.property-validation-failed";
 
     /// <summary>Reported when one profile submission repeats a property definition identifier.</summary>
@@ -449,115 +247,64 @@ public sealed class UserService : IUserService
     /// <summary>Reported when a profile value carries an unsupported visibility discriminator.</summary>
     private const string ProfileVisibilityInvalidCode = "user.profile.visibility-invalid";
 
-    /// <summary>Reported when a tenant-authored validation expression is malformed or exceeds safety bounds.</summary>
+    /// <summary>
+    /// Reported when a tenant-authored validation expression is malformed or exceeds safety bounds.
+    /// </summary>
     private const string ProfileDefinitionExpressionInvalidCode =
         "profile-definition.validation-expression-invalid";
 
-    /// <summary>
-    /// Reported when the tenant already declares a profile property of the submitted name.
-    /// </summary>
+    /// <summary>Reported when the tenant already declares a profile property of the submitted name.</summary>
     private const string ProfileDefinitionDuplicateNameCode = "profile-definition.duplicate-name";
 
-    /// <summary>
-    /// Reported when no such profile property definition exists within the tenant.
-    /// </summary>
+    /// <summary>Reported when no such profile property definition exists within the tenant.</summary>
     private const string ProfileDefinitionNotFoundCode = "profile-definition.not-found";
 
-    /// <summary>
-    /// Reported when no such role exists within the tenant.
-    /// </summary>
+    /// <summary>Reported when no such role exists within the tenant.</summary>
     /// <remarks>
     /// Spelled BYTE FOR BYTE as the sibling role service spells it - with an underscore, which is that
     /// service's convention rather than this one's hyphen - because the member-services operations
-    /// pre-resolve the role and then delegate the write to that service, and the two must not hand a
-    /// client two different codes for one condition. The API edge folds hyphens onto underscores before
-    /// classifying, so both spellings would answer 404 and produce the same problem type; the failed
-    /// outcome's own code would differ, and that is what a caller and a test compare.
+    /// pre-resolve the role and then delegate the write to that service, and the two must not hand a client
+    /// two different codes for one condition.
     /// </remarks>
     private const string ServiceRoleNotFoundCode = "role.not_found";
 
-    /// <summary>
-    /// Reported when the member-services operation names a tenant that does not exist.
-    /// </summary>
+    /// <summary>Reported when the member-services operation names a tenant that does not exist.</summary>
     /// <remarks>
-    /// Spelled byte for byte as the sibling role service spells it, for the reason recorded on
-    /// <see cref="ServiceRoleNotFoundCode"/>. It is the only portal-existence code this service raises:
-    /// the account-creation path reports a missing tenant as a portal-assignment failure instead, because
-    /// there the tenant is a target of a write rather than the resource being addressed.
+    /// Spelled byte for byte as the sibling role service spells it, for the reason recorded on <see
+    /// cref="ServiceRoleNotFoundCode"/>. It is the only portal-existence code this service raises: the
+    /// account-creation path reports a missing tenant as a portal-assignment failure instead, because there
+    /// the tenant is a target of a write rather than the resource being addressed.
     /// </remarks>
     private const string ServicePortalNotFoundCode = "portal.not_found";
 
-    /// <summary>
-    /// Reported when the tenant has switched self-service subscription off.
-    /// </summary>
-    /// <remarks>
-    /// The tenant's <c>Profile_ManageServices</c> setting, which the legacy container consulted before
-    /// rendering the member-services tab at all (<c>ManageUsers.ascx.vb:L61-L66</c>). The reason token
-    /// classifies as 403: the request is well formed and the caller is who it says it is, but the tenant
-    /// does not offer the operation.
-    /// </remarks>
+    /// <summary>Reported when the tenant has switched self-service subscription off.</summary>
     private const string ServiceDisabledCode = "user.service.disabled-forbidden";
 
     /// <summary>
     /// Reported when the addressed role is not one the tenant publishes for self-service subscription.
     /// </summary>
-    /// <remarks>
-    /// Reproduces the first arm of both legacy gates, <c>objRole.IsPublic</c>
-    /// (<c>MemberServices.ascx.vb:L105</c> and <c>:L124</c>). The legacy screen expressed the refusal by
-    /// not rendering the command; an HTTP resource has no command to withhold, so it answers 403.
-    /// </remarks>
     private const string ServiceNotOfferedCode = "user.service.not-offered-forbidden";
 
-    /// <summary>
-    /// Reported when completing a subscription or a cancellation would require taking payment.
-    /// </summary>
-    /// <remarks>
-    /// The legacy else-branch of both operations handed the caller to
-    /// <c>~/admin/Sales/PayPalSubscription.aspx</c> (<c>MemberServices.ascx.vb:L113</c> and <c>:L115</c>),
-    /// and AAP 0.2.2.4 excludes sales administration. Classified as 403 rather than as a server fault
-    /// because nothing is broken: the tenant publishes an offer this application deliberately does not
-    /// transact. The catalogue reports the same condition as a flag on the row, so a client can explain
-    /// the refusal before provoking it.
-    /// </remarks>
+    /// <summary>Reported when completing a subscription or a cancellation would require taking payment.</summary>
     private const string ServicePaymentRequiredCode = "user.service.payment-required-forbidden";
 
-    /// <summary>
-    /// Reported when the addressed role offers this account no free trial.
-    /// </summary>
-    /// <remarks>
-    /// One code for every reason the legacy trial predicate returned false
-    /// (<c>MemberServices.ascx.vb:L325-L342</c>): the role is not published, it charges no service fee
-    /// and so has nothing to trial, its trial itself carries a fee, or this account has already consumed
-    /// it. They are not distinguished, because doing so would tell a caller which of a tenant's
-    /// commercial terms it had guessed wrong about.
-    /// </remarks>
+    /// <summary>Reported when the addressed role offers this account no free trial.</summary>
     private const string ServiceTrialNotOfferedCode = "user.service.trial-not-offered-forbidden";
 
-    /// <summary>
-    /// Reported when an invitation-code redemption carries no code.
-    /// </summary>
+    /// <summary>Reported when an invitation-code redemption carries no code.</summary>
     /// <remarks>
     /// Duplicates <see cref="RedeemServiceCodeRequestValidator"/> rather than trusting it, so the guard
     /// holds for a caller that reached this service without the validation pipeline in front of it. Both
-    /// sites are annotated so a change to either is visibly a change to a pair. The reason token
-    /// classifies as 400.
+    /// sites are annotated so a change to either is visibly a change to a pair.
     /// </remarks>
     private const string ServiceCodeRequiredCode = "user.service.code-required";
 
-    /// <summary>
-    /// Reported when no role in the tenant bears the submitted invitation code.
-    /// </summary>
-    /// <remarks>
-    /// The legacy <c>RSVPFailure</c> message (<c>MemberServices.ascx.vb:L427</c>). Classified as 400
-    /// rather than 404: the addressed resource is the account's own redemption endpoint, which exists,
-    /// and the code is a submitted VALUE the caller can correct. The reason token deliberately avoids
-    /// the not-found family for that reason.
-    /// </remarks>
+    /// <summary>Reported when no role in the tenant bears the submitted invitation code.</summary>
     private const string ServiceCodeNotMatchedCode = "user.service.code-not-matched";
 
     /// <summary>
     /// Cache key holding a tenant's projected profile property definitions, carried over verbatim from
-    /// <c>DataCache.ProfileDefinitionsCacheKey</c> (DataCache.vb:L75).
+    /// <c>DataCache.ProfileDefinitionsCacheKey</c>.
     /// </summary>
     private const string ProfileDefinitionsCacheKeyFormat = "ProfileDefinitions{0}";
 
@@ -566,14 +313,12 @@ public sealed class UserService : IUserService
     /// </summary>
     private const int ProfileDefinitionsCacheTimeOutMinutes = 20;
 
-    /// <summary>
-    /// Page size that requests every match unpaged, per the repository contracts.
-    /// </summary>
+    /// <summary>Page size that requests every match unpaged, per the repository contracts.</summary>
     private const int UnpagedPageSize = 0;
 
     /// <summary>
-    /// Longest value <c>dbo.UserProfile.PropertyValue</c> can hold; longer values move to the
-    /// unbounded text column beside it.
+    /// Longest value <c>dbo.UserProfile.PropertyValue</c> can hold; longer values move to the unbounded
+    /// text column beside it.
     /// </summary>
     private const int ProfileValueColumnLength = 3750;
 
@@ -585,38 +330,29 @@ public sealed class UserService : IUserService
 
     /// <summary>Maximum number of compiled tenant expressions retained process-wide.</summary>
     /// <remarks>
-    /// INFO-01: the cache holds at most this many entries and, once full, evicts exactly ONE entry per newly
-    /// admitted expression rather than clearing itself. The reasoning sits beside the eviction in
-    /// <c>GetValidationExpression</c>: these expressions are tenant data and the cache is shared across
-    /// tenants, so the cost of reaching the ceiling must be proportionate to what the writer introduced
-    /// instead of falling on every other tenant at once.
+    /// INFO-01: the cache holds at most this many entries and, once full, evicts exactly ONE entry per
+    /// newly admitted expression rather than clearing itself.
     /// </remarks>
     private const int ValidationExpressionCacheMaximum = 1024;
 
     /// <summary>
     /// Number of accounts above which the legacy membership settings defaulted the account picker to a
-    /// free-text control rather than a drop-down (UserModuleBase.vb:L178).
+    /// free-text control rather than a drop-down.
     /// </summary>
     private const int LargeTenantAccountThreshold = 1000;
 
-    /// <summary>
-    /// Terminal width of <c>dbo.Users.DisplayName</c>.
-    /// </summary>
+    /// <summary>Terminal width of <c>dbo.Users.DisplayName</c>.</summary>
     /// <remarks>
-    /// Measured as <c>nvarchar(128)</c> in both the terminal DDL and
-    /// <c>UserConfiguration</c>. <see cref="string.Length"/> counts UTF-16 code units, which is the
-    /// same unit SQL Server uses for this column's declared length.
+    /// Measured as <c>nvarchar(128)</c> in both the terminal DDL and <c>UserConfiguration</c>. <see
+    /// cref="string.Length"/> counts UTF-16 code units, which is the same unit SQL Server uses for this
+    /// column's declared length.
     /// </remarks>
     private const int DisplayNameMaximumLength = 128;
 
-    /// <summary>
-    /// Legacy integer sentinel meaning "no page selected" in the three redirect settings.
-    /// </summary>
+    /// <summary>Legacy integer sentinel meaning "no page selected" in the three redirect settings.</summary>
     private const string UnsetRedirectSettingValue = "-1";
 
-    /// <summary>
-    /// Bound on how long a tenant-authored validation expression may run before it is abandoned.
-    /// </summary>
+    /// <summary>Bound on how long a tenant-authored validation expression may run before it is abandoned.</summary>
     /// <remarks>
     /// A profile property's validation expression is tenant data rather than code, so a pathological
     /// expression must not be able to occupy a request thread indefinitely.
@@ -631,14 +367,12 @@ public sealed class UserService : IUserService
 
     /// <summary>
     /// Profile property names the legacy account grid composed its address column from, in the order it
-    /// composed them (Users.ascx.vb:L352, reaching the excluded <c>FormatAddress</c> helper).
+    /// composed them.
     /// </summary>
     private static readonly string[] AddressProfilePropertyNames =
         ["Unit", "Street", "City", "Region", "Country", "PostalCode"];
 
-    /// <summary>
-    /// Profile property name the legacy account grid displayed as its telephone column.
-    /// </summary>
+    /// <summary>Profile property name the legacy account grid displayed as its telephone column.</summary>
     private const string TelephoneProfilePropertyName = "Telephone";
 
     private readonly IUserRepository _users;
@@ -650,17 +384,6 @@ public sealed class UserService : IUserService
     /// The role contract, reached for the two membership primitives the member-services surface is built
     /// out of.
     /// </summary>
-    /// <remarks>
-    /// A SIBLING APPLICATION SERVICE RATHER THAN A REPOSITORY, and deliberately. Subscribing to a service
-    /// and cancelling one are the ordinary role assignment and removal, and both carry substantial rules
-    /// that already exist on that contract: the expiry derivation from the role's trial and billing terms
-    /// (<c>RoleController.vb:L503-L558</c>), the portal-administrator bound protection, the
-    /// expire-rather-than-delete retention of a consumed paid trial (<c>:L494-L496</c>) and the two
-    /// protected-assignment refusals (<c>:L741</c> and <c>:L764</c>). Reaching the role REPOSITORY from
-    /// here would mean reimplementing every one of them, which is one rule with two implementations free
-    /// to drift apart. The same reasoning already applies to <see cref="_permissions"/>, which is injected
-    /// for the deletion cascade for exactly this reason.
-    /// </remarks>
     private readonly IRoleService _roleService;
     private readonly IPortalRepository _portals;
     private readonly IModuleRepository _modules;
@@ -680,80 +403,46 @@ public sealed class UserService : IUserService
     private readonly IPortalContextHolder _portalContext;
 
     /// <summary>
-    /// Initialises the service with the collaborators it reaches the store, the credential policy and
-    /// the cache through.
+    /// Initialises the service with the collaborators it reaches the store, the credential policy and the
+    /// cache through.
     /// </summary>
     /// <param name="users">Account, membership and credential persistence.</param>
     /// <param name="profiles">Profile property definitions and the values held against them.</param>
     /// <param name="roles">Role lookups, used for automatic enrolment and for role projection.</param>
     /// <param name="permissions">
     /// Permission grant cleanup on deletion, reached through the application contract that owns it rather
-    /// than through the grant repository directly. The rule that only grants made DIRECTLY to the account
-    /// are removed - grants reaching it through a role belong to the role and would strip every other
-    /// holder - lives on that contract, and this service does not restate it.
+    /// than through the grant repository directly.
     /// </param>
     /// <param name="roleService">
     /// The role contract, reached only by the member-services operations and only for the two membership
     /// primitives they are built out of, so that the expiry derivation and the protected-assignment rules
-    /// keep exactly one implementation. Nothing else in this service uses it.
+    /// keep exactly one implementation.
     /// </param>
     /// <param name="portals">Tenant existence, the designated administrator and the account count.</param>
     /// <param name="modules">Module settings persistence, where membership settings are stored.</param>
     /// <param name="definitions">Definition lookups, used to locate the settings source module.</param>
-    /// <param name="tabs">
-    /// Page lookups. Present for exactly one obligation: the three redirect members of the tenant's
-    /// membership settings name pages, and the legacy screen edited them with a picker bound to the
-    /// portal's own pages, so a write has to be able to prove that a submitted page belongs to the tenant.
-    /// Nothing else in this service reads pages.
-    /// </param>
+    /// <param name="tabs">Page lookups.</param>
     /// <param name="unitOfWork">The single commit point for every write below.</param>
     /// <param name="passwordHasher">One-way credential hashing and verification.</param>
     /// <param name="clock">The clock every timestamp is taken from.</param>
     /// <param name="cache">Cache reads and invalidation.</param>
     /// <param name="currentUser">The acting caller, needed by the self-service prohibitions.</param>
     /// <param name="audit">Receives the business audit record for a created or removed account.</param>
-    /// <param name="tokens">
-    /// Session revocation. Present because three operations below end an account's right to sign in, or
-    /// change the credential by which it does so, and the token contract states in terms that each of them
-    /// must revoke the account's refresh tokens within the same request. Without this collaborator that
-    /// obligation was documented on every one of them and honoured by none.
-    /// </param>
+    /// <param name="tokens">Session revocation.</param>
     /// <param name="storeFailures">
-    /// Classifies a caught exception as a failure of the store rather than of this service. Present for one
-    /// obligation: the account-creation path writes the credential to an EXTERNAL membership store, and the
-    /// only honest way to distinguish that store failing from this service being handed something it cannot
-    /// use is to ask the layer that owns the provider types. This contract is declared in the Domain, so
-    /// asking it costs this project no dependency on the mapper or on the database client.
+    /// Classifies a caught exception as a failure of the store rather than of this service.
     /// </param>
     /// <param name="passwordPolicy">Bound credential policy, preserved from the legacy configuration.</param>
     /// <param name="diagnostics">
     /// The route by which this service reports a security-relevant anomaly it has decided not to publish to
-    /// the caller. It is a Domain contract carrying a closed set of occurrences, a tenant, an account and a
-    /// short stable code - and no message, no exception and no object - so it is neither a logger nor a way
-    /// of becoming one. This layer cannot hold an <c>ILogger&lt;T&gt;</c>: its package surface is
-    /// FluentValidation and nothing else, and the logging assemblies ship in the ASP.NET Core shared
-    /// framework, which a class library here must never reference. <see cref="ISecurityDiagnostics"/> is the
-    /// boundary abstraction that lets a fact be recorded anyway, and <c>AuthService</c> takes it for the same
-    /// reason.
+    /// the caller.
     /// </param>
     /// <param name="caching">Bound caching configuration supplying the performance multiplier.</param>
     /// <param name="portalContext">
     /// The tenant facts already settled for the call being served, read for exactly one purpose: the
     /// designated administrator, which the detail projection needs in order to publish the removal
-    /// capability. THE HOLDER RATHER THAN <c>IPortalContext</c> ITSELF, and that is not a stylistic
-    /// choice - the container registers the contract as a call-scoped projection over this holder, and
-    /// resolving it before the tenant has been settled THROWS. Injecting the contract directly would
-    /// therefore turn every call that runs outside a resolved request scope, including every unit test,
-    /// into an exception at construction time. The holder answers <c>IsResolved</c> without faulting,
-    /// which is the only safe way to ask.
+    /// capability.
     /// </param>
-    /// <remarks>
-    /// MIGRATION: the audit sink preserves the two account events the legacy site recorded,
-    /// <c>USER_CREATED</c> and <c>USER_DELETED</c> (<c>EventLogController.vb:L39-L40</c>). The deletion
-    /// entry is the one measured call site in the legacy account controller, at
-    /// <c>UserController.vb:L240</c>, which passed the account name as the log key together with the
-    /// account identifier and the ambient tenant.
-    /// </remarks>
     public UserService(
         IUserRepository users,
         IUserProfileRepository profiles,
@@ -800,9 +489,7 @@ public sealed class UserService : IUserService
         _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
     }
 
-    /// <summary>
-    /// Returns the account the tenant designates as its administrator, or <see langword="null"/>.
-    /// </summary>
+    /// <summary>Returns the account the tenant designates as its administrator, or <see langword="null"/>.</summary>
     /// <param name="portalId">The tenant whose designated administrator is wanted.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>
@@ -810,39 +497,11 @@ public sealed class UserService : IUserService
     /// designates nobody or does not exist.
     /// </returns>
     /// <remarks>
-    /// <para>
     /// ⚠ THE TENANT FACTS OF THE CALL ARE ALREADY IN HAND, AND READING THE PORTAL AGAIN TO GET ONE COLUMN
-    /// OF THEM WAS THE DEFECT. Every request that reaches this service has had its tenant resolved by
+    /// OF THEM IS REDUNDANT. Every request that reaches this service has had its tenant resolved by
     /// <c>Api/Middleware/PortalAliasResolutionMiddleware</c> or by the portal-administrator authorisation
-    /// handler, whichever ran first, and the snapshot they settled ALREADY CARRIES
-    /// <c>AdministratorId</c> - it is a declared member of <c>IPortalContext</c>. The detail read
-    /// nevertheless issued its own <c>Portals</c> round trip for that single column, once per account
-    /// opened, when the value was sitting in a call-scoped object the container would hand over for free.
-    /// </para>
-    /// <para>
-    /// ⚠ THE TENANT IS COMPARED BEFORE THE SNAPSHOT IS TRUSTED, AND SKIPPING THAT WOULD BE A CORRECTNESS
-    /// BUG RATHER THAN AN OPTIMISATION. The snapshot describes the tenant the REQUEST was addressed to,
-    /// and it is not always the tenant this call is acting on: a host-level caller may name any portal it
-    /// administers, and the identifier arrives as an argument precisely so that it can differ. Reading
-    /// <c>AdministratorId</c> off a snapshot for a DIFFERENT portal would publish one tenant's protected
-    /// account against another tenant's listing, so the fast path is taken only when
-    /// <c>PortalId</c> matches exactly and the persistence read is made in every other case. Minus one and
-    /// zero are both genuine portal keys here, so the comparison is an equality test and never a
-    /// truthiness or positivity test.
-    /// </para>
-    /// <para>
-    /// ⚠ NOTHING IS CACHED ACROSS CALLS, AND THAT IS DELIBERATE. The capability this value feeds is
-    /// evaluated per caller, so holding a resolved administrator in a field - or in the shared cache -
-    /// would let one caller's answer be served to another whose tenant, or whose rights, differ. The
-    /// holder's snapshot is already scoped to exactly one inbound call, which is the correct lifetime for
-    /// it and the reason no additional caching is introduced here.
-    /// </para>
-    /// <para>
-    /// <c>IsResolved</c> is tested rather than <c>Current</c> being read speculatively: the holder's
-    /// contract states that reading <c>Current</c> before the tenant is settled throws, and a background
-    /// caller or a unit test resolving this service outside a request scope must fall through to the
-    /// persistence read rather than fault.
-    /// </para>
+    /// handler, whichever ran first, and the snapshot they settled ALREADY CARRIES <c>AdministratorId</c> -
+    /// it is a declared member of <c>IPortalContext</c>.
     /// </remarks>
     private async Task<int?> ReadDesignatedAdministratorAsync(
         int portalId,
@@ -860,24 +519,16 @@ public sealed class UserService : IUserService
         return owner?.AdministratorId;
     }
 
-    /// <summary>
-    /// Records one committed account change on the audit trail.
-    /// </summary>
+    /// <summary>Records one committed account change on the audit trail.</summary>
     /// <param name="eventName">The stable event name, from <see cref="AuditEventNames"/>.</param>
     /// <param name="portalId">The tenant the change was made within.</param>
     /// <param name="subjectUserId">The account the change was made against.</param>
     /// <param name="properties">Short, non-sensitive machine-readable facts about the change.</param>
     /// <remarks>
-    /// <para>
     /// Called only after the change has been committed. The acting account comes from the credential, and
     /// it is not always the account acted upon: an administrator creating a member records the
     /// administrator as the actor and the member as the subject, a distinction the legacy record - which
     /// had a single user field - could not express.
-    /// </para>
-    /// <para>
-    /// No credential material of any kind reaches an audit record from this service: not a submitted
-    /// password, not a stored hash, not a reset token, and no answer to a security question.
-    /// </para>
     /// </remarks>
     private void RecordAudit(
         string eventName,
@@ -898,36 +549,9 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// The three search filters are mutually exclusive because the legacy grid dispatched to exactly one
-    /// search shape per postback, selected by a drop-down, and each branch appended a percent sign to
-    /// the search text - so prefix matching is the preserved semantic and combining filters would be
-    /// new behaviour. Supplying one half of the profile-property pair is refused for the same reason:
-    /// silently ignoring the other half would answer a question the caller did not ask.
-    /// </para>
-    /// <para>
-    /// The address and telephone columns the grid displayed are profile values rather than account
-    /// columns, so they are composed here from the six address properties the legacy helper concatenated
-    /// and from the telephone property. That costs one profile read per row of the page, which is the
-    /// price of a column the legacy grid also assembled per row; a tenant that does not define those
-    /// properties simply leaves both columns absent.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the tenant's <c>Column_*</c> settings decide what this listing FETCHES and nothing more.
-    /// The account columns every row carries - the given and family names, the display name, the electronic
-    /// mail address, the creation and last sign-in instants and the approval flag - are always projected as
-    /// stored, whatever those settings say, because the legacy grid honoured them by declining to render a
-    /// column rather than by altering the value behind it. Only the address and telephone profile values
-    /// are gated, by skipping their per-row read, so their absence reports "not requested". The settings
-    /// themselves are published verbatim by the membership-settings read, so a client that wants to
-    /// reproduce the legacy column set has everything it needs to do so.
-    /// </para>
-    /// <para>
-    /// Host-level accounts are excluded because this list serves tenant administration and a host
-    /// account is beyond its reach, which is the same rule the deletion guard enforces. Unauthorised
-    /// accounts are included, because the grid renders an authorised column and hiding them would make
-    /// that column meaningless.
-    /// </para>
+    /// The address and telephone columns the grid displayed are profile values rather than account columns,
+    /// so they are composed here from the six address properties the legacy helper concatenated and from
+    /// the telephone property.
     /// </remarks>
     public async Task<Result<PagedResult<UserListItemDto>>> ListUsersAsync(
         int portalId,
@@ -942,20 +566,8 @@ public sealed class UserService : IUserService
         ArgumentNullException.ThrowIfNull(page);
         EnsurePagingIsUsable(page);
 
-        // MIGRATION: the PER-COLLECTION ordering set is enforced HERE, against this collection's own set
-        // rather than against the union. The shared request validator applies nothing narrower than the
-        // union of every collection's set, because one PagedRequest contract serves every listing, so it
-        // would otherwise admit a portal-only or role-only field name here and the read would order by its
-        // own sequence regardless - returning a page the caller cannot account for and cannot detect.
-        // Refusing says so instead.
-        //
-        // SortableFields.Users holds exactly the names the underlying query can honour, which are the
-        // mapped columns of the entity it pages over. It is deliberately NARROWER than the projection: the
-        // creation instant, the last sign-in instant, the approval flag and the lock flag are read from the
-        // external membership store AFTER the page has been taken, so ordering by one of them would order
-        // the page rather than the collection - not an ordering at all. Those are refused here rather than
-        // accepted and silently discarded. The set and the ordering the repository actually applies must
-        // agree, and a test asserts that agreement in both directions.
+        // The PER-COLLECTION ordering set is enforced HERE, against this collection's own set rather than
+        // against the union.
         if (!SortableFields.IsPermittedFor(page.SortBy, SortableFields.Users))
         {
             return Result<PagedResult<UserListItemDto>>.Failure(
@@ -1027,9 +639,7 @@ public sealed class UserService : IUserService
 
         // The sort field travels to the repository so the database orders BEFORE it skips and takes.
         // Re-ordering the returned page here would only re-order the rows this one page happened to
-        // contain, which is how an accepted sort field comes to be silently ignored. The field itself has
-        // already been checked against the names this collection honours - SortableFields.Users, applied
-        // by the sealed UserPagedRequestValidator at the API boundary - so nothing is re-validated here.
+        // contain, which is how an accepted sort field comes to be silently ignored.
         PagedResult<User> matches = await _users.ListAsync(
             portalId,
             page.PageIndex,
@@ -1070,18 +680,6 @@ public sealed class UserService : IUserService
                 ?.PropertyDefinitionId
             : null;
 
-        // ONE profile read for the whole page, grouped once, rather than one per row.
-        //
-        // MIGRATION: this read used to sit INSIDE the loop below, which made it one round trip per row of
-        // the page - and it ran AFTER the database had already windowed the accounts, so the very read that
-        // made the listing bounded was followed by an unbounded-in-page-size sequence of reads. It is not
-        // an optional cost either: the address and telephone columns are enabled by default
-        // (MembershipSettingsDto declares ColumnAddress and ColumnTelephone as true), so the default
-        // configuration is the expensive one. The batched member exists for exactly this call site; the
-        // grouping below is in memory and costs nothing per row.
-        //
-        // Skipped entirely when the tenant publishes neither column, in which case there is nothing to fetch
-        // and no key to group by.
         bool profileValuesWanted = addressPropertyIds.Count > 0 || telephonePropertyId is not null;
 
         Dictionary<int, List<UserProfileValue>> profileValuesByUser = new();
@@ -1107,16 +705,6 @@ public sealed class UserService : IUserService
             }
         }
 
-        // ONE portal read for the whole page, taken only when there are rows to decide about.
-        //
-        // It exists for the delete capability the projection publishes: the operation refuses the account
-        // named by Portals.AdministratorId, so a client cannot withhold that affordance without knowing
-        // which account that is. Reading it here rather than per row is what keeps the cost at one query;
-        // reading it at all is what keeps the affordance honest.
-        //
-        // ⚠ A NULL ADMINISTRATOR IS NOT AN ERROR AND IS NOT COERCED. A portal that designates nobody
-        // protects nobody, and minus one - the legacy spelling of a missing integer - is not treated as a
-        // real account either, because the mapper compares by equality against a real Users.UserID.
         int? designatedAdministrator = null;
         if (matches.Items.Count > 0)
         {
@@ -1171,27 +759,10 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
     /// ⚠ THE READS THIS MEMBER DOES NOT PERFORM ARE THE POINT OF IT. <see cref="ListUsersAsync"/> reads the
     /// tenant's account-policy settings to learn which columns it may publish, reads the tenant's profile
     /// property definitions, issues a batched profile-value read to fill the address and telephone columns,
-    /// and reads the portal to learn which account it must not offer for deletion. An account PICKER renders
-    /// none of those values, so none of those four reads happens here: one projecting query answers the whole
-    /// request.
-    /// </para>
-    /// <para>
-    /// No column-visibility rule is applied either, and its absence is deliberate rather than overlooked.
-    /// The tenant's account-policy settings decide whether the LISTING may publish an address, a telephone
-    /// number, an electronic-mail address, a creation instant and a last-login instant - a rule that exists
-    /// because those columns are optional on the grid. None of them is in this projection at all, so there is
-    /// nothing for such a rule to withhold, and reading the policy in order to withhold nothing would
-    /// reintroduce the round trip this member exists to avoid.
-    /// </para>
-    /// <para>
-    /// The ordering is checked HERE against this collection's own set rather than trusted from the boundary,
-    /// so a caller reaching the application layer directly gets the same refusal an HTTP caller gets. The
-    /// paging bounds are re-checked for the same reason.
-    /// </para>
+    /// and reads the portal to learn which account it must not offer for deletion.
     /// </remarks>
     public async Task<Result<PagedResult<UserChoiceDto>>> ListAccountChoicesAsync(
         int portalId,
@@ -1238,8 +809,7 @@ public sealed class UserService : IUserService
     /// Absence is not a failure, so an account the tenant does not hold reads as a successful result with
     /// no value. The legacy caching wrapper is not reproduced on this read: its key was composed from the
     /// account name (<c>DataCache.UserCacheKey</c>, "UserInfo|{0}|{1}"), which this member does not have
-    /// before it reads, so caching here would need a second key shape for the same payload. Every write
-    /// below still evicts that key, so the sign-in path's cached read stays correct.
+    /// before it reads, so caching here would need a second key shape for the same payload.
     /// </remarks>
     public async Task<Result<UserDetailDto?>> GetUserAsync(
         int portalId,
@@ -1258,11 +828,6 @@ public sealed class UserService : IUserService
             .ListRoleNamesAsync(portalId, userId, _clock.UtcNow, cancellationToken)
             .ConfigureAwait(false);
 
-        // ⚠ NEEDED FOR THE REMOVAL CAPABILITY THE PROJECTION PUBLISHES. The operation refuses the account
-        // named by Portals.AdministratorId, and no other member of the detail contract reveals which account
-        // that is - so without it the client could not withhold the affordance and had to approximate the
-        // rule, which it did incorrectly. A null administrator is not an error and is not coerced: a portal
-        // that designates nobody protects nobody.
         int? designatedAdministrator = await ReadDesignatedAdministratorAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
@@ -1271,35 +836,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// <para>
-    /// The account row, the tenant membership row and the automatic role enrolments commit together, so a
-    /// half-built account cannot be left behind. Automatic enrolment reproduces UserController.vb
-    /// L167-L180, which assigned a newly created account to every tenant role flagged for it; it is done
-    /// through the role repository rather than through the role service precisely so that it lands in the
-    /// same commit.
-    /// </para>
-    /// <para>
-    /// The credential is written after the first flush because its foreign key needs the generated account
-    /// identifier, which the store only assigns while the insert runs. Both writes nevertheless remain inside
-    /// one explicit transaction and one commit, and the membership store enlists its command on the context's
-    /// current transaction, so the pair is genuinely atomic rather than atomic "in effect": a failed
-    /// credential write rolls the account, portal membership and role assignments back, and there is no
-    /// window in which an account exists without the credential that makes it usable. An earlier revision
-    /// committed the account first and undid it with an in-process compensation routine, which could itself
-    /// fail - and could not run at all if the process was terminated - leaving an unusable account behind.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy screen could create an account with a generated credential and mail it to
-    /// its holder. The mail subsystem is out of scope, so a credential that is generated here could never
-    /// reach anybody; rather than accept a request the service cannot honour, the operation requires an
-    /// explicit credential and <see cref="CreateUserRequest"/> carries no generated-credential flag at
-    /// all. An administrator who wants the holder to choose their own credential creates the account with
-    /// a credential of the administrator's choosing and then issues a reset. Electronic-mail uniqueness is
-    /// enforced only when the deployment asks for it, because the legacy provider was configured with it
-    /// switched off.
-    /// </para>
-    /// </remarks>
     public async Task<Result<UserDetailDto>> CreateUserAsync(
         int portalId,
         CreateUserRequest request,
@@ -1312,21 +848,8 @@ public sealed class UserService : IUserService
             return Result<UserDetailDto>.Failure(CreateInvalidUsernameCode, "An account name is required.");
         }
 
-        // MIGRATION: THE CANONICAL ACCOUNT NAME IS COMPUTED ONCE AND USED EVERYWHERE BELOW - for the two
-        // uniqueness reads, for the display-name format, for the credential store's own lookup and for every
-        // message. It agrees by construction with what UserMappings.ToNewUser writes to the row and with what
-        // UserRepository's reads normalise their argument to.
-        //
-        // Computing it once is the whole fix. The guards used to ask about the string as SUBMITTED while the
-        // row was written from the same string, and both reads normalise their argument - so a submitted
-        // " alice" was checked as "alice", found free, and then stored as " alice", which no later lookup for
-        // "alice" could match. The account occupied the name, could not sign in, and did not appear in the
-        // administration screens; the credential store had meanwhile recorded it under the canonical name,
-        // so the two stores disagreed about the identity of one account. A guard that asks about a different
-        // string from the one the write stores is not a guard.
-        //
-        // The whitespace test above deliberately precedes this, so a name of nothing but spaces is refused as
-        // absent rather than silently becoming the empty string.
+        // THE CANONICAL ACCOUNT NAME IS COMPUTED ONCE AND USED EVERYWHERE BELOW - for the two uniqueness
+        // reads, for the display-name format, for the credential store's own lookup and for every message.
         string username = request.Username.Trim();
 
         if (string.IsNullOrWhiteSpace(request.Email))
@@ -1357,11 +880,7 @@ public sealed class UserService : IUserService
             return Result<UserDetailDto>.Failure(CreateInvalidPasswordCode, "A credential is required.");
         }
 
-        // An omitted confirmation is not a mismatch. The member is a non-nullable string that
-        // defaults to empty, so "not submitted" reads as empty rather than as null; testing for
-        // null instead would compare an omitted confirmation against the credential and refuse a
-        // request the endpoint may legitimately be called without. The declarative validator is
-        // the stricter authority and demands the pair agree; this is the service's own guard.
+        // An omitted confirmation is not a mismatch.
         if (!string.IsNullOrEmpty(request.ConfirmPassword)
             && !string.Equals(request.Password, request.ConfirmPassword, StringComparison.Ordinal))
         {
@@ -1414,13 +933,6 @@ public sealed class UserService : IUserService
                 "The electronic-mail address is already in use.");
         }
 
-        // THE TENANT'S DISPLAY-NAME FORMAT, read before anything is written.
-        //
-        // MIGRATION: the legacy editor applied it at creation too - `User.ascx.vb:L212` calls
-        // `UpdateDisplayName()` as the FIRST statement of `CreateUser()`, before the account is added - and
-        // an earlier revision of this method omitted it, so a tenant with a configured format got a formatted
-        // display name on every edit and an unformatted one on every creation. The format is applied below,
-        // inside the transaction.
         MembershipSettingsDto? tenantPolicy =
             await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -1440,9 +952,8 @@ public sealed class UserService : IUserService
         });
 
         // The auto-assignment filter is applied here rather than in the repository because the legacy
-        // membership provider had no such procedure: it exposed GetPortalRoles alone
-        // (DataProvider.vb:L91) and the AutoAssignment column was tested by the caller. Roles are
-        // counted in tens per portal, so selecting over the portal's own set costs nothing.
+        // membership provider had no such procedure: it exposed GetPortalRoles alone and the AutoAssignment
+        // column was tested by the caller.
         IReadOnlyList<Role> portalRoles =
             await _roles.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -1458,16 +969,9 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false))
         {
             _users.Add(account);
-            // MIGRATION: SEC-F6. THE FOUR CHECKS ABOVE CANNOT CLOSE THE RACE. IX_Users is unique over the
-            // account name, so two requests carrying the same name arriving together both read "not taken"
-            // and the loser's insert is refused by the index. Without this the provider fault reached the
-            // transport, which references neither the mapper nor the database client by design and therefore
-            // answered 500 - a server fault for a store that had behaved correctly and kept exactly one row.
-            //
-            // The registered-in-this-portal code is returned, which is the code the FIRST of those checks
-            // emits: the winner of the race has by then created the account and registered it here, so that
-            // is precisely the state the loser now faces, and reporting it identically means a caller cannot
-            // tell a race from an ordinary second attempt - nor should it need to.
+            // THE FOUR CHECKS ABOVE CANNOT CLOSE THE RACE. IX_Users is unique over the account name, so two
+            // requests carrying the same name arriving together both read "not taken" and the loser's
+            // insert is refused by the index.
             try
             {
                 await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -1481,19 +985,6 @@ public sealed class UserService : IUserService
             }
 
             // THE FORMAT IS APPLIED HERE, AFTER THE INSERT, AND THE POSITION IS THE ONE DIVERGENCE.
-            //
-            // MIGRATION: the legacy applied it BEFORE the insert, which meant `[USERID]` was substituted
-            // from `UserInfo.UserID` while that property still held the legacy null marker - so a tenant
-            // whose format named the identifier stored the literal text "-1" for every account it ever
-            // created (`UserInfo.vb:L358-L368` substitutes `Me.UserID.ToString()`; `User.ascx.vb:L212`
-            // calls it before `AddUser`). The identifier is generated by the insert, so the only position at
-            // which the token can resolve to the account it names is after that insert. Applying it here
-            // reproduces the legacy INTENT and corrects a legacy defect; the divergence is recorded in
-            // MIGRATION_NOTES.md rather than absorbed.
-            //
-            // The second write is inside the same transaction as the first, so a display name the store
-            // cannot accept - or one the width guard refuses - rolls the account back entirely rather than
-            // leaving one behind with an unformatted name.
             if (displayNameFormat is not null)
             {
                 string formatted = FormatDisplayName(
@@ -1522,11 +1013,6 @@ public sealed class UserService : IUserService
                 }
             }
 
-            // MIGRATION: THE HASH IS COMPUTED OUTSIDE THE GUARDED REGION, and its position used to be inside
-            // it. Hashing is pure computation in this process - it reaches no store and cannot fail for any
-            // reason the store is responsible for - so a fault raised by the hasher was nonetheless reported
-            // as "the credential store could not be written", which named the wrong subsystem to whoever had
-            // to diagnose it. A guarded region must contain the operation it is guarding and nothing else.
             string credentialHash = _passwordHasher.Hash(credential);
 
             try
@@ -1549,40 +1035,7 @@ public sealed class UserService : IUserService
             catch (Exception exception) when (exception is not OperationCanceledException
                 && _storeFailures.IsStoreUnavailable(exception))
             {
-                // MIGRATION: THE CATCH IS NARROWED AND THE MESSAGE IS FIXED, and both halves repair a real
-                // defect rather than tidying one.
-                //
-                // It used to admit every exception that was not a cancellation, which made it a catch-all
-                // wearing the label of a store guard. A null argument, a mis-registered collaborator, an
-                // invalid operation raised by our own code - each was converted into "the credential store
-                // could not be written", so a programming fault inside this request was reported as an
-                // external store fault, and the fault that actually needed fixing was the one the report
-                // pointed away from. Now only a failure the Domain classifier POSITIVELY attributes to the
-                // store is absorbed here; anything else propagates to the global handler, which is the
-                // component whose job is to report an unexpected fault as one.
-                //
-                // The published text no longer carries exception.GetType().Name. A caller can do nothing
-                // with a type name, and it is the exception's own shape rather than authored text - so it
-                // told an unauthenticated caller which client library and which failure mode a write had hit,
-                // for no benefit to the caller at all. The diagnostic value is not lost: the global handler
-                // records the type chain for the log, which is where a type name belongs.
-                //
-                // MIGRATION: THE CAUGHT TYPE IS REPORTED PRIVATELY AND NEVER TO THE CALLER, AND THAT SPLIT IS
-                // A SECURITY FIX. The message on this outcome used to end with `exception.GetType().Name`, on
-                // the reasonable-sounding premise that the underlying cause should survive for whoever reports
-                // the failure. It survived further than intended: a failed Result's message is published
-                // verbatim as the RFC 7807 `detail`, so the internal type of the credential store - the
-                // database client, in the measured instance - was disclosed to an HTTP caller who has no
-                // relationship with it and can do nothing about it. The shape gave nothing away that helps a
-                // caller and named a component an attacker would otherwise have to guess at.
-                //
-                // What replaces it keeps both readers whole. The CALLER receives fixed, caller-safe wording
-                // that says what happened and what to quote - the correlation identifier joins their report to
-                // this request - while the TYPE NAME goes to ISecurityDiagnostics, whose contract exists for
-                // exactly this: a closed occurrence, a tenant, an account and a short stable code, with no
-                // parameter through which a message, an exception or a value could travel. The transport
-                // additionally refuses any detail naming an exception type, so the class is closed at the edge
-                // as well as at this source.
+                // The published text no longer carries exception.GetType().Name.
                 _diagnostics.Record(
                     SecurityDiagnosticEvent.CredentialStoreWriteFailed,
                     portalId,
@@ -1610,9 +1063,9 @@ public sealed class UserService : IUserService
         _cache.InvalidatePortal(portalId);
         _cache.InvalidateUser(portalId, account.Username);
 
-        // MIGRATION: reproduces the legacy USER_CREATED audit entry (EventLogController.vb:L39). Recorded
-        // only after the commit, so an account whose creation was rolled back - because the credential store
-        // refused it or was unreachable - never produces a record.
+        // Reproduces the legacy USER_CREATED audit entry. Recorded only after the commit, so an account
+        // whose creation was rolled back - because the credential store refused it or was unreachable -
+        // never produces a record.
         RecordAudit(
             AuditEventNames.UserCreated,
             portalId,
@@ -1628,20 +1081,12 @@ public sealed class UserService : IUserService
         // AN APPROXIMATION. The capability withholds removal from the account named by
         // Portals.AdministratorId, compared by equality against Users.UserID. This account was inserted a
         // moment ago and carries a fresh identity, so it cannot be the account an existing designation
-        // names - the comparison could only ever be false. Passing the designation would therefore change
-        // nothing except add a query to every creation.
+        // names - the comparison could only ever be false.
         return Result<UserDetailDto>.Success(
             UserMappings.ToDetail(account, portalId, roleNames, portalAdministratorId: null));
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// The display name is reformatted to the tenant's configured format before the row is written,
-    /// reproducing the call the legacy editor made immediately beforehand at User.ascx.vb:L374, and
-    /// editing the tenant administrator's own account drops the tenant cache, which L368-L371 did
-    /// explicitly. Electronic-mail uniqueness is deliberately not enforced here at all, for the reason
-    /// the contract records.
-    /// </remarks>
     public async Task<Result<UserDetailDto>> UpdateUserAsync(
         int portalId,
         int userId,
@@ -1667,13 +1112,6 @@ public sealed class UserService : IUserService
                 "The electronic-mail address does not satisfy this portal's validation rule.");
         }
 
-        // MIGRATION: THE PROJECTION USED TO RUN HERE AND NOW RUNS AFTER THE GUARDS, and the duplicate was a
-        // genuine defect rather than a redundancy. Two revisions each placed a call to the projection: one
-        // immediately after the address check, one below every state-dependent guard. Both survived a
-        // combination, so the aggregate was mutated BEFORE the display-name width guard could refuse - and a
-        // refusal that has already mutated a tracked entity depends on nobody calling SaveChanges afterwards,
-        // which this method cannot guarantee for its callers. The later call is the correct one and is kept;
-        // this position now performs no write at all.
         MembershipSettingsDto? settings =
             await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -1739,41 +1177,8 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
     /// Deletion removes the tenant membership and the tenant's role assignments, and removes the account
-    /// row and its credential only once no membership of any tenant remains. That is what the schema
-    /// permits: an account is installation-wide and its tenant memberships are rows in
-    /// <c>dbo.UserPortals</c>, so erasing the account while another tenant still holds a membership would
-    /// destroy that tenant's data.
-    /// </para>
-    /// <para>
-    /// THE WHOLE CASCADE IS ONE TRANSACTION, AND THAT IS THE MOST IMPORTANT PROPERTY THIS MEMBER HAS. Five
-    /// writes make up a deletion - the account's direct permission grants, its role assignments, its tenant
-    /// membership, its credential in the external membership store, and the account row - and they cannot
-    /// be one <c>SaveChanges</c> because the credential lives in a store that no entity maps and is written
-    /// through its own statement. So an explicit scope encloses all five, every one of them lands or none
-    /// does, and disposal without a commit rolls the batch back. Without it, a failure or a cancellation
-    /// part way through leaves an account whose grants and assignments are already gone - the state no
-    /// administrative screen can see and no later deletion revisits - while the reply may even say the
-    /// account was left intact.
-    /// </para>
-    /// <para>
-    /// The permission grants keyed by the account are removed first, reproducing the three cleanup
-    /// procedures UserController.vb:L200 invoked before deleting the account. They are STAGED, through the
-    /// permission contract's stage-only member, so they join the single commit below rather than becoming
-    /// durable on their own; the ordering matches the legacy sequence, but the durability does not, and
-    /// deliberately so. Every step of the cascade - the grant removal, the role assignments, the tenant
-    /// membership, the account row and the external credential - is staged or issued inside the ONE explicit
-    /// transaction opened here and committed once, so the all-or-nothing promise this contract makes is a
-    /// property of the code rather than of the order in which the steps happen to appear. An earlier revision
-    /// let the grant removal commit on its own, which meant a later credential-store failure reported failure
-    /// over an account that was intact but stripped of every grant it held.
-    /// </para>
-    /// <para>
-    /// Both protections are enforced here rather than exposed as switches. The legacy delete let its
-    /// caller decide whether the tenant's designated administrator survived, which placed a business
-    /// decision in the presentation layer.
-    /// </para>
+    /// row and its credential only once no membership of any tenant remains.
     /// </remarks>
     public async Task<Result> DeleteUserAsync(
         int portalId,
@@ -1808,16 +1213,10 @@ public sealed class UserService : IUserService
                     $"Account {userId} is the designated administrator of portal {portalId} and cannot be deleted."));
         }
 
-        // THE FIRST DESTRUCTIVE STEP, and deliberately so. Every guard above has passed, so the deletion is
-        // going to be attempted; and nothing below has yet removed anything, so a revocation that cannot be
-        // written abandons the deletion with the account wholly intact rather than half dismantled. Placing
-        // it after the cascade would mean reporting failure over an account whose grants, role assignments
-        // and credential had already gone.
-        //
-        // IUserService calls this the worst of the three cases it covers, and the reasoning is worth keeping
-        // in view: a refresh token that outlives the account it names is exchanged for access tokens
-        // asserting an identity that no longer exists, and there is no longer any account for an
-        // administrator to inspect or disable. Revoking is part of deleting rather than a follow-up to it.
+        // IUserService calls this the worst of the three cases it covers, and the reasoning is worth
+        // keeping in view: a refresh token that outlives the account it names is exchanged for access
+        // tokens asserting an identity that no longer exists, and there is no longer any account for an
+        // administrator to inspect or disable.
         if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
         {
             return Result.Failure(sessions);
@@ -1829,55 +1228,19 @@ public sealed class UserService : IUserService
         // ONE SCOPE AROUND THE WHOLE CASCADE. Five writes follow - the account's direct grants, its role
         // assignments, its tenant membership, its credential in the external membership store, and the
         // account row - and they cannot be expressed as a single SaveChanges because the credential lives
-        // outside the mapped model and is written through its own statement. So they are enclosed here, and
-        // the commit at the end of the block is the only point at which any of them becomes durable.
-        //
-        // Disposal rolls back when no commit was taken, which is what makes every failure path below - an
-        // unreachable membership store, a concurrency conflict raised by the commit, a cancellation observed
-        // between two steps - correct without a compensation routine. The membership store enlists in this
-        // scope because it borrows the same connection, so the credential removal is inside the boundary
-        // rather than beside it.
-        //
-        // The default isolation is correct: this sequence is atomic-or-nothing but depends on nothing it
-        // read staying unchanged. The account's own concurrency token protects the account row, and the
-        // guards above are refusals rather than check-then-write decisions.
+        // outside the mapped model and is written through its own statement.
         await using (ITransactionScope transaction = await _unitOfWork
             .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
             .ConfigureAwait(false))
         {
-            // MIGRATION: the legacy cascade removed the account's direct grants from both grant tables
-            // through two separate provider members - DeleteModulePermissionsByUserID, reached from
-            // ModulePermissionController.vb:L218, and DeleteTabPermissionsByUserID, reached from
-            // TabPermissionController.vb:L209 - and each terminal procedure joins its own grant table to its
-            // own owning table so the delete is bounded to this portal. Both are still issued, and for the
-            // same reason the legacy code issued both: a grant left behind on either table would outlive the
-            // account that held it and a later account reusing the identifier would inherit it.
-            //
-            // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT REPOSITORY.
-            // The two tables are one concern and the rule bounding the removal to DIRECT grants - grants
-            // reaching the account through a role belong to the role, so removing them would strip every
-            // other holder of that role - is permission knowledge rather than account knowledge. Consolidating
-            // it behind the one member that owns it keeps a single definition of "this account's own grants";
-            // issuing the two table deletes from here would put a second copy of that rule in a service whose
-            // subject is accounts, free to drift from the first. The account identifier crosses the boundary
-            // as an int: the legacy members took the account OBJECT and read the portal off it, which is
-            // precisely why a caller could widen the removal to every portal the account belonged to.
-            //
-            // THE STAGE-ONLY MEMBER IS THE ONE CALLED, AND THE DISTINCTION IS THE WHOLE POINT. Its top-level
-            // sibling commits and evicts on its own, which inside this scope would be a second, inner
-            // commit boundary: the grants would become durable ahead of everything below them, so a credential
-            // removal that failed - or a cancellation - would leave an account intact but stripped of its
-            // grants, and this method would report that the account had been left alone. Staging instead
-            // means the removal joins the single commit below and an abandoned deletion keeps its grants.
-            // Cache eviction is deferred to the same contract's eviction member, after the commit.
+            // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT
+            // REPOSITORY. The two tables are one concern and the rule bounding the removal to DIRECT grants
+            // - grants reaching the account through a role belong to the role, so removing them would strip
+            // every other holder of that role - is permission knowledge rather than account knowledge.
             Result cascade = await _permissions
                 .StageUserPermissionRemovalAsync(portalId, userId, cancellationToken)
                 .ConfigureAwait(false);
 
-            // A refusal is propagated rather than discarded. Nothing has been committed at this point, so
-            // reporting the reason leaves the account whole; swallowing it would commit an account removal
-            // whose grants were still in place, which is the one outcome the cascade exists to prevent.
-            // Returning here disposes the scope without committing, which rolls the batch back.
             if (cascade.IsFailure)
             {
                 return cascade;
@@ -1894,9 +1257,9 @@ public sealed class UserService : IUserService
                     .ConfigureAwait(false);
             }
 
-            // SEC-013: profile rows have no PortalID of their own. Their tenant ownership is carried by the
-            // required definition foreign key, so portal removal must stage precisely the values whose
-            // definitions belong to this portal before the membership is removed.
+            // profile rows have no PortalID of their own. Their tenant ownership is carried by the required
+            // definition foreign key, so portal removal must stage precisely the values whose definitions
+            // belong to this portal before the membership is removed.
             await _profiles.DeleteProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
             UserPortal? membership = await _users
@@ -1910,17 +1273,6 @@ public sealed class UserService : IUserService
 
             if (!holdsAnotherMembership)
             {
-                // THE ANSWER IS READ, WHICH IT PREVIOUSLY WAS NOT. This is the one write in the cascade that
-                // leaves the external membership store, and it is the one whose failure matters most: the account
-                // row is about to be removed, so a credential left behind becomes an orphan that no
-                // administrative screen can reach and no later deletion will revisit, while the deletion itself
-                // reported success. Discarding the answer made an unreachable membership store look exactly like
-                // a completed removal.
-                //
-                // Refusing here is safe precisely because nothing has been committed. Every removal above is
-                // tracked or issued inside this transaction and the commit is still ahead, so abandoning now
-                // leaves the account whole rather than partly dismantled, and the caller is told the truth. The
-                // reason token ends in store_unavailable, so the Api edge answers 503 and a caller may retry.
                 if (!await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false))
                 {
                     return Result.Failure(
@@ -1940,49 +1292,9 @@ public sealed class UserService : IUserService
         // Everything below runs only once the batch is durable, so no eviction and no audit record can
         // describe a deletion that did not happen.
 
-        // MIGRATION: reproduces the legacy USER_DELETED audit entry, whose one measured call site is
+        // Reproduces the legacy USER_DELETED audit entry, whose one measured call site is
         // UserController.vb:L240 - AddLog("Username", objUser.Username, _portalSettings, objUser.UserID,
-        // EventLogType.USER_DELETED). The account name it recorded is carried on the Username property and
-        // the account identifier it recorded is the subject, so the two facts the legacy record held both
-        // survive. The account-fully-removed distinction is net-new detail: the legacy delete had no
-        // multi-tenant retention arm to report.
-        //
-        // MIGRATION: THIS IS NOW THE FIRST THING AFTER THE COMMIT, AND THE ORDER IS THE FIX. It used to sit
-        // behind the three cache evictions below, the last of which - the grant-cache eviction - is an
-        // awaited call that OBSERVED THE CANCELLATION TOKEN at the time, now delegated to the permission
-        // contract and synchronous. A caller who disconnected in the moment after
-        // the commit therefore had the account deleted, permanently and irreversibly, with no record anywhere
-        // that it had happened: the token was signalled, the eviction threw, the exception left the member
-        // and this record was never reached. Deleting an account is the single least reversible operation
-        // this service performs and the one an investigation is most likely to ask about, so its record is
-        // the last thing that may be allowed to depend on the caller still being connected.
-        //
-        // Both facts the record needs - the account's key and whether the row itself was removed - are
-        // already in memory, so nothing about emitting them here weakens the record. The evictions follow,
-        // and may now fail without erasing the history of a deletion that has already happened.
-        // PRIV-02. THE SESSION RECORDS ARE ERASED, NOT MERELY REVOKED, AND THIS IS WHERE THAT HAPPENS.
-        //
-        // EndSessionsAsync above STAMPED every family so it can no longer be redeemed, which is the right
-        // treatment for a sign-out precisely because the stamped record is what makes a later replay of that
-        // family recognisable. It is the wrong treatment for a deletion: each record keeps the token digest and
-        // the subject identifiers, so an account removed from the application went on being described in the
-        // session store until its family ceiling elapsed - personal data about a subject that no longer exists,
-        // retained for a signal nobody can act on because there is no account left to protect.
-        //
-        // AFTER THE COMMIT, and the order is a choice between asymmetric failures rather than a preference.
-        // Erasing before the commit would mean a rolled-back deletion had destroyed the record of a live
-        // account's sessions, leaving an administrator unable to see or end them. Erasing afterwards means the
-        // worst case is revoked records naming a subject that is gone, and the scheduled reclamation removes
-        // those on its own.
-        //
-        // THE SCOPE FOLLOWS WHAT WAS ACTUALLY REMOVED. An account that still belongs to another tenant keeps
-        // its row and its sessions there, so only the records scoped to THIS tenant may be erased; an account
-        // removed outright has no legitimate session anywhere.
-        //
-        // A FAILURE HERE DOES NOT FAIL THE DELETION, and reporting one would be dishonest: the account is
-        // already gone and no retry can un-delete it. The records are still revoked, so nothing is
-        // exchangeable; what remains is a retention concern with a scheduled remedy, recorded as a property of
-        // the audit entry so an operator can see that the erasure is still owed.
+        // EventLogType.USER_DELETED).
         Result purged = holdsAnotherMembership
             ? await _tokens
                 .PurgeAccountSessionRecordsAsync(account.UserId, portalId, cancellationToken)
@@ -2005,9 +1317,7 @@ public sealed class UserService : IUserService
         _cache.InvalidateUser(portalId, account.Username);
 
         // The grant-cache eviction the permission contract owns, deferred to here because this method owned
-        // the commit. Evicting inside the scope would have discarded warm entries for a batch that might
-        // still have rolled back, and would have opened a window for a concurrent reader to repopulate them
-        // from rows the transaction was about to remove.
+        // the commit.
         _permissions.InvalidateUserPermissionCaches();
 
         return Result.Success();
@@ -2015,32 +1325,8 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
     /// SELF-SERVICE ONLY, AND THE CURRENT CREDENTIAL IS ALWAYS VERIFIED. This member no longer carries the
-    /// administrative reset, and that separation is a security fix rather than a tidying. One member serving
-    /// both meant the caller's own request body chose which of the two it got: sending the reset
-    /// discriminator skipped the current-credential check entirely, so any bearer token that could reach the
-    /// endpoint could overwrite any account's credential without proving anything. The two operations now
-    /// have two members, two endpoints and two authorisation policies - this one is reachable only by the
-    /// account holder, and <see cref="ResetPasswordAsync"/> only by an administrator of the account's portal.
-    /// </para>
-    /// <para>
-    /// A reset discriminator submitted here is REFUSED rather than honoured or ignored. Honouring it would
-    /// restore the defect; ignoring it would silently perform a different operation from the one the caller
-    /// asked for, on a credential.
-    /// </para>
-    /// <para>
-    /// Neither path returns, echoes or logs a credential, and no hash value appears on any result.
-    /// </para>
-    /// <para>
-    /// A successful change clears the forced-change flag, because the flag's purpose has been served.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the recovery question-and-answer operation the legacy screen offered is reported as
-    /// unsupported rather than implemented. Its only real purpose was to guard credential retrieval,
-    /// which this migration removes outright, so carrying the pair forward would preserve a mechanism
-    /// with nothing left to protect.
-    /// </para>
+    /// administrative reset, and that separation is a security fix rather than a tidying.
     /// </remarks>
     public Task<Result> ChangePasswordAsync(
         int portalId,
@@ -2060,30 +1346,10 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// ADMINISTRATIVE, AND THEREFORE GATED OUTSIDE THIS LAYER. This member deliberately does not verify the
-    /// current credential, which is the whole point of a reset: its holder has lost it. What makes that safe
-    /// is that the endpoint carrying it requires administration of the account's own portal, so the absence
-    /// of a credential check is compensated by the presence of an authorisation check. It was previously
-    /// selectable from inside a request body on an endpoint that required nothing but authentication, which
-    /// is the account-takeover path this split closes.
-    /// </para>
-    /// <para>
-    /// Refused outright when the deployment has reset switched off, before the account is read, so a
-    /// deployment that has disabled reset cannot be probed for which accounts exist.
-    /// </para>
-    /// <para>
     /// MIGRATION: this member owns the fallback half of credential migration. AuthService owns the primary
-    /// first-login path through the bounded legacy verifier; an administrative reset remains necessary after
-    /// that deadline, for an unsupported representation, or when the owner no longer knows the credential.
-    /// The shipped default keeps reset ENABLED, which is faithful:
-    /// <c>Website/release.config</c> L240 registers the legacy provider with
-    /// <c>enablePasswordReset="true"</c>.
-    /// </para>
-    /// <para>
-    /// The new credential is never returned. The legacy reset assigned the provider's answer onto the account
-    /// and returned it, so the credential travelled back in clear text; nothing here reproduces that.
-    /// </para>
+    /// first-login path through the bounded legacy verifier; an administrative reset remains necessary
+    /// after that deadline, for an unsupported representation, or when the owner no longer knows the
+    /// credential.
     /// </remarks>
     public Task<Result> ResetPasswordAsync(
         int portalId,
@@ -2114,15 +1380,14 @@ public sealed class UserService : IUserService
     /// <param name="request">The submitted credential change.</param>
     /// <param name="expected">The discriminator this entry point implements.</param>
     /// <returns>
-    /// The failure reason when the discriminator names a different operation, or <see langword="null"/> when
-    /// it names this one or is absent.
+    /// The failure reason when the discriminator names a different operation, or <see langword="null"/>
+    /// when it names this one or is absent.
     /// </returns>
     /// <remarks>
     /// An ABSENT discriminator is accepted, because the endpoint the caller chose has already stated which
     /// operation they meant and requiring them to say it twice would refuse well-formed requests. A
     /// discriminator naming the OTHER operation is refused rather than ignored: the two differ in whether a
     /// credential is verified, so silently performing the one the caller did not ask for is not an option.
-    /// An unrecognised value is refused for the same reason.
     /// </remarks>
     private static ResultReason? EnsureOperation(ChangePasswordRequest request, string expected)
     {
@@ -2138,18 +1403,11 @@ public sealed class UserService : IUserService
                 $"Operation \"{request.Operation}\" is not supported by this endpoint, which performs \"{expected}\". Use the endpoint that performs the operation you intend."));
     }
 
-    /// <summary>
-    /// Writes a new credential, shared by the self-service change and the administrative reset.
-    /// </summary>
+    /// <summary>Writes a new credential, shared by the self-service change and the administrative reset.</summary>
     /// <param name="portalId">Identifier of the tenant that owns the account.</param>
     /// <param name="userId">Identifier of the account whose credential is changing.</param>
     /// <param name="request">The submitted credential change.</param>
-    /// <param name="verifyCurrent">
-    /// Whether the current credential must be presented and verified. This is the ONLY difference between
-    /// the two operations, and it is a parameter rather than a re-reading of the request so that the
-    /// decision belongs to the entry point - and therefore to the endpoint's authorisation policy - and can
-    /// never again be chosen by the caller.
-    /// </param>
+    /// <param name="verifyCurrent">Whether the current credential must be presented and verified.</param>
     /// <param name="cancellationToken">Token observed while the credential is written.</param>
     /// <returns>A successful result with no value, or the reason the credential was not written.</returns>
     private async Task<Result> WriteCredentialAsync(
@@ -2159,37 +1417,6 @@ public sealed class UserService : IUserService
         bool verifyCurrent,
         CancellationToken cancellationToken)
     {
-        // WHO IS ALLOWED TO PERFORM WHICH OPERATION IS SETTLED HERE, BEFORE ANY ACCOUNT IS READ, and it is
-        // settled a SECOND time rather than once. The endpoints that reach this member already carry the
-        // policies that answer it - a change is routed through the account-owner policy and a reset through
-        // the portal-administrator policy - so on the HTTP path this check agrees with the policy that has
-        // already run. It is stated here anyway, for two reasons. Any other caller of this service reaches
-        // the member directly, with no policy in front of it. And the defect this closes is severe enough
-        // that it should not depend on a route attribute remaining correct: an earlier revision performed
-        // NEITHER check, so the reset branch skipped current-credential verification by design - correctly,
-        // since an administrator does not know the credential they are resetting - and performed no
-        // privilege check either, which meant any caller who could reach this member could set anybody's
-        // credential.
-        //
-        // A CHANGE is self-service and is refused to anyone but the owner. Verifying the current credential,
-        // which the branch below does, is proof of possession rather than of authority: it establishes that
-        // the caller knows the credential, and an administrator who wishes to act on another account uses
-        // the reset operation, which is audited as an administrative act.
-        //
-        // A RESET is administrative and is refused to anyone who does not administer the tenant the account
-        // belongs to. The asymmetry matters: were the reset operation admitted to the account itself, the
-        // owner could invoke it on themselves and thereby set a new credential WITHOUT presenting the
-        // current one - which would make the change branch's verification optional, and turn a stolen
-        // access token into a permanent account takeover.
-        //
-        // An administrator's OWN account is not additionally singled out, which is a considered position
-        // rather than an oversight: an account that already administers the tenant can reset every credential
-        // in it, so resetting its own escalates nothing that is not already conferred. This differs from the
-        // three membership transitions, which DO refuse a self-targeted change, because those exist to keep an
-        // administrator subject to a control - lockout and approval - that resetting a credential is not.
-        //
-        // The operation is read from verifyCurrent rather than from the request, so it is the entry point's
-        // answer and never the caller's: a reset is exactly the call that does not verify the current value.
         Result authorised = await AuthoriseCredentialOperationAsync(
                 portalId,
                 userId,
@@ -2259,11 +1486,6 @@ public sealed class UserService : IUserService
 
         // Every reason to refuse this request has now been exhausted, so this is the last moment at which
         // the sessions can be ended without ending them for a request that was going to be rejected anyway.
-        // It is also the last moment BEFORE the credential is replaced, which is the ordering the helper
-        // exists to enforce: a credential changed with sessions left exchangeable would not end the session
-        // the change was performed to end, and the obligation is stated on IUserService in exactly those
-        // terms. Both a self-service change and an administrative reset are covered - the reset ends the
-        // sessions of the account being reset, not the administrator's own.
         if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
         {
             return Result.Failure(sessions);
@@ -2271,15 +1493,6 @@ public sealed class UserService : IUserService
 
         DateTime now = _clock.UtcNow;
 
-        // ⚠ THE WRITE CARRIES THE REPRESENTATION THIS METHOD READ, AND THAT CLOSES A RACE THAT USED TO BE
-        // SILENT. Everything above decided from `storedHash`: a self-service change verified the current
-        // credential against it, and a reset established that the caller may replace it. The replacement used
-        // to be unconditional, so anything that changed the credential in between - an administrator resetting
-        // a compromised account while its holder was mid-change, another replica serving the same account, a
-        // sign-in migrating a legacy representation - was discarded without trace. The worst shape of it is an
-        // administrative reset being rolled back by a request that had verified the very credential the reset
-        // existed to retire. The expectation makes the database refuse that write instead, which is the only
-        // serialisation point two replicas share.
         CredentialWriteOutcome written = await _users
             .SetPasswordHashAsync(
                 userId,
@@ -2291,11 +1504,7 @@ public sealed class UserService : IUserService
 
         if (written == CredentialWriteOutcome.Superseded)
         {
-            // NOT retried here, and not reported as a store failure. The caller's own decision was made
-            // against a credential that is no longer in force, so the only correct answers are to refuse and
-            // to say why: a repeat of the identical request re-reads and either succeeds or refuses again on
-            // the current state. Reported as a conflict by the edge, which is what a well-formed request that
-            // the resource's state declines means.
+            // NOT retried here, and not reported as a store failure.
             return Result.Failure(
                 PasswordSupersededCode,
                 "The credential changed while this request was being processed, so it was not replaced. "
@@ -2307,21 +1516,6 @@ public sealed class UserService : IUserService
             return Result.Failure(PasswordResetFailedCode, "The credential store refused the change.");
         }
 
-        // ⚠ THE SECOND REVOCATION, AND IT IS NOT REDUNDANT. The one above runs BEFORE the write, which is
-        // the ordering the helper exists to enforce - a credential replaced with sessions left exchangeable
-        // would not end the session the change was performed to end. But a sign-in already in flight can mint
-        // a family in the interval between that revocation and this write committing, and such a family would
-        // have escaped the first sweep entirely. Repeating the revocation once the write has landed catches
-        // it, and the sign-in path closes the mirror-image case: a family minted AFTER this point can only
-        // come from a request whose own post-issuance credential read observes this change and revokes what it
-        // just minted. One of the two always applies, so no family issued against the superseded credential
-        // survives.
-        //
-        // A failure here is escalated rather than absorbed, for the same reason as the first sweep: the
-        // credential HAS changed by this point, so reporting success while sessions may remain exchangeable
-        // would be the exact falsehood the ordering rules were written to prevent. The caller is told to
-        // retry, and a retry is harmless - the swap now refuses as superseded, and the revocation is
-        // idempotent. MIGRATION: recorded in MIGRATION_NOTES.md.
         if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason lingering)
         {
             return Result.Failure(lingering);
@@ -2340,12 +1534,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// Both preconditions are measured rather than invented: the legacy membership panel offered the
-    /// command only while the account was locked (Membership.ascx.vb:L142) and hid all four membership
-    /// commands when the acting administrator was looking at their own account (L135). Both become codes
-    /// so the API layer cannot decide either question for itself.
-    /// </remarks>
     public async Task<Result> UnlockUserAsync(
         int portalId,
         int userId,
@@ -2396,12 +1584,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// One member with a direction argument replaces the panel's two commands, which kept their
-    /// precondition in two places. The direction is data; the precondition - that the account is not
-    /// already in the requested state - and the prohibition on acting upon one's own account are both
-    /// enforced here.
-    /// </remarks>
     public async Task<Result> SetUserApprovalAsync(
         int portalId,
         int userId,
@@ -2442,8 +1624,6 @@ public sealed class UserService : IUserService
 
         // Withdrawal only. Granting an approval takes nothing away, so it revokes nothing - IUserService
         // says so in terms, and ending a session because an account gained a right would be gratuitous.
-        // Withdrawal is the opposite: it ends the account's right to sign in, so leaving it holding
-        // exchangeable refresh tokens would let it keep obtaining access tokens after the withdrawal.
         if (!isApproved
             && await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason sessions)
         {
@@ -2464,11 +1644,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// This is the non-destructive alternative to an administrative reset: it demands a new credential at
-    /// the next sign-in without replacing the current one, so nothing is transmitted. The precondition
-    /// mirrors Membership.ascx.vb:L144 and the self-service prohibition mirrors L135.
-    /// </remarks>
     public async Task<Result> RequirePasswordChangeAsync(
         int portalId,
         int userId,
@@ -2502,27 +1677,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// <para>
-    /// A tenant with no settings source is answered with the LEGACY DEFAULTS rather than with an absence,
-    /// and the returned document records which of the two happened through
-    /// <see cref="MembershipSettingsDto.IsStored"/>. That is what the legacy reader effectively did:
-    /// <c>UserModuleBase.GetSettings</c> (<c>UserModuleBase.vb:L94-L194</c>) applied a measured default for
-    /// every absent key, and the screens that consumed the result fell back to those same defaults when the
-    /// account module could not be located, so the values an operator saw were never undefined.
-    /// </para>
-    /// <para>
-    /// MIGRATION: this member USED TO ANSWER WITH NO VALUE, which the API surface translated into
-    /// <c>404 Not Found</c>. That was wrong in a way worth recording, because the status was not merely
-    /// unhelpful - it was untrue. Membership settings are a property of a tenant that exists, so the
-    /// resource the caller addressed exists too; only its storage was absent. The consequence measured at
-    /// runtime was that four screens which merely read this document to decide which columns to render
-    /// raised a screen-level "not found" alert over otherwise healthy content, and the settings screen
-    /// disabled its own save control against a healthy server. Absence of storage is now reported inside
-    /// the document, where a caller can act on it, instead of in the status line, where a caller can only
-    /// treat it as a failure.
-    /// </para>
-    /// </remarks>
     public async Task<Result<MembershipSettingsDto?>> GetMembershipSettingsAsync(
         int portalId,
         CancellationToken cancellationToken = default)
@@ -2536,16 +1690,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// Every setting is written as a module setting against the tenant's account module instance, which
-    /// is precisely where the legacy screen wrote them (UserSettings.ascx.vb:L183). Absence of that
-    /// module is a legitimate answer to a read and an impossibility for a write, which is why this member
-    /// reports it and the read above does not. Each non-null redirect is resolved before any setting is
-    /// staged and must belong to the same tenant. Identifier zero is resolved normally because it is the
-    /// first real page key; the legacy <c>-1</c> absence sentinel has already become
-    /// <see langword="null"/> at this boundary and is likewise treated as an identifier if a caller sends
-    /// it explicitly.
-    /// </remarks>
     public async Task<Result<MembershipSettingsUpdateResultDto>> UpdateMembershipSettingsAsync(
         int portalId,
         UpdateMembershipSettingsRequest request,
@@ -2556,17 +1700,11 @@ public sealed class UserService : IUserService
         // THE SERVICE'S OWN COPY OF THE FIELD RULES, and the duplication is deliberate for the same reason
         // it is on the module-settings write: the declarative validator answers a caller that came through
         // the API pipeline with a field-level 400, and this member is reachable from callers that did not.
-        // The two must agree, so both are annotated as a pair.
         if (ValidateMembershipSettings(request) is ResultReason invalid)
         {
             return Result<MembershipSettingsUpdateResultDto>.Failure(invalid);
         }
 
-        // PAGE OWNERSHIP, which no field rule can decide. The legacy screen offered a picker bound to the
-        // portal's own pages (UserSettings.ascx.vb:L80-L82), so a redirect target outside the tenant was
-        // never selectable; here it arrives as an integer and has to be proved. Absence is null and only
-        // null - the page identity seeds at zero, so zero is a legitimate page and a non-positive test would
-        // reject the first page of every portal.
         var checkedPages = new HashSet<int>();
         foreach ((string member, int? tabId) in new[]
         {
@@ -2575,9 +1713,6 @@ public sealed class UserService : IUserService
             (nameof(UpdateMembershipSettingsRequest.RedirectAfterLogout), request.RedirectAfterLogout),
         })
         {
-            // A repeated identifier is read ONCE. The three members may legitimately name the same page -
-            // an installation that sends every outcome to one landing page is ordinary - and asking the
-            // repository the same question again adds I/O without adding information.
             if (tabId is not { } wanted || !checkedPages.Add(wanted))
             {
                 continue;
@@ -2597,13 +1732,6 @@ public sealed class UserService : IUserService
         Module? source = await FindMembershipSettingsSourceAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (source is null)
         {
-            // MIGRATION: reported as a CONFLICT rather than as a missing resource, and the distinction is
-            // not cosmetic. The read beside this member answers 200 with the legacy defaults for exactly
-            // this tenant, so the settings resource demonstrably exists; what is absent is the store the
-            // legacy screen wrote into, which is a state conflict the operator can resolve. Answering 404
-            // here would contradict the 200 the read just gave for the same address, and a client cannot
-            // act on a contradiction. The detail names the module the installation needs so the message is
-            // actionable rather than merely accurate.
             return Result<MembershipSettingsUpdateResultDto>.Failure(
                 MembershipSettingsSourceMissingCode,
                 FormattableString.Invariant(
@@ -2628,12 +1756,6 @@ public sealed class UserService : IUserService
         // THE STORED FORMAT, READ BEFORE IT IS OVERWRITTEN. The sweep below is driven by a COMPARISON, and
         // the value being compared against exists only until the upsert loop replaces it - which is why the
         // read is taken here rather than after the write.
-        //
-        // MIGRATION: the comparison is the legacy one. `UserSettings.ascx.vb:L175-L182` tested the submitted
-        // format against `GetSetting(PortalId, "Security_DisplayNameFormat")` and swept only when they
-        // differed, so resubmitting an unchanged policy rewrote nothing. The comparison is ORDINAL, because
-        // the format is a template rather than prose: a case difference between "[FIRSTNAME]" and
-        // "[firstname]" changes which token is substituted, so two spellings are two formats.
         string previousFormat = ReadStoredDisplayNameFormat(stored);
         string submittedFormat = request.SecurityDisplayNameFormat ?? string.Empty;
         bool formatChanged = !string.Equals(previousFormat, submittedFormat, StringComparison.Ordinal);
@@ -2653,17 +1775,8 @@ public sealed class UserService : IUserService
         // once the write has committed. Empty whenever no sweep ran.
         IReadOnlyList<string> rewrittenAccounts = [];
 
-        // ONE TRANSACTION AROUND THE POLICY AND THE SWEEP IT CAUSES.
-        //
         // MIGRATION: the legacy save committed the policy immediately and started a BACKGROUND THREAD to
-        // rewrite every account's display name (`UserSettings.ascx.vb:L175-L182` ->
-        // `UserController.UpdateDisplayNames`, `UserController.vb:L1259-L1268`). Three properties of that
-        // arrangement are deliberately not reproduced: the operator was told nothing, a failure part way
-        // through left some accounts formatted and the rest not, and a request that was abandoned took the
-        // sweep with it. Here the sweep is part of the write - both commit or neither does - and the count
-        // is reported. The divergence is recorded in MIGRATION_NOTES.md.
-        //
-        // JOINED RATHER THAN BEGUN, so a caller that already opened a scope keeps one boundary.
+        // rewrite every account's display name.
         await using (ITransactionScope transaction = await _unitOfWork
             .JoinOrBeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
             .ConfigureAwait(false))
@@ -2676,10 +1789,7 @@ public sealed class UserService : IUserService
 
                 if (swept.IsFailure)
                 {
-                    // The policy is abandoned WITH the sweep. Storing a format that cannot be applied to
-                    // every account would leave the tenant in a state where each subsequent edit of an
-                    // affected account is refused by the width guard - a policy that silently breaks the
-                    // accounts it governs. Refusing the whole write says so at the moment of the change.
+                    // The policy is abandoned WITH the sweep.
                     return Result<MembershipSettingsUpdateResultDto>.Failure(swept.Error!);
                 }
 
@@ -2696,8 +1806,7 @@ public sealed class UserService : IUserService
 
         // Every rewritten account is stale in the PER-ACCOUNT cache too, which is keyed by username rather
         // than by tenant, so the tenant-wide eviction above does not reach it. Each rewritten account is
-        // therefore evicted by name. The legacy sweep evicted nothing at all, which is why an operator could
-        // change the format and still be shown the previous names until the entries aged out.
+        // therefore evicted by name.
         foreach (string rewrittenAccount in rewrittenAccounts)
         {
             _cache.InvalidateUser(portalId, rewrittenAccount);
@@ -2706,15 +1815,13 @@ public sealed class UserService : IUserService
         return Result<MembershipSettingsUpdateResultDto>.Success(outcome);
     }
 
-    /// <summary>
-    /// Reads the display-name format currently stored against the tenant's settings source.
-    /// </summary>
+    /// <summary>Reads the display-name format currently stored against the tenant's settings source.</summary>
     /// <param name="stored">The settings rows already read for the upsert.</param>
     /// <returns>The stored format, or the empty string when the tenant has never stored one.</returns>
     /// <remarks>
     /// Reads the rows already in hand rather than issuing a second query, and answers the empty string for
-    /// an absent key - which is the value <c>ReadString</c> defaults this key to, so a tenant that has never
-    /// configured a format compares equal to a submission that leaves it blank and is not swept.
+    /// an absent key - which is the value <c>ReadString</c> defaults this key to, so a tenant that has
+    /// never configured a format compares equal to a submission that leaves it blank and is not swept.
     /// </remarks>
     private static string ReadStoredDisplayNameFormat(IReadOnlyList<ModuleSetting> stored)
     {
@@ -2724,37 +1831,19 @@ public sealed class UserService : IUserService
         return setting?.SettingValue ?? string.Empty;
     }
 
-    /// <summary>
-    /// Recomposes every account's display name in one tenant from a newly adopted format.
-    /// </summary>
+    /// <summary>Recomposes every account's display name in one tenant from a newly adopted format.</summary>
     /// <param name="portalId">The tenant to sweep.</param>
-    /// <param name="format">The newly adopted format. Never blank; the caller tests that first.</param>
+    /// <param name="format">The newly adopted format.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>
     /// The usernames of the accounts whose stored display name changed, or a failure when the format would
     /// overflow the stored column for any one of them.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: reproduces <c>UserController.UpdateDisplayNames</c>
-    /// (<c>Library/Components/Users/UserController.vb</c> L1259-L1268), which walked
-    /// <c>GetUsers(PortalId)</c> calling <c>UpdateDisplayName(format)</c> and then <c>UpdateUser</c> per
-    /// account. The population is the same one the account listing pages - the tenant's accounts, host
-    /// accounts excluded - because a host account belongs to no single tenant and its display name is not
-    /// governed by one tenant's format.
-    /// </para>
-    /// <para>
     /// ⚠ ONE WRITE, NOT ONE PER ACCOUNT. The legacy issued a separate update per account, so a sweep over a
     /// large tenant was N round trips and a failure at row K left K-1 accounts formatted. Here the tracked
     /// aggregates are mutated and the caller's single <c>SaveChanges</c> writes them together inside the
     /// caller's transaction.
-    /// </para>
-    /// <para>
-    /// ⚠ THE WIDTH GUARD REFUSES THE WHOLE SWEEP, NOT THE OFFENDING ACCOUNT. The stored column is 128
-    /// characters; a format that overflows it for one account would be stored as the tenant's policy and
-    /// then refuse every subsequent edit of that account. The account named in the failure is the first one
-    /// that overflows, which is the one an operator needs in order to understand the refusal.
-    /// </para>
     /// </remarks>
     private async Task<Result<IReadOnlyList<string>>> RewriteDisplayNamesAsync(
         int portalId,
@@ -2798,9 +1887,9 @@ public sealed class UserService : IUserService
                         $"The submitted display-name format produces {formatted.Length} characters for account {account.UserId}; the stored limit is {DisplayNameMaximumLength}."));
             }
 
-            // Recorded only when the value actually changes. A format whose tokens resolve to what is already
-            // stored is not a rewrite, and counting it would report a tenant-wide change to an operator who
-            // caused none.
+            // Recorded only when the value actually changes. A format whose tokens resolve to what is
+            // already stored is not a rewrite, and counting it would report a tenant-wide change to an
+            // operator who caused none.
             if (!string.Equals(account.DisplayName, formatted, StringComparison.Ordinal))
             {
                 account.DisplayName = formatted;
@@ -2851,29 +1940,10 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// C-03: the two halves of <c>UserController.vb</c> L1189-L1193, in the legacy order and with the
-    /// legacy short-circuit. The setting is consulted FIRST, so a tenant that does not require a valid
-    /// profile at sign-in never pays for the definition read at all - which is the same ordering the
-    /// legacy <c>And</c> expression produced, since VB's <c>And</c> on the two operands was evaluated left
-    /// to right and the second operand was a method call the first could not skip. The reproduction here is
-    /// the stronger one: this genuinely short-circuits, so it issues fewer reads than the legacy did while
-    /// producing an identical answer.
-    /// </para>
-    /// <para>
-    /// A tenant with no User Accounts module instance has no settings source, so the setting cannot be
-    /// read. The legacy behaviour in that case is measured rather than guessed: <c>GetUserSettings</c>
-    /// returned nothing, <c>UserModuleBase.GetSetting</c> therefore yielded the key's default, and the
-    /// default for this key is <see langword="true"/> (<c>UserModuleBase.vb</c> L94-L194). The default is
-    /// applied here rather than the gate being skipped, which is why the settings read is treated as
-    /// present-with-defaults instead of as an absence.
-    /// </para>
-    /// <para>
     /// The completeness test walks the tenant's definitions and stops at the first required property whose
-    /// answer is missing or empty, exactly as <c>ProfileController.ValidateProfile</c> did with its
-    /// <c>Exit For</c>. An account with no stored answers at all and at least one required definition is
-    /// therefore incomplete, which is the case the legacy hit for a newly created account.
-    /// </para>
+    /// answer is missing or empty, exactly as <c>ProfileController.ValidateProfile</c> did with its <c>Exit
+    /// For</c>. An account with no stored answers at all and at least one required definition is therefore
+    /// incomplete, which is the case the legacy hit for a newly created account.
     /// </remarks>
     public async Task<Result<bool>> RequiresProfileCompletionAsync(
         int portalId,
@@ -2917,17 +1987,6 @@ public sealed class UserService : IUserService
 
         foreach (ProfilePropertyDefinition definition in mandatory)
         {
-            // MIGRATION: EMPTINESS IS TESTED EXACTLY AS THE LEGACY TESTED IT - against the empty string, not
-            // against whitespace. ProfileController.vb ValidateProfile reads
-            //     If propertyDefinition.Required And propertyDefinition.PropertyValue = Null.NullString Then
-            // and Null.vb declares NullString as the EMPTY STRING, so a stored answer of " " satisfied the
-            // legacy rule and let the account sign in. IsNullOrWhiteSpace is therefore a TIGHTENING, and the
-            // consequence falls on exactly the accounts least able to escape it: an existing account whose
-            // stored answer is a space is refused entry to the very form it would have to use to correct the
-            // answer, and it has no way to tell what is wrong. Whether a space is a satisfactory answer is a
-            // policy question, and the place to answer it is the per-property validation expression the
-            // definition already carries - not the completeness gate, which only asks whether an answer
-            // exists. Recorded in MIGRATION_NOTES.md.
             if (!answers.TryGetValue(definition.PropertyDefinitionId, out string? answer)
                 || string.IsNullOrEmpty(answer))
             {
@@ -2964,18 +2023,7 @@ public sealed class UserService : IUserService
         IReadOnlyList<UserProfileValue> values =
             await _profiles.GetProfileValuesAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
 
-        // ONE READ FOR BOTH TENANT FACTS, deliberately. The default visibility that seeds an unfilled
-        // value and the flag saying whether the holder may choose a visibility at all are two members of
-        // the same settings source, so reading it once means they cannot disagree and the projection costs
-        // no more than it did when it published only the first of them.
-        //
-        // The second fact is published here because the only other place it was readable from is
-        // administrator-only. GET api/v1/users/settings carries PolicyNames.PortalAdministrator, and the
-        // caller who needs this answer is by construction an ordinary account holder looking at their own
-        // profile - measured, such a caller was answered 403 auth.not_permitted, so the affordance could
-        // never be offered to the one person it exists for. Widening that endpoint would have handed an
-        // account holder the tenant's entire account policy; this hands them the one fact that concerns
-        // them, on a projection they are already entitled to read.
+        // ONE READ FOR BOTH TENANT FACTS, deliberately.
         MembershipSettingsDto? settings =
             await ReadMembershipSettingsAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -2997,34 +2045,9 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// PRIV-01. COMPOSED FROM THE THREE PROJECTIONS THAT ALREADY EXIST, NOT ASSEMBLED FROM THE REPOSITORIES
-    /// AGAIN. The account record, the profile and the role assignments each have one definition in this
-    /// service, and reaching past them to build a fourth reading of the same rows is how an export starts
-    /// disagreeing with the screens it is meant to reproduce - a subject comparing the two would be shown two
-    /// different answers about themselves, and neither could be called wrong. The cost is three reads instead
-    /// of one; the export is not a hot path.
-    /// </para>
-    /// <para>
     /// THE ABSENCE TEST IS THE ACCOUNT READ, once. Every member below is scoped to the same tenant and the
     /// same account, so if the account is not a member of the tenant there is nothing to describe and the
-    /// document is null - the same convention <see cref="GetUserAsync"/> uses. The profile read applies the
-    /// same test internally and would answer null too; it is not relied on for the decision, because a
-    /// profile that is absent for its own reason (a tenant defining no properties) must not read as an
-    /// absent account.
-    /// </para>
-    /// <para>
-    /// THE ROLE ASSIGNMENTS ARE PROJECTED HERE RATHER THAN THROUGH THE ROLE SERVICE. Its own membership
-    /// listing is addressed BY ROLE - "who holds this role" - and answering "which roles does this account
-    /// hold" through it would mean enumerating every role of the tenant and filtering, which is both
-    /// wasteful and a read of other subjects' memberships to answer a question about one. The assignment
-    /// rows for one account are a repository read, and the role names are resolved from the roles those
-    /// assignments name.
-    /// </para>
-    /// <para>
-    /// NOTHING IS WRITTEN AND NO CACHE IS EVICTED. The audit record is the only side effect, and it carries
-    /// counts rather than values for the reason set out on <see cref="AuditEventNames.UserDataExported"/>.
-    /// </para>
+    /// document is null - the same convention <see cref="GetUserAsync"/> uses.
     /// </remarks>
     public async Task<Result<UserPersonalDataExportDto?>> ExportPersonalDataAsync(
         int portalId,
@@ -3074,15 +2097,12 @@ public sealed class UserService : IUserService
                 UserId = assignment.UserId,
 
                 // The subject's own identifying fields, taken from the account projection above rather than
-                // re-read: this document describes one account, so these are the same two values on every row
-                // and they must not be able to disagree with the account record beside them.
+                // re-read: this document describes one account, so these are the same two values on every
+                // row and they must not be able to disagree with the account record beside them.
                 Username = account.Value.Username,
                 DisplayName = account.Value.DisplayName,
                 RoleId = assignment.RoleId,
 
-                // An assignment whose role has been removed under it keeps the assignment's own facts and
-                // reports no name, rather than being dropped from the document. Dropping it would understate
-                // what is held; inventing a name would state something the store does not say.
                 RoleName = role?.RoleName ?? string.Empty,
                 EffectiveDate = assignment.EffectiveDate,
                 ExpiryDate = assignment.ExpiryDate,
@@ -3099,12 +2119,6 @@ public sealed class UserService : IUserService
             RoleAssignments = memberships,
         };
 
-        // COUNTS, NEVER VALUES. The sink is retained independently of, and for longer than, the data it
-        // describes, so copying the exported e-mail address, profile values or role names into it would
-        // duplicate the subject's personal data into a second store every time the endpoint that exists to
-        // serve that subject was used. The actor is what makes the record worth keeping: an export taken by an
-        // administrator and one taken by the account holder are different events, and nothing else
-        // distinguishes them afterwards.
         RecordAudit(
             AuditEventNames.UserDataExported,
             portalId,
@@ -3122,22 +2136,9 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// Replace-the-set is the deliberate shape: the caller submits the whole desired profile and the
-    /// difference is computed here, because computing it in the API layer would put a business decision
-    /// there. A property the submitted set omits therefore has its stored value removed.
-    /// </para>
-    /// <para>
     /// The three validation rules are the three a profile property definition actually carries - required,
     /// declared length and a validation expression - and they are enforced here because they depend on
-    /// tenant data a static request validator cannot see. A validation expression is tenant data rather
-    /// than code, so it runs under a time bound and a pathological expression is reported as a validation
-    /// failure rather than being allowed to occupy the request.
-    /// </para>
-    /// <para>
-    /// A value longer than the bounded column can hold is stored in the unbounded text column beside it,
-    /// which is what the two columns exist for; the projection reads whichever of the pair holds a value.
-    /// </para>
+    /// tenant data a static request validator cannot see.
     /// </remarks>
     public async Task<Result> UpdateProfileAsync(
         int portalId,
@@ -3233,13 +2234,6 @@ public sealed class UserService : IUserService
                 continue;
             }
 
-            // MIGRATION: the same empty-string test the completeness gate applies, for the same reason and
-            // from the same legacy line - ProfileController.vb ValidateProfile compares the answer against
-            // Null.NullString, which Null.vb declares as the EMPTY STRING. The two must agree or the pair
-            // becomes incoherent in one direction or the other: a write rule stricter than the completeness
-            // rule refuses an answer that would have satisfied sign-in, and a laxer one accepts an answer
-            // that will lock the account out on its next sign-in. Whether a whitespace answer is
-            // satisfactory belongs to the property's own validation expression, applied above.
             if (!submitted.TryGetValue(definition.PropertyDefinitionId, out UserProfileValueDto? property)
                 || string.IsNullOrEmpty(property.PropertyValue))
             {
@@ -3258,13 +2252,6 @@ public sealed class UserService : IUserService
 
         foreach (UserProfileValue value in stored)
         {
-            // MIGRATION: a stored answer the submitted set omits is BLANKED, not deleted. No legacy
-            // member and no procedure in the eighty-eight upgrade scripts ever removed a UserProfile
-            // row - the membership provider's profile block declares only a reader and an upsert
-            // (DataProvider.vb:L118 and L119), and clearing an answer was an upsert carrying an empty
-            // value, which the legacy code could express because Null.NullString was the empty
-            // string. Blanking therefore reproduces the legacy write exactly, keeping the row's
-            // visibility and refreshing its timestamp, where deleting would reset both.
             UserProfileValueDto replacement =
                 submitted.TryGetValue(value.PropertyDefinitionId, out UserProfileValueDto? property)
                     ? property
@@ -3303,27 +2290,6 @@ public sealed class UserService : IUserService
     }
 
     /// <inheritdoc />
-    /// <remarks>
-    /// <para>
-    /// The sequence is ordered by the display-order column so no client has to sort it, and it is
-    /// deliberately unpaged because the legacy screen listed every definition on one page with no pager
-    /// and a tenant declares definitions in the tens. The read goes through the cache under the legacy key
-    /// so the eviction member the cache abstraction already declares for it stays meaningful.
-    /// </para>
-    /// <para>
-    /// MIGRATION: THE PROFILE-DEFINITION SURFACE IS FULL DEFINITION MANAGEMENT, NOT A READ-ONLY LOOKUP, and
-    /// the reading is stated here because the plan describes it both ways - AAP 0.5.1.4 calls the API
-    /// surface a "Lookup surface" while AAP 0.5.1.8 calls the client feature "Definition management". The
-    /// contract settles it: <see cref="IUserService"/> declares a create, an update and a delete for
-    /// definitions alongside the two reads, so read-only is not an available interpretation of it. The
-    /// legacy source agrees - <c>Website/admin/Users/ProfileDefinitions.ascx.vb</c> is a management grid
-    /// with add, edit, reorder and delete commands, and <c>EditProfileDefinition.ascx.vb</c> is its editor -
-    /// so a read-only surface would have LOST a workflow the legacy application offered, which UI
-    /// functional parity forbids. The narrower phrase is best read as describing how the definitions are
-    /// consumed by the profile screens, which do only read them. The reconciliation is recorded in
-    /// MIGRATION_NOTES.md so the two descriptions are not re-litigated downstream.
-    /// </para>
-    /// </remarks>
     public async Task<Result<IReadOnlyList<ProfilePropertyDefinitionDto>>> ListProfilePropertyDefinitionsAsync(
         int portalId,
         CancellationToken cancellationToken = default)
@@ -3333,8 +2299,8 @@ public sealed class UserService : IUserService
             ProfileDefinitionsCacheTimeOutMinutes * _caching.PerformanceMultiplier);
 
         // MIGRATION: the legacy caller skipped the database read entirely when the configured expiry
-        // resolved to zero. That is not reproduced: disabling caching disables caching only, and the
-        // read still runs, because a configuration value must not silently change what is reported.
+        // resolved to zero. That is not reproduced: disabling caching disables caching only, and the read
+        // still runs, because a configuration value must not silently change what is reported.
         IReadOnlyList<ProfilePropertyDefinitionDto> catalogue = expiration > TimeSpan.Zero
             ? await _cache.GetOrCreateAsync(
                 cacheKey,
@@ -3363,8 +2329,7 @@ public sealed class UserService : IUserService
 
         // The repository has already applied the same portal predicate used by the collection read: the
         // scope reaching it is matched exactly, so -1 addresses the tenant IDENTITY(-1, 1) numbered -1
-        // rather than the host-level rows, which the terminal schema stores with a SQL NULL portal. This
-        // layer decides only whether a scoped row that exists is still live.
+        // rather than the host-level rows, which the terminal schema stores with a SQL NULL portal.
         if (definition is null || definition.IsDeleted)
         {
             // The contract declares absence as a null value on a non-nullable type parameter.
@@ -3402,9 +2367,6 @@ public sealed class UserService : IUserService
             return Result<ProfilePropertyDefinitionDto>.Failure(invalidExpression);
         }
 
-        // MIGRATION: the duplicate test reads the declaration rather than asking for a boolean,
-        // matching core DataProvider.vb:L254 GetPropertyDefinitionByName, which returned the row. On
-        // a create there is nothing to exclude, so any match at all is a collision.
         if (await _profiles
             .GetDefinitionByNameAsync(portalId, request.PropertyName, cancellationToken)
             .ConfigureAwait(false) is not null)
@@ -3418,17 +2380,11 @@ public sealed class UserService : IUserService
         ProfilePropertyDefinition created = UserMappings.ToNewDefinition(portalId, request);
         await _profiles.AddDefinitionAsync(created, cancellationToken).ConfigureAwait(false);
 
-        // MIGRATION: SEC-F6. THE NAME TEST ABOVE CANNOT CLOSE THE RACE, SO THE FLUSH ANSWERS FOR IT.
+        // THE NAME TEST ABOVE CANNOT CLOSE THE RACE, SO THE FLUSH ANSWERS FOR IT.
         // IX_ProfilePropertyDefinition is unique over (PortalID, ModuleDefID, PropertyName), so two
         // requests declaring the same property name in the same tenant arriving together both read "not
         // declared" before either inserts, and the loser's insert is refused by the index rather than by
-        // the read. Left untranslated the provider fault reached the transport, which references neither
-        // the mapper nor the database client by design, and was answered 500 - a server fault reported for
-        // a store that had behaved correctly and kept exactly one declaration.
-        //
-        // The SAME code and the SAME wording the name test emits are returned. The loser faces precisely
-        // the state that test describes - the winner has by now declared the property - so publishing a
-        // second code for it would oblige every caller to handle two codes for one outcome.
+        // the read.
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -3467,21 +2423,6 @@ public sealed class UserService : IUserService
             .GetDefinitionByIdAsync(portalId, propertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, and it previously was not.
-        // Withdrawal is logical rather than physical, because stored answers reference the declaration, so
-        // the row survives with Deleted set. Every READ in this service already treats such a row as gone -
-        // the single read tests IsDeleted, and the portal listing filters on it in the store - but this guard
-        // tested only existence and tenancy, so a declaration the API refuses to SHOW remained editable
-        // through it. That is not a recycle bin: a recycle bin lets a caller see and restore what it holds,
-        // and this contract exposes no member that reads, restores or even acknowledges a withdrawn
-        // declaration. The asymmetry therefore had no contract behind it, and the honest answer for a
-        // resource this API will not show is that it does not exist.
-        //
-        // Reachable against the schema this migration binds to. The removal path here is physical (the
-        // repository stages a Remove and lets the answers cascade), so this application does not itself
-        // create withdrawn rows - but the existing DotNetNuke database does, which is the whole premise of
-        // mapping to an unaltered schema. Rows carrying Deleted are exactly the legacy data this member will
-        // meet first.
         if (stored is null || stored.IsDeleted)
         {
             return Result<ProfilePropertyDefinitionDto>.Failure(
@@ -3500,21 +2441,8 @@ public sealed class UserService : IUserService
             return Result<ProfilePropertyDefinitionDto>.Failure(invalidExpression);
         }
 
-        // MIGRATION: the same read-the-row test as on create, except that here the declaration being
-        // edited must not collide with itself. A boolean answer could not express "found, but it is
-        // the row I am editing", which is exactly why the legacy exclusion argument is not pushed down
-        // into the repository: the caller knows which row it is editing and compares identifiers here.
-        // The comparison is reachable because the terminal update procedure genuinely writes the name
-        // (04.05.00:L1685 assigns PropertyName = @PropertyName), so a rename is a supported edit.
-        //
         // MIGRATION: THIS READ DELIBERATELY STILL SEES WITHDRAWN DECLARATIONS, and it must not be "made
-        // consistent" with the absence rule applied to the guard above. The terminal index is
-        // IX_ProfilePropertyDefinition ON (PortalID, ModuleDefID, PropertyName), declared UNIQUE at
-        // 03.02.03:L1082 and again at 04.00.04:L1127, and it does NOT include Deleted - so a withdrawn row
-        // still occupies its name in the store. A duplicate check that skipped withdrawn rows would accept a
-        // rename the database then rejects, turning a clear duplicate-name result into a constraint
-        // violation surfacing as a server fault. Absence is the right answer for addressing a withdrawn
-        // declaration; presence is the right answer for asking whether its name is free.
+        // consistent" with the absence rule applied to the guard above.
         ProfilePropertyDefinition? sameName = await _profiles
             .GetDefinitionByNameAsync(portalId, request.PropertyName, cancellationToken)
             .ConfigureAwait(false);
@@ -3530,18 +2458,11 @@ public sealed class UserService : IUserService
         UserMappings.ApplyDefinitionUpdate(stored, request);
         await _profiles.UpdateDefinitionAsync(stored, cancellationToken).ConfigureAwait(false);
 
-        // MIGRATION: SEC-F6. THE NAME COMPARISON ABOVE CANNOT CLOSE THE RACE EITHER. A rename onto a name
-        // that is free when read and taken by the time the update is written is refused by
+        // MIGRATION: THE NAME COMPARISON ABOVE CANNOT CLOSE THE RACE EITHER. A rename onto a name that is
+        // free when read and taken by the time the update is written is refused by
         // IX_ProfilePropertyDefinition, and the reasoning already recorded above for withdrawn rows applies
         // unchanged to a concurrent one: the honest answer is the duplicate-name result the comparison
         // would have produced, not a server fault.
-        //
-        // THIS ARM PRECEDES THE CONCURRENCY ARM DELIBERATELY. The two describe different store outcomes -
-        // a name already occupied against a row changed underneath - and a caller acts differently on each,
-        // renaming for the first and reloading for the second. Ordering makes that independent of how the
-        // concurrency predicate happens to be written: it matches only the mapper's concurrency type by
-        // name and so would not claim a duplicate-key signal today, but a duplicate key must never be
-        // reported as a stale read even if that predicate is later widened.
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -3570,11 +2491,8 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
-    /// The per-account values recorded against the definition are discarded in the same unit of work, so
-    /// no value is left referencing a definition that no longer exists. The values already loaded with the
-    /// definition are removed explicitly; the schema additionally declares a cascade from the definition
-    /// to its values, which the persistence configuration honours, so the outcome does not depend on which
-    /// of the two paths ran.
+    /// The per-account values recorded against the definition are discarded in the same unit of work, so no
+    /// value is left referencing a definition that no longer exists.
     /// </remarks>
     public async Task<Result> DeleteProfilePropertyDefinitionAsync(
         int portalId,
@@ -3586,12 +2504,7 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false);
 
         // MIGRATION: A WITHDRAWN DECLARATION IS ABSENT TO THIS MEMBER TOO, matching the single read, the
-        // portal listing and the update beside it. This guard tested only existence and tenancy, so a
-        // declaration the API refuses to show could still be deleted through it - and because removal here
-        // is physical and cascades the stored answers, that made the one reachable operation on a withdrawn
-        // declaration the most destructive one available. Reporting absence instead is both consistent with
-        // every read and the safer of the two answers: the caller asked to remove something this API says
-        // does not exist, and it now says so before any answer is destroyed.
+        // portal listing and the update beside it.
         if (definition is null || definition.IsDeleted)
         {
             return Result.Failure(
@@ -3600,29 +2513,12 @@ public sealed class UserService : IUserService
                     $"Profile property definition {propertyDefinitionId} does not exist in portal {portalId}."));
         }
 
-        // MIGRATION: the answers recorded against the declaration are NOT removed one at a time here.
-        // FK_UserProfile_ProfilePropertyDefinition is declared ON DELETE CASCADE
-        // (04.00.04.SqlDataProvider:L1429), and the repository loads the answers before staging the
-        // removal, so the change tracker cascades them as explicit statements on any provider that
-        // does not enforce the constraint itself. An explicit loop here would duplicate that work,
-        // and no value-deletion member exists on the contract because the legacy surface had none.
+        // The answers recorded against the declaration are NOT removed one at a time here.
         await _profiles
             .DeleteDefinitionAsync(definition.PropertyDefinitionId, cancellationToken)
             .ConfigureAwait(false);
 
-        // MIGRATION: the commit is guarded exactly as the update path beside it is, and for the same
-        // race. A concurrent administrator that removed this declaration between the read above and
-        // this commit makes the tracked deletion affect no rows, which the persistence layer reports
-        // as a concurrency conflict. Left unguarded that escaped as an unhandled exception and the
-        // caller was told the server had failed, when in truth the caller had simply lost a race and
-        // the outcome it asked for has already happened. The conflict code is the one this contract
-        // documents, so the shared status table answers it as 409.
-        //
-        // MIGRATION: this comment used to end "and the endpoint's declared conflict response becomes
-        // reachable rather than notional", which was half wrong in the direction that matters - the
-        // reachability was real but the DELETE endpoint declared no 409 at all, so the reachable response
-        // was the undeclared one. The declaration has been added to the endpoint; the claim is stated here
-        // without asserting anything about a declaration this layer cannot see.
+        // The commit is guarded exactly as the update path beside it is, and for the same race.
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -3639,9 +2535,7 @@ public sealed class UserService : IUserService
         return Result.Success();
     }
 
-    /// <summary>
-    /// Rejects a paging request whose bounds no validator can have accepted.
-    /// </summary>
+    /// <summary>Rejects a paging request whose bounds no validator can have accepted.</summary>
     /// <param name="page">The submitted paging request.</param>
     /// <exception cref="DomainException">Thrown when the bounds are unusable.</exception>
     private static void EnsurePagingIsUsable(PagedRequest page)
@@ -3669,16 +2563,10 @@ public sealed class UserService : IUserService
         }
     }
 
-    /// <summary>
-    /// Rejects a filter that was supplied but is blank.
-    /// </summary>
+    /// <summary>Rejects a filter that was supplied but is blank.</summary>
     /// <param name="filter">The submitted filter.</param>
     /// <param name="name">The argument name, used in the reported message.</param>
     /// <exception cref="DomainException">Thrown when the filter is present but blank.</exception>
-    /// <remarks>
-    /// Absence means "do not filter"; the empty string is not a synonym for it, because an empty prefix
-    /// matches every row and would make a filtered search silently unfiltered.
-    /// </remarks>
     private static void EnsureFilterIsNotBlank(string? filter, string name)
     {
         if (filter is not null && string.IsNullOrWhiteSpace(filter))
@@ -3695,40 +2583,17 @@ public sealed class UserService : IUserService
     /// <param name="portalId">The tenant the account belongs to.</param>
     /// <param name="userId">The account whose credential the operation addresses.</param>
     /// <param name="isReset">
-    /// <see langword="true"/> for an administrative reset, which presents no current credential;
-    /// <see langword="false"/> for a self-service change, which does.
+    /// <see langword="true"/> for an administrative reset, which presents no current credential; <see
+    /// langword="false"/> for a self-service change, which does.
     /// </param>
     /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
-    /// <returns>A successful outcome when the operation is permitted, and a failure naming why when it is not.</returns>
+    /// <returns>
+    /// A successful outcome when the operation is permitted, and a failure naming why when it is not.
+    /// </returns>
     /// <remarks>
-    /// <para>
-    /// THIS IS A SECOND CHECK, NOT THE ONLY ONE, AND BOTH ARE NECESSARY. The route policy establishes that the
-    /// caller may address this account at all - it admits the account itself or an administrator of its tenant
-    /// - and it does so without reading a request body, which is what a policy can see. It therefore cannot
-    /// distinguish the two operations this member accepts, and the distinction is exactly where the danger
-    /// lies: reset legitimately skips current-credential verification, so a caller who may address an account
-    /// but may not administer it must be prevented from choosing reset.
-    /// </para>
-    /// <para>
-    /// THE AUTHORITY IS READ FROM STORED STATE, NOT FROM THE CALLER'S CLAIMS. The authority-minimised token
-    /// carries only the account and tenant identifiers; <c>ICurrentUser</c>'s compatibility host and role
-    /// members are neutral. Everything that confers authority is read from the database.
-    /// </para>
-    /// <para>
-    /// AN UNAUTHENTICATED OR UNIDENTIFIABLE CALLER IS REFUSED BOTH OPERATIONS. Reaching this member without an
-    /// identity should be impossible, because every route that leads here requires one; it is refused rather
-    /// than assumed impossible, so that a future caller reaching the service directly cannot bypass the rule.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy screens expressed this by which screen a caller could open rather than by a check
-    /// inside the operation. <c>Website/admin/Users/Password.ascx</c> was the account's own change screen and
-    /// required the current credential; the administrative reset was reached from the membership panel, which
-    /// the account-management page only rendered for an administrator, and which additionally hid its commands
-    /// when an administrator was looking at their own account
-    /// (<c>Website/admin/Users/Membership.ascx.vb</c> L135). A stateless API has no screen to gate, so the rule
-    /// moves into the operation - which also makes it hold for every caller rather than only for one that came
-    /// through a page.
-    /// </para>
+    /// THIS IS A SECOND CHECK, NOT THE ONLY ONE, AND BOTH ARE NECESSARY. The route policy establishes that
+    /// the caller may address this account at all - it admits the account itself or an administrator of its
+    /// tenant - and it does so without reading a request body, which is what a policy can see.
     /// </remarks>
     private async Task<Result> AuthoriseCredentialOperationAsync(
         int portalId,
@@ -3766,34 +2631,18 @@ public sealed class UserService : IUserService
     }
 
     /// <summary>
-    /// Reports whether one account holds administrative authority over one tenant, judged from stored state.
+    /// Reports whether one account holds administrative authority over one tenant, judged from stored
+    /// state.
     /// </summary>
     /// <param name="portalId">The tenant in question.</param>
     /// <param name="callerUserId">The account whose authority is being established.</param>
     /// <param name="cancellationToken">Token observed while the reads are in flight.</param>
     /// <returns><see langword="true"/> when the account is a host account or administers that tenant.</returns>
     /// <remarks>
-    /// <para>
     /// A host account is installation-wide and is accepted without any tenant membership, which is measured
-    /// rather than assumed: a host account is created by the installer and need hold membership of no portal,
-    /// so a portal-scoped read would not find it. The account is therefore read without a tenant scope and its
-    /// own super-user column decides.
-    /// </para>
-    /// <para>
-    /// Otherwise the question is asked by KEYS and by TIME: the administrator role's key comes from the
-    /// tenant's own <c>Portals.AdministratorRoleId</c> column, and membership is judged in force at one instant
-    /// read once from the injected clock. It is never asked by role name, because no unique constraint on
-    /// <c>Roles.RoleName</c> exists anywhere in the eighty-eight upgrade scripts, so the stock name
-    /// "Administrators" names a different row in every portal and a name-based test would be satisfied by an
-    /// administrator of any of them. The validity window itself is
-    /// <c>UserRole.AnyActiveInRole</c>, which is the single implementation shared with the API layer's
-    /// authorisation evaluator, so the two layers cannot come to different conclusions about the same
-    /// assignment.
-    /// </para>
-    /// <para>
-    /// A tenant that designates no administrator role confers authority on nobody. An unset designation is a
-    /// configuration gap, and a gap must not grant.
-    /// </para>
+    /// rather than assumed: a host account is created by the installer and need hold membership of no
+    /// portal, so a portal-scoped read would not find it. The account is therefore read without a tenant
+    /// scope and its own super-user column decides.
     /// </remarks>
     private async Task<bool> CallerAdministersPortalAsync(
         int portalId,
@@ -3841,26 +2690,8 @@ public sealed class UserService : IUserService
     /// when it held none - or the reason the caller must report instead of success.
     /// </returns>
     /// <remarks>
-    /// <para>
     /// <b>Call this BEFORE the state change, not after it.</b> The ordering is the whole reason this is a
-    /// helper rather than two lines repeated three times. Revoking first and then failing leaves the account
-    /// signed out of sessions it may simply re-establish, which is an inconvenience; changing the state
-    /// first and then failing to revoke leaves the operation reported as failed while the credential has in
-    /// fact been replaced, or the approval withdrawn, with every session still live - which is both a
-    /// falsehood to the caller and the exact exposure the revocation exists to close.
-    /// </para>
-    /// <para>
-    /// The residual race is bounded and is worth naming. Between the revocation and the state change a
-    /// concurrent exchange could mint one fresh family, which the revocation has already passed. That family
-    /// is short-lived by construction and, once the state change lands, cannot be renewed: the sign-in
-    /// service re-reads approval and lock-out on every exchange, so the next rotation refuses it and revokes
-    /// it. What remains is one access token's own lifetime, which is the irreducible floor for stateless
-    /// bearer tokens and is documented as such rather than papered over.
-    /// </para>
-    /// <para>
-    /// The revocation is idempotent, so an account holding no session succeeds here rather than reporting
-    /// that nothing was found, and a caller that retries after a store failure cannot do harm by retrying.
-    /// </para>
+    /// helper rather than two lines repeated three times.
     /// </remarks>
     private async Task<ResultReason?> EndSessionsAsync(int userId, CancellationToken cancellationToken)
     {
@@ -3873,13 +2704,9 @@ public sealed class UserService : IUserService
             return null;
         }
 
-        // SEC-F2. AN UNCONFIRMED RETIREMENT IS NOT AN OBSTACLE; AN UNREACHABLE STORE IS. The token service
-        // now reports success only for a PROVEN retirement, so an account that never signed in on this
-        // instance - the common case - answers "no such family". Abandoning a membership transition for
-        // that would refuse the operation for the safest possible reason: there was nothing to end. A store
-        // that could not ANSWER is the opposite case and still abandons it, because the sessions may exist
-        // and may still be exchangeable. The two are told apart by the reason token the API's own translator
-        // also classifies on, so the readings cannot drift apart.
+        // AN UNCONFIRMED RETIREMENT IS NOT AN OBSTACLE; AN UNREACHABLE STORE IS. The token service now
+        // reports success only for a PROVEN retirement, so an account that never signed in on this instance
+        // - the common case - answers "no such family".
         if (!revoked.Reason!.Code.Contains("store_unavailable", StringComparison.OrdinalIgnoreCase))
         {
             return null;
@@ -3894,9 +2721,7 @@ public sealed class UserService : IUserService
             + " The operation was abandoned rather than completed while they remained active. Try again.");
     }
 
-    /// <summary>
-    /// Refuses a membership transition an administrator aimed at their own account.
-    /// </summary>
+    /// <summary>Refuses a membership transition an administrator aimed at their own account.</summary>
     /// <param name="userId">The account the transition addresses.</param>
     /// <returns>The reason the transition is refused, or <see langword="null"/> when it is permitted.</returns>
     private ResultReason? EnsureNotActingOnSelf(int userId)
@@ -3906,17 +2731,9 @@ public sealed class UserService : IUserService
                 "A membership transition cannot be applied to the acting administrator's own account.")
             : null;
 
-    /// <summary>
-    /// Tests whether an exception, or any exception it wraps, reports a concurrency conflict.
-    /// </summary>
+    /// <summary>Tests whether an exception, or any exception it wraps, reports a concurrency conflict.</summary>
     /// <param name="exception">The exception raised by the commit.</param>
     /// <returns><see langword="true"/> when the commit lost a race.</returns>
-    /// <remarks>
-    /// The conflict is recognised by type name rather than by catching the persistence provider's own
-    /// exception type, because this project deliberately declares no persistence package: adding one so
-    /// that a single <c>catch</c> clause could name a type would put an infrastructure dependency in the
-    /// application layer, which the layering forbids.
-    /// </remarks>
     private static bool IsConcurrencyConflict(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
@@ -3934,49 +2751,11 @@ public sealed class UserService : IUserService
     /// Applies the bound credential policy to a submitted credential, returning the reason it was refused
     /// or <see langword="null"/> when it satisfies the policy.
     /// </summary>
-    /// <param name="credential">The submitted credential. Never logged, echoed or recorded.</param>
+    /// <param name="credential">The submitted credential.</param>
     /// <param name="code">The failure code to report the refusal under, so the caller's context is kept.</param>
     /// <returns>The refusal reason, or <see langword="null"/> when the credential is acceptable.</returns>
     /// <remarks>
-    /// <para>
     /// No message produced here contains any part of the credential.
-    /// </para>
-    /// <para>
-    /// PRIVATE, AND NOT A SECOND POLICY. The legacy predicate this derives from, <c>ValidatePassword</c> at
-    /// <c>UserController.vb</c>:L1067, was public and therefore a policy in its own right, free to diverge
-    /// from the one the screens declared. This one is unreachable from outside the service and reads the
-    /// SAME bound <see cref="PasswordPolicyOptions"/> instance that the request validators in
-    /// <c>Validation/</c> read, so there is one policy with one source. It neither duplicates nor tightens
-    /// the declarative rules: it hardcodes no threshold, adds no rule the options do not declare, and skips
-    /// the non-alphanumeric and strength rules entirely unless the configuration asks for them. Its purpose
-    /// is that a credential write is never performed on the strength of a validator having been wired up at
-    /// the boundary - the service is reachable from a test, a seeder or a future host that has no such
-    /// pipeline.
-    /// </para>
-    /// <para>
-    /// The legacy policy is preserved verbatim rather than hardened: minimum length seven, zero required
-    /// non-alphanumeric characters and no question-and-answer requirement, read from
-    /// <c>Website/release.config</c>:L242-L245. Tightening a policy during a migration locks out existing
-    /// account holders, so any hardening is a separate and explicit decision.
-    /// </para>
-    /// <para>
-    /// MIGRATION: DEFECT 1 IS ANNOTATED HERE AND DELIBERATELY NOT FIXED IN THE LEGACY SOURCE. The legacy
-    /// predicate evaluated three rules but its third rule ASSIGNED its verdict rather than accumulating
-    /// it, so a credential that failed the length rule and then matched the strength expression was
-    /// reported VALID - the earlier failure was overwritten. The defect is DORMANT in this installation
-    /// because no strength expression is configured, so the third rule never runs and the legacy and
-    /// target verdicts agree on every input this configuration can produce. The rules are evaluated in
-    /// order here and the first refusal returns immediately, which is the behaviour the legacy code was
-    /// evidently reaching for. Per AAP 0.9.1 a discovered defect is annotated in place and not fixed, so
-    /// nothing in <c>Library/</c> is touched; were a strength expression ever configured, this service
-    /// would refuse a short credential that the legacy predicate accepted, and that difference is recorded
-    /// in MIGRATION_NOTES.md rather than left to be found in production.
-    /// </para>
-    /// <para>
-    /// A malformed or pathological strength expression is reported as a refusal rather than thrown: the
-    /// match is bounded by a timeout, and both the malformed-pattern and timeout cases answer that the rule
-    /// could not be applied. A configuration error must not present as a valid credential.
-    /// </para>
     /// </remarks>
     private ResultReason? ValidateCredential(string credential, string code)
     {
@@ -4022,21 +2801,13 @@ public sealed class UserService : IUserService
         return null;
     }
 
-    /// <summary>
-    /// Applies the tenant's display-name format to an account.
-    /// </summary>
+    /// <summary>Applies the tenant's display-name format to an account.</summary>
     /// <param name="format">The configured format, carrying the legacy tokens.</param>
     /// <param name="userId">The account identifier substituted for <c>[USERID]</c>.</param>
     /// <param name="firstName">The submitted given name substituted for <c>[FIRSTNAME]</c>.</param>
     /// <param name="lastName">The submitted family name substituted for <c>[LASTNAME]</c>.</param>
     /// <param name="username">The immutable account name substituted for <c>[USERNAME]</c>.</param>
     /// <returns>The formatted display name.</returns>
-    /// <remarks>
-    /// The four tokens and their substitution order are taken verbatim from
-    /// <c>UserInfo.UpdateDisplayName</c> (UserInfo.vb:L358-L368). Submitted values are supplied directly
-    /// rather than read from a tracked entity so the caller can check the computed width before mutating
-    /// that entity.
-    /// </remarks>
     private static string FormatDisplayName(
         string format,
         int userId,
@@ -4049,48 +2820,12 @@ public sealed class UserService : IUserService
             .Replace("[LASTNAME]", lastName ?? string.Empty, StringComparison.Ordinal)
             .Replace("[USERNAME]", username ?? string.Empty, StringComparison.Ordinal);
 
-    /// <summary>
-    /// Withholds from one listing row every column the tenant's own settings declare hidden.
-    /// </summary>
+    /// <summary>Withholds from one listing row every column the tenant's own settings declare hidden.</summary>
     /// <param name="row">The row about to be published.</param>
     /// <param name="settings">The tenant's membership settings, holding the nine column flags.</param>
     /// <remarks>
-    /// <para>
-    /// DATA MINIMISATION, APPLIED SERVER-SIDE. The tenant states which member columns its administration
-    /// screen presents, and a column it does not present is a column no client of that screen needs. Sending
-    /// it anyway puts personal data - given and family names, an email address, a creation instant, a last
-    /// sign-in instant and an approval state - onto every row of every page for a screen that will not show
-    /// it, and leaves the minimisation to the client. Client-side hiding is not minimisation: the value has
-    /// already crossed the network, already appeared in any intermediary that logged the body, and is already
-    /// readable by anyone who can call the endpoint. The decision belongs on this side of the boundary.
-    /// </para>
-    /// <para>
-    /// The nine flags govern nine members and nothing else. Username, the identifiers, the super-user flag,
-    /// the online flag and the lock state carry no flag of their own and are therefore untouched - a column
-    /// the tenant never had a setting for is not a column it has hidden.
-    /// </para>
-    /// <para>
     /// A WITHHELD VALUE IS NOT AMBIGUOUS, and the objection that it is deserves answering directly, because
-    /// this minimisation was once withdrawn on exactly that ground. Written this way, an empty name does read
-    /// the same as an account that genuinely holds none - but the tenant's flags are published VERBATIM by
-    /// <c>GET /api/v1/users/settings</c>, which is the same call a client must already make to know which
-    /// columns to render, so a client can always tell a withheld column from an empty one. No information the
-    /// client can act on is lost, while the personal data genuinely stops being transmitted. That trade is
-    /// the whole point.
-    /// </para>
-    /// <para>
-    /// Applied to the LISTING only. The detail, profile and settings endpoints are unaffected: they are
-    /// addressed one account at a time, they are separately authorised, and a client that asks for one
-    /// account has asked for that account's record rather than for a grid column.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the legacy grid honoured these flags by declining to RENDER a column
-    /// (<c>UserModuleBase.vb:L98-L115</c> reads the setting and the grid omitted the column), which on a
-    /// server-rendered page meant the value never reached the browser at all. Withholding it from the
-    /// response is the closest equivalent an API has to that, and is strictly closer than sending it: a
-    /// legacy operator whose tenant hid the email column could not obtain it from that screen, and neither
-    /// can a caller of this listing now.
-    /// </para>
+    /// this minimisation was once withdrawn on exactly that ground.
     /// </remarks>
     private static void WithholdColumnsTheTenantHides(UserListItemDto row, MembershipSettingsDto settings)
     {
@@ -4145,16 +2880,14 @@ public sealed class UserService : IUserService
         }
     }
 
-    /// <summary>
-    /// Concatenates the address parts an account holds, in the legacy order.
-    /// </summary>
+    /// <summary>Concatenates the address parts an account holds, in the legacy order.</summary>
     /// <param name="values">Every profile value the account holds.</param>
     /// <param name="addressPropertyIds">The address property definitions, in composition order.</param>
     /// <returns>The composed address, or <see langword="null"/> when the account holds no part of one.</returns>
     /// <remarks>
-    /// The legacy grid reached the excluded <c>FormatAddress</c> helper, which appended each non-blank
-    /// part after a comma and a space and then trimmed the leading separator. Joining the non-blank parts
-    /// with the same separator is output-identical.
+    /// The legacy grid reached the excluded <c>FormatAddress</c> helper, which appended each non-blank part
+    /// after a comma and a space and then trimmed the leading separator. Joining the non-blank parts with
+    /// the same separator is output-identical.
     /// </remarks>
     private static string? ComposeAddress(IReadOnlyList<UserProfileValue> values, IReadOnlyList<int> addressPropertyIds)
     {
@@ -4178,44 +2911,26 @@ public sealed class UserService : IUserService
         return parts.Count == 0 ? null : string.Join(", ", parts);
     }
 
-    /// <summary>
-    /// Reads the value a profile row holds, from whichever of its two storage columns holds it.
-    /// </summary>
+    /// <summary>Reads the value a profile row holds, from whichever of its two storage columns holds it.</summary>
     /// <param name="row">The stored row, or <see langword="null"/> when the account has no answer.</param>
     /// <returns>
-    /// The stored value, or <see langword="null"/> when <paramref name="row"/> is
-    /// <see langword="null"/> or holds nothing in either column.
+    /// The stored value, or <see langword="null"/> when <paramref name="row"/> is <see langword="null"/> or
+    /// holds nothing in either column.
     /// </returns>
     /// <remarks>
-    /// MIGRATION: <c>UserProfileValue</c> exposes <c>PropertyValue</c> and <c>PropertyText</c> raw
-    /// and derives nothing, so the coalesce lives here. The order reproduces the legacy read
-    /// procedure <c>GetUserProfile</c>, which returns one column aliased <c>PropertyValue</c>
-    /// computed as "case when (PropertyValue Is Null) then PropertyText else PropertyValue end"
-    /// (<c>04.00.04.SqlDataProvider</c> line 1592): the bounded <c>nvarchar(3750)</c> column wins
-    /// whenever it is not SQL <c>NULL</c>, and the <c>ntext</c> overflow column is the fallback.
-    /// The two are mutually exclusive per row because <see cref="WriteProfileValue"/> and the legacy
-    /// write procedure both null one while filling the other, so the order only becomes observable
-    /// for a row some other writer left holding both - and there the legacy answer is the bounded
-    /// column. Null-coalescing is exact here precisely because it tests for null alone: an empty
-    /// string is a stored value, not an absence, and must not fall through.
+    /// <c>UserProfileValue</c> exposes <c>PropertyValue</c> and <c>PropertyText</c> raw and derives
+    /// nothing, so the coalesce lives here.
     /// </remarks>
     private static string? StoredValue(UserProfileValue? row) => row?.PropertyValue ?? row?.PropertyText;
 
-    /// <summary>
-    /// Locates the module instance a tenant's membership settings are stored against.
-    /// </summary>
+    /// <summary>Locates the module instance a tenant's membership settings are stored against.</summary>
     /// <param name="portalId">The tenant whose settings source is wanted.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The module instance, or <see langword="null"/> when the tenant has none.</returns>
     /// <remarks>
-    /// The legacy reader located this module by definition name and then read ordinary module settings
-    /// against it, so the settings a tenant-wide screen edits have always been module settings on a
-    /// well-known module instance rather than rows in a settings table of their own.
-    /// <para>
-    /// SEC-007: <c>User Accounts</c> is an administrative package and is deliberately absent from the
+    /// <c>User Accounts</c> is an administrative package and is deliberately absent from the
     /// portal-placeable definition catalogue. The repository exposes a separately named privileged lookup
     /// so this security-settings path cannot accidentally widen the catalogue used by module creation.
-    /// </para>
     /// </remarks>
     private async Task<Module?> FindMembershipSettingsSourceAsync(int portalId, CancellationToken cancellationToken)
     {
@@ -4231,9 +2946,9 @@ public sealed class UserService : IUserService
             return null;
         }
 
-        // MIGRATION: the legacy module block has no paging member, so the tenant's modules are read whole
-        // and the recycle bin is excluded here. This call site never wanted a page - it asked for every
-        // live instance so it could locate one by its definition.
+        // The legacy module block has no paging member, so the tenant's modules are read whole and the
+        // recycle bin is excluded here. This call site never wanted a page - it asked for every live
+        // instance so it could locate one by its definition.
         IReadOnlyList<Module> instances =
             await _modules.GetByPortalIdAsync(portalId, cancellationToken).ConfigureAwait(false);
 
@@ -4242,9 +2957,7 @@ public sealed class UserService : IUserService
             && candidate.ModuleDefinitionId == accounts.ModuleDefinitionId);
     }
 
-    /// <summary>
-    /// Reads a tenant's membership settings, applying the legacy defaults for every absent key.
-    /// </summary>
+    /// <summary>Reads a tenant's membership settings, applying the legacy defaults for every absent key.</summary>
     /// <param name="portalId">The tenant whose settings are read.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The settings, or <see langword="null"/> when the tenant has no settings source.</returns>
@@ -4252,31 +2965,6 @@ public sealed class UserService : IUserService
         int portalId,
         CancellationToken cancellationToken)
     {
-        // MIGRATION: THE LEGACY READ WAS CACHED AND THIS ONE IS NOT, WHICH IS A DELIBERATE OMISSION RATHER
-        // than an oversight. GetUserSettings at UserController.vb:L656-L670 kept its answer under the key
-        // SettingsKey(portalId) - "UserSettings|" + portalId, composed at L924 - and the measured expiry is
-        // the reason this note exists: it is TimeSpan.FromMinutes(Globals.PerformanceSetting), so the
-        // performance setting is THE WHOLE TIMEOUT here, not a multiplier over a 20-minute base as it is at
-        // every other caching site in the legacy tree (compare the profile-definition read above, which is
-        // 20 * the multiplier). The legacy default for that setting is 3 - Globals.vb resolves an absent
-        // host setting to 3 - so the real legacy lifetime of this entry was THREE MINUTES against the
-        // sixty this convention would otherwise imply. That inconsistency is recorded rather than
-        // normalised: anyone reintroducing this cache must reproduce three minutes and not "correct" it to
-        // 20 * multiplier, because that would multiply the staleness window twentyfold.
-        //
-        // It is not reintroduced now for a correctness reason, not a performance one. The caching
-        // abstraction classifies a key by declared prefix family in order to scope its invalidation, and
-        // "UserSettings|" is not a declared family, so InvalidatePortal could not sweep this entry. The
-        // rows behind it are ORDINARY MODULE SETTINGS on the account module instance, reachable and
-        // writable through the module service as well as through the write member beside this one, so an
-        // entry this service alone knew how to evict would go stale on a write this service never saw. The
-        // sibling module service records the same decision for the same reason, for the analogous
-        // "GetModuleSettings<id>" key. What is cached instead is the profile-definition catalogue, which is
-        // installation-time reference data with a declared family and a declared eviction member.
-        //
-        // A second difference follows from the legacy code and is preserved: the legacy cached only inside
-        // its not-nothing guard, so a tenant with no account module re-probed on every call and never
-        // cached the absence. Nothing here caches an absence either.
         Module? source = await FindMembershipSettingsSourceAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (source is null)
         {
@@ -4292,9 +2980,6 @@ public sealed class UserService : IUserService
             map[setting.SettingName] = setting.SettingValue;
         }
 
-        // Every default below is the one UserModuleBase.GetSettings applied when the key was absent
-        // (UserModuleBase.vb:L94-L194); the property initialisers on the contract already carry them, so
-        // only a stored value overrides one.
         var settings = new MembershipSettingsDto
         {
             // A source was found and read, so every value below either came from a stored row or from the
@@ -4338,9 +3023,9 @@ public sealed class UserService : IUserService
         }
         else
         {
-            // MIGRATION: the legacy default depended on the tenant's size - a free-text picker above a
-            // thousand accounts, a drop-down below it (UserModuleBase.vb:L178). The rule is reproduced;
-            // the two numeric values are the contract's own, and the client interprets them.
+            // The legacy default depended on the tenant's size - a free-text picker above a thousand
+            // accounts, a drop-down below it. The rule is reproduced; the two numeric values are the
+            // contract's own, and the client interprets them.
             int accounts = await _portals.CountUsersAsync(portalId, cancellationToken).ConfigureAwait(false);
             settings.SecurityUsersControl = accounts > LargeTenantAccountThreshold ? 1 : 0;
         }
@@ -4348,17 +3033,14 @@ public sealed class UserService : IUserService
         return settings;
     }
 
-    /// <summary>
-    /// Applies this service's own copy of the membership-settings field rules.
-    /// </summary>
+    /// <summary>Applies this service's own copy of the membership-settings field rules.</summary>
     /// <param name="request">The submitted settings.</param>
     /// <returns>The reason the settings are refused, or <see langword="null"/> when they are acceptable.</returns>
     /// <remarks>
     /// Deliberately duplicates <c>UpdateMembershipSettingsRequestValidator</c> rather than trusting it. The
-    /// validator is the authority for the message a caller sees, because it can name the offending member as
-    /// a field; this guard is what makes the rules hold for a caller that reached the service without the
-    /// pipeline in front of it. Both sites are annotated so a change to either is visibly a change to a pair.
-    /// The page-ownership rule is NOT duplicated here - it lives only here, because it needs a data read.
+    /// validator is the authority for the message a caller sees, because it can name the offending member
+    /// as a field; this guard is what makes the rules hold for a caller that reached the service without
+    /// the pipeline in front of it.
     /// </remarks>
     private static ResultReason? ValidateMembershipSettings(UpdateMembershipSettingsRequest request)
     {
@@ -4403,9 +3085,6 @@ public sealed class UserService : IUserService
                 UpdateMembershipSettingsRequestValidator.SettingValueTooLongMessage);
         }
 
-        // The stored expression is the one setting that is later EXECUTED, by the registration and profile
-        // validators, so an expression that cannot be compiled must never reach the store: every subsequent
-        // submission would then fail inside a validator with no field to name.
         if (!IsUsableExpression(request.SecurityEmailValidation))
         {
             return new ResultReason(
@@ -4416,16 +3095,9 @@ public sealed class UserService : IUserService
         return null;
     }
 
-    /// <summary>
-    /// Determines whether a submitted pattern can be compiled and applied as a regular expression.
-    /// </summary>
+    /// <summary>Determines whether a submitted pattern can be compiled and applied as a regular expression.</summary>
     /// <param name="pattern">The submitted pattern.</param>
     /// <returns><see langword="true"/> when the pattern is usable.</returns>
-    /// <remarks>
-    /// The timeout is the validator's, so the two cannot diverge, and it bounds the probe match as well as
-    /// the compilation - a pattern with catastrophic backtracking compiles instantly and then runs away on
-    /// input, so compiling alone would not detect it.
-    /// </remarks>
     private static bool IsUsableExpression(string? pattern)
     {
         if (string.IsNullOrWhiteSpace(pattern))
@@ -4454,9 +3126,7 @@ public sealed class UserService : IUserService
         }
     }
 
-    /// <summary>
-    /// Projects membership settings back into the setting names the legacy screen wrote.
-    /// </summary>
+    /// <summary>Projects membership settings back into the setting names the legacy screen wrote.</summary>
     /// <param name="settings">The submitted settings.</param>
     /// <returns>The name and value of every setting to store.</returns>
     private static IReadOnlyDictionary<string, string> ProjectMembershipSettings(
@@ -4488,9 +3158,7 @@ public sealed class UserService : IUserService
             ["Security_DisplayNameFormat"] = settings.SecurityDisplayNameFormat,
         };
 
-    /// <summary>
-    /// Reads the tenant's default profile-value visibility.
-    /// </summary>
+    /// <summary>Reads the tenant's default profile-value visibility.</summary>
     /// <param name="portalId">The tenant whose default is wanted.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The configured default, or the legacy fallback when the tenant has no settings source.</returns>
@@ -4508,9 +3176,7 @@ public sealed class UserService : IUserService
         return settings?.ProfileDefaultVisibility ?? new MembershipSettingsDto().ProfileDefaultVisibility;
     }
 
-    /// <summary>
-    /// Projects a tenant's profile property definitions in display order.
-    /// </summary>
+    /// <summary>Projects a tenant's profile property definitions in display order.</summary>
     /// <param name="portalId">The tenant whose definitions are read.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The definitions, ordered as configured.</returns>
@@ -4532,9 +3198,7 @@ public sealed class UserService : IUserService
             .ToList();
     }
 
-    /// <summary>
-    /// Tests a submitted profile value against the rules its definition declares.
-    /// </summary>
+    /// <summary>Tests a submitted profile value against the rules its definition declares.</summary>
     /// <param name="definition">The definition the value belongs to.</param>
     /// <param name="value">The submitted value.</param>
     /// <returns>The reason the value is unusable, or <see langword="null"/> when it is usable.</returns>
@@ -4624,9 +3288,6 @@ public sealed class UserService : IUserService
             }
             catch (NotSupportedException)
             {
-                // Backreferences and look-around are unsupported by the linear-time engine. They remain
-                // compatible with legacy definitions, but every evaluation is still bounded by the short
-                // timeout and by the request-level property-count limit.
                 created = new Regex(
                     expression,
                     RegexOptions.CultureInvariant,
@@ -4640,26 +3301,9 @@ public sealed class UserService : IUserService
                 "The validation expression is not a valid regular expression.");
         }
 
-        // INFO-01: AT CAPACITY THIS EVICTS ONE ENTRY, NOT ALL OF THEM.
-        //
-        // It used to call Clear(). The ceiling still held, so nothing grew without bound - but the COST of
-        // reaching it fell on the wrong party. Expressions are tenant data, authored by any account entitled
-        // to write a profile-property definition or the membership e-mail rule, and this cache is
-        // process-wide and shared by every tenant the instance serves. So one privileged writer introducing
-        // distinct expressions could discard up to 1,024 compiled expressions belonging to OTHER tenants,
-        // repeatedly, and each of those tenants then paid a recompilation on its next validation. The total
-        // work was bounded, which is why this is a hardening note rather than a defect, but the effect was a
-        // cliff and it was payable by whoever did not cause it.
-        //
         // Removing a single entry per admitted expression makes the cost PROPORTIONATE: introducing one new
         // expression can displace at most one other, so a writer can no longer do more damage than the work
         // it brought. The cache stays exactly at its ceiling rather than emptying and refilling.
-        //
-        // The victim is whichever entry the enumerator yields first, which is not the least recently used -
-        // ConcurrentDictionary offers no recency and adding one would mean a second structure, a lock and a
-        // per-hit write, all to choose better between entries whose recompilation is already bounded by the
-        // 512-character limit and the short timeout. An arbitrary single victim is the right trade here; a
-        // wholesale clear was not.
         if (ValidationExpressionCache.Count >= ValidationExpressionCacheMaximum)
         {
             foreach (string victim in ValidationExpressionCache.Keys)
@@ -4673,9 +3317,7 @@ public sealed class UserService : IUserService
         return Result<Regex>.Success(created);
     }
 
-    /// <summary>
-    /// Writes a submitted profile value onto a row, choosing the column that can hold it.
-    /// </summary>
+    /// <summary>Writes a submitted profile value onto a row, choosing the column that can hold it.</summary>
     /// <param name="row">The row to write.</param>
     /// <param name="property">The submitted value.</param>
     /// <param name="utcNow">The instant the write is stamped with.</param>
@@ -4696,26 +3338,9 @@ public sealed class UserService : IUserService
         row.LastUpdatedDate = utcNow;
     }
 
-    /// <summary>
-    /// Builds the submission that clears a stored profile answer without discarding its row.
-    /// </summary>
+    /// <summary>Builds the submission that clears a stored profile answer without discarding its row.</summary>
     /// <param name="row">The stored answer being cleared.</param>
     /// <returns>A submission carrying an empty value and the row's existing visibility.</returns>
-    /// <remarks>
-    /// MIGRATION: this is how the legacy application cleared a profile answer, and it is why no
-    /// value-deletion member exists on the repository contract. The membership provider declared only
-    /// a reader and an upsert for profile values (<c>DataProvider.vb:L118</c> and <c>L119</c>), and a
-    /// sweep of all eighty-eight upgrade scripts finds no procedure that deletes a
-    /// <c>UserProfile</c> row and no <c>DELETE</c> statement against that table. An answer was
-    /// cleared by upserting an empty value, which was representable because the legacy
-    /// <c>Null.NullString</c> sentinel was the empty string rather than null.
-    /// <para>
-    /// The stored visibility is carried forward rather than reset, because the legacy upsert wrote
-    /// the property's own visibility and clearing an answer never re-decided who could see the
-    /// property. The timestamp is refreshed by <see cref="WriteProfileValue"/>, as the legacy write
-    /// refreshed it on every call.
-    /// </para>
-    /// </remarks>
     private static UserProfileValueDto Cleared(UserProfileValue row) => new()
     {
         PropertyDefinitionId = row.PropertyDefinitionId,
@@ -4723,9 +3348,7 @@ public sealed class UserService : IUserService
         Visibility = row.Visibility,
     };
 
-    /// <summary>
-    /// Writes one module setting, updating the stored row when it already exists.
-    /// </summary>
+    /// <summary>Writes one module setting, updating the stored row when it already exists.</summary>
     /// <param name="stored">The rows already held against the module.</param>
     /// <param name="moduleId">The module the setting belongs to.</param>
     /// <param name="settingName">The setting name.</param>
@@ -4760,9 +3383,7 @@ public sealed class UserService : IUserService
             .ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Reads a stored switch, falling back to the legacy default when it is absent or unreadable.
-    /// </summary>
+    /// <summary>Reads a stored switch, falling back to the legacy default when it is absent or unreadable.</summary>
     /// <param name="map">The stored settings.</param>
     /// <param name="settingName">The setting name.</param>
     /// <param name="fallback">The legacy default.</param>
@@ -4785,9 +3406,7 @@ public sealed class UserService : IUserService
                 ? parsed
                 : fallback;
 
-    /// <summary>
-    /// Reads a stored page reference, translating the legacy sentinel into an absence.
-    /// </summary>
+    /// <summary>Reads a stored page reference, translating the legacy sentinel into an absence.</summary>
     /// <param name="map">The stored settings.</param>
     /// <param name="settingName">The setting name.</param>
     /// <returns>The referenced page, or <see langword="null"/> when none is set.</returns>
@@ -4806,9 +3425,7 @@ public sealed class UserService : IUserService
         return parsed < 0 ? null : parsed;
     }
 
-    /// <summary>
-    /// Reads a stored string, falling back to the legacy default when it is absent.
-    /// </summary>
+    /// <summary>Reads a stored string, falling back to the legacy default when it is absent.</summary>
     /// <param name="map">The stored settings.</param>
     /// <param name="settingName">The setting name.</param>
     /// <param name="fallback">The legacy default.</param>
@@ -4816,9 +3433,7 @@ public sealed class UserService : IUserService
     private static string ReadString(IReadOnlyDictionary<string, string> map, string settingName, string fallback)
         => map.TryGetValue(settingName, out string? stored) ? stored : fallback;
 
-    /// <summary>
-    /// Renders a switch in the form the legacy store held.
-    /// </summary>
+    /// <summary>Renders a switch in the form the legacy store held.</summary>
     /// <param name="value">The value to render.</param>
     /// <returns>The stored representation.</returns>
     private static string WriteBoolean(bool value) => value ? bool.TrueString : bool.FalseString;
@@ -4833,31 +3448,10 @@ public sealed class UserService : IUserService
             ? page.ToString(CultureInfo.InvariantCulture)
             : UnsetRedirectSettingValue;
 
-    // =========================================================================================
-    // MEMBER SERVICES - the self-service role-subscription surface.
-    //
-    // MIGRATION: replaces Website/admin/Users/MemberServices.ascx.vb in full. The panel operated on the
-    // SIGNED-IN account and never on the account its container was managing - DataBind at L150,
-    // Subscribe at L106, UseTrial at L125 and cmdRSVP_Click at L413 all pass UserInfo.UserID, which
-    // PortalModuleBase.vb L319-L323 resolves as the current account, while the subject the container
-    // assigned at ManageUsers.ascx.vb L517 is read nowhere. The API therefore gates all five operations
-    // on account ownership alone.
-    //
-    // MIGRATION: the two write primitives are DELEGATED to the role contract rather than reimplemented.
-    // The legacy operations called RoleController.UpdateUserRole, whose derivation and refusals already
-    // live there in one place; reaching the role repository from here would duplicate the expiry
-    // derivation (RoleController.vb:L503-L558), the expire-rather-than-delete retention (L494-L496) and
-    // the two protected-assignment refusals (L741, L764). Nothing below computes a date, evicts a cache
-    // entry or writes an audit record for a membership: the delegate owns all four, so a subscription
-    // made here is indistinguishable in the store and in the trail from one an administrator made.
-    // =========================================================================================
-
-    /// <summary>
-    /// The tenant and the account a member-services operation acts within, resolved once.
-    /// </summary>
+    /// <summary>The tenant and the account a member-services operation acts within, resolved once.</summary>
     /// <param name="Portal">
     /// The tenant row, read rather than probed because the subscribe predicate needs its payment-processor
-    /// account (<c>MemberServices.ascx.vb:L313-L318</c>).
+    /// account.
     /// </param>
     /// <param name="Account">The account the operation acts on.</param>
     private readonly record struct MemberServiceScope(Portal Portal, User Account);
@@ -4875,10 +3469,6 @@ public sealed class UserService : IUserService
             return Result<IReadOnlyList<MemberServiceDto>>.Failure(scope.Error!);
         }
 
-        // The catalogue and the account's own memberships are TWO reads paired above the repository,
-        // exactly as IRoleRepository.GetSubscribableRolesAsync documents: the legacy procedure flattened
-        // the account's expiry and assignment key onto each role row with two correlated sub-selects,
-        // and those annotations describe the account rather than the role.
         IReadOnlyList<Role> published = await _roles
             .GetSubscribableRolesAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -4887,26 +3477,17 @@ public sealed class UserService : IUserService
             .GetUserRolesAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
 
-        // Keyed by role because that is how the two sides are paired. The first assignment per role wins,
-        // which is what the legacy sub-select did - an uncorrelated scalar sub-query returning more than
-        // one row would have failed outright, so a store holding a duplicate pair is read consistently
-        // here rather than throwing.
+        // Keyed by role because that is how the two sides are paired.
         var assignments = new Dictionary<int, UserRole>(held.Count);
         foreach (UserRole assignment in held)
         {
             _ = assignments.TryAdd(assignment.RoleId, assignment);
         }
 
-        // ONE clock reading for the whole catalogue. Reading it per row would let two rows classify
-        // against different days if the loop straddled midnight, so every row is judged against the same
-        // instant. UTC rather than the legacy server-local Date.Today, for the reason recorded on the
-        // cancellation path in the role service.
+        // ONE clock reading for the whole catalogue. Reading it per row would let two rows classify against
+        // different days if the loop straddled midnight, so every row is judged against the same instant.
         DateTime today = _clock.UtcNow;
 
-        // ShowSubscribe's second arm: `objPortal IsNot Nothing AndAlso Not
-        // String.IsNullOrEmpty(objPortal.ProcessorUserId)` (MemberServices.ascx.vb:L317). Whitespace is
-        // treated as absent as well, because a processor account of spaces cannot take a payment and the
-        // legacy read funnelled an absent value through Null.SetNull to the empty string.
         bool tenantTakesPayment = !string.IsNullOrWhiteSpace(scope.Value.Portal.ProcessorUserId);
 
         var catalogue = new List<MemberServiceDto>(published.Count);
@@ -4936,11 +3517,9 @@ public sealed class UserService : IUserService
             return Result.Failure(offer.Error!);
         }
 
-        // MIGRATION: the legacy gate is `If objRole.IsPublic And objRole.ServiceFee = 0.0`
-        // (MemberServices.ascx.vb:L105). The public test is already satisfied by the resolver above; the
-        // fee test is the excluded payment path, so it is refused here rather than redirected. Absence is
-        // read as "no fee" - see the note on UserMappings.ToMemberService for why the legacy comparison
-        // could not.
+        // The legacy gate is `If objRole.IsPublic And objRole.ServiceFee = 0.0`. The public test is already
+        // satisfied by the resolver above; the fee test is the excluded payment path, so it is refused here
+        // rather than redirected.
         if (ChargesServiceFee(offer.Value))
         {
             return Result.Failure(
@@ -4948,12 +3527,8 @@ public sealed class UserService : IUserService
                 "This service charges a fee, and payment cannot be taken here.");
         }
 
-        // MIGRATION: NEITHER DATE IS CALLER-SUPPLIED, and that is what makes this a subscription rather
-        // than an administrative assignment. The legacy path reached UpdateUserRole(portalId, userId,
-        // roleId, cancel) (RoleController.vb:L489), which takes no date arguments at all and derives both
-        // bounds from the role's own stored terms; the seven-argument AddUserRole overload that stores a
-        // caller's dates verbatim was the administration screen's member, not this one's. Leaving both
-        // request members absent is precisely what selects the derivation inside the delegate.
+        // NEITHER DATE IS CALLER-SUPPLIED, and that is what makes this a subscription rather than an
+        // administrative assignment.
         return await _roleService
             .AssignUserToRoleAsync(
                 portalId,
@@ -4977,12 +3552,6 @@ public sealed class UserService : IUserService
             return Result.Failure(offer.Error!);
         }
 
-        // MIGRATION: the cancel path shares the SUBSCRIBE gate rather than having one of its own.
-        // Subscribe(roleID, cancel) tests `objRole.IsPublic And objRole.ServiceFee = 0.0` once and
-        // branches on `cancel` only INSIDE the redirect (MemberServices.ascx.vb:L105-L117), appending
-        // "&cancel=1" at L115 - so cancelling a fee-bearing subscription also went through the payment
-        // page. Refusing it here is therefore the same excluded path and not an omission: a paid
-        // subscription is ended by whatever settles the account, which this application does not do.
         if (ChargesServiceFee(offer.Value))
         {
             return Result.Failure(
@@ -4991,10 +3560,8 @@ public sealed class UserService : IUserService
         }
 
         // The delegate answers role_assignment.not_found when the account does not hold the service and
-        // role_assignment.protected when the membership may not be withdrawn at all, and it decides
-        // between deleting the row and back-dating its expiry to retain a consumed paid trial. Its
-        // success may carry role_assignment.expired_not_removed, which is passed through unchanged so a
-        // caller can say which happened.
+        // role_assignment.protected when the membership may not be withdrawn at all, and it decides between
+        // deleting the row and back-dating its expiry to retain a consumed paid trial.
         return await _roleService
             .RemoveUserFromRoleAsync(portalId, roleId, userId, cancellationToken)
             .ConfigureAwait(false);
@@ -5013,8 +3580,7 @@ public sealed class UserService : IUserService
         {
             // The resolver's public-role refusal is reported under the TRIAL code on this path, because
             // ShowTrial's first arm and ShowSubscribe's are the same test and a caller of this operation
-            // asked about a trial. Every other refusal - unknown tenant, unknown account, unknown role,
-            // tenant switch off - keeps its own code.
+            // asked about a trial.
             return Result.Failure(
                 offer.Error!.Code == ServiceNotOfferedCode
                     ? new ResultReason(ServiceTrialNotOfferedCode, TrialNotOfferedMessage)
@@ -5023,12 +3589,7 @@ public sealed class UserService : IUserService
 
         Role role = offer.Value;
 
-        // MIGRATION: ShowTrial (MemberServices.ascx.vb:L325-L342) and UseTrial (:L120-L133) together.
-        // The predicate's first arm returns FALSE for a public role with no service fee - a free service
-        // has nothing to trial - its second requires a zero TRIAL fee, which is also UseTrial's own gate
-        // at L124, and it additionally requires that this account has not already consumed the trial.
-        // All three are evaluated here so the operation cannot complete a case the catalogue would not
-        // have offered.
+        // ShowTrial and UseTrial (:L120-L133) together.
         if (!ChargesServiceFee(role) || ChargesTrialFee(role))
         {
             return Result.Failure(ServiceTrialNotOfferedCode, TrialNotOfferedMessage);
@@ -5045,19 +3606,6 @@ public sealed class UserService : IUserService
             return Result.Failure(ServiceTrialNotOfferedCode, TrialNotOfferedMessage);
         }
 
-        // The same assignment the subscription performs, because the legacy member called the same
-        // operation (:L125). WHICH term governs the derived expiry - the trial period or the billing
-        // period - is decided inside the delegate from the role's trial frequency and the stored
-        // trial-used flag, exactly as RoleController.vb:L521-L527 decided it, so no trial arithmetic
-        // exists here or anywhere outside that one derivation.
-        //
-        // MIGRATION: the trial-used flag is NOT written, because the legacy application never wrote it.
-        // The terminal AddUserRole and UpdateUserRole procedures (04.00.04.SqlDataProvider) set only the
-        // two dates, and no in-scope legacy code assigns UserRoleInfo.IsTrialUsed - it is read at
-        // RoleController.vb:L494 and :L515 and at MemberServices.ascx.vb:L336 and assigned nowhere.
-        // Setting it here would be new behaviour; the consequence of not setting it - a trial that can be
-        // taken again once the first has lapsed - is the legacy behaviour and is recorded in
-        // MIGRATION_NOTES.md rather than silently corrected.
         return await _roleService
             .AssignUserToRoleAsync(
                 portalId,
@@ -5083,20 +3631,11 @@ public sealed class UserService : IUserService
             return Result<RedeemServiceCodeResultDto>.Failure(scope.Error!);
         }
 
-        // MIGRATION: duplicates RedeemServiceCodeRequestValidator's emptiness rule rather than trusting
-        // it, so the guard holds for a caller that reached this service without the validation pipeline
-        // in front of it. It is also the legacy guard `If code <> ""` (MemberServices.ascx.vb:L403), and
-        // that guard is LOAD-BEARING rather than defensive: an absent Roles.RSVPCode reached the legacy
-        // comparison at L411 as Null.NullString, which is the EMPTY STRING rather than null
-        // (Null.vb:L66-L75), so without it an empty submission would have matched every role in the
-        // tenant that carries no code and enrolled the account in all of them.
+        // Duplicates RedeemServiceCodeRequestValidator's emptiness rule rather than trusting it, so the
+        // guard holds for a caller that reached this service without the validation pipeline in front of
+        // it.
         if (string.IsNullOrWhiteSpace(request.Code))
         {
-            // The sentence is READ FROM THE VALIDATOR rather than repeated here. It was previously a
-            // second literal copy, which is how one refusal comes to be worded two ways: when the field
-            // was renamed in the message to match its own label ("RSVP Code", not "invitation code"),
-            // only one of the two copies would have moved. Both sit in this assembly, so the constant
-            // is reachable and the drift is now impossible rather than merely unlikely.
             return Result<RedeemServiceCodeResultDto>.Failure(
                 ServiceCodeRequiredCode,
                 RedeemServiceCodeRequestValidator.CodeRequiredMessage);
@@ -5104,26 +3643,14 @@ public sealed class UserService : IUserService
 
         string code = request.Code;
 
-        // MIGRATION: EVERY role of the tenant is searched, public or not, free or not. The legacy handler
-        // read GetPortalRoles(PortalSettings.PortalId) at L407 and applied neither the public test nor
-        // the fee test that the grid's own commands applied - an invitation code IS the bypass for a
-        // service that is not published, so narrowing this search would remove the feature's purpose. It
-        // follows that a fee-bearing role is not refused here either: no payment was taken on the legacy
-        // path, so none is owed on this one.
+        // EVERY role of the tenant is searched, public or not, free or not.
         IReadOnlyList<Role> tenantRoles = await _roles
             .GetByPortalIdAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        // MIGRATION: the comparison is ORDINAL and the submitted value is NOT trimmed. `objRole.RSVPCode
-        // = code` (:L411) is a Visual Basic string equality in memory, and the file declares no
-        // Option Compare Text, so it compared byte for byte and a leading space prevented a match.
-        // Widening it would let a code match a role its issuer did not intend, which is a widening of an
-        // access grant rather than a convenience. Roles carrying no code are skipped explicitly here,
-        // which is what the legacy emptiness guard achieved indirectly.
-        //
-        // MIGRATION: the loop has NO EARLY EXIT, matching L410-L420, so one code legitimately enrols an
-        // account in several services. Ordered by name and then key, which is the order the catalogue
-        // read returns, so a client can present the result against the grid it already shows.
+        // The loop has NO EARLY EXIT, matching L410-L420, so one code legitimately enrols an account in
+        // several services. Ordered by name and then key, which is the order the catalogue read returns, so
+        // a client can present the result against the grid it already shows.
         List<Role> matches = tenantRoles
             .Where(role => !string.IsNullOrEmpty(role.RsvpCode)
                 && string.Equals(role.RsvpCode, code, StringComparison.Ordinal))
@@ -5133,15 +3660,10 @@ public sealed class UserService : IUserService
 
         if (matches.Count == 0)
         {
-            // SEC: A FAILED ATTEMPT IS RECORDED, AND THE SUBMITTED CODE IS NOT. The legacy handler answered a
-            // miss with an on-screen sentence and wrote nothing, so an installation could be guessed at
-            // indefinitely and leave no trace; the endpoint's window now bounds the RATE, and this record is
-            // what makes a bounded-but-persistent attempt visible to an operator. What is recorded is
-            // deliberately narrow: that an attempt failed, and how many of the tenant's roles are reachable
-            // by code at all. Putting the guess itself in the trail would turn the trail into a list of
-            // near-miss codes for whoever can read it - a worse exposure than the silence it replaces - and
-            // naming the codes that DO exist would be worse again. The account and the tenant are already
-            // carried by every record this service writes, which is what an operator correlates on.
+            // SEC: A FAILED ATTEMPT IS RECORDED, AND THE SUBMITTED CODE IS NOT. The legacy handler answered
+            // a miss with an on-screen sentence and wrote nothing, so an installation could be guessed at
+            // indefinitely and leave no trace; the endpoint's window now bounds the RATE, and this record
+            // is what makes a bounded-but-persistent attempt visible to an operator.
             RecordAudit(
                 AuditEventNames.ServiceCodeRedemptionFailure,
                 portalId,
@@ -5153,9 +3675,6 @@ public sealed class UserService : IUserService
                         .ToString(CultureInfo.InvariantCulture),
                 });
 
-            // MIGRATION: the legacy RSVPFailure message (:L427) becomes a failed outcome rather than a
-            // successful empty one. Reporting success with nothing enrolled would tell a client its code
-            // had been accepted when it had not.
             return Result<RedeemServiceCodeResultDto>.Failure(
                 ServiceCodeNotMatchedCode,
                 "The invitation code entered is not valid or does not exist.");
@@ -5164,10 +3683,9 @@ public sealed class UserService : IUserService
         var enrolled = new List<RedeemedServiceDto>(matches.Count);
         foreach (Role role in matches)
         {
-            // The three-argument UpdateUserRole overload the legacy handler called (L413) forwards to the
-            // four-argument one with Cancel = False (RoleController.vb:L472-L474), which is the ordinary
-            // assignment this delegate performs. Each match is committed by the delegate's own unit of
-            // work, as the legacy loop wrote one role at a time.
+            // The three-argument UpdateUserRole overload the legacy handler called forwards to the
+            // four-argument one with Cancel = False, which is the ordinary assignment this delegate
+            // performs.
             Result assigned = await _roleService
                 .AssignUserToRoleAsync(
                     portalId,
@@ -5180,23 +3698,13 @@ public sealed class UserService : IUserService
             {
                 // A refusal on one match ABANDONS the redemption rather than reporting a partial success,
                 // because a caller told "you were enrolled in these two" when a third was refused has no
-                // way to learn about the third. Matches already committed stand - the legacy loop had no
-                // enclosing transaction either, and each iteration wrote independently - so a retry of
-                // the same code is idempotent for them: the delegate revises an existing membership's
-                // expiry rather than failing on it.
+                // way to learn about the third.
                 return Result<RedeemServiceCodeResultDto>.Failure(assigned.Error!);
             }
 
             enrolled.Add(UserMappings.ToRedeemedService(role));
         }
 
-        // SEC: A SUCCESSFUL REDEMPTION IS RECORDED TOO, and for a reason the failure record does not cover: a
-        // role obtained by code is a MEMBERSHIP GRANT, which is the kind of change the legacy register audits
-        // everywhere else, and without this record the only trace of how the membership arrived was the
-        // assignment itself. This names the MECHANISM; the per-role assignment records name the roles. The
-        // count is recorded because one code may legitimately grant several services - the legacy loop had no
-        // early exit - and the code that granted them is not recorded here any more than it is on the failure
-        // path.
         RecordAudit(
             AuditEventNames.ServiceCodeRedeemed,
             portalId,
@@ -5212,14 +3720,12 @@ public sealed class UserService : IUserService
         });
     }
 
-    /// <summary>
-    /// Wording reported for every reason a trial is not on offer.
-    /// </summary>
+    /// <summary>Wording reported for every reason a trial is not on offer.</summary>
     /// <remarks>
     /// Deliberately one sentence for four distinct conditions - the role is not published, it charges no
-    /// service fee and so has nothing to trial, its trial itself carries a fee, or this account has
-    /// already consumed it. Distinguishing them would tell a caller which of a tenant's commercial terms
-    /// it had guessed wrong about, and the catalogue already reports whether the trial is offered.
+    /// service fee and so has nothing to trial, its trial itself carries a fee, or this account has already
+    /// consumed it. Distinguishing them would tell a caller which of a tenant's commercial terms it had
+    /// guessed wrong about, and the catalogue already reports whether the trial is offered.
     /// </remarks>
     private const string TrialNotOfferedMessage = "This service offers no trial to this account.";
 
@@ -5232,21 +3738,9 @@ public sealed class UserService : IUserService
     /// <param name="cancellationToken">Token observed while the two rows are read.</param>
     /// <returns>The resolved scope, or the reason the operation is refused.</returns>
     /// <remarks>
-    /// <para>
     /// The tenant row is READ rather than probed, because the subscribe predicate needs its
     /// payment-processor account. The account is read so that an unknown one is answered 404 rather than
     /// silently producing an empty catalogue or an assignment against a row that does not exist.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the tenant's <c>Profile_ManageServices</c> switch is enforced here, once, for all five
-    /// operations. The legacy container hid the whole tab when it was off
-    /// (<c>ManageUsers.ascx.vb:L61-L66</c>), and in Web Forms an unrendered control was an unreachable
-    /// handler - so the setting WAS the enforcement. An HTTP resource has no tab to hide, so it becomes a
-    /// refusal. Its default when the tenant stores no value is <see langword="true"/>, exactly as
-    /// <c>UserModuleBase.vb:L146-L147</c> applied it, and a tenant with no account module at all - for
-    /// which the settings read legitimately answers nothing - therefore reads as enabled rather than as
-    /// broken.
-    /// </para>
     /// </remarks>
     private async Task<Result<MemberServiceScope>> OpenMemberServiceScopeAsync(
         int portalId,
@@ -5284,20 +3778,12 @@ public sealed class UserService : IUserService
         return Result<MemberServiceScope>.Success(new MemberServiceScope(portal, account));
     }
 
-    /// <summary>
-    /// Resolves the published role a member-services write operation addresses.
-    /// </summary>
+    /// <summary>Resolves the published role a member-services write operation addresses.</summary>
     /// <param name="portalId">The tenant.</param>
     /// <param name="userId">The account.</param>
     /// <param name="roleId">The role the service is expressed as.</param>
     /// <param name="cancellationToken">Token observed while the rows are read.</param>
     /// <returns>The role, or the reason the operation is refused.</returns>
-    /// <remarks>
-    /// Adds the public-role test to the scope resolution above, which is the first arm of both legacy
-    /// gates - <c>objRole.IsPublic</c> at <c>MemberServices.ascx.vb:L105</c> and <c>:L124</c>. The role is
-    /// resolved WITHIN the tenant, so a role belonging to another portal reads as absent rather than as
-    /// unpublished: answering "not published" would confirm that the identifier exists somewhere.
-    /// </remarks>
     private async Task<Result<Role>> ResolveServiceOfferAsync(
         int portalId,
         int userId,
@@ -5329,31 +3815,21 @@ public sealed class UserService : IUserService
         return Result<Role>.Success(role);
     }
 
-    /// <summary>
-    /// Reports whether a role charges a recurring service fee.
-    /// </summary>
+    /// <summary>Reports whether a role charges a recurring service fee.</summary>
     /// <param name="role">The role to test.</param>
     /// <returns><see langword="true"/> when a fee greater than zero is stored.</returns>
     /// <remarks>
     /// MIGRATION: absence is read as "no fee", which the legacy comparison could not do.
-    /// <c>RoleInfo.ServiceFee</c> was a non-nullable <c>Single</c>, so a stored <c>NULL</c> arrived
-    /// through <c>Null.SetNull</c> as <c>Single.MinValue</c> - not zero - and
-    /// <c>objRole.ServiceFee = 0.0</c> was consequently FALSE for a role with no fee at all, handing such
-    /// a role to the payment page. This is the same test the sibling role service already applies on the
-    /// cancellation path, so one reading of an absent fee serves both.
+    /// <c>RoleInfo.ServiceFee</c> was a non-nullable <c>Single</c>, so a stored <c>NULL</c> arrived through
+    /// <c>Null.SetNull</c> as <c>Single.MinValue</c> - not zero - and <c>objRole.ServiceFee = 0.0</c> was
+    /// consequently FALSE for a role with no fee at all, handing such a role to the payment page.
     /// </remarks>
     private static bool ChargesServiceFee(Role role) =>
         role.ServiceFee is decimal serviceFee && serviceFee > 0m;
 
-    /// <summary>
-    /// Reports whether a role charges a fee for its trial period.
-    /// </summary>
+    /// <summary>Reports whether a role charges a fee for its trial period.</summary>
     /// <param name="role">The role to test.</param>
     /// <returns><see langword="true"/> when a trial fee greater than zero is stored.</returns>
-    /// <remarks>
-    /// The gate <c>UseTrial</c> applied at <c>MemberServices.ascx.vb:L124</c>, with absence read as "no
-    /// fee" for the same reason recorded on <see cref="ChargesServiceFee"/>.
-    /// </remarks>
     private static bool ChargesTrialFee(Role role) =>
         role.TrialFee is decimal trialFee && trialFee > 0m;
 }

@@ -2,22 +2,11 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 
 namespace DnnMigration.Infrastructure.HealthChecks;
 
-/// <summary>
-/// Exposes whether the process has failed to deliver an audit record since it started.
-/// </summary>
+/// <summary>Exposes whether the process has failed to deliver an audit record since it started.</summary>
 /// <remarks>
-/// <para>
 /// The audit contract deliberately preserves a completed business operation when its logging sink fails.
 /// That resilience must not turn the loss into silence, so the sink increments this process-local,
-/// saturating counter before attempting its secondary diagnostic. The health endpoint then reports a
-/// degraded audit pipeline while remaining HTTP-successful: the application can still serve requests, but
-/// operators can see that its accountability trail is incomplete.
-/// </para>
-/// <para>
-/// The counter is process-local by design. It is not an audit store and does not attempt to recreate the
-/// record that was lost. A restart clears it because the new process has not yet lost a record; the durable
-/// monitoring system is responsible for retaining the degraded-health observation across restarts.
-/// </para>
+/// saturating counter before attempting its secondary diagnostic.
 /// </remarks>
 internal sealed class AuditPipelineHealth : IHealthCheck
 {
@@ -30,9 +19,7 @@ internal sealed class AuditPipelineHealth : IHealthCheck
     /// <summary>Gets the number of failed deliveries observed by this process.</summary>
     internal long FailureCount => Volatile.Read(ref _failureCount);
 
-    /// <summary>
-    /// Records one failed audit delivery without ever overflowing the counter.
-    /// </summary>
+    /// <summary>Records one failed audit delivery without ever overflowing the counter.</summary>
     internal void RecordFailure()
     {
         while (true)

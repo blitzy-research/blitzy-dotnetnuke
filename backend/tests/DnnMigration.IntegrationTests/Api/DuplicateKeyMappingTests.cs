@@ -17,37 +17,17 @@ namespace DnnMigration.IntegrationTests.Api;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: SEC-F6, AND THIS IS THE SAFETY NET RATHER THAN THE ROUTE. Every create path that writes through
-/// a unique constraint catches the duplicate signal itself and answers with the same reason code its own
-/// sequential pre-check emits, so a caller normally receives a 409 naming the field that collided - the role
-/// name, the host name, the account name, the profile property - and never reaches the wording asserted here.
-/// Those per-path answers are asserted in the service suites and end to end in the API suites. What this suite
-/// covers is the case those cannot: a path added later that writes through a unique index and forgets to catch.
-/// Before the fix that path was answered 500, telling the caller the server had failed when the store had
-/// behaved correctly and kept exactly one record; with this arm it is at least answered correctly even when it
-/// cannot be answered specifically.
+/// AND THIS IS THE SAFETY NET RATHER THAN THE ROUTE. Every create path that writes through a unique
+/// constraint catches the duplicate signal itself and answers with the same reason code its own sequential
+/// pre-check emits, so a caller normally receives a 409 naming the field that collided - the role name, the
+/// host name, the account name, the profile property - and never reaches the wording asserted here.
 /// </para>
 /// <para>
 /// <strong>Measured against the handler's own surface, not over HTTP.</strong> Provoking the arm end to end
-/// would require an endpoint that writes through a unique index WITHOUT catching the signal, which is exactly
-/// the state the rest of this work removed - so an end-to-end test would either need a defect deliberately
-/// left in place to keep it meaningful, or a test-only endpoint that proves nothing about the real pipeline.
-/// The mapping is a pure function of the exception, so it is measured where it is made. The same reasoning,
-/// and the same shape, is used by <see cref="TransportRefusalMappingTests"/> for the host-refusal arm.
-/// </para>
-/// <para>
-/// Three things are asserted, and each guards a distinct defect. The STATUS, because 500 was the measured
-/// behaviour and it is wrong twice over - it misreports a store that worked, and it raises a server-fault log
-/// entry for an ordinary collision. The DETAIL, because a provider message routinely carries the connection
-/// string, the server and database names and the values bound to the statement, so republishing it would be a
-/// disclosure; and because the constraint name the signal carries is a schema fact of no use to a caller and
-/// obvious use to anyone mapping the store. The LOG LEVEL, because a caller able to provoke Error entries at
-/// will can bury the error rate that real faults are alerted on.
-/// </para>
-/// <para>
-/// The recording logger is declared here rather than shared with the transport-refusal suite because that
-/// suite's own double is a private nested type. Two small doubles are a lesser cost than a shared test
-/// utility that either suite could change under the other.
+/// would require an endpoint that writes through a unique index WITHOUT catching the signal, which is
+/// exactly the state the rest of this work removed - so an end-to-end test would either need a defect
+/// deliberately left in place to keep it meaningful, or a test-only endpoint that proves nothing about the
+/// real pipeline.
 /// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
@@ -59,17 +39,13 @@ public sealed class DuplicateKeyMappingTests
         + "Reload the resource and submit different values.";
 
     /// <summary>
-    /// A duplicate-value refusal is answered 409 with authored wording, discloses neither the constraint nor
-    /// the provider's own text, and is not recorded as a server fault.
+    /// A duplicate-value refusal is answered 409 with authored wording, discloses neither the constraint
+    /// nor the provider's own text, and is not recorded as a server fault.
     /// </summary>
-    /// <param name="constraintName">The constraint the store named, or <see langword="null"/> when it named none.</param>
+    /// <param name="constraintName">
+    /// The constraint the store named, or <see langword="null"/> when it named none.
+    /// </param>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Both shapes of the signal are exercised. The name is best effort by construction - it is read out of
-    /// provider text, which is localised and version dependent - so a signal carrying none must be answered
-    /// exactly as well as one that does. A handler that read the name to build its explanation would pass the
-    /// first case and produce either a disclosure or an empty explanation on the second.
-    /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
     [InlineData("IX_RoleName")]
@@ -116,9 +92,7 @@ public sealed class DuplicateKeyMappingTests
             });
 
         // The store-failure classifier is asked only after the duplicate arm has declined, so it is given
-        // the answer that would be WRONG for this failure - "the store is unavailable" - deliberately. A
-        // handler that consulted it before the specific arms, or instead of them, would answer 503 here and
-        // fail this fact; one that keeps the order answers 409 whatever the classifier says.
+        // the answer that would be WRONG for this failure - "the store is unavailable" - deliberately.
         Mock<IStoreFailureClassifier> storeFailures = new(MockBehavior.Strict);
         storeFailures.Setup(classifier => classifier.IsStoreUnavailable(It.IsAny<Exception?>())).Returns(true);
 

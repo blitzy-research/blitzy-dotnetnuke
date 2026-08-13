@@ -1,32 +1,4 @@
-<!--
-  Async progress indicator. A leaf presentational primitive: one decorative glyph, one text
-  label, nothing else.
-
-  The polite live region, the busy state and the size attribute are deliberately NOT declared
-  here - they all sit on the HOST element, supplied by the `host` metadata in the paired
-  class. Repeating any of them would nest a second live region inside the host's own and
-  leave the two competing to announce the same thing. Every dimension and colour likewise
-  lives in the paired stylesheet as design tokens, so this template carries no inline styling
-  and no branching on size. The glyph below is a static indeterminate indicator, not a
-  rotating one, for the reasons that stylesheet records.
-
-  The glyph is hidden from assistive technology because it conveys nothing a screen-reader
-  user needs, while the label stays real text so it becomes the announced content of the
-  host's live region instead of a competing accessible name.
-
-  MIGRATION: the label is interpolated as plain text on purpose. Legacy resource values are
-  untrusted markup - some carry tags and a few carry script - and the legacy application
-  encoded on output rather than trusting the stored value. Interpolation escapes markup,
-  which is exactly the behaviour required, so no raw-markup binding and no sanitiser bypass
-  appears anywhere here.
-
-  MIGRATION: no legacy ancestor. The in-scope admin trees are full-page-postback Web Forms
-  with no partial-postback progress control, and neither legacy stylesheet declares a
-  spinner, progress or busy selector, so the browser's own page-load indicator was the legacy
-  application's only progress affordance. Nothing is ported, so no legacy class name and no
-  legacy raster icon is referenced, and the wording is authored directly in English because
-  localisation is not carried forward.
--->
+<!-- Async progress indicator. -->
 <span class="indicator" aria-hidden="true"></span>
 @if (hasVisibleLabel) {
   <span class="label">{{ label }}</span>

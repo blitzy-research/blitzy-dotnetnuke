@@ -4,10 +4,6 @@ namespace DnnMigration.Api.Authorization;
 /// Identifies an endpoint that may be reached while an authenticated account is completing blocking
 /// credential or profile remediation.
 /// </summary>
-/// <remarks>
-/// This metadata is an exception to the global remediation gate, not an authorisation policy of its own.
-/// Every endpoint still has to satisfy its ordinary authentication, tenant and account-owner policy.
-/// </remarks>
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = false, Inherited = true)]
 public sealed class AllowDuringRemediationAttribute : Attribute
 {

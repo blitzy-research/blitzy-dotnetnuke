@@ -9,20 +9,10 @@ namespace DnnMigration.Api.Authorization;
 /// The single place the authorisation handlers read an identifier out of a principal or a matched route.
 /// </summary>
 /// <remarks>
-/// <para>
 /// WHY ONE HELPER RATHER THAN A COPY PER HANDLER. Three handlers need the same three readings - the
 /// caller's account key, the tenant the token was minted for, and a tenant or resource key named by the
 /// route - and every one of those readings has a rule that is wrong by default. The account key may arrive
-/// under either of two claim names depending on host configuration. A malformed identifier must read as
-/// absent rather than as zero, because zero is a real key in this schema. And both -1 and 0 are legitimate
-/// identifiers here, so neither may be treated as "not supplied". A second copy of any of those rules would
-/// eventually diverge from the first, and the divergence would present as an authorisation decision that
-/// is wrong only for particular identifier values.
-/// </para>
-/// <para>
-/// Nothing here decides anything. Every member reports what the request or the principal says, and the
-/// handlers combine those readings into a decision.
-/// </para>
+/// under either of two claim names depending on host configuration.
 /// </remarks>
 internal static class AuthorizationClaims
 {
@@ -64,8 +54,8 @@ internal static class AuthorizationClaims
     /// <remarks>
     /// This is the tenant the credential was presented to, and binding an administrative decision to it is
     /// what stops a token issued in one tenant from carrying authority into another. It is deliberately a
-    /// different question from which tenant the request arrived at and from which tenant the route names;
-    /// a handler that treats the three as interchangeable has no tenant binding at all.
+    /// different question from which tenant the request arrived at and from which tenant the route names; a
+    /// handler that treats the three as interchangeable has no tenant binding at all.
     /// </remarks>
     public static int? ReadTokenPortalId(ClaimsPrincipal user)
     {
@@ -78,11 +68,6 @@ internal static class AuthorizationClaims
     /// <param name="httpContext">The current request.</param>
     /// <param name="key">The route value name.</param>
     /// <returns>The value, or <see langword="null"/> when absent or unparseable.</returns>
-    /// <remarks>
-    /// Both -1 and 0 are legitimate identifiers in this schema - <c>Portals.PortalID</c> is
-    /// <c>IDENTITY(-1, 1)</c> and <c>Roles.RoleID</c> is <c>IDENTITY(0, 1)</c> - so neither is treated as
-    /// absent. Absence is the route value not being present at all.
-    /// </remarks>
     public static int? ReadRouteInt(HttpContext httpContext, string key)
     {
         ArgumentNullException.ThrowIfNull(httpContext);

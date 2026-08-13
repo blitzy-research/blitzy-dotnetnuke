@@ -25,21 +25,14 @@ namespace DnnMigration.UnitTests.Services;
 /// <remarks>
 /// <para>
 /// Provisioning a tenant cannot be done in one commit. The administrator's credential lives in the external
-/// membership store, which is reached by explicit statements rather than through the tracked object graph, so
-/// it can only be written once the account has an identifier — which means after a first commit. The service
-/// therefore commits the object graph, writes the credential, and commits again with the wiring the second
-/// commit needs. That leaves a window in which the tenant exists and its administrator cannot sign in, so the
-/// failure branch has to undo the first commit. Both the refusal branch and the exception branch are asserted
-/// here, right down to which rows are withdrawn and whether the credential is deleted, because a half-created
-/// tenant is worse than none.
+/// membership store, which is reached by explicit statements rather than through the tracked object graph,
+/// so it can only be written once the account has an identifier — which means after a first commit.
 /// </para>
 /// <para>
-/// The host-only guard is an authorisation rule over the contents of a request rather than over the route, so
-/// it cannot be expressed as an endpoint policy. It is asserted against the value the update will actually
-/// write rather than against the submitted value, because the request is a whole-row replacement and an
-/// omitted numeric term is written as zero. A guard that tested only for presence would let a tenant
-/// administrator waive its own hosting charge by leaving the field out; the assertions below pin that
-/// specific case.
+/// The host-only guard is an authorisation rule over the contents of a request rather than over the route,
+/// so it cannot be expressed as an endpoint policy. It is asserted against the value the update will
+/// actually write rather than against the submitted value, because the request is a whole-row replacement
+/// and an omitted numeric term is written as zero.
 /// </para>
 /// </remarks>
 public class PortalServiceTests
@@ -48,13 +41,7 @@ public class PortalServiceTests
 
     private const int SecondPortalId = 0;
 
-    /// <summary>
-    /// The product-wide page permission scope code, as the upgrade scripts spell it.
-    /// </summary>
-    /// <remarks>
-    /// Repeated here rather than shared, because the repository that owns it keeps it private and this
-    /// test asserts against the same literal the shipped catalogue rows carry.
-    /// </remarks>
+    /// <summary>The product-wide page permission scope code, as the upgrade scripts spell it.</summary>
     private const string TabScopeCode = "SYSTEM_TAB";
 
     /// <summary>
@@ -74,9 +61,7 @@ public class PortalServiceTests
     /// Held as its own pair of constants rather than derived from <see cref="PortalAliasId"/> because the
     /// active-alias refusal turns "which row did this request arrive through" into a load-bearing fact: a
     /// test that reused the row under test here would be arranging the REFUSED case by accident and would
-    /// then prove nothing about the path it names. The host name is distinct from the
-    /// <c>"other.example"</c> the cross-tenant assertions use, so a same-portal arrangement can never be
-    /// confused with a foreign-tenant one.
+    /// then prove nothing about the path it names.
     /// </remarks>
     private const int SparePortalAliasId = 5;
 
@@ -86,9 +71,9 @@ public class PortalServiceTests
     private const int AdministratorId = 7;
 
     /// <summary>
-    /// The account key of the caller making the request, deliberately distinct from
-    /// <see cref="AdministratorId"/> so that a fact about the CALLER's stored authority cannot be satisfied by
-    /// a lookup of the portal's designated administrator.
+    /// The account key of the caller making the request, deliberately distinct from <see
+    /// cref="AdministratorId"/> so that a fact about the CALLER's stored authority cannot be satisfied by a
+    /// lookup of the portal's designated administrator.
     /// </summary>
     private const int CallerId = 990;
 
@@ -138,17 +123,7 @@ public class PortalServiceTests
 
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>
-    /// The tenant contract exposes thirteen asynchronous operations and nothing else.
-    /// </summary>
-    /// <remarks>
-    /// The thirteenth is <c>ListAdministratorCandidatesAsync</c>, which fills the administrator selector
-    /// on the settings screen (<c>Website/admin/Portal/SiteSettings.ascx.vb:L329-L339</c>). It has to
-    /// live on THIS contract rather than on the role contract: every role read resolves its tenant from
-    /// the caller's own context rather than from a route segment, so none of them can enumerate the
-    /// administrators of the portal a settings screen happens to be addressing, and without it the
-    /// administrator could be displayed and never reassigned.
-    /// </remarks>
+    /// <summary>The tenant contract exposes thirteen asynchronous operations and nothing else.</summary>
     [Fact]
     public void PortalContract_OffersExactlyThirteenOperations()
     {
@@ -163,9 +138,7 @@ public class PortalServiceTests
         }
     }
 
-    /// <summary>
-    /// The service refuses to be constructed without every collaborator it depends on.
-    /// </summary>
+    /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
     public void Service_RequiresEveryCollaborator()
     {
@@ -298,9 +271,7 @@ public class PortalServiceTests
         });
     }
 
-    /// <summary>
-    /// Listing tenants requires a paging request.
-    /// </summary>
+    /// <summary>Listing tenants requires a paging request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListPortals_RequiresARequest()
@@ -311,9 +282,7 @@ public class PortalServiceTests
             () => harness.Service.ListPortalsAsync(null!, null, CancellationToken.None));
     }
 
-    /// <summary>
-    /// Page coordinates outside the permitted range are refused without reading anything.
-    /// </summary>
+    /// <summary>Page coordinates outside the permitted range are refused without reading anything.</summary>
     /// <param name="pageIndex">The page index to submit.</param>
     /// <param name="pageSize">The page size to submit.</param>
     /// <returns>A task representing the assertion.</returns>
@@ -345,9 +314,7 @@ public class PortalServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// The largest permitted page size is accepted, so the bound is inclusive.
-    /// </summary>
+    /// <summary>The largest permitted page size is accepted, so the bound is inclusive.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListPortals_AcceptsTheLargestPermittedPageSize()
@@ -389,19 +356,15 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// An ordering that belongs to another collection is refused here, not forwarded and silently
-    /// replaced by this listing's default.
+    /// An ordering that belongs to another collection is refused here, not forwarded and silently replaced
+    /// by this listing's default.
     /// </summary>
     /// <param name="foreignField">A field name declared for a different collection.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// Every name below passes the shared request validator, because that validator applies the union
-    /// of every collection's sortable set - one validator is resolved for the one shared request type,
-    /// so the union is the narrowest bound it can possibly apply. Without the per-collection check
-    /// inside this service each of these would reach the store as an unrecognised property name and be
-    /// answered by the store's default order, which is a page the caller cannot account for and cannot
-    /// detect. The assertion that nothing was read is the substantive half: a refusal issued after the
-    /// read would still have spent the query.
+    /// Every name below passes the shared request validator, because that validator applies the union of
+    /// every collection's sortable set - one validator is resolved for the one shared request type, so the
+    /// union is the narrowest bound it can possibly apply.
     /// </remarks>
     [Theory]
     [InlineData("RoleName")]
@@ -433,17 +396,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// Every field this listing's own ordering honours is accepted and reaches the store unchanged, so
-    /// the allowlist is neither narrower nor wider than the ordering behind it.
+    /// Every field this listing's own ordering honours is accepted and reaches the store unchanged, so the
+    /// allowlist is neither narrower nor wider than the ordering behind it.
     /// </summary>
     /// <param name="field">A field name declared for the portal listing.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The counterpart of the refusal above, and it is what makes the pair meaningful: a check that only
-    /// refused would be satisfied by refusing everything. Each name here corresponds to exactly one arm
-    /// of the repository's ordering expression - four explicit arms plus the portal name, which is that
-    /// expression's default - so an entry added to the allowlist without an arm to honour it fails one
-    /// of these two tests.
+    /// refused would be satisfied by refusing everything.
     /// </remarks>
     [Theory]
     [InlineData("PortalId")]
@@ -467,8 +427,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A field name differing only in case is accepted, because the allowlist and the ordering
-    /// expression both compare names without regard to case.
+    /// A field name differing only in case is accepted, because the allowlist and the ordering expression
+    /// both compare names without regard to case.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -558,9 +518,7 @@ public class PortalServiceTests
         outcome.Value.Items.Should().ContainSingle().Which.Aliases.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// The member and page counts are read per tenant rather than derived from the row.
-    /// </summary>
+    /// <summary>The member and page counts are read per tenant rather than derived from the row.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListPortals_CountsMembersAndPagesPerTenant()
@@ -579,8 +537,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// I-01: the tallies cost two reads for the whole page rather than two reads per row, and the
-    /// batched reads are asked about exactly the identifiers on the page.
+    /// I-01: the tallies cost two reads for the whole page rather than two reads per row, and the batched
+    /// reads are asked about exactly the identifiers on the page.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -595,8 +553,8 @@ public class PortalServiceTests
             CancellationToken.None);
 
         // The per-portal members must not be reached at all from the listing path: reaching them is
-        // precisely the per-row round trip this finding was about, and a test that only counted the
-        // batched calls would pass while both patterns ran side by side.
+        // precisely the per-row round trip this finding was about, and a test that only counted the batched
+        // calls would pass while both patterns ran side by side.
         harness.Portals.Verify(
             p => p.CountUsersAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
             Times.Never());
@@ -618,9 +576,7 @@ public class PortalServiceTests
             Times.Once());
     }
 
-    /// <summary>
-    /// A tenant the batched tally omits is published with a zero rather than failing the listing.
-    /// </summary>
+    /// <summary>A tenant the batched tally omits is published with a zero rather than failing the listing.</summary>
     /// <remarks>
     /// The repository contract promises a total map, but a sparse one must not break the projection: a
     /// tenant with no members and no pages is a legitimate state, and zero is the figure the legacy grid
@@ -702,9 +658,7 @@ public class PortalServiceTests
         harness.CacheExpiration.Should().Be(TimeSpan.FromMinutes(60));
     }
 
-    /// <summary>
-    /// A multiplier of nothing disables caching and reads straight through.
-    /// </summary>
+    /// <summary>A multiplier of nothing disables caching and reads straight through.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetPortal_BypassesTheCacheWhenCachingIsDisabled()
@@ -720,9 +674,7 @@ public class PortalServiceTests
         harness.CacheKey.Should().BeNull();
     }
 
-    /// <summary>
-    /// A tenant that does not exist is reported as absent rather than as a failure.
-    /// </summary>
+    /// <summary>A tenant that does not exist is reported as absent rather than as a failure.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetPortal_ReportsAbsenceForAnUnknownTenant()
@@ -738,8 +690,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The detail names the two wiring roles from the tenant's own role names, and leaves a name absent when
-    /// the identifier points at nothing.
+    /// The detail names the two wiring roles from the tenant's own role names, and leaves a name absent
+    /// when the identifier points at nothing.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -758,7 +710,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A wiring identifier the tenant's role names do not cover leaves the name absent rather than guessing.
+    /// A wiring identifier the tenant's role names do not cover leaves the name absent rather than
+    /// guessing.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -793,9 +746,7 @@ public class PortalServiceTests
             Times.Once);
     }
 
-    /// <summary>
-    /// A tenant with no administrator on record reads no account and reports no address.
-    /// </summary>
+    /// <summary>A tenant with no administrator on record reads no account and reports no address.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetPortal_ReadsNoAccountWhenNoAdministratorIsOnRecord()
@@ -829,9 +780,7 @@ public class PortalServiceTests
         outcome.Value!.AdminTabId.Should().Be(90);
     }
 
-    /// <summary>
-    /// The detail carries the tenant's host names, ordered without regard to case.
-    /// </summary>
+    /// <summary>The detail carries the tenant's host names, ordered without regard to case.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetPortal_CarriesTheHostNamesInOrder()
@@ -848,9 +797,7 @@ public class PortalServiceTests
             .Should().Equal(new[] { "alpha.example", "Zebra.example" });
     }
 
-    /// <summary>
-    /// Creating a tenant requires a request.
-    /// </summary>
+    /// <summary>Creating a tenant requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_RequiresARequest()
@@ -921,8 +868,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// An administrator account name already in use anywhere in the installation is refused, because sign-in
-    /// names are installation-wide.
+    /// An administrator account name already in use anywhere in the installation is refused, because
+    /// sign-in names are installation-wide.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -973,22 +920,9 @@ public class PortalServiceTests
     /// <param name="expectedMessage">The explanation the caller must receive.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-F6. Provisioning performs THREE commits, and the two checks above cannot close the
-    /// window in front of any of them: two requests submitting the same host name, or the same administrator
-    /// name, both read "not taken" before either inserts, and the loser is refused by the unique index. Left
-    /// untranslated that refusal reached the transport - which references neither the mapper nor the database
-    /// client by design - and was answered 500, telling the caller the server had failed for a store that had
-    /// correctly kept exactly one row.
-    /// </para>
-    /// <para>
-    /// The code is chosen from the CONSTRAINT the store named rather than from which commit was in flight,
-    /// because a single commit stages several tables and the failing one is not knowable from position. Both
-    /// names are asserted, so a mapping that answered one for both would fail here; and the fallback is
-    /// asserted too, because a constraint this mapping does not recognise must still be a conflict rather
-    /// than reverting to a 500. The three answers all carry a <c>duplicate</c> or <c>conflict</c> token, which
-    /// is what the transport's status vocabulary turns into 409 with no mapping-table change.
-    /// </para>
+    /// Provisioning performs THREE commits, and the two checks above cannot close the window in front of
+    /// any of them: two requests submitting the same host name, or the same administrator name, both read
+    /// "not taken" before either inserts, and the loser is refused by the unique index.
     /// </remarks>
     [Theory]
     [InlineData(
@@ -1091,8 +1025,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A setting that cannot be read as a number is treated as absent rather than as zero-by-accident, and a
-    /// currency of only white space falls back.
+    /// A setting that cannot be read as a number is treated as absent rather than as zero-by-accident, and
+    /// a currency of only white space falls back.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1115,13 +1049,6 @@ public class PortalServiceTests
     /// A negative configured charge or quota is stored exactly as configured, because the legacy creation
     /// path compared none of the four to anything.
     /// </summary>
-    /// <remarks>
-    /// <c>PortalController.vb:L326-L375</c> reads each of these from an installation-wide host setting and
-    /// hands the parsed value to the insert at L369 untouched. The floor an earlier revision applied
-    /// borrowed the ROLE-fee guards at <c>PortalController.vb:L395,L398</c>, which clamp a
-    /// <c>RoleInfo</c> while a portal template creates its roles, so applying it to a portal column
-    /// changed which values an installation could store.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_StoresNegativeConfiguredTermsVerbatim()
@@ -1146,12 +1073,7 @@ public class PortalServiceTests
     /// anybody has configured it, and it leaves its handle to the store.
     /// </summary>
     /// <remarks>
-    /// The handle is deliberately left at its type default here. The <c>GUID</c> column carries
-    /// <c>DF_Portals_GUID DEFAULT (newid())</c> (<c>01.00.05:L1404</c>, re-asserted at
-    /// <c>03.01.01:L1133</c>) and the entity configuration mirrors that default, so the value is issued
-    /// during the insert rather than by the mapper - which is what keeps the mapper a pure function of its
-    /// arguments. A fake store issues nothing, so the assertion here is the type default rather than a
-    /// generated handle.
+    /// The handle is deliberately left at its type default here.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1171,8 +1093,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The host name is bound through the tenant's navigation rather than through an identifier the store has
-    /// not issued yet, which is what lets both rows commit together.
+    /// The host name is bound through the tenant's navigation rather than through an identifier the store
+    /// has not issued yet, which is what lets both rows commit together.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1329,11 +1251,10 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The isolation is asserted rather than left unexamined. The two collision checks are guarded by unique
-    /// indexes on the alias and account-name columns, so the store refuses a concurrent duplicate whatever
-    /// this level is, and a stricter level would widen the lock footprint of the installation's busiest write
-    /// for nothing. Serialisable is the right level for the DELETE path, where the check is over a COUNT that
-    /// no index can guard, and the two paths are deliberately different.
+    /// The isolation is asserted rather than left unexamined. The two collision checks are guarded by
+    /// unique indexes on the alias and account-name columns, so the store refuses a concurrent duplicate
+    /// whatever this level is, and a stricter level would widen the lock footprint of the installation's
+    /// busiest write for nothing.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_CommitsOneTransactionAtDefaultIsolation()
@@ -1358,12 +1279,10 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// THIS IS THE ASSERTION THAT CHANGED, and the change is the fix. The earlier contract committed the
-    /// tenant graph durably and then called a compensating routine to delete it row by row - a routine that
-    /// could not run if the process was terminated mid-way, leaving a portal reachable at its alias whose
-    /// administrator held no credential. The transaction subsumes it: nothing was ever made durable, so there
-    /// is nothing to undo, and the assertions below therefore demand that NO compensating write was issued.
-    /// A test that still expected the deletions would be pinning the defect in place.
+    /// THE TRANSACTION IS ABANDONED RATHER THAN COMPENSATED. Committing the tenant graph durably and then
+    /// calling a compensating routine to delete it row by row leaves that routine unable to run when the
+    /// process is terminated mid-way, and a portal reachable at its alias whose administrator holds no
+    /// credential.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_AbandonsTheTransactionWhenTheCredentialIsRefused()
@@ -1394,9 +1313,7 @@ public class PortalServiceTests
         harness.DeletedCredentialUserIds.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A refused credential emits no audit record, because nothing was installed.
-    /// </summary>
+    /// <summary>A refused credential emits no audit record, because nothing was installed.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_RecordsNoAuditEventWhenNothingWasInstalled()
@@ -1410,16 +1327,15 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The enrolments the tenant graph staged are reversed by the transaction rather than withdrawn one at a
-    /// time, so no assignment or membership can outlive the tenant it belonged to.
+    /// The enrolments the tenant graph staged are reversed by the transaction rather than withdrawn one at
+    /// a time, so no assignment or membership can outlive the tenant it belonged to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The doubles are told that the store DOES hold an assignment and a membership, which is the state the
     /// old compensating routine read in order to decide what to withdraw. Under the transaction the service
     /// never asks: the reversal covers rows it did not have to enumerate, including any it could not have
-    /// known about. That is strictly stronger than the routine it replaces, which withdrew only the three
-    /// enrolments it happened to remember creating.
+    /// known about.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_ReversesEnrolmentsWithoutEnumeratingThem()
@@ -1465,18 +1381,13 @@ public class PortalServiceTests
         harness.AuditRecords.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// A cancellation abandons the transaction exactly as any other failure does.
-    /// </summary>
+    /// <summary>A cancellation abandons the transaction exactly as any other failure does.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// THIS ASSERTION IS INVERTED FROM THE CONTRACT IT REPLACES, deliberately. The compensating routine was
-    /// guarded by "when the exception is not a cancellation", so a caller who withdrew mid-provisioning left
-    /// a durably committed half-built tenant that nothing would ever clean up - the single worst case the
-    /// compensation existed to prevent, excluded from it by construction. Because the transaction is
-    /// abandoned by disposal rather than by a handler that has to decide whether to run, a cancellation is
-    /// reversed like everything else and no exclusion can be written. The absence of compensating deletes
-    /// below is therefore success, not the old "nothing was cleaned up" outcome that looked identical.
+    /// guarded by "when the exception is not a cancellation", so a caller who withdrew mid-provisioning
+    /// left a durably committed half-built tenant that nothing would ever clean up - the single worst case
+    /// the compensation existed to prevent, excluded from it by construction.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_AbandonsTheTransactionOnCancellation()
@@ -1497,8 +1408,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A successful provisioning discards both the installation-wide cache and the new tenant's own, because
-    /// a newly bound host name changes which tenant a request resolves to.
+    /// A successful provisioning discards both the installation-wide cache and the new tenant's own,
+    /// because a newly bound host name changes which tenant a request resolves to.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1518,11 +1429,6 @@ public class PortalServiceTests
     /// C-02: the new tenant receives the nineteen default profile property definitions, under the four
     /// legacy categories and in the legacy order.
     /// </summary>
-    /// <remarks>
-    /// The names and the category boundaries are transcribed from
-    /// <c>ProfileController.AddDefaultDefinitions</c> (L334-L361). Asserting the whole sequence rather than
-    /// a count is deliberate: a count passes identically for a correct set and for nineteen wrong names.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_InstallsTheNineteenDefaultProfileDefinitions()
@@ -1560,7 +1466,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// C-02: the default definitions carry the legacy view ordering, which starts at three and steps by two.
+    /// C-02: the default definitions carry the legacy view ordering, which starts at three and steps by
+    /// two.
     /// </summary>
     /// <remarks>
     /// The legacy helper incremented its counter BEFORE assigning it, so the first order is 3 and the
@@ -1609,9 +1516,7 @@ public class PortalServiceTests
             .Should().HaveCount(14).And.OnlyContain(d => d.Length == 50);
     }
 
-    /// <summary>
-    /// C-02: the new tenant receives a home page, and the portal points at it.
-    /// </summary>
+    /// <summary>C-02: the new tenant receives a home page, and the portal points at it.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_CreatesTheHomePageAndPointsTheTenantAtIt()
@@ -1630,14 +1535,7 @@ public class PortalServiceTests
         harness.AddedPortals.Single().HomeTabId.Should().Be(homePage.TabId);
     }
 
-    /// <summary>
-    /// C-02: the home page receives the three grants the legacy portal template declared for it.
-    /// </summary>
-    /// <remarks>
-    /// View for all users, view for administrators and edit for administrators. Each grant is bound to the
-    /// page by NAVIGATION rather than by identifier, because the page has no identifier until the commit
-    /// that follows, so the navigation is asserted too.
-    /// </remarks>
+    /// <summary>C-02: the home page receives the three grants the legacy portal template declared for it.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_GrantsTheHomePageTheTemplatePermissions()
@@ -1665,60 +1563,15 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// SEC-F1: a page permission key the catalogue does not define is granted to nobody and RECORDED, while
-    /// the tenant is still created - so an installation whose reference data is incomplete can still be
+    /// a page permission key the catalogue does not define is granted to nobody and RECORDED, while the
+    /// tenant is still created - so an installation whose reference data is incomplete can still be
     /// administered, and the gap is discoverable.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: THIS FACT HAS NOW BEEN STATED THREE WAYS, so the reasoning is set out in full to stop it
-    /// oscillating. It began as "the missing key is skipped and the tenant is created", was replaced by "the
-    /// creation is refused", and is now the first again - but for reasons the middle position did not weigh,
-    /// two of which are measurements rather than judgements.
-    /// </para>
-    /// <para>
-    /// FIRST, legacy parity. The legacy template parser resolved each key through
-    /// <c>PermissionController.GetPermissionByCodeAndKey</c> and iterated the answer; an empty answer produced
-    /// an empty loop, so the page was created with no grant and the portal came into being regardless
-    /// (<c>ParseTabPermissions</c>, reached from <c>PortalController.CreatePortal</c> at
-    /// <c>Library/Components/Portal/PortalController.vb:L980</c>). Refusing is therefore a behavioural
-    /// regression against the system being migrated, which Minimal Change Clause item 3 forbids without
-    /// documenting - and the AAP's own instruction for a discovered legacy defect (§0.9.1) is to annotate it
-    /// in place rather than to fix it.
-    /// </para>
-    /// <para>
-    /// SECOND, the middle position's premise was FALSE. It reasoned that such a tenant is "administrable by
-    /// nobody, including its own administrator and the host". It is not: the permission service short-circuits
-    /// a super user to granted before consulting any grant, and portal administration is decided from the
-    /// tenant's own <c>AdministratorRoleId</c> rather than from page grants, so both the host and the
-    /// tenant's administrator retain full access to a page carrying no <c>TabPermission</c> row at all. What a
-    /// missing grant costs is the ANONYMOUS view grant, which is a visibility defect an operator can repair,
-    /// not an administrative lock-out.
-    /// </para>
-    /// <para>
-    /// THIRD, the measured cost of refusing. Runtime testing of the migrated console found
-    /// <c>POST /api/v1/portals</c> answering <c>500</c> on every attempt - the only 5xx in the whole
-    /// engagement - because a database provisioned from the migration's own schema scripts carries no
-    /// <c>Permission</c> rows: those rows belong to the legacy upgrade chain, and Rule T4 forbids this work
-    /// from creating them. Tenant provisioning was therefore impossible, and a foreseeable, diagnosable
-    /// reference-data condition was being reported as a server fault naming no field.
-    /// </para>
-    /// <para>
-    /// What remains from the middle position is the part that was right: the condition must not be silent. The
-    /// audit record is kept, with the same three diagnostic properties, so the gap is searchable and the
-    /// operator can repair the catalogue.
-    /// </para>
-    /// <para>
-    /// THE RECORD'S EVENT NAME AND ITS TIMING BOTH CHANGED, AND THIS TEST NOW PINS BOTH. It used to be raised
-    /// as PORTAL_CREATED with a Failed outcome, FROM INSIDE THE OPEN TRANSACTION. Two things were wrong with
-    /// that. The name read as "creating the portal failed", which is the opposite of what happens here - the
-    /// portal IS created and only a grant is missing - so a search for failed provisionings returned a
-    /// successful one and a count of successful ones missed it. And a record written before the commit
-    /// described work that a later stage could still abandon, leaving an entry naming a tenant that does not
-    /// exist. It is now HOST_ALERT, which is the legacy type for an installation condition the host operator
-    /// must repair (EventLogController.vb), raised after the commit from a condition the page stage returns as
-    /// data. The failure code and the three properties are unchanged, so nothing an operator needs was lost.
-    /// </para>
+    /// THIS FACT HAS NOW BEEN STATED THREE WAYS, so the reasoning is set out in full to stop it
+    /// oscillating. It began as "the missing key is skipped and the tenant is created", was replaced by
+    /// "the creation is refused", and is now the first again - but for reasons the middle position did not
+    /// weigh, two of which are measurements rather than judgements.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1777,14 +1630,6 @@ public class PortalServiceTests
     /// can name a tenant that does not exist.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// THIS IS THE REGRESSION PIN FOR THE PRE-COMMIT WRITE. The catalogue gap is discovered part-way through
-    /// the sequence, several staged writes before the commit, and the record used to be emitted at the moment
-    /// of discovery. Here the credential stage refuses AFTER that discovery, which disposes the transaction
-    /// scope without committing and makes the portal, its alias, its roles, its administrator and its page all
-    /// disappear - and the trail must be empty, because nothing happened. Before the fix this left behind an
-    /// entry asserting that the permission catalogue was incomplete for a tenant identifier that no row bears.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_RecordsNoCatalogueAlertWhenTheProvisioningIsRolledBack()
     {
@@ -1816,14 +1661,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// SEC-F1: the home page's grants are resolved without consulting any page row, so a database that holds
-    /// no page at the zero identity seed still receives all three of them.
+    /// the home page's grants are resolved without consulting any page row, so a database that holds no
+    /// page at the zero identity seed still receives all three of them.
     /// </summary>
     /// <remarks>
-    /// This is the regression pin for the defect itself. The harness answers the page-scoped-by-TAB read with
-    /// nothing - which is what production answers for a page that does not exist yet, since the home page has
-    /// no identifier until the creation commits and <c>dbo.Tabs</c> is <c>IDENTITY (0, 1)</c> - and the three
-    /// grants must still be staged. Before the fix this produced zero grants and a <c>201 Created</c>.
+    /// This is the regression pin for the defect itself. The harness answers the page-scoped-by-TAB read
+    /// with nothing - which is what production answers for a page that does not exist yet, since the home
+    /// page has no identifier until the creation commits and <c>dbo.Tabs</c> is <c>IDENTITY (0, 1)</c> -
+    /// and the three grants must still be staged.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1850,11 +1695,12 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// C-02: every stage of the sequence is staged inside the one transactional scope, so nothing is written
-    /// outside it.
+    /// C-02: every stage of the sequence is staged inside the one transactional scope, so nothing is
+    /// written outside it.
     /// </summary>
     /// <remarks>
-    /// The transactional wrapper is asserted to run exactly once, and the two stages the review found missing
+    /// The transactional wrapper is asserted to run exactly once, and the two stages that follow the
+    /// administrator credential - the profile-property definitions, and the home page with its permissions -
     /// are asserted to have produced their rows, which together pin the property that a tenant is published
     /// whole or not at all.
     /// </remarks>
@@ -1911,12 +1757,6 @@ public class PortalServiceTests
     /// <summary>
     /// M-07: a successful provisioning records the tenant-installed fact under the legacy event name.
     /// </summary>
-    /// <remarks>
-    /// The name is the one <c>Signup.ascx.vb:L312</c> emitted, so an operator's existing queries keep
-    /// matching. The administrator's password is asserted ABSENT: the legacy entry attached fourteen
-    /// properties and the credential was not among them, and that decision is preserved rather than
-    /// reversed.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task CreatePortal_RecordsTheTenantInstalledAudit()
@@ -1925,8 +1765,6 @@ public class PortalServiceTests
 
         await harness.Service.CreatePortalAsync(ValidCreateRequest(), CancellationToken.None);
 
-        // Both legacy intents of an installation are recorded: PORTAL_CREATED, the enumeration's accurate
-        // member, and HOST_ALERT, the type PortalController.vb:L1140-L1141 actually raised.
         harness.AuditEvents.Select(candidate => candidate.EventName)
             .Should()
             .BeEquivalentTo(["PORTAL_CREATED", "HOST_ALERT"]);
@@ -1940,9 +1778,6 @@ public class PortalServiceTests
         recorded.Properties.Should().ContainKey("KeywordsSupplied");
 
         // MIGRATION: the tenant NAME and ALIAS were recorded by one revision and are deliberately absent.
-        // Both are caller-supplied text bounded in length and not in content, and the record's envelope
-        // already carries the tenant key - so they add no identifying power to a log whose sink admits only
-        // identifiers, closed vocabularies and booleans.
         recorded.Properties.Should().NotContainKeys("PortalName", "PortalAlias");
         recorded.Properties.Values.Should().NotContain(PortalName);
         recorded.Properties.Values.Should().NotContain(HostAlias);
@@ -1957,8 +1792,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// M-07: a removal records the tenant-removed fact under the legacy event name, carrying the property the
-    /// legacy screens carried.
+    /// M-07: a removal records the tenant-removed fact under the legacy event name, carrying the property
+    /// the legacy screens carried.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -1978,9 +1813,7 @@ public class PortalServiceTests
         recorded.Properties.Should().ContainKey("PortalId");
     }
 
-    /// <summary>
-    /// M-07: a refused removal records nothing, because no tenant was removed.
-    /// </summary>
+    /// <summary>M-07: a refused removal records nothing, because no tenant was removed.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeletePortal_RecordsNoAuditWhenTheRemovalIsRefused()
@@ -2020,20 +1853,9 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FAILURE THIS PINS IS AN ABSENCE, WHICH IS WHY IT NEEDED ITS OWN TEST. The two records used to be
-    /// the LAST thing in the member, behind the read-back that the sibling assertion above exercises - and
-    /// that read-back returns early. So a portal that had been committed, was reachable through its alias, and
-    /// whose administrator could sign in, produced NO audit record of any kind whenever the read-back came back
-    /// empty. Nothing failed loudly; the trail simply had a gap that is indistinguishable from the tenant never
-    /// having been provisioned, which is the reading an investigation would take.
-    /// </para>
-    /// <para>
-    /// The response is still a failure, and deliberately so: the caller asked for the tenant's representation
-    /// and did not get one. What changed is that the failure is now about the RESPONSE alone. Both facts the
-    /// records need - the tenant's key and the administrator's key - are in memory before the read-back is
-    /// attempted, so waiting for it bought nothing.
-    /// </para>
+    /// The response is still a failure, and deliberately so: the caller asked for the tenant's
+    /// representation and did not get one. What changed is that the failure is now about the RESPONSE
+    /// alone.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_RecordsTheCreationEvenWhenTheTenantCannotBeReadBack()
@@ -2056,9 +1878,7 @@ public class PortalServiceTests
         harness.AuditRecords.Should().OnlyContain(record => record.Outcome == AuditOutcome.Succeeded);
     }
 
-    /// <summary>
-    /// Updating a tenant requires a request.
-    /// </summary>
+    /// <summary>Updating a tenant requires a request.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdatePortal_RequiresARequest()
@@ -2069,9 +1889,7 @@ public class PortalServiceTests
             () => harness.Service.UpdatePortalAsync(PortalId, null!, CancellationToken.None));
     }
 
-    /// <summary>
-    /// An unknown tenant is reported as absent rather than as a failure, and nothing is written.
-    /// </summary>
+    /// <summary>An unknown tenant is reported as absent rather than as a failure, and nothing is written.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdatePortal_ReportsAbsenceForAnUnknownTenant()
@@ -2105,9 +1923,7 @@ public class PortalServiceTests
         harness.PortalRow!.PortalName.Should().Be("Renamed");
     }
 
-    /// <summary>
-    /// A tenant administrator that changes any host-only term is refused, one term at a time.
-    /// </summary>
+    /// <summary>A tenant administrator that changes any host-only term is refused, one term at a time.</summary>
     /// <param name="term">The single host-only term to alter.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
@@ -2231,9 +2047,7 @@ public class PortalServiceTests
         harness.PortalRow!.UserQuota.Should().Be(500);
     }
 
-    /// <summary>
-    /// A host account may change every host-only term, which is the other half of the same rule.
-    /// </summary>
+    /// <summary>A host account may change every host-only term, which is the other half of the same rule.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdatePortal_PermitsAHostAccountToChangeEveryHostOnlyTerm()
@@ -2261,24 +2075,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// SEC-011 REGRESSION. A caller whose TOKEN still claims host status but whose STORED account no longer has
-    /// it is refused the host-only exemption.
+    /// REGRESSION. A caller whose TOKEN still claims host status but whose STORED account no longer has it
+    /// is refused the host-only exemption.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the shape the finding described. Access tokens are bearer credentials with a lifetime of their
-    /// own, so every claim inside one is a statement about the past: an account removed from the host role
-    /// keeps a syntactically valid token asserting the old status until it expires. Reading the exemption from
-    /// that claim meant a demoted account could still waive a portal's hosting charge and lift all three
-    /// quotas, on any portal it could otherwise administer, for the remainder of the token's life - and the
-    /// only way to stop it would have been to shorten every token's lifetime, which is a different trade.
-    /// </para>
-    /// <para>
-    /// The claim is deliberately left ASSERTING host status here rather than being cleared. A fact that cleared
-    /// it would pass whether or not the implementation consults the store, because both sources would then
-    /// agree; making them disagree is what pins which one is read.
-    /// </para>
+    /// The claim is deliberately left ASSERTING host status here rather than being cleared. A fact that
+    /// cleared it would pass whether or not the implementation consults the store, because both sources
+    /// would then agree; making them disagree is what pins which one is read.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_RefusesAHostOnlyChangeWhenOnlyTheTokenStillClaimsHostStatus()
@@ -2299,15 +2103,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// THE CONVERSE, WHICH IS WHAT PROVES THE CLAIM IS NOT CONSULTED AT ALL. A caller whose stored account IS a
-    /// host account is granted the exemption even though its token claims otherwise.
+    /// THE CONVERSE, WHICH IS WHAT PROVES THE CLAIM IS NOT CONSULTED AT ALL. A caller whose stored account
+    /// IS a host account is granted the exemption even though its token claims otherwise.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// Asserted in both directions on purpose. The refusal above is satisfied by an implementation that
-    /// requires the claim AND the store to agree, which would still be reading the claim; only a fact in which
-    /// the store alone admits the change can distinguish that from reading the store alone. It also states the
-    /// operational half: a promotion takes effect on the next request rather than on the next sign-in.
+    /// requires the claim AND the store to agree, which would still be reading the claim; only a fact in
+    /// which the store alone admits the change can distinguish that from reading the store alone.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_PermitsAHostOnlyChangeWhenOnlyTheStoreSaysHostAccount()
@@ -2327,14 +2130,12 @@ public class PortalServiceTests
             "the stored account is the authority, so a stale claim neither grants nor withholds the exemption");
     }
 
-    /// <summary>
-    /// An UNAUTHENTICATED caller never receives the exemption, and no store read can give it one.
-    /// </summary>
+    /// <summary>An UNAUTHENTICATED caller never receives the exemption, and no store read can give it one.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// The fail-closed arm. With no account key there is nothing to look up, so the guard must refuse rather
-    /// than fall through - a lookup of "no user" must not be mistaken for a lookup that found a host account,
-    /// and an absent account must not be mistaken for an unrestricted one.
+    /// The fail-closed arm. With no account key there is nothing to look up, so the guard must refuse
+    /// rather than fall through - a lookup of "no user" must not be mistaken for a lookup that found a host
+    /// account, and an absent account must not be mistaken for an unrestricted one.
     /// </remarks>
     [Fact]
     public async Task UpdatePortal_RefusesAHostOnlyChangeFromAnUnauthenticatedCaller()
@@ -2352,7 +2153,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The guard is applied before anything is written, so a refused update leaves the stored row untouched.
+    /// The guard is applied before anything is written, so a refused update leaves the stored row
+    /// untouched.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2389,7 +2191,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// The re-read after an update bypasses the cache, so a caller never sees the value the update replaced.
+    /// The re-read after an update bypasses the cache, so a caller never sees the value the update
+    /// replaced.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2456,11 +2259,6 @@ public class PortalServiceTests
     /// conflict a stale concurrency token reports.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Asserted on both write paths rather than only one, because the whole point of sharing
-    /// <c>DescribeConcurrencyConflict</c> is that an operator meets the same sentence on whichever screen
-    /// they were using.
-    /// </remarks>
     [Fact]
     public async Task UpdatePortal_ReportsAStoreRefusedLostUpdateAsAConcurrencyConflict()
     {
@@ -2480,9 +2278,7 @@ public class PortalServiceTests
         harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// Deleting a tenant that does not exist is refused.
-    /// </summary>
+    /// <summary>Deleting a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeletePortal_RefusesAnUnknownTenant()
@@ -2516,13 +2312,6 @@ public class PortalServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(LastRemainingCode);
 
-        // The message leads with the legacy wording verbatim. IPortalService documents this rule as
-        // yielding "the shared message keyed LastPortal, whose wording is 'You Can Not Delete The Last
-        // Portal In Your Database'", sourced from Website/App_GlobalResources/SharedResources.resx:942,
-        // and the migration discipline requires error messages to stay equivalent to the ones existing
-        // operators already recognise. Asserting the legacy sentence is therefore asserting the parity
-        // requirement itself, not merely the current phrasing; the trailing sentence explains the rule to
-        // a caller that has never seen the legacy screen.
         outcome.Reason!.Message.Should().Be(
             "You Can Not Delete The Last Portal In Your Database. The installation must retain at least one portal.");
         harness.RemovedPortals.Should().BeEmpty();
@@ -2731,7 +2520,8 @@ public class PortalServiceTests
     /// <summary>
     /// PRIV-02, and the case that makes ONE TENANT-SCOPED erasure necessary rather than merely tidier: a
     /// member retained because it belongs to another tenant is never in the revocation loop, so its records
-    /// naming the removed tenant survive that loop entirely. The tenant-scoped erasure is what reaches them.
+    /// naming the removed tenant survive that loop entirely. The tenant-scoped erasure is what reaches
+    /// them.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -2818,7 +2608,6 @@ public class PortalServiceTests
         harness.PurgedSessionPortalIds.Should().BeEmpty();
     }
 
-
     /// <summary>
     /// Removing a tenant discards its pages, its own cache and the installation-wide cache, because a
     /// released host name must stop resolving.
@@ -2845,11 +2634,9 @@ public class PortalServiceTests
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The isolation matters here in a way it does not on the create path, and that asymmetry is the point.
-    /// The guard is over a COUNT of the remaining tenants, and no index can make a count-then-delete atomic:
-    /// two concurrent removals could each count two, each conclude one would remain, and between them empty
-    /// the installation - the precise condition the guard exists to prevent. Serialisable is what makes the
-    /// count a decision the second transaction cannot invalidate. The scope is opened before the READ as well
-    /// as before the write, so a tenant another caller has already removed cannot be removed a second time.
+    /// The guard is over a COUNT of the remaining tenants, and no index can make a count-then-delete
+    /// atomic: two concurrent removals could each count two, each conclude one would remain, and between
+    /// them empty the installation - the precise condition the guard exists to prevent.
     /// </remarks>
     [Fact]
     public async Task DeletePortal_CommitsOneSerialisableTransaction()
@@ -2895,7 +2682,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A committed removal records the legacy PORTAL_DELETED event, carrying the name the row no longer holds.
+    /// A committed removal records the legacy PORTAL_DELETED event, carrying the name the row no longer
+    /// holds.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
@@ -2932,13 +2720,6 @@ public class PortalServiceTests
     /// the migration, and without the credential.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The legacy entry attached fourteen properties (<c>PortalController.vb:L1142-L1155</c>) and the password
-    /// was NOT among them, so the legacy code already declined to record the credential. The assertion below
-    /// pins that: the submitted password must appear nowhere in the record, in any property, under any name.
-    /// The four file-system properties - template path, template file, server path and child path - are absent
-    /// because this migration performs no file-system work and recording them would assert something untrue.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_RecordsTheLegacyPortalCreatedEventWithoutTheCredential()
     {
@@ -2974,16 +2755,13 @@ public class PortalServiceTests
         record.Properties["AdministratorId"].Should().Be(
             harness.AddedUsers.Single().UserId.ToString(CultureInfo.InvariantCulture));
 
-        // The two free-text members are recorded as PRESENT rather than quoted, which is the whole of the
-        // narrowing: an auditor can still tell that an installation was asked for a description, and the
-        // caller-shaped text itself never reaches the general log.
         record.Properties["DescriptionSupplied"].Should().Be("True");
         record.Properties["KeywordsSupplied"].Should().Be("True");
 
-        // MIGRATION: THE TENANT NAME AND ALIAS ARE ABSENT TOO, WHICH IS WHERE TWO REVISIONS DISAGREED. One
-        // recorded both for readability; the record's envelope already carries the tenant key, so neither
-        // adds identifying power, and both are caller-supplied text that the sink's allowlist would withhold
-        // anyway. Asserting their absence here is what keeps this layer and the sink from disagreeing.
+        // THE TENANT NAME AND ALIAS ARE ABSENT TOO, WHICH IS WHERE TWO REVISIONS DISAGREED. One recorded
+        // both for readability; the record's envelope already carries the tenant key, so neither adds
+        // identifying power, and both are caller-supplied text that the sink's allowlist would withhold
+        // anyway.
         record.Properties.Should().NotContainKeys("PortalName", "PortalAlias");
         record.Properties.Values.Should().NotContain(PortalName);
         record.Properties.Values.Should().NotContain(HostAlias);
@@ -2997,10 +2775,7 @@ public class PortalServiceTests
         // SEC: THE PERSONAL DATA AND THE CALLER'S FREE TEXT MUST NOT BE HERE, AND THIS IS THE ASSERTION
         // THAT KEEPS THEM OUT. The general application log is not a records-management store: it is the
         // highest-volume and longest-retained log the application writes, its retention is not controlled
-        // from this codebase, and a subject-access or erasure request cannot reach it. The administrator's
-        // identifier is carried instead, and it resolves to the name and address in the store whenever an
-        // operator legitimately needs them. The two free-text members were additionally attacker-shaped:
-        // bounded in length by the validators but not in content.
+        // from this codebase, and a subject-access or erasure request cannot reach it.
         record.Properties.Should().NotContainKey("AdministratorUsername");
         record.Properties.Should().NotContainKey("AdministratorFirstName");
         record.Properties.Should().NotContainKey("AdministratorLastName");
@@ -3013,15 +2788,8 @@ public class PortalServiceTests
         record.Properties.Values.Should().NotContain("measured, tenant");
     }
 
-    /// <summary>
-    /// A parent portal's host name is stored exactly as submitted.
-    /// </summary>
+    /// <summary>A parent portal's host name is stored exactly as submitted.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy screen stored a non-child alias verbatim, and the parent character set admits
-    /// the dot, the colon and the separator (<c>Signup.ascx.vb:L203-L214</c>), so a value carrying a port or a
-    /// path is a legitimate parent address and must not be re-composed.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_StoresAParentHostNameVerbatim()
     {
@@ -3038,28 +2806,11 @@ public class PortalServiceTests
             .Which.HttpAlias.Should().Be("parent.example:8080");
     }
 
-    /// <summary>
-    /// A child portal's bare segment is composed beneath the authority the request resolved to.
-    /// </summary>
+    /// <summary>A child portal's bare segment is composed beneath the authority the request resolved to.</summary>
     /// <param name="parentAlias">The host name the request resolved to.</param>
     /// <param name="segment">The bare segment the operator submitted.</param>
     /// <param name="expected">The address that must be stored.</param>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: this is <c>Signup.ascx.vb:L232-L233</c> - <c>GetDomainName(Request) &amp; "/" &amp;
-    /// ChildPath</c>. Until this fix the flag was accepted and never read, so a caller could ask for a child
-    /// portal, be told it had one, and find it unreachable: the bare segment was stored as if it were a host
-    /// name and no request could ever match it.
-    /// </remarks>
-    /// <remarks>
-    /// ⚠ THE NESTING CASE THAT USED TO LIVE HERE HAS MOVED, AND IT NOW ASSERTS A REFUSAL. This theory
-    /// previously carried <c>("parent.example/first", "second", "parent.example/first/second")</c>, pinning
-    /// the legacy member's behaviour of returning <c>www.domain.com/directory</c> and composing beneath it.
-    /// That address is one nothing in this deployment can route to -
-    /// <c>PortalAliasTopology.MaximumPathSegments</c> is one, the reverse proxy matches one optional segment
-    /// and the browser honours one - so composing it created a tenant that could never be reached. The case
-    /// is now <see cref="CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested"/>.
-    /// </remarks>
     [Theory]
     [InlineData("parent.example", "child", "parent.example/child")]
     [InlineData("parent.example:8080", "child", "parent.example:8080/child")]
@@ -3088,10 +2839,10 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// Checking the segment would be the same defect wearing a different hat: two different parents may each
-    /// legitimately own a child called "sales", so a check against the bare segment would refuse the second as
-    /// a duplicate, while a check that ran before composition would miss a genuine collision between two
-    /// children of the same parent.
+    /// Checking the segment would be the same defect wearing a different hat: two different parents may
+    /// each legitimately own a child called "sales", so a check against the bare segment would refuse the
+    /// second as a duplicate, while a check that ran before composition would miss a genuine collision
+    /// between two children of the same parent.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_ChecksAndRecordsTheComposedChildAddress()
@@ -3127,12 +2878,6 @@ public class PortalServiceTests
     /// A child address the operator has already qualified is stored verbatim rather than composed twice.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// MIGRATION: the legacy HOST branch (<c>Signup.ascx.vb:L199-L216</c> and L235) permitted the typed value
-    /// to carry path separators of its own and stored it exactly as typed, validating only its final segment.
-    /// Composing beneath the resolved authority as well would produce "parent/other.example/child", an
-    /// address nobody asked for and nothing serves.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_StoresAQualifiedChildAddressVerbatim()
     {
@@ -3150,16 +2895,10 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A child portal asked for from a request that resolved to no tenant is refused, and nothing is written.
+    /// A child portal asked for from a request that resolved to no tenant is refused, and nothing is
+    /// written.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// Refused rather than guessed at. The legacy member could always answer because it read the incoming URL
-    /// directly; here the authority has to be an alias that EXISTS, and inventing one would create a tenant
-    /// reachable at an address the installation does not serve. Reported as a failure code so the API edge
-    /// renders a bad request rather than a server fault, and asserted to leave no transaction open at all,
-    /// because the refusal precedes every write.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_RefusesAChildWhenNoParentAuthorityResolved()
     {
@@ -3181,32 +2920,16 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A child portal asked for beneath a parent that is ITSELF addressed beneath a path segment is refused,
-    /// and nothing is written.
+    /// A child portal asked for beneath a parent that is ITSELF addressed beneath a path segment is
+    /// refused, and nothing is written.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THIS CASE INVERTS A PREVIOUSLY PINNED BEHAVIOUR, and the inversion is the fix. The composition
-    /// theory above used to assert that a parent of <c>parent.example/first</c> plus a segment of
-    /// <c>second</c> stored <c>parent.example/first/second</c>, because that is what the legacy member did:
-    /// <c>Globals.GetDomainName</c> returned <c>www.domain.com/directory</c> when the request had arrived
-    /// beneath a sub-directory, and <c>Signup.ascx.vb:L232-L233</c> composed beneath whatever it returned.
-    /// </para>
-    /// <para>
     /// Nothing in this deployment can deliver a request to a two-segment address.
     /// <c>PortalAliasTopology.MaximumPathSegments</c> is one; the reverse-proxy location in
     /// <c>docker/api-proxy.conf</c> matches one optional segment ahead of <c>/api/</c>; the browser's own
-    /// prefix detection honours one; and the request pipeline now considers one and FAILS CLOSED rather than
-    /// falling back to the bare host. Composing the deeper address would therefore have created a tenant
-    /// that no request could reach and whose administrator had no way to learn why - the worst of the
-    /// available outcomes, and strictly worse than being told at creation time.
-    /// </para>
-    /// <para>
-    /// Asserted to leave no transaction open and no audit record, because the refusal precedes every write,
-    /// and to carry its own reason code so the caller can tell it from an unresolved parent: the remedy
-    /// differs, being to submit the child's full host name instead of a bare segment.
-    /// </para>
+    /// prefix detection honours one; and the request pipeline now considers one and FAILS CLOSED rather
+    /// than falling back to the bare host.
     /// </remarks>
     [Fact]
     public async Task CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested()
@@ -3233,12 +2956,6 @@ public class PortalServiceTests
     /// nested, because no composition takes place.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The complement of <see cref="CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested"/>, and the
-    /// documented remedy for it. The refusal is about COMPOSING a second level, not about the request having
-    /// arrived beneath a path: a caller who supplies a full host name is not asking for composition at all,
-    /// and the value they supplied has already been bounded to one path segment by the create validator.
-    /// </remarks>
     [Fact]
     public async Task CreatePortal_StoresAQualifiedChildEvenWhenTheResolvedParentIsNested()
     {
@@ -3399,16 +3116,8 @@ public class PortalServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// The settings route cannot be used to designate an account that belongs to another tenant.
-    /// </summary>
+    /// <summary>The settings route cannot be used to designate an account that belongs to another tenant.</summary>
     /// <returns>A task representing the assertion.</returns>
-    /// <remarks>
-    /// The general update path has always refused this. This route did not, because the rule was typed on the
-    /// other route's concrete request and could not be called from here - so the same foreign identifier that
-    /// <c>PUT /portals/{id}</c> rejected was stored by <c>PUT /portals/{id}/settings</c>. The two must agree,
-    /// and the failure code must be the same one, or a caller could distinguish the routes by their refusals.
-    /// </remarks>
     [Fact]
     public async Task UpdatePortalSettings_RefusesAnAdministratorFromAnotherTenant()
     {
@@ -3429,9 +3138,7 @@ public class PortalServiceTests
         harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
-    /// <summary>
-    /// The settings route cannot be used to point a tenant's navigation at another tenant's page.
-    /// </summary>
+    /// <summary>The settings route cannot be used to point a tenant's navigation at another tenant's page.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
     /// The page columns carry no foreign key in every supported schema, so nothing downstream would have
@@ -3574,14 +3281,6 @@ public class PortalServiceTests
     /// Every projected alias reports whether it is the one THIS REQUEST resolved the tenant through, so a
     /// screen can withhold the affordance on that row before it is attempted.
     /// </summary>
-    /// <remarks>
-    /// MIGRATION: restores the legacy affordance at <c>Website/admin/Portal/PortalAlias.ascx.vb</c> L51 to
-    /// L60, where <c>IsNotCurrent</c> compared each grid row's key against
-    /// <c>Me.PortalAlias.PortalAliasID()</c> and <c>portalalias.ascx</c> L8 bound the answer to the edit
-    /// hyperlink's <c>Visible</c> property. The comparison is by KEY, never by host name: the legacy write
-    /// path lower-cased on insert and update while its reader did not, so two spellings of one alias are
-    /// both legitimate stored values and a string comparison would need a casing rule of its own.
-    /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task ListPortalAliases_MarksOnlyTheAliasThisRequestResolvedThrough()
@@ -3633,9 +3332,7 @@ public class PortalServiceTests
     /// <remarks>
     /// The consequence is unrecoverable rather than merely unwise: the host name the session is arriving
     /// through would stop resolving to the tenant, for every caller using it, and the screen that would
-    /// undo the change becomes unreachable. The refusal is checked BEFORE the duplicate check because it
-    /// does not depend on the submitted value - a rename to the value the row already holds is still a
-    /// write against the row resolution is using.
+    /// undo the change becomes unreachable.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3699,9 +3396,7 @@ public class PortalServiceTests
         harness.UpdatedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be("renamed.example");
     }
 
-    /// <summary>
-    /// A request that resolved no tenant may rename any row, because it is using none of them.
-    /// </summary>
+    /// <summary>A request that resolved no tenant may rename any row, because it is using none of them.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdatePortalAlias_PermitsEveryRowWhenTheRequestResolvedNoTenant()
@@ -3718,15 +3413,12 @@ public class PortalServiceTests
         outcome.IsSuccess.Should().BeTrue();
     }
 
-    /// <summary>
-    /// Unbinding the alias the current request resolved through is refused with the same code.
-    /// </summary>
+    /// <summary>Unbinding the alias the current request resolved through is refused with the same code.</summary>
     /// <remarks>
-    /// MIGRATION: this half goes BEYOND the legacy screen rather than reproducing it. Legacy hid the edit
-    /// affordance for the current row and governed removal only by a count
-    /// (<c>EditPortalAlias.ascx.vb</c> L107), so an operator on a portal with several aliases could unbind
-    /// the very one they had arrived through - and the consequence is strictly worse than a rename, because
-    /// no row is left to correct. The divergence is deliberate and recorded in <c>MIGRATION_NOTES.md</c>.
+    /// This half goes BEYOND the legacy screen rather than reproducing it. Legacy hid the edit affordance
+    /// for the current row and governed removal only by a count, so an operator on a portal with several
+    /// aliases could unbind the very one they had arrived through - and the consequence is strictly worse
+    /// than a rename, because no row is left to correct.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -3745,9 +3437,7 @@ public class PortalServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    /// <summary>
-    /// A row the request did NOT arrive through remains removable.
-    /// </summary>
+    /// <summary>A row the request did NOT arrive through remains removable.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeletePortalAlias_PermitsARowThisRequestDidNotResolveThrough()
@@ -3762,9 +3452,7 @@ public class PortalServiceTests
         harness.RemovedAliases.Should().ContainSingle().Which.Should().BeSameAs(harness.LookupAlias);
     }
 
-    /// <summary>
-    /// A single host name is reported as absent when it does not exist, and projected otherwise.
-    /// </summary>
+    /// <summary>A single host name is reported as absent when it does not exist, and projected otherwise.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task GetPortalAlias_ReportsAbsenceOrTheProjection()
@@ -3787,9 +3475,7 @@ public class PortalServiceTests
         absent.Value.Should().BeNull();
     }
 
-    /// <summary>
-    /// Adding a host name requires one to be submitted.
-    /// </summary>
+    /// <summary>Adding a host name requires one to be submitted.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task AddPortalAlias_RequiresASubmission()
@@ -3804,11 +3490,7 @@ public class PortalServiceTests
     /// A blank host name is refused before the tenant is probed, because an alias with no host name reaches
     /// nothing.
     /// </summary>
-    /// <param name="submitted">
-    /// The blank host name to submit. The null case is deliberately forced past the non-nullable
-    /// annotation, because a JSON body carrying <c>"httpAlias": null</c> deserialises to exactly
-    /// that regardless of the annotation, and the guard exists for precisely that caller.
-    /// </param>
+    /// <param name="submitted">The blank host name to submit.</param>
     /// <returns>A task representing the assertion.</returns>
     [Theory]
     [InlineData(null)]
@@ -3830,9 +3512,7 @@ public class PortalServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A host name cannot be bound to a tenant that does not exist.
-    /// </summary>
+    /// <summary>A host name cannot be bound to a tenant that does not exist.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task AddPortalAlias_RefusesAnUnknownTenant()
@@ -3872,16 +3552,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// A host name bound between the check and the commit is refused with exactly the answer the check gives,
-    /// and neither cache is discarded because nothing was written.
+    /// A host name bound between the check and the commit is refused with exactly the answer the check
+    /// gives, and neither cache is discarded because nothing was written.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6. Measured on a live installation before the fix: eight simultaneous identical
-    /// bindings produced one 201, four 409 and THREE 500s, with exactly one row stored - the three 500s being
-    /// the racers, told the server had failed when the unique index had done exactly its job. The cache
-    /// assertions matter as much as the code: alias resolution is installation-wide, so discarding the host
-    /// entries on a binding that never happened would evict every tenant's resolution for nothing.
+    /// Measured on a live installation with the fault untranslated: eight simultaneous bindings produced one
+    /// 201, four 409 and THREE 500s, with exactly one row stored - the three 500s being the racers, told
+    /// the server had failed when the unique index had done exactly its job.
     /// </remarks>
     [Fact]
     public async Task AddPortalAlias_RefusesAHostNameBoundBetweenTheCheckAndTheCommit()
@@ -3961,9 +3639,7 @@ public class PortalServiceTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A host name that does not exist is refused with its own reason.
-    /// </summary>
+    /// <summary>A host name that does not exist is refused with its own reason.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task UpdatePortalAlias_RefusesAnUnknownHostName()
@@ -4025,9 +3701,9 @@ public class PortalServiceTests
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// MIGRATION: SEC-F6, the rename counterpart of the binding race. A rename is refused by the same unique
-    /// index for the same reason, and the check that excludes the row being renamed from its own comparison
-    /// cannot see a name another request is binding concurrently.
+    /// The rename counterpart of the binding race. A rename is refused by the same unique index for the
+    /// same reason, and the check that excludes the row being renamed from its own comparison cannot see a
+    /// name another request is binding concurrently.
     /// </remarks>
     [Fact]
     public async Task UpdatePortalAlias_RefusesAHostNameBoundBetweenTheCheckAndTheCommit()
@@ -4053,24 +3729,14 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// Changing a host name writes the trimmed name, leaves the owning tenant alone - the request declares no
-    /// tenant member, so a move between tenants is not expressible - and discards the cache of the tenant that
-    /// actually owns the row.
+    /// Changing a host name writes the trimmed name, leaves the owning tenant alone - the request declares
+    /// no tenant member, so a move between tenants is not expressible - and discards the cache of the
+    /// tenant that actually owns the row.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This is also where the returned representation is pinned, and it is pinned HERE rather than in the API
-    /// test for a reason worth stating. Two facts about the answered row are asserted below. The first is that
-    /// <c>IsCurrent</c> is reported: it says whether this row is the alias the request itself resolved the
-    /// tenant through, it is decided from the caller's own context, and no client can compute it - that is the
-    /// fact that makes returning a representation worth doing at all, and it holds at every layer. The second
-    /// is that the reported host name is the STORED spelling rather than the submitted one: the request here
-    /// carries surrounding whitespace and the row keeps the trimmed form, so a bodyless answer would have left
-    /// this caller holding a value the store had already replaced. That second fact is only reachable from a
-    /// direct service caller, because the API's own <c>HttpAlias</c> validator refuses a padded host name with
-    /// <c>400</c> before the service is entered - which is exactly why it is asserted at this level and not in
-    /// <c>PortalApiTests</c>. Trimming is the only transformation applied; the stored spelling is otherwise the
-    /// submitted one, case included.
+    /// This is also where the returned representation is pinned, and it is pinned HERE rather than in the
+    /// API test for a reason worth stating. Two facts about the answered row are asserted below.
     /// </remarks>
     [Fact]
     public async Task UpdatePortalAlias_DoesNotMoveTheHostNameBetweenTenants()
@@ -4100,9 +3766,7 @@ public class PortalServiceTests
         outcome.Value.IsCurrent.Should().BeFalse();
     }
 
-    /// <summary>
-    /// Removing a host name that does not exist is refused.
-    /// </summary>
+    /// <summary>Removing a host name that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
     public async Task DeletePortalAlias_RefusesAnUnknownHostName()
@@ -4119,8 +3783,8 @@ public class PortalServiceTests
     }
 
     /// <summary>
-    /// Removing a host name releases it and discards the cache of the tenant it belonged to, read before the
-    /// row is withdrawn.
+    /// Removing a host name releases it and discards the cache of the tenant it belonged to, read before
+    /// the row is withdrawn.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4239,9 +3903,7 @@ public class PortalServiceTests
         PortalGuid = new Guid("66666666-7777-8888-9999-000000000000"),
     };
 
-    /// <summary>
-    /// Builds an account with exactly the supplied portal memberships.
-    /// </summary>
+    /// <summary>Builds an account with exactly the supplied portal memberships.</summary>
     /// <param name="userId">Installation-wide account identifier.</param>
     /// <param name="isSuperUser">Whether the account is a host operator.</param>
     /// <param name="portalIds">Portal identifiers whose membership rows the account holds.</param>
@@ -4270,9 +3932,7 @@ public class PortalServiceTests
         return account;
     }
 
-    /// <summary>
-    /// Builds a host-name row.
-    /// </summary>
+    /// <summary>Builds a host-name row.</summary>
     /// <param name="portalAliasId">The row identifier.</param>
     /// <param name="portalId">The owning tenant.</param>
     /// <param name="httpAlias">The host name.</param>
@@ -4289,17 +3949,8 @@ public class PortalServiceTests
     /// composed beneath.
     /// </summary>
     /// <param name="httpAlias">The resolved tenant's own host name.</param>
-    /// <param name="portalAliasId">
-    /// Surrogate key of the alias row the request resolved through. This is the fact the active-alias
-    /// refusal and the <c>IsCurrent</c> projection both read, so a test naming a different key is
-    /// describing a request that arrived through a different host name.
-    /// </param>
+    /// <param name="portalAliasId">Surrogate key of the alias row the request resolved through.</param>
     /// <returns>A resolved tenant context.</returns>
-    /// <remarks>
-    /// The alias is the only member the composition reads, but the whole contract is answered so the double
-    /// cannot be mistaken for a partially-populated context. It stands in for the legacy
-    /// <c>Globals.GetDomainName(Request)</c> reading that <c>Signup.ascx.vb:L232</c> composed beneath.
-    /// </remarks>
     private static IPortalContext ResolvedTenant(
         string httpAlias = HostAlias,
         int portalAliasId = PortalAliasId)
@@ -4325,11 +3976,7 @@ public class PortalServiceTests
     /// <param name="harness">The harness to arrange.</param>
     /// <remarks>
     /// <see cref="Harness.Ready"/> resolves the fixture's single alias row, which is the honest default: a
-    /// request that reached a one-alias portal did arrive through that row. Every write against that row is
-    /// therefore refused, so a test about the DUPLICATE check, the unique-index race, the rename write or
-    /// the removal write has to say explicitly that it arrived somewhere else - otherwise it exercises the
-    /// active-alias refusal instead of the path it is named for. The fact is stated here once so each such
-    /// test needs a single line and the reason lives in one place.
+    /// request that reached a one-alias portal did arrive through that row.
     /// </remarks>
     private static void ArrivedThroughAnotherAlias(Harness harness)
     {
@@ -4337,9 +3984,7 @@ public class PortalServiceTests
         harness.ResolvedContext = ResolvedTenant(SpareHostAlias, SparePortalAliasId);
     }
 
-    /// <summary>
-    /// A transaction scope that records whether it was committed and whether it was disposed.
-    /// </summary>
+    /// <summary>A transaction scope that records whether it was committed and whether it was disposed.</summary>
     /// <remarks>
     /// The production scope rolls back on disposal without a commit, so a test that asserted only "the
     /// scope was disposed" would pass for a write that was abandoned. Recording BOTH facts is what lets a
@@ -4384,9 +4029,7 @@ public class PortalServiceTests
         }
     }
 
-    /// <summary>
-    /// Builds a provisioning request that passes every check the service performs.
-    /// </summary>
+    /// <summary>Builds a provisioning request that passes every check the service performs.</summary>
     /// <returns>A well-formed provisioning request.</returns>
     private static CreatePortalRequest ValidCreateRequest() => new()
     {
@@ -4408,9 +4051,6 @@ public class PortalServiceTests
     /// <returns>A well-formed update request.</returns>
     private static UpdatePortalRequest ValidUpdateRequest() => new()
     {
-        // Carried so the request is representative of one that has passed the registered validator, whose
-        // one rule on this member is that it equal the route identifier. The service never reads it - it
-        // addresses the identifier it was given as an argument - so its presence changes no assertion here.
         PortalId = PortalId,
         PortalName = "Renamed",
         DefaultLanguage = DefaultLanguageCode,
@@ -4420,8 +4060,8 @@ public class PortalServiceTests
     };
 
     /// <summary>
-    /// Builds the route-owned settings request with the same ordinary values as
-    /// <see cref="ValidUpdateRequest"/>.
+    /// Builds the route-owned settings request with the same ordinary values as <see
+    /// cref="ValidUpdateRequest"/>.
     /// </summary>
     /// <returns>A well-formed settings update request.</returns>
     private static UpdatePortalSettingsRequest ValidSettingsUpdateRequest() => new()
@@ -4434,8 +4074,8 @@ public class PortalServiceTests
     };
 
     /// <summary>
-    /// Assembles the service over twelve recording doubles, exposing every answer as mutable state so a test
-    /// can change the world after the doubles have been wired.
+    /// Assembles the service over twelve recording doubles, exposing every answer as mutable state so a
+    /// test can change the world after the doubles have been wired.
     /// </summary>
     private sealed class Harness
     {
@@ -4505,9 +4145,6 @@ public class PortalServiceTests
             AddedTabs = [];
             AddedTabPermissions = [];
 
-            // The catalogue the upgrade scripts install for the page scope. Both keys the stock home page
-            // needs are present, because the production database has them and a harness that omitted them
-            // would silently exercise the skip path instead of the grant path.
             PageScopeCatalogue =
             [
                 new Permission { PermissionId = 3, PermissionCode = TabScopeCode, PermissionKey = PermissionKey.VIEW, PermissionName = "View Tab" },
@@ -4549,17 +4186,12 @@ public class PortalServiceTests
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
                 .Callback<AuditEvent>(AuditRecords.Add);
 
-            // The tenant this request resolved to. A child portal's alias is composed beneath it, so the
-            // double has to answer both members rather than only the one the composition reads: a holder
-            // that reported itself unresolved while still yielding a context would be a state the
-            // production holder cannot be in, and a test built on it would prove nothing.
+            // The tenant this request resolved to.
             PortalContext.SetupGet(holder => holder.IsResolved).Returns(() => ContextResolved);
             PortalContext.SetupGet(holder => holder.Current).Returns(() => ResolvedContext);
 
             // Every write that spans more than one commit opens a transaction, and a loose mock would
-            // otherwise hand back a null task. Each scope is recorded so a test can assert that the work
-            // was committed rather than merely that it completed - disposal without a commit is how the
-            // production code rolls back, so "committed" and "finished" are genuinely different outcomes.
+            // otherwise hand back a null task.
             UnitOfWork
                 .Setup(unit => unit.BeginTransactionAsync(
                     It.IsAny<TransactionIsolation>(),
@@ -4682,14 +4314,11 @@ public class PortalServiceTests
 
         public Result SessionRevocationResult { get; set; }
 
-        /// <summary>
-        /// What the token store answers when asked to ERASE a tenant's session records.
-        /// </summary>
+        /// <summary>What the token store answers when asked to ERASE a tenant's session records.</summary>
         /// <remarks>
-        /// PRIV-02. Separate from <see cref="SessionRevocationResult"/> because the two operations differ in
-        /// kind and in consequence: revocation retains the record so a replay of its family stays
-        /// recognisable, and erasure removes it. A failed erasure must not fail the removal - the tenant is
-        /// already gone by then - which is a fact worth being able to set independently.
+        /// PRIV-02. Separate from <see cref="SessionRevocationResult"/> because the two operations differ
+        /// in kind and in consequence: revocation retains the record so a replay of its family stays
+        /// recognisable, and erasure removes it.
         /// </remarks>
         public Result SessionRecordErasureResult { get; set; } = Result.Success();
 
@@ -4701,15 +4330,15 @@ public class PortalServiceTests
         public bool EchoCreatedPortal { get; set; }
 
         /// <summary>
-        /// Whether the caller's STORED account is a host account. SEC-011: this is the authoritative knob,
-        /// because the guard it drives re-reads the status from the store rather than trusting the token.
+        /// Whether the caller's STORED account is a host account. this is the authoritative knob, because
+        /// the guard it drives re-reads the status from the store rather than trusting the token.
         /// </summary>
         public bool SuperUser { get; set; }
 
         /// <summary>
-        /// What the caller's TOKEN claims about host status, when that must differ from the store. Left unset
-        /// the claim mirrors the store, which is the ordinary case; setting it is how a test states the case
-        /// the finding was about - a token minted before a demotion, or before a promotion.
+        /// What the caller's TOKEN claims about host status, when that must differ from the store. Left
+        /// unset the claim mirrors the store, which is the ordinary case; setting it is how a test states
+        /// the case the finding was about - a token minted before a demotion, or before a promotion.
         /// </summary>
         public bool? SuperUserClaim { get; set; }
 
@@ -4801,8 +4430,8 @@ public class PortalServiceTests
         public List<Permission> PageScopeCatalogue { get; set; }
 
         /// <summary>
-        /// Builds a harness whose world is consistent: one tenant with one host name and an administrator on
-        /// record, an installation holding two tenants, and a credential store that accepts writes.
+        /// Builds a harness whose world is consistent: one tenant with one host name and an administrator
+        /// on record, an installation holding two tenants, and a credential store that accepts writes.
         /// </summary>
         /// <returns>A wired harness.</returns>
         public static Harness Ready()
@@ -4822,10 +4451,6 @@ public class PortalServiceTests
                 .Setup(p => p.CountPagesAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.PageCount);
 
-            // The batched tallies answer the same figures as the per-portal members, so a test that sets
-            // UserCount or PageCount sees the same number whichever member the code under test reaches
-            // for. Both stubs honour the total contract the repository promises: every identifier that
-            // was asked about is present as a key.
             harness.Portals
                 .Setup(p => p.CountUsersForPortalsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -4858,18 +4483,6 @@ public class PortalServiceTests
                     harness.AddedProfileDefinitions.Add(definition))
                 .Returns(Task.CompletedTask);
 
-            // MIGRATION: SEC-F1. THE STUB NOW MIRRORS PRODUCTION, AND THE CORRECTION IS THE POINT OF IT.
-            // The page-SCOPED read is what the service asks, and it is answered from the harness catalogue
-            // filtered by key, exactly as the repository filters by scope code and key and orders by
-            // identifier.
-            //
-            // The page-scoped-by-TAB read is deliberately stubbed to answer NOTHING. An earlier revision of
-            // this harness answered it with the whole catalogue, on the stated belief that production
-            // "ignores its page argument" - and that belief was false: the repository proves the page exists
-            // before it answers. Because the home page has no identifier until the creation commits, the
-            // service was asking about page zero, so on a database with no page keyed zero production got an
-            // empty catalogue and silently skipped all three grants while these facts passed. Answering
-            // empty here is what makes this suite able to fail if the resolution ever moves back.
             harness.Permissions
                 .Setup(p => p.GetByCodeAndKeyAsync(
                     It.IsAny<string>(),
@@ -4923,11 +4536,9 @@ public class PortalServiceTests
                 .Setup(p => p.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Callback<int, CancellationToken>((portalId, _) =>
                 {
-                    // The contract identifies its deletion target by identifier, as the legacy
-                    // procedure did, so the harness resolves the identifier back to the entity it
-                    // already knows about. That keeps RemovedPortals a list of entities and lets
-                    // the suite go on asserting *which* tenant was removed by reference rather
-                    // than merely that some identifier was passed.
+                    // The contract identifies its deletion target by identifier, as the legacy procedure
+                    // did, so the harness resolves the identifier back to the entity it already knows
+                    // about.
                     Portal? removed = harness.AddedPortals.Find(candidate => candidate.PortalId == portalId);
 
                     if (removed is null && harness.PortalRow is Portal known && known.PortalId == portalId)
@@ -4953,9 +4564,7 @@ public class PortalServiceTests
                 .ReturnsAsync((int portalId, CancellationToken _) =>
                     harness.AllAliases.Where(alias => alias.PortalId == portalId).ToList());
             // The SET-based read the tenant listing uses: it asks for the aliases of the tenants on its
-            // page rather than for every alias in the installation. Served from the same alias world as the
-            // other two reads, and honouring the same rule as the single-portal read - every value denotes
-            // the tenant bearing it, so no member of the set is a wildcard.
+            // page rather than for every alias in the installation.
             harness.Aliases
                 .Setup(a => a.GetByPortalIdsAsync(
                     It.IsAny<IReadOnlyCollection<int>>(),
@@ -4983,13 +4592,6 @@ public class PortalServiceTests
                 .Setup(a => a.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Callback<int, CancellationToken>((portalAliasId, _) =>
                 {
-                    // Deletion identifies its target by key, as the legacy procedure did, so the harness
-                    // resolves the identifier back to the entity it already knows about. That keeps
-                    // RemovedAliases a list of entities and lets the suite go on asserting *which* alias
-                    // was removed by reference rather than merely that some identifier was passed.
-                    //
-                    // A staged-but-uncommitted alias carries no key yet, so the created row is matched
-                    // here by the identifier it actually has rather than by a generated one.
                     PortalAlias? removed = harness.AddedAliases
                         .Find(candidate => candidate.PortalAliasId == portalAliasId);
 
@@ -5092,9 +4694,7 @@ public class PortalServiceTests
                     return Task.FromResult(harness.SessionRevocationResult);
                 });
 
-            // PRIV-02. Tenant-scoped erasure, recorded so a fact can assert that removing a portal erased its
-            // session records rather than leaving them revoked - including the records of members RETAINED
-            // because they belong to another tenant, which the revocation loop deliberately never touches.
+            // PRIV-02.
             harness.Tokens
                 .Setup(tokens => tokens.PurgePortalSessionRecordsAsync(
                     It.IsAny<int>(),
@@ -5110,9 +4710,6 @@ public class PortalServiceTests
                 .Callback<Role, CancellationToken>((role, _) => harness.AddedRoles.Add(role))
                 .Returns(Task.CompletedTask);
 
-            // A role delete carries its key, and a portal compensation deletes the three stock roles it
-            // created, so the harness records the keys and resolves them back to the role objects the
-            // assertions name.
             harness.Roles
                 .Setup(r => r.DeleteAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .Callback<int, CancellationToken>((roleId, _) =>
@@ -5161,9 +4758,9 @@ public class PortalServiceTests
 
             harness.Clock.SetupGet(c => c.UtcNow).Returns(Now);
 
-            // SEC-011: THE CLAIM AND THE STORE ARE WIRED SEPARATELY, SO A TEST CAN MAKE THEM DISAGREE. The
-            // claim follows the store unless a test overrides it, which keeps every existing fact meaning what
-            // it says while giving the demotion facts a way to state their case.
+            // THE CLAIM AND THE STORE ARE WIRED SEPARATELY, SO A TEST CAN MAKE THEM DISAGREE. The claim
+            // follows the store unless a test overrides it, which keeps every existing fact meaning what it
+            // says while giving the demotion facts a way to state their case.
             harness.CurrentUser
                 .SetupGet(c => c.IsSuperUser)
                 .Returns(() => harness.SuperUserClaim ?? harness.SuperUser);

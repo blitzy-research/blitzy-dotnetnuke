@@ -19,16 +19,14 @@ namespace DnnMigration.Infrastructure.Security;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MIGRATION: the legacy forms-authentication cookie is replaced by a short-lived bearer token and a
-/// single-use refresh family held by <see cref="IRefreshTokenStore"/>. Logout revokes the refresh family;
-/// an already-issued access token remains valid until its stamped expiry and is discarded by the client.
-/// Token issuance depends on no database object of its own, so it cannot be blocked by a schema this
-/// migration is forbidden to alter.
+/// The legacy forms-authentication cookie is replaced by a short-lived bearer token and a single-use
+/// refresh family held by <see cref="IRefreshTokenStore"/>. Logout revokes the refresh family; an
+/// already-issued access token remains valid until its stamped expiry and is discarded by the client.
 /// </para>
 /// <para>
-/// Access tokens deliberately contain only subject, tenant, token identifier, issuer, audience and
-/// time claims. User names, host flags, roles and permission keys are mutable authority or profile
-/// data and are therefore re-read from authoritative storage rather than copied into a bearer token.
+/// Access tokens deliberately contain only subject, tenant, token identifier, issuer, audience and time
+/// claims. User names, host flags, roles and permission keys are mutable authority or profile data and are
+/// therefore re-read from authoritative storage rather than copied into a bearer token.
 /// </para>
 /// </remarks>
 internal sealed class JwtTokenService : ITokenService
@@ -222,13 +220,6 @@ internal sealed class JwtTokenService : ITokenService
     /// <returns>Success once no record remains, or the store-unavailable failure.</returns>
     /// <remarks>
     /// PRIV-02. Only two answers are possible and both are stated here rather than left to the caller.
-    /// "Nothing matched" is SUCCESS - an erasure whose subject held no records has achieved exactly what it
-    /// was asked to - and it is not conditioned on
-    /// <see cref="IRefreshTokenStore.IsAuthoritativeAcrossReplicas"/> the way a revocation's "unknown" is.
-    /// The distinction is real: a revocation that finds nothing may have left a live session on another
-    /// replica, whereas a process-local store that holds no record of a subject genuinely holds no personal
-    /// data about it, which is the whole claim this member makes. A replica that does hold records erases its
-    /// own when its own sweep or its own deletion request reaches it.
     /// </remarks>
     private static Result Erased(RefreshTokenPurgeResult purged) => purged.Answered
         ? Result.Success()
@@ -247,10 +238,6 @@ internal sealed class JwtTokenService : ITokenService
             ExpiresAtUtc = expiresAtUtc,
             RefreshToken = refreshToken,
 
-            // The remediation flags are deliberately NOT set here. They are authoritative account state
-            // rather than token state, so the authentication service re-reads them and stamps them onto
-            // this response after rotation - which is what keeps a completed or newly imposed requirement
-            // from being frozen into a token for its whole lifetime.
             User = new CurrentUserDto
             {
                 UserId = subject.UserId,
@@ -334,23 +321,8 @@ internal sealed class JwtTokenService : ITokenService
     /// <param name="outcome">What the store reported.</param>
     /// <returns>A successful result only for a proven retirement.</returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ <c>Unknown</c> IS A FAILURE HERE, AND IT USED TO BE A SUCCESS. Every outcome except
-    /// store-unavailable and capacity-exhausted was mapped to success, on the reading that a token the
-    /// store cannot find must already be gone. That reading is only sound for a store that sees ALL of the
-    /// state. With families held per process it was demonstrably unsound: replica B, asked to end a session
-    /// established on replica A, does not recognise the token, answered <c>Unknown</c>, and reported a
-    /// successful sign-out while replica A went on honouring the very token that was presented for
-    /// revocation. The client then discarded its only copy, so the live session could not even be retried.
-    /// </para>
-    /// <para>
     /// So the rule is now the strict one: a retirement is successful when the store retired something
-    /// (<c>Succeeded</c>) or when it holds the family and had already retired it
-    /// (<c>AlreadyRevoked</c>). Anything else - a token this store never knew, an expired or replayed
-    /// presentation, an unreachable store - is reported as an unconfirmed retirement so the caller keeps
-    /// the credential and can try again. A deployment that wants "unknown means gone" to be true configures
-    /// the shared store, where the store's ignorance really is the whole system's.
-    /// </para>
+    /// (<c>Succeeded</c>) or when it holds the family and had already retired it (<c>AlreadyRevoked</c>).
     /// </remarks>
     private Result Retired(RefreshTokenOutcome outcome) => outcome switch
     {

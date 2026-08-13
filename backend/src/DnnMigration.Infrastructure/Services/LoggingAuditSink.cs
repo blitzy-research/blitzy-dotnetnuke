@@ -1,19 +1,3 @@
-// MIGRATION: this is the replacement transport for the legacy business audit trail. The legacy
-// EventLogController.AddLog persisted a LogInfo into an EventLog table through the logging provider
-// family, which AAP 0.2.2.2 excludes; the facts and their stable event names survive, the store does not.
-// Records are emitted as STRUCTURED log events, so the host's configured sink - Serilog, wired in
-// Api/Program.cs - decides where they land, and an operator who wants them in a table again configures a
-// sink rather than changing this file.
-//
-// MIGRATION: the message template is FIXED and every fact is a named property. That is what makes the
-// trail queryable in the way the legacy table was: an operator asks for AuditEvent = "PORTAL_CREATED"
-// rather than pattern-matching a sentence. A template assembled by interpolation would compile to a
-// distinct template per call and would destroy that property, which is why nothing below interpolates.
-//
-// MIGRATION: the legacy record's server name and configuration identifier are not reproduced. Both were
-// populated by the excluded logging provider from ambient machine state, and both are supplied by the
-// hosting environment now - the container name, the environment name - rather than by the record.
-
 using System.Collections;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Abstractions.Services;
@@ -23,9 +7,7 @@ using Microsoft.Extensions.Logging;
 
 namespace DnnMigration.Infrastructure.Services;
 
-/// <summary>
-/// Writes audit records to the host's structured logging pipeline.
-/// </summary>
+/// <summary>Writes audit records to the host's structured logging pipeline.</summary>
 /// <remarks>
 /// <para>
 /// Registered as a singleton and holding no per-request state. The logger and diagnostics route are
@@ -37,25 +19,10 @@ namespace DnnMigration.Infrastructure.Services;
 /// because a run of refused sign-ins or privilege checks is an operator-visible security signal, while a
 /// completed administrative change is ordinary business activity.
 /// </para>
-/// <para>
-/// The sink is also the privacy enforcement boundary. It writes stable numeric identifiers, a closed set of
-/// bounded metadata keys and no raw account name, person name, electronic-mail address, tenant alias,
-/// filename, path or free-text description. Unknown keys are discarded; invalid values become one fixed
-/// scalar. This protects every configured logging provider rather than relying on each producer to remain
-/// careful forever.
-/// </para>
 /// </remarks>
 internal sealed class LoggingAuditSink : IAuditSink
 {
-    /// <summary>
-    /// The single, fixed message template every audit record is written with.
-    /// </summary>
-    /// <remarks>
-    /// One template for every event, so that a structured sink groups the whole trail under one event
-    /// identifier and an operator filters it by the <c>AuditEvent</c> property rather than by text. The
-    /// The custom state carries a matching <c>{OriginalFormat}</c> entry, so logging providers preserve this
-    /// one template while receiving each value as an independently queryable scalar.
-    /// </remarks>
+    /// <summary>The single, fixed message template every audit record is written with.</summary>
     private const string MessageTemplate =
         "Audit {AuditEvent} {AuditOutcome} portal={AuditPortalId} actor={AuditActorUserId} "
         + "subject={AuditSubjectUserId} resource={AuditResourceType}/{AuditResourceId} "
@@ -75,28 +42,16 @@ internal sealed class LoggingAuditSink : IAuditSink
     /// Maps the only producer keys the logging pipeline accepts to their structured property names.
     /// </summary>
     /// <remarks>
-    /// MIGRATION: THIS ALLOWLIST IS A CROSS-CUTTING COUPLING AND HAS TO BE EXTENDED WHENEVER A SERVICE
-    /// RECORDS A NEW PROPERTY. A key that is absent here is WITHHELD - counted, not written - which is the
-    /// correct default for caller-shaped text and a silent loss for a property a service deliberately added.
-    /// Five keys were added for exactly that reason after two revisions were combined: the portal-
-    /// installation record gained the administrator's numeric key and presence-only flags for its two
-    /// free-text members (AdministratorId, DescriptionSupplied, KeywordsSupplied), and the credential
-    /// migration record and its failure detail were added (PreviousFormat, ReplacementKind). Each is a
-    /// numeric identifier, a closed enumeration member, or a boolean - none is caller-shaped prose, which is
-    /// why the tenant NAME and ALIAS that the same revision recorded are deliberately still absent - and
-    /// every value still passes the bounded, control-character-rejecting check below before it is written.
+    /// THIS ALLOWLIST IS A CROSS-CUTTING COUPLING AND HAS TO BE EXTENDED WHENEVER A SERVICE RECORDS A NEW
+    /// PROPERTY. A key that is absent here is WITHHELD - counted, not written - which is the correct
+    /// default for caller-shaped text and a silent loss for a property a service deliberately added.
     /// </remarks>
     private static readonly IReadOnlyDictionary<string, string> AllowedMetadata = BuildAllowedMetadata();
 
     /// <summary>
-    /// Stands in for a control character in a rendered property, so that no value can forge a line
-    /// break, repaint a terminal, or otherwise alter the structure of the record that contains it.
+    /// Stands in for a control character in a rendered property, so that no value can forge a line break,
+    /// repaint a terminal, or otherwise alter the structure of the record that contains it.
     /// </summary>
-    /// <remarks>
-    /// A single printable character, chosen so that the substitution is visible to a reader rather than
-    /// silent: a record showing an unexpected placeholder invites the question, whereas a record with the
-    /// character removed looks like ordinary text and hides that anything was altered.
-    /// </remarks>
     private const char ControlCharacterReplacement = '\uFFFD';
 
     /// <summary>The logger every record is written through.</summary>
@@ -129,20 +84,10 @@ internal sealed class LoggingAuditSink : IAuditSink
 
     /// <inheritdoc />
     /// <remarks>
-    /// <para>
-    /// Honours the contract's absolute guarantee that recording never throws. Three things could
-    /// plausibly throw here and all three are contained: a null event, which is discarded; a logger or
-    /// sink that faults; and projection of a caller-supplied property dictionary, which is performed inside
-    /// the same guarded region rather than before it.
-    /// </para>
-    /// <para>
-    /// Cancellation is deliberately NOT re-thrown from the catch, unlike every other guarded region in
-    /// this solution. Nothing here is cancellable - no token is accepted and no awaitable is created -
-    /// so an <see cref="OperationCanceledException"/> reaching this handler could only come from a
-    /// misbehaving sink, and letting it escape would fault an operation that had already completed. A
-    /// contained failure increments the audit-pipeline health counter first, then attempts the closed
-    /// security-diagnostic fallback; failure of that fallback is contained independently.
-    /// </para>
+    /// Honours the contract's absolute guarantee that recording never throws. Three things could plausibly
+    /// throw here and all three are contained: a null event, which is discarded; a logger or sink that
+    /// faults; and projection of a caller-supplied property dictionary, which is performed inside the same
+    /// guarded region rather than before it.
     /// </remarks>
     public void Record(AuditEvent auditEvent)
     {
@@ -153,11 +98,6 @@ internal sealed class LoggingAuditSink : IAuditSink
 
         try
         {
-            // A DELIBERATE REFUSAL ESCALATES, and only a completed operation is merely informational. A run
-            // of refused sign-ins is the pattern an operator wants raised, and it is invisible if every
-            // refusal is recorded at the same level as every success; a refusal is also the outcome an
-            // alerting rule is most often written against. The unfinished outcome escalates for the reason it
-            // always did.
             LogLevel level = auditEvent.Outcome == AuditOutcome.Succeeded
                 ? LogLevel.Information
                 : LogLevel.Warning;
@@ -184,30 +124,11 @@ internal sealed class LoggingAuditSink : IAuditSink
     }
 
     /// <summary>
-    /// Selects the stable numeric identifier the record is written under, from the family the event
-    /// belongs to.
+    /// Selects the stable numeric identifier the record is written under, from the family the event belongs
+    /// to.
     /// </summary>
     /// <param name="eventName">The event name the record carries.</param>
     /// <returns>The identifier and its symbolic name.</returns>
-    /// <remarks>
-    /// <para>
-    /// A CATEGORY identifier, not one per event name. The distinction is what lets the two requirements on
-    /// this sink hold at once: an operator addresses a whole family with one alert rule by number, and
-    /// narrows to a single event within it by filtering the <c>AuditEvent</c> property - so nothing needs a
-    /// number of its own, and the trail is not fragmented into as many identifiers as it has event names.
-    /// </para>
-    /// <para>
-    /// These numbers are a PUBLISHED CONTRACT. An operator's alert rule addresses an event by its number, so
-    /// renumbering one silently detaches whatever was watching it; the two that are pinned by a test are
-    /// pinned as literals there rather than read from here, precisely so that a change on either side has to
-    /// be deliberate. New families take the next free number and never reuse a retired one.
-    /// </para>
-    /// <para>
-    /// Anything unmapped is recorded under the general identifier rather than under zero. Zero is what an
-    /// unspecified identifier already means, so a family that was simply never added here would be
-    /// indistinguishable from one that had been deliberately left general.
-    /// </para>
-    /// </remarks>
     private static EventId EventIdFor(string eventName) => eventName switch
     {
         AuditEventNames.LoginSuccess
@@ -226,9 +147,7 @@ internal sealed class LoggingAuditSink : IAuditSink
         _ => new EventId(1000, "Audit"),
     };
 
-    /// <summary>
-    /// Projects an application event onto the fixed structured logging contract.
-    /// </summary>
+    /// <summary>Projects an application event onto the fixed structured logging contract.</summary>
     /// <param name="auditEvent">The event to project.</param>
     /// <returns>A bounded state object carrying only allowlisted properties.</returns>
     private static AuditLogState BuildState(AuditEvent auditEvent)
@@ -269,11 +188,6 @@ internal sealed class LoggingAuditSink : IAuditSink
             acceptedMetadata++;
         }
 
-        // ADMITTED AND WITHHELD ARE BOTH COUNTED, and the withheld count is the point. A caller that
-        // supplies a fact this sink will not carry - one outside the allowlist, or one whose value failed a
-        // bound - would otherwise see its fact vanish with no trace that it was ever offered. Counting both
-        // makes the omission visible in the same entry, so an operator can tell "this event carries no
-        // metadata" apart from "this event offered metadata that was refused" without reading the source.
         int withheldMetadata = auditEvent.Properties.Count - acceptedMetadata;
 
         properties.Add(new KeyValuePair<string, object?>("AuditPropertyCount", acceptedMetadata));
@@ -313,14 +227,11 @@ internal sealed class LoggingAuditSink : IAuditSink
             "LineNumber",
             "LinePosition",
 
-            // MIGRATION: SEC-F1. Portal creation PROCEEDS when the installation's page-permission catalogue
-            // does not define a key its home page would have been granted - the legacy template parser
-            // iterated an empty catalogue answer and created the portal regardless - and these three facts
-            // are what make the resulting record actionable: which scope code was consulted, and which of
-            // the two keys was absent. The record is therefore the ONLY trace of a tenant whose home page
-            // came into being with a reduced grant set, which is why it must carry them. All three are
-            // authored constants or booleans - no caller input reaches them - which is why they belong in
-            // this vocabulary rather than in the withheld count.
+            // Portal creation PROCEEDS when the installation's page-permission catalogue does not define a
+            // key its home page would have been granted - the legacy template parser iterated an empty
+            // catalogue answer and created the portal regardless - and these three facts are what make the
+            // resulting record actionable: which scope code was consulted, and which of the two keys was
+            // absent.
             "MissingEditDefinition",
             "MissingViewDefinition",
             "MustChangePassword",
@@ -405,11 +316,7 @@ internal sealed class LoggingAuditSink : IAuditSink
     {
         _health.RecordFailure();
 
-        // Two channels, deliberately, because they answer different questions and fail independently. The
-        // health signal above is what an orchestrator reads, and the security diagnostic below is what an
-        // operator queries; this counter is neither - it is an out-of-band event source that survives the
-        // logging pipeline being the very thing that failed, and it is the only channel that can be trusted
-        // when the primary logger is the fault. It cannot throw back into this path.
+        // Two channels, deliberately, because they answer different questions and fail independently.
         try
         {
             AuditSinkDiagnostics.Instance.ReportLoss(auditEvent.EventName, failure);
@@ -434,9 +341,7 @@ internal sealed class LoggingAuditSink : IAuditSink
         }
     }
 
-    /// <summary>
-    /// A logging state whose key/value enumeration becomes structured sink properties.
-    /// </summary>
+    /// <summary>A logging state whose key/value enumeration becomes structured sink properties.</summary>
     private sealed class AuditLogState : IReadOnlyList<KeyValuePair<string, object?>>
     {
         private readonly string _message;

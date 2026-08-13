@@ -1,145 +1,29 @@
-<!--
-  THE ONE REAL TABLE IN THIS APPLICATION.
-
-  Eight legacy grids across the five administration trees collapse into this single
-  template. Every other legacy table carried a design-surface summary attribute on pure
-  layout markup and becomes a grid or flex arrangement in a stylesheet instead; only a
-  genuine record listing earns a table element, and this is it.
-
-  Read the component class before changing a binding here. Every value this template
-  renders is a PRE-COMPUTED projection, and every list is tracked. Nothing is formatted,
-  sorted, paged or filtered in this file.
-
-  MIGRATION: EVERY table gets a caption, which normalises a legacy inconsistency rather
-  than copying it. Only three of the eight legacy grids carried a summary attribute at
-  all and the account listing carried none, so a reader meeting two grids on one screen
-  had no way to tell them apart. The legacy summary TEXT is deliberately NOT reused as
-  caption prose: it is a Visual Studio design-surface artefact, not user-facing writing.
-  Three independent proofs that it is machine noise - the member-services markup repeats
-  one summary on both a layout table and its grid, the page-management markup repeats
-  another on two different tables, and the edit-roles markup puts one on a table that
-  holds nothing but form fields. The caption's wording therefore arrives by projection
-  from the feature, in the short title-case register the resource files use for control
-  titles.
-
-  MIGRATION: heading scope, sort announcement and keyboard-operable sorting are NET
-  ACCESSIBILITY GAINS AT ZERO VISUAL COST. Measured across the legacy stylesheets:
-  ':focus' appears in zero files, 'outline' appears in zero files and 'aria-' appears in
-  zero files, so the legacy grids announced no sort state and drew no focus indicator of
-  any kind. Nothing is taken away to add them.
-
-  MIGRATION: heading wording is the feature's to supply and is never hardcoded here.
-  The legacy markup's heading attributes are STALE - the portal listing declares three
-  that the resource file overrides at run time, keyed by the stale text itself - so the
-  resource VALUE is authoritative, not the markup. Counted directly over the 37 in-scope
-  resource files, heading keys number 55: reproduced three ways, by an XML parse of each
-  file's data elements, by a repeat of that parse across every depth, and by a literal
-  scan for the key suffix. A figure of 51 circulates and is NOT reproducible against
-  this checkout; the difference of four matches exactly one file's heading count,
-  consistent with one file having been missed in the earlier census. Both figures and
-  the method are recorded rather than one being chosen silently. A heading may also
-  legitimately contain a space, so no class name or identifier is ever derived from one.
-
-  MIGRATION: localisation is not carried across. The resource files were read for
-  wording only; no translation runtime is added and no translation attribute appears
-  here.
--->
+<!-- THE ONE REAL TABLE IN THIS APPLICATION. -->
 
 <!--
-  MIGRATION: the scrolling region is the component's own container and deliberately does
-  NOT opt into the shared table stylesheet's scroll-region hook. Two measured reasons.
-  The shared hook floors the table at the width of its container, and the component
-  stylesheet records that this exact value is INERT under a fixed table layout with
-  percentage tracks - it was tried, and four pairs of headings still physically
-  overlapped on a narrow viewport - so the component's own token-composed floor must win
-  and the shared hook would outrank it below the tablet step. The shared hook also
-  documents that its consumer must supply the tab stop, the region role and an
-  ACCESSIBLE NAME; a shared component cannot invent a name, which is the same reason the
-  caption is projected rather than defaulted.
-
-  Not a landmark, and never will be. Landmark elements belong exclusively to the
-  application shell. A caption is not a landmark either.
+  The scrolling region is the component's own container and deliberately does NOT opt into the shared
+  table stylesheet's scroll-region hook. Two measured reasons.
 -->
 <div class="data-table__container">
   <!--
-    The row count reports the CURRENT PAGE plus the heading row, and nothing more. The
-    pager is a sibling and reports the whole match set; a table must not claim knowledge
-    of rows it was never handed.
-  -->
-  <!--
-    THE RESULT-SET REPORT, for a reader who cannot see the rows change.
-
-    Placed BEFORE the table and outside it, because a live region has to be in the document
-    before the change it reports - a region inserted at the same moment as its own text is
-    frequently not announced at all - and because no element but a row, a cell or a section
-    belongs inside a `<table>`.
-
-    ⚠ SEEN BY NOBODY, ANNOUNCED TO EVERYONE. It is visually hidden rather than merely empty, so
-    it adds no visible text and occupies no space, which is what lets the count be announced
-    without printing a second row count beside the one the pager already shows.
-
-    `role="status"` carries the announcement semantics and `aria-live` restates the polite value
-    it implies, the same pairing `notification-list.component.html` uses. POLITE and never
-    assertive: a filter result is not an interruption, and interrupting on every keystroke of a
-    debounced search would make the screen unusable with a reader running.
-
-    `aria-atomic="true"` re-reads the whole sentence rather than the changed words, because the
-    part that changes is the NUMBER and a partial re-read would announce a bare digit.
+    The row count reports the CURRENT PAGE plus the heading row, and nothing more. The pager is a
+    sibling and reports the whole match set; a table must not claim knowledge of rows it was never
+    handed.
   -->
   <p class="data-table__result-status" role="status" aria-live="polite" aria-atomic="true">
     {{ resultSummary() }}
   </p>
 
   <table class="data-table" [attr.aria-rowcount]="ariaRowCount()" [attr.aria-busy]="ariaBusy()">
-    <!--
-      The accessible name arrives by PROJECTION, not by an input. The public surface is
-      closed at five inputs and every further affordance is projected, so a feature
-      writes its own element carrying the caption attribute and gets a real caption in
-      return. Projecting it remains the CONSUMER'S OBLIGATION: a screen knows what its
-      grid lists and this component does not, so the words belong to the screen.
-
-      THE FALLBACK IS A FLOOR, NOT A LICENCE. An earlier revision projected with no
-      fallback, on the reasoning that a shared component must not invent a
-      screen-specific default. The reasoning is sound and the conclusion was not: with
-      nothing projected the element still rendered, EMPTY, and an empty caption is worse
-      than no caption at all - the table has no accessible name, and a reader who lands
-      on it is told nothing whatsoever about what it lists. The generic name below is
-      deliberately generic: it names the KIND of thing the reader has reached rather
-      than pretending to know the screen, so it can never be mistaken for real caption
-      prose, and a consumer that projects a caption overrides it completely.
-
-      The mechanism is the framework's own default content for an unmatched projection
-      slot, so there is no input to add - which the closed five-input surface forbids -
-      no content query, and nothing to resolve after render. Angular substitutes the
-      fallback only when no node matches the selector, which is exactly the condition
-      being guarded.
-
-      Carried out of the painted output but kept in the accessibility tree, so a reader
-      who reaches the table directly still learns what it lists while a screen that
-      already shows a page heading does not read the same phrase twice. The attribute is
-      the shared stylesheet's own documented hook for this, so the clipping technique
-      lives in one place; neither display nor visibility is used, because both would
-      remove the caption from the accessibility tree along with the page.
-    -->
     <caption class="data-table__caption" data-visually-hidden>
       <ng-content select="[dataTableCaption]">Data table</ng-content>
     </caption>
 
     <!--
-      Track sizes live here and nowhere else, so NO CELL EVER CARRIES A SIZE. This is
-      also what makes row windowing safe: under a fixed table layout the columns resolve
-      from this group rather than from cell content, so a row that is not currently
-      rendered cannot shift the columns as it scrolls into the window. The width member
-      and the virtualisation strategy are two halves of one design.
-
-      Guarded so that a table with no columns yet - the initial state, before a feature's
-      first response arrives - emits no group at all. A column group containing neither a
-      column element nor a span is not conforming markup, and an unguarded group emits
-      exactly that.
-
-      A track is emitted for EVERY column and its size only when one was declared, so an
-      undeclared or blank width leaves the column to take its share rather than
-      collapsing it.
+      Track sizes live here and nowhere else, so NO CELL EVER CARRIES A SIZE. This is also what makes
+      row windowing safe: under a fixed table layout the columns resolve from this group rather than
+      from cell content, so a row that is not currently rendered cannot shift the columns as it scrolls
+      into the window.
     -->
     @if (columnWidths().length > 0) {
       <colgroup>
@@ -153,17 +37,8 @@
       <tr class="data-table__header-row" [attr.aria-rowindex]="headerRowIndex">
         @for (cell of headerCells(); track cell.key) {
           <!--
-            Column scope is what lets assistive technology name a cell by its column as
-            a reader moves across a row. The sort state is OMITTED ENTIRELY for a column
-            that offers no sorting, because announcing 'none' there would claim the
-            column is sortable when it is not; a sortable column that is merely inactive
-            does carry 'none', and that policy is applied consistently.
-
-            Heading alignment and body alignment are resolved INDEPENDENTLY, each from
-            its own column member, and neither is derived from the other. The eight
-            legacy grids genuinely disagreed - several centred their headings while
-            starting their bodies - so deriving one from the other would silently
-            override whichever screen a feature was reproducing.
+            Column scope is what lets assistive technology name a cell by its column as a reader moves
+            across a row.
           -->
           <th
             scope="col"
@@ -173,103 +48,14 @@
           >
             @if (cell.sortable) {
               <!--
-                A REAL BUTTON inside the heading, not a heading with a click handler.
-                Chosen over an activatable heading deliberately: a button is focusable
-                by default, is announced as operable, and answers both Enter and Space
-                with no key handling written here at all. An activatable heading would
-                need a tab stop and a hand-rolled key handler to reach the same place,
-                and would still not be announced as a control. The explicit type stops
-                it submitting any form a feature wraps around the table.
-
-                MARKED UNAVAILABLE WHILE A REQUEST IS IN FLIGHT, AND NOT NATIVELY DISABLED,
-                which is a correction rather than a preference. `[disabled]` was measured
-                dropping focus to the document body on every sort press: the platform blurs
-                an element the instant it becomes disabled, so activating a heading from the
-                keyboard reordered the table and then left the reader with no position in it
-                at all - and nothing to return to, because there is no focus to restore once
-                it has gone. `aria-disabled` announces the same state while keeping the
-                control focusable and in the tab order, which is the documented remedy for
-                exactly this case. The refusal itself lives in `activateSort`, which was
-                already guarding on the same flag, so the behaviour is unchanged: no second
-                ordering can be queued behind the first, by pointer or by key.
-
-                The attribute is emitted only while the flag holds - `null` otherwise, which
-                Angular omits - rather than being written as `aria-disabled="false"` on every
-                heading of every table.
-
-                THIS BUTTON'S FOCUS RING IS VISIBLE, and it takes two independent
-                decisions outside this file to keep it that way, both recorded here because
-                this is the element whose ring was measured invisible and the markup is
-                where a later author would look. WCAG 2.4.7 and 2.4.11.
-
-                FIRST, THE HEADING BAND IS NOT PAINTED. The stylesheet beside this template
-                carries the measurement: six of the seven legacy record grids wired a
-                heading class that declares no colour at all, so the effective legacy
-                heading background was transparent and there was never a filled band to
-                carry forward. Colouring the heading TEXT with the brand token and painting
-                no surface is therefore both the faithful rendering and the one that leaves
-                this button's ring falling on the page surface, the alternating surface or
-                the selected tint - about 12.6:1, 11.6:1 and 8.2:1 against the ring colour
-                respectively, every one clear of the 3:1 floor for a non-text indicator.
-                Painting the band with the brand token and reversing the text onto it is
-                what must never be done here: the shared ring resolves its colour from that
-                same brand token, so the ring would paint brand-on-brand at 1:1, and it
-                could not escape geometrically either - at the shared width and offset the
-                ring's outer box measured fully inside the heading cell's painted box and a
-                pixel census of the annulus found zero ring-distinct pixels.
-
-                SECOND, THE SHARED RING IS TWO-TONE. Not painting the band fixes THIS
-                element, but it cannot fix the class of defect, because the brand colour is
-                still a painted surface elsewhere in the application - the shell paints the
-                skip link with it - and any focusable element placed on a brand-coloured
-                surface would collide again. The focus-ring mixin therefore bands the
-                outline with a contrasting outer shadow, so one tone is always at maximum
-                contrast against whatever is behind it. Two measurements shaped that choice
-                and both still hold, so neither is a live defect and neither may be
-                discarded. NO SINGLE FLAT RING COLOUR CAN WORK: this component paints four
-                distinct surfaces behind a focusable element - a brand band, were one ever
-                painted, the page background, the alternating-row surface and the
-                selected-row tint - and clearing the 3:1 floor on a brand band requires a
-                luminance at or above roughly 0.20 while clearing it on the selected tint
-                requires one at or below roughly 0.18. That window is empty; an exhaustive
-                search of the colour space put the best achievable worst-case at about
-                2.87:1. Setting the ring to the page background specifically MOVES the
-                failure rather than removing it, reading 1:1 against every unselected body
-                row. And A NAIVE REGRESSION TEST WILL PASS WHILE SUCH A DEFECT IS LIVE: a
-                body row's own background resolves to transparent, so comparing the ring
-                colour with the element's own background returns "different" and looks
-                correct, when the real backdrop is the first opaque ancestor. Any automated
-                guard must resolve the effective painted backdrop or compare rendered pixels.
-
-                Structure needed no change for either decision - a real, natively focusable
-                button is already correct - and none was made.
+                A REAL BUTTON inside the heading, not a heading with a click handler. Chosen over an
+                activatable heading deliberately: a button is focusable by default, is announced as
+                operable, and answers both Enter and Space with no key handling written here at all.
               -->
               <!--
-                `aria-label` STATES THE ACTION AND CONTAINS THE VISIBLE LABEL VERBATIM. The
-                heading text alone names the column and not what pressing it does, so a
-                reader landing here heard only "Module Title, button". The name is composed
-                in the component as "Sort by " plus the column's own label, which keeps it
-                compliant with WCAG 2.5.3 Label in Name - a voice-control user says the words
-                they can see, so a name that REPLACED the visible text rather than extending
-                it would break them. The current direction is deliberately not part of it:
-                the enclosing heading's `aria-sort` already announces that.
-                ⚠ `aria-disabled`, NOT `disabled`, AND THE DIFFERENCE IS A MEASURED DEFECT.
-                This control was `[disabled]="isLoading()"`, and runtime measurement showed what
-                that costs: activating a sort DESTROYED keyboard focus. A MutationObserver
-                watching with `attributeOldValue` recorded the exact sequence — `focusout` on the
-                button with `relatedTarget: null`, then `aria-busy null -> "true"` on the table,
-                then `disabled null -> ""` on all four sort buttons, and 34.1 ms later both
-                attributes removed again. Disabling the element that HAS focus ejects focus to
-                `BODY`, and nothing restores it when the attribute is withdrawn, so a
-                keyboard-only reader was dumped to the top of the document after every sort and a
-                freshly captured accessibility tree contained no focused node at all. Enter, Space
-                and a mouse click all lost focus identically. The sibling pagination controls are
-                not disabled and keep focus correctly, so the two halves of one table disagreed.
-                `aria-disabled` states the transient unavailability without removing the control
-                from the tab order or taking focus off it, which is what WCAG 2.1 asks for a state
-                that lasts 34 ms. The refusal itself moves into `activateSort`, so the guard the
-                native attribute used to provide is kept rather than lost — a second activation
-                mid-flight is still refused, it is now refused in code where it can be tested.
+                `aria-label` STATES THE ACTION AND CONTAINS THE VISIBLE LABEL VERBATIM. The heading text
+                alone names the column and not what pressing it does, so a reader landing here heard
+                only "Module Title, button".
               -->
               <button
                 class="data-table__sort"
@@ -283,21 +69,11 @@
                 }}</span>
 
                 <!--
-                  MIGRATION: the direction indicator is a TEXT GLYPH, not an image. It is
-                  hidden from assistive technology because the heading's sort state
-                  already conveys the direction, and announcing the glyph as well would
-                  state it twice.
-
-                  ⚠ THE SPAN IS RENDERED UNCONDITIONALLY AND ONLY ITS CONTENT IS CONDITIONAL,
-                  BECAUSE THE BOX HAS TO BE RESERVED. Measured with the span behind an `@if`:
-                  activating a sort grew the button under the pointer — the Title heading went
-                  44.000 -> 46.469 px and re-centred 1.234 px to the left, and Start Date went
-                  70.859 -> 86.750 px, a 15.891 px jump. A control that changes size and position
-                  at the moment it is pressed can move out from under the finger that pressed it,
-                  and on a second press the pointer is no longer over what it aimed at. Keeping
-                  the element present at a fixed measure means the glyph appears INSIDE a box that
-                  was always there, so the heading's geometry is identical sorted and unsorted.
-                  `aria-hidden` on an empty span contributes nothing to the accessible name.
+                  ⚠ THE SPAN IS RENDERED UNCONDITIONALLY AND ONLY ITS CONTENT IS CONDITIONAL, BECAUSE
+                  THE BOX HAS TO BE RESERVED. Measured with the span behind an `@if`: activating a sort
+                  grew the button under the pointer — the Title heading went 44.000 -> 46.469 px and
+                  re-centred 1.234 px to the left, and Start Date went 70.859 -> 86.750 px, a 15.891 px
+                  jump.
                 -->
                 <span class="data-table__sort-indicator" aria-hidden="true">
                   @if (cell.sorted) {
@@ -320,65 +96,21 @@
     </thead>
 
     <!--
-      MIGRATION: THE PAGER IS A SIBLING OF THIS TABLE, NEVER A ROW INSIDE IT, so no foot
-      row is emitted here and the shared pagination component is referenced nowhere in
-      this file. That is the legacy arrangement reproduced, not a preference: the portal
-      listing closes its grid, emits two line breaks and THEN declares its paging
-      control, and the account listing does the identical thing. A third variant makes
-      the same point from another direction - the profile-property listing follows its
-      grid with form action buttons instead. What follows the table is always the
-      feature's business.
-
-      The two line breaks become a spacing token in the FEATURE'S layout, not an empty
-      element here. The legacy pager class is deliberately not borrowed either: the
-      markup referenced it four times and no stylesheet in the repository ever defined
-      it, and the only pager rule that does exist belongs to a file-management feature
-      that is out of scope.
-
-      MIGRATION: row commands are PROJECTED by the consuming feature, and the feature
-      also owns the confirmation dialogue and the call to the interface. This component
-      exposes no row-command output, so no dialogue is rendered here.
-
-      MIGRATION: legacy spacer rows and spacer cells become spacing tokens in the
-      stylesheet and NEVER empty elements in this template. The role listing carried
-      both - a fixed-height row spanning four columns with no content whatsoever, and a
-      star-width cell holding a single non-breaking space. Neither survives; an empty
-      cell is announced as a blank by a screen reader, and a spacing token costs nothing
-      and says nothing.
+      THE PAGER IS A SIBLING OF THIS TABLE, NEVER A ROW INSIDE IT, so no foot row is emitted here and
+      the shared pagination component is referenced nowhere in this file.
     -->
     <tbody class="data-table__body">
+      <!-- WAITING WINS OVER EMPTY, and the emptiness test counts explicitly. -->
       <!--
-        WAITING WINS OVER EMPTY, and the emptiness test counts explicitly. An empty page
-        is a legitimate answer rather than an error, but claiming it while a request is
-        still in flight would show the reader 'nothing found' about a query that has not
-        answered yet. The component's own emptiness projection compares the row count to
-        zero rather than testing the array for truthiness, because an empty array is
-        truthy and the naive test would report 'empty' never.
-      -->
-      <!--
-        THE PLACEHOLDER REPLACES THE ROWS ONLY WHEN THERE ARE NO ROWS TO REPLACE. A read
-        that arrives while rows are on screen - a page turn, a sort, a filter change, the
-        re-read after a delete - keeps them and reports its progress through `aria-busy` on
-        the table instead. Showing the placeholder on every read tore the body down to one
-        spanning cell and rebuilt it, which is the mechanical cause of the zero-data row,
-        the pager jumping several hundred pixels, and the largest layout shift measured in
-        the application. See `showWaitingPlaceholder` for the trace.
+        THE PLACEHOLDER REPLACES THE ROWS ONLY WHEN THERE ARE NO ROWS TO REPLACE. A read that arrives
+        while rows are on screen - a page turn, a sort, a filter change, the re-read after a delete -
+        keeps them and reports its progress through `aria-busy` on the table instead.
       -->
       @if (showWaitingPlaceholder()) {
         <!--
-          ONE SPANNING CELL rather than a skeleton row of empty cells, so a screen reader
-          reads a single status instead of a row of blanks, the heading context stays on
-          screen, and the markup stays valid. The span covers EVERY rendered column
-          including the commands column, and the component floors it at one so it can
-          never span zero cells.
-
-          The placeholder attribute is the shared table stylesheet's own documented hook
-          for exactly this pattern - a spanning message cell while the table's structure
-          stays on screen - so the treatment is inherited rather than re-invented here.
-
-          The indicator is rendered with NO BINDINGS AT ALL, so it uses its own default
-          wording and resolves into its announced mode. It carries its own status role;
-          nothing is added to it here.
+          ONE SPANNING CELL rather than a skeleton row of empty cells, so a screen reader reads a single
+          status instead of a row of blanks, the heading context stays on screen, and the markup stays
+          valid.
         -->
         <tr [attr.aria-rowindex]="messageRowIndex">
           <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
@@ -386,20 +118,6 @@
           </td>
         </tr>
       } @else if (isEmpty()) {
-        <!--
-          Also rendered with NO BINDINGS, relying on its own default wording: this
-          component has no message input, because its surface is closed at five. A
-          feature needing particular wording renders the empty state itself.
-
-          MIGRATION, and a deliberate composition choice rather than an oversight: the
-          shared empty state emits its own heading and documents that it assumes no
-          surrounding table, grid or list. Placing it inside a cell is valid markup - a
-          cell accepts flow content - and is chosen so that ONE table survives with its
-          headings intact, which is what lets a reader still see which columns the
-          absent rows would have filled. The alternative the shared stylesheet describes,
-          replacing the table outright, discards that context. The divergence is recorded
-          rather than absorbed.
-        -->
         <tr [attr.aria-rowindex]="messageRowIndex">
           <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
             <app-empty-state />
@@ -407,76 +125,11 @@
         </tr>
       } @else {
         <!--
-          TRACKED BY THE ROW OBJECT ITSELF - never by an identifier member and never by
-          index. The legacy identity seeds make BOTH zero and minus one legitimate keys:
-          the portal table seeds its identity at minus one while the role, page and
-          module tables seed theirs at zero, so a live listing really does contain a
-          portal keyed minus one and a role keyed zero. Minus one is SIMULTANEOUSLY the
-          legacy integer null sentinel, and the legacy markup compares against it
-          directly - the page-module grid enables a control only where a module
-          identifier is not minus one, on a column seeded at zero. Any truthiness test,
-          any positivity test and any null-coalescing default would therefore mis-key the
-          first role, page or module row or discard a real portal, with no error anywhere:
-          the DOM would simply reuse the wrong node. Taking the reference is immune to all
-          of it, because there is no number to misread.
-
-          The row is a tab stop so selection is reachable from the keyboard.
-
-          ⚠⚠ EVERY ROW AFFORDANCE BELOW IS CONDITIONAL ON SOMETHING LISTENING, and that
-          condition is the correction of a defect rather than an optimisation. The row used
-          to carry `tabindex="0"`, an `aria-selected` attribute and both activation handlers
-          unconditionally, while the stylesheets keyed a pointer cursor, a focus ring, hover
-          feedback and press feedback to that attribute's PRESENCE. Six of the seven grids in
-          this application bind no `(rowSelect)` at all, so on those six every row was a tab
-          stop that led nowhere, announced a selection state the grid could not substantiate,
-          and showed a pointer promising an action that did nothing. A page of twenty accounts
-          put twenty inert stops between the search control and the first row command.
-
-          The attributes are therefore bound to null when nothing is listening, which removes
-          them from the document outright rather than setting them to a falsy value — and
-          because the shared table conventions key the cursor, the ring and the tint to
-          `[aria-selected]` being PRESENT, removing the attribute withdraws the whole visual
-          affordance with it. One condition, one source of truth, no way to paint a state the
-          document does not also announce.
-
-          THE HANDLERS STAY DECLARED, and the component refuses inside them instead. A
-          template cannot register a listener conditionally without duplicating the entire
-          row — every cell branch, all four column kinds — and two copies of the body markup
-          would drift. `activateRow` refuses when nothing is listening, so no state moves.
-
-          MIGRATION: the selected state is published PROGRAMMATICALLY, never by colour
-          alone, and it is published ONCE - as the SELECTION state and nothing else. An
-          earlier revision published it twice, adding the current-item state alongside,
-          and that was wrong on the ARIA semantics: the current-item state marks the
-          reader's current position within a set of related items - the page they are on,
-          the step they have reached - which is a concept this component does not model
-          separately from selection. Publishing both made a screen reader announce one
-          state twice in two different vocabularies, one of which was a claim the
-          component could not substantiate. The selection state is the accurate one, it is
-          the one the shared table stylesheet keys both the selected tint and the
-          selectable pointer affordance to, and keying the tint to an announced attribute
-          is what makes it impossible to paint a state that is not also announced. It is
-          present on every selectable row and reads true on exactly one.
-
-          MIGRATION: the legacy selected-row treatment was bold red text with no change
-          of surface, while the tinted surface value sat unused on a different selector.
-          The tint is the correction; the announcement is the addition.
-
-          BOTH ACTIVATION HANDLERS TAKE THE EVENT, and that is what lets a projected
-          control keep its own behaviour. Every press and key inside a row bubbles here,
-          so the handlers test where the event began and stand aside when it began inside
-          something operable - see the component class. Without it, clicking an
-          inline-editable checkbox in an ordinary template cell also selected the row, and
-          a space bar pressed on that checkbox reached the row handler, which cancelled
-          the default and stopped the checkbox toggling.
-        -->
-        <!--
-          THE TWO SPACERS HOLD THE SCROLLABLE HEIGHT OF THE ROWS THAT ARE NOT RENDERED, so the
-          document keeps its true length and the scrollbar its true proportions while only the
-          rows near the viewport exist in the DOM. Each is a valid single-cell row spanning
-          every column, is hidden from assistive technology - it represents no record - and
-          collapses to nothing when windowing is not engaged, which is the ordinary case for
-          every paged screen in this application.
+          THE TWO SPACERS HOLD THE SCROLLABLE HEIGHT OF THE ROWS THAT ARE NOT RENDERED, so the document
+          keeps its true length and the scrollbar its true proportions while only the rows near the
+          viewport exist in the DOM. Each is a valid single-cell row spanning every column, is hidden
+          from assistive technology - it represents no record - and collapses to nothing when windowing
+          is not engaged, which is the ordinary case for every paged screen in this application.
         -->
         @if (leadingSpacerHeight() > 0) {
           <tr aria-hidden="true" class="data-table__spacer">
@@ -487,9 +140,7 @@
         <!--
           ⚠ TRACKED THROUGH A METHOD SO A FEATURE CAN NAME ITS RECORD'S IDENTITY. The fallback inside
           `trackBodyRow` is the row OBJECT, which is what this expression named directly before, so a
-          listing that supplies no `rowKey` renders exactly as it did. A listing that supplies one keeps
-          its row elements across a re-read of the page already shown - a resubmitted search, or the
-          refetch after a removal - instead of rebuilding every row to display nine of the same records.
+          listing that supplies no `rowKey` renders exactly as it did.
         -->
         @for (bodyRow of renderedRows(); track trackBodyRow(bodyRow)) {
           <tr
@@ -505,49 +156,11 @@
               @switch (cell.kind) {
                 @case ('actions') {
                   <!--
-                    MIGRATION: the commands column replaces the legacy image-command
-                    column, and EVERY COMMAND NOW CARRIES AN ACCESSIBLE NAME. Roughly
-                    half of the legacy commands carried none at all - both commands in
-                    the portal listing, the delete command in the role listing, the two
-                    reordering commands in the profile-property listing and all three
-                    commands in the account listing were unlabelled images. Where the
-                    legacy markup did label them it is honoured: the profile-property
-                    listing gave its edit and delete commands visible text, and the
-                    portal-alias listing gave its edit command alternative text and a
-                    resource key. One wording gap is recorded rather than papered over -
-                    the portal resource file supplies 'Edit this Portal' but has NO
-                    delete key at all, its only near-match being a grid-level bulk
-                    action - so a feature authors 'Delete' directly.
-
-                    MIGRATION: nine legacy raster buttons and boolean glyphs are replaced
-                    by text, inline vector art or stylesheet treatment, and this component
-                    references no image asset at all. Named so the replacement is
-                    traceable, all of them GIF: edit, delete, checked, unchecked, up, dn,
-                    userOnline, and the two toolbar glyphs icon_users and
-                    icon_securityroles, each of which carries its sixteen-pixel size as a
-                    filename suffix.
-
-                    MIGRATION: the commands column's heading is normalised. Only the
-                    profile-property listing supplied any heading text for its command
-                    columns - 'Edit', 'Del', 'Dn' and 'Up' - and abbreviations that
-                    terse are unreadable to a screen reader; the other seven grids
-                    supplied nothing. The heading is now a column label like any other,
-                    which is why it arrives through the same column descriptor.
-
-                    MIGRATION: the users-online column is DROPPED. The account listing
-                    declared a template column with NO heading text holding a single
-                    unconditional image with no alternative text - it reported nothing,
-                    because it rendered identically for every user whether online or not.
-                    Users-online is out of scope and no endpoint serves it. A documented
-                    functional reduction.
-
-                    THE HAZARD THIS CELL EXISTS FOR: commands are interactive elements
-                    sitting INSIDE an activatable row, so BOTH event families are stopped
-                    here. Without it, activating Edit or Delete would bubble to the row
-                    and select it as well, and pairing a delete with a selection is the
-                    worst of the available outcomes. A keyboard activation raises a key
-                    event that bubbles exactly as a click does, which is why stopping
-                    clicks alone would not be enough.
+                    The commands column replaces the legacy image-command column, and EVERY COMMAND NOW
+                    CARRIES AN ACCESSIBLE NAME. Roughly half of the legacy commands carried none at all
+                    - both commands in the portal listing, the delete command in the role listing, the
+                    two reordering commands in the profile-property listing and all three commands in
+                    the account listing were unlabelled images.
                   -->
                   <td
                     class="data-table__cell data-table__cell--actions"
@@ -556,10 +169,9 @@
                     (keydown)="blockRowActivation($event)"
                   >
                     <!--
-                      The commands are laid out by this wrapper, not by the cell. A cell
-                      made into a flex container stops being a table cell and drops out
-                      of the row's layout altogether, so the flex context has to live one
-                      level in.
+                      The commands are laid out by this wrapper, not by the cell. A cell made into a
+                      flex container stops being a table cell and drops out of the row's layout
+                      altogether, so the flex context has to live one level in.
                     -->
                     <div class="data-table__actions">
                       @if (cell.template !== null && cell.context !== null) {
@@ -573,41 +185,8 @@
                 }
                 @case ('template') {
                   <!--
-                    MIGRATION: rich cell content arrives as a REAL ANGULAR TEMPLATE
-                    supplied by the feature and rendered through an outlet - never as
-                    injected markup. This is the replacement for the legacy template
-                    columns, including the two inline-editable checkbox cells that posted
-                    back on change and the four boolean columns that swapped one raster
-                    glyph for another.
-
-                    MIGRATION: those boolean columns compared a bound value against the
-                    STRING LITERAL 'true', which only ever worked because the
-                    administration pages compiled with strict type checking switched off
-                    while the class library compiled with it on. The portal listing shows
-                    the same asymmetry from another angle, calling a conversion helper
-                    with the wrong casing. Neither survives translation: a boolean is a
-                    boolean here, every conversion is explicit, and the coercions the
-                    legacy pages relied on are made deliberate rather than inherited.
-
-                    NO CELL-WIDE PROPAGATION BOUNDARY HERE, DELIBERATELY, and this cell is
-                    the reason the row handlers test each event instead. Unlike a commands
-                    cell, an ordinary template cell mixes operable content with row
-                    content: the two legacy inline-editable checkbox cells posted back on
-                    change, yet the rest of such a cell is still material a reader may
-                    click to select the row. Fencing off the whole cell would take row
-                    activation away from most of the grid; the row handlers' per-event test
-                    takes it away only from the control, so the checkbox toggles, the row
-                    is not selected by that press, and clicking the cell's own content
-                    still selects the row.
-                  -->
-                  <!--
-                    THE ROW HEADER SWITCH. A cell that IDENTIFIES its row is a `<th scope="row">`
-                    and every other cell is a `<td>`; the column declares which, and at most one
-                    column per set may. Two elements rather than one with a bound name because a
-                    template cannot compute an element name - and the alternative, hoisting the
-                    body into an `<ng-template>` and outletting it twice, would put an extra
-                    indirection between the outlet and the caller's own template for the sake of
-                    four repeated lines.
+                    Rich cell content arrives as a REAL ANGULAR TEMPLATE supplied by the feature and
+                    rendered through an outlet - never as injected markup.
                   -->
                   @if (cell.rowHeader) {
                     <th scope="row" class="data-table__cell" [attr.data-align]="cell.align">
@@ -631,26 +210,8 @@
                 }
                 @default {
                   <!--
-                    ALREADY-FORMATTED TEXT, produced exactly once inside the row
-                    projection. No function is called from this template: a
-                    template-invoked formatter re-runs on every change-detection pass,
-                    which with one call per cell across a page of rows is the single most
-                    likely performance defect in a grid and defeats the push strategy
-                    outright.
-
-                    MIGRATION: cell text, heading text and the caption are interpolated
-                    as PLAIN TEXT and nothing else. This is parity, not caution. Cell
-                    values and legacy wording are untrusted markup: across the in-scope
-                    resource files 76 values carry an HTML tag, and one of them holds a
-                    live third-party advertising script with a remote source. A literal
-                    scan for an opening script tag finds nothing there because the tags
-                    are stored escaped, which is precisely how such a value survives
-                    review unnoticed. The legacy code escaped too - the access-denied
-                    page wraps an externally supplied message in an HTML encoder before
-                    displaying it, and the page loader encodes exception text the same
-                    way. Interpolation escapes by default, so no markup-injecting binding
-                    and no sanitiser bypass appears anywhere in this file. Rich content
-                    goes through the template column above instead.
+                    Cell text, heading text and the caption are interpolated as PLAIN TEXT and nothing
+                    else. This is parity, not caution.
                   -->
                   <!-- The row header switch; see the note in the template branch above. -->
                   @if (cell.rowHeader) {

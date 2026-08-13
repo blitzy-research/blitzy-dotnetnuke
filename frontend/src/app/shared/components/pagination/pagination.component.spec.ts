@@ -1,31 +1,7 @@
 /**
- * Specifications for the shared pagination component.
- *
- * This file instantiates the component and asserts on rendered DOM rather than on getters, and it locates
- * the four steps by their ACCESSIBLE LABEL rather than by position in a node list. Both choices are
- * deliberate: a getter can be right while the template is wrong - if the class adds its `+ 1` and the
- * template adds another, `displayPage` still reads correctly while the screen shows the wrong number - and
- * locating by index would keep passing if two controls swapped places, which is precisely the defect worth
- * catching.
- *
- * The component is also used in production by three feature screens - `features/user/user-list`,
- * `features/portal/portal-list` and `features/module/module-list`, each rendering `<app-pagination>` - so a
- * production build type-checks it too. What a build cannot check is the behaviour asserted here.
- *
- * The defect no compiler can catch: the two page bases. The boundary is ZERO-BASED and the display is
- * ONE-BASED, and the whole reason this component exists is to hold the single `+ 1` between them. Both bases
- * come from the legacy screens: `Website/admin/Portal/Portals.ascx.vb` passes `CurrentPage - 1` down to the
- * provider, so the DATA base is zero, and `Website/admin/Users/Users.ascx.vb` repeats that subtraction; the
- * same screens hand the pager the UNMODIFIED one-based `CurrentPage` and seed that counter to one, so the
- * DISPLAY base is one. A disagreement about which base crosses this boundary would neither fail to compile
- * nor fail an assertion about a successful response - it would quietly serve the neighbouring page - so
- * emitting `2` when stepping forward from page zero is asserted on its own below.
- *
- * MIGRATION: the component renders NO page-number window, because it exposes no page list to iterate and its
- * public input surface is closed at four members; the legacy ten-link window is not reproduced. There is
- * therefore no button labelled with a page number to click, and the equivalent coupling is asserted instead:
- * the highest page number a person can READ off the pager is parsed out of the rendered readout, and the
- * control that navigates there must emit exactly that number MINUS ONE.
+ * Specifications for the shared pagination component. This file instantiates the component and asserts on
+ * rendered DOM rather than on getters, and it locates the four steps by their ACCESSIBLE LABEL rather
+ * than by position in a node list.
  */
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
@@ -33,10 +9,9 @@ import { By } from '@angular/platform-browser';
 import { PaginationComponent } from './pagination.component';
 
 /**
- * The accessible label of each step, as a person hears it.
- *
- * Written out literally rather than imported from the component, so that a change to its wording is reported
- * by these specifications instead of being silently agreed with.
+ * The accessible label of each step, as a person hears it. Written out literally rather than imported
+ * from the component, so that a change to its wording is reported by these specifications instead of
+ * being silently agreed with.
  */
 const STEP = {
   first: 'First page',
@@ -45,12 +20,7 @@ const STEP = {
   last: 'Last page',
 } as const;
 
-/**
- * The en dash the template renders between the two item numbers, written as `&ndash;`.
- *
- * Escaped rather than pasted so that the expectation cannot be broken by a re-encoding of this file, and so
- * it is unmistakably not a hyphen.
- */
+/** The en dash the template renders between the two item numbers, written as `&ndash;`. */
 const EN_DASH = '\u2013';
 
 describe('PaginationComponent', () => {
@@ -58,22 +28,16 @@ describe('PaginationComponent', () => {
   let component: PaginationComponent;
 
   /**
-   * Every index the component has emitted, in order.
-   *
-   * A captured array rather than a spy, because the COUNT matters as much as the value: a redundant second
-   * emission for one step is a real defect, and `toEqual([1])` catches it while an assertion that the
-   * emitter merely fired would not.
+   * Every index the component has emitted, in order. A captured array rather than a spy, because the
+   * COUNT matters as much as the value: a redundant second emission for one step is a real defect, and
+   * `toEqual([1])` catches it while an assertion that the emitter merely fired would not.
    */
   let emitted: number[];
 
-  // No HTTP providers are registered, and none belongs here: this component issues no request and injects no
-  // service of any kind, so there is no backend to fake and consequently nothing to verify in an
-  // `afterEach`. Registering a testing backend for a component that cannot reach one would assert nothing
-  // and would only invite the mistake of leaving it unverified.
+  // No HTTP providers are registered, and none belongs here: this component issues no request and injects
+  // no service of any kind, so there is no backend to fake and consequently nothing to verify in an
+  // `afterEach`.
   beforeEach(async () => {
-    // Imported rather than declared: the component is standalone, so it is brought in like any other
-    // standalone building block, and this workspace contains no declaring module anywhere that could hold it
-    // instead.
     await TestBed.configureTestingModule({ imports: [PaginationComponent] }).compileComponents();
 
     fixture = TestBed.createComponent(PaginationComponent);
@@ -83,13 +47,10 @@ describe('PaginationComponent', () => {
   });
 
   /**
-   * Binds the three inputs, which are the entire public surface, and renders.
-   *
-   * Bound through `setInput` rather than by assigning to the instance, and the distinction is load-bearing:
-   * all three inputs declare a `transform`, and a transform runs only when Angular sets the input — through
-   * a template binding or through this call. Assigning `component.pageSize = -10` would bypass the transform
-   * entirely and quietly test a state the component can never actually be in, so every specification below
-   * binds this way.
+   * Binds the four inputs and renders. Bound through `setInput`
+   * rather than by assigning to the instance, and the distinction is load-bearing: all three inputs
+   * declare a `transform`, and a transform runs only when Angular sets the input — through a template
+   * binding or through this call.
    *
    * @param page The ZERO-BASED index of the page shown.
    * @param pageSize The number of items on a full page.
@@ -102,13 +63,7 @@ describe('PaginationComponent', () => {
     fixture.detectChanges();
   }
 
-  /**
-   * The fixture's host element, narrowed by a runtime check rather than by an assertion.
-   *
-   * `DebugElement.nativeElement` is typed loosely by the framework, so it is taken as `unknown` and proved
-   * to be an element with `instanceof`. That way a surprise is a named failure here instead of a property
-   * access on something unexpected inside an expectation.
-   */
+  /** The fixture's host element, narrowed by a runtime check rather than by an assertion. */
   function host(): HTMLElement {
     const node: unknown = fixture.debugElement.nativeElement;
 
@@ -121,10 +76,6 @@ describe('PaginationComponent', () => {
 
   /**
    * The single element matching a selector, failing the specification when none is rendered.
-   *
-   * `query` yields `null` for no match, and a non-null assertion would convert a missing element into an
-   * opaque runtime error inside an expectation. Throwing with the selector in the message says which element
-   * was expected and never appeared.
    *
    * @param selector The CSS selector to match.
    * @returns The matching element.
@@ -145,16 +96,12 @@ describe('PaginationComponent', () => {
     throw new Error(`Expected "${selector}" to be an HTML element.`);
   }
 
-  /**
-   * Whether anything matches, for the specifications that assert absence.
-   */
+  /** Whether anything matches, for the specifications that assert absence. */
   function isRendered(selector: string): boolean {
     return fixture.debugElement.query(By.css(selector)) !== null;
   }
 
-  /**
-   * Every rendered step, narrowed to native buttons by a runtime check.
-   */
+  /** Every rendered step, narrowed to native buttons by a runtime check. */
   function steps(): readonly HTMLButtonElement[] {
     return fixture.debugElement.queryAll(By.css('.pagination__button')).map((found) => {
       const node: unknown = found.nativeElement;
@@ -168,12 +115,8 @@ describe('PaginationComponent', () => {
   }
 
   /**
-   * One step, located by the accessible label a person perceives.
-   *
-   * Deliberately NOT by position in the node list. An index would keep passing if two controls swapped
-   * places, whereas this couples each expectation to the affordance it actually describes. Insisting on
-   * exactly one match also catches a duplicated label, which would leave a screen-reader user with two
-   * identically named controls.
+   * One step, located by the accessible label a person perceives. Deliberately NOT by position in the
+   * node list.
    *
    * @param label The step's `aria-label`.
    * @returns The matching button.
@@ -199,34 +142,23 @@ describe('PaginationComponent', () => {
     return found;
   }
 
-  /**
-   * Collapses the runs of whitespace a multi-line template introduces into single spaces.
-   */
+  /** Collapses the runs of whitespace a multi-line template introduces into single spaces. */
   function collapsed(text: string | null): string {
     return text === null ? '' : text.replace(/\s+/g, ' ').trim();
   }
 
-  /**
-   * The rendered range summary, whitespace-collapsed.
-   */
+  /** The rendered range summary, whitespace-collapsed. */
   function statusText(): string {
     return collapsed(element('.pagination__status').textContent);
   }
 
-  /**
-   * The rendered position readout, whitespace-collapsed.
-   */
+  /** The rendered position readout, whitespace-collapsed. */
   function positionText(): string {
     return collapsed(element('.pagination__position').textContent);
   }
 
   /**
    * The two ONE-BASED numbers a person can actually read off the pager.
-   *
-   * Parsed out of rendered text rather than read from a getter, so that an expectation built on them is
-   * coupled to what is on screen. The pattern is anchored and admits digits only, which is what makes a
-   * `NaN` or an `Infinity` in the readout a parse failure with the offending text quoted rather than a
-   * silently passing comparison.
    *
    * @returns The page number shown and the count of pages it sits within.
    */
@@ -249,30 +181,6 @@ describe('PaginationComponent', () => {
   }
 
   describe('whether it renders at all', () => {
-    // MIGRATION: the rule has TWO parts, and they are deliberately not the same rule.
-    //
-    //   * THE GROUP renders as soon as there is a result to count. It carries the range summary, which is
-    //     the only on-screen confirmation of how many records a filter matched. Runtime testing measured
-    //     what tying it to navigability cost: a filter narrowing 250 portals to seven removed the whole
-    //     group, so seven rows were shown with nothing stating that seven was the entire match set.
-    //   * THE STEPS render only when there is somewhere to step to, because four permanently disabled
-    //     buttons would assert the opposite of the truth about what can be reached.
-    //
-    // That split is the legacy USERS behaviour and a documented divergence from the legacy PORTALS screen.
-    // The two behaved differently while running a character-for-character identical guard:
-    //
-    //   * Both ran `If SuppressPager And ctlPagingControl.Visible Then ctlPagingControl.Visible = (PageSize
-    //     < TotalRecords)` — Portals.ascx.vb and Users.ascx.vb, identical.
-    //   * PORTALS hard-coded `SuppressPager` to `True` - `Portals.ascx.vb` has the genuine setting read
-    //     commented out and the property simply returns `True` - so its guard RAN and its pager vanished
-    //     whenever everything fit on one page.
-    //   * USERS read the real `Display_SuppressPager` setting (Users.ascx.vb,
-    //     `CType(setting, Boolean)`) whose default is `False` (Library/Components/Users/UserModuleBase.vb),
-    //     so its guard NEVER RAN and its pager stayed visible even for a single page - status cell and all,
-    //     since `Library/Controls/PagingControl.vb` rendered that cell on every visible pass.
-    //
-    // The portals guard was disabled code, so the users behaviour is the one adopted for both.
-
     it('keeps the group and its count when everything already fits on one page', () => {
       bind(0, 10, 5);
 
@@ -321,13 +229,7 @@ describe('PaginationComponent', () => {
 
   describe('a page size the API could not have produced', () => {
     // The component's documented choice for an unusable page size is to RENDER NOTHING and stay INERT —
-    // never `Infinity`, never `NaN`, never a throw. Zero is not exotic: the shared empty-page factory seeds
-    // `pageSize` to exactly zero and the feature stores hold that empty page as their initial state, so a
-    // screen really does bind zero before its first response arrives. Raising would take the screen down on
-    // its first paint.
-    //
-    // Zero is NOT read as "every match on one page" either. That mode does not exist in this API, and
-    // inventing it would paint a plausible single page a reader could not tell from a real one.
+    // never `Infinity`, never `NaN`, never a throw.
 
     it('renders nothing for a page size of zero rather than treating it as unpaged', () => {
       bind(0, 0, 5000);
@@ -404,15 +306,7 @@ describe('PaginationComponent', () => {
   });
 
   describe('deriving the page count from the bound page size', () => {
-    // MIGRATION: the page size is a PER-PORTAL SETTING and is NEVER assumed here, because the two legacy
-    // paged screens did not even agree on it. A suite that only ever bound 10 could not tell "reads the
-    // input" from "hard-codes a default", so several sizes are used below and every expected number is
-    // written out literally rather than derived from a constant.
-
     it('reads a page size of 25, which neither legacy screen used', () => {
-      // 120 over 25 is 5 pages: four full pages of 25 and a short fifth of 20. Neither legacy page size
-      // could produce 5 from 120 — 20 would give 6 and 10 would give 12 — so this number can only come from
-      // the bound input.
       bind(0, 25, 120);
 
       expect(component.totalPages).toBe(5);
@@ -427,9 +321,6 @@ describe('PaginationComponent', () => {
     });
 
     it('reads a page size of 20, the size the portals screen hard-coded', () => {
-      // 120 over 20 is 6 pages, against the 5 that a size of 25 gives for the same total. Binding both
-      // totals the same and only the size differently is what proves the size is being read rather than
-      // assumed.
       bind(0, 20, 120);
 
       expect(component.totalPages).toBe(6);
@@ -471,14 +362,7 @@ describe('PaginationComponent', () => {
   });
 
   describe('the page base: zero across the boundary, one on the screen', () => {
-    // The specifications in this block are the reason this file exists. Each one defends the single
-    // off-by-one the whole migration hangs on, and not one of them can be caught by a compiler: every value
-    // involved is a `number`, so both the right answer and the off-by-one type-check identically.
-
     it('(a) renders the first page as the number one', () => {
-      // Asserted on RENDERED TEXT, never on `displayPage` alone. A getter-only expectation cannot catch a
-      // template that applies the `+ 1` a second time: the class would still report 1 while the screen
-      // showed 2.
       bind(0, 10, 100);
 
       expect(positionText()).withContext('page index 0 reads as page 1').toBe('1 / 10');
@@ -497,8 +381,8 @@ describe('PaginationComponent', () => {
 
     it('(b) emits ONE when stepping forward from the first page, never TWO', () => {
       // THE single most valuable expectation in this file. Emitting 2 is the double-increment defect: it
-      // happens when the one-based display number is emitted instead of the zero-based index, and the result
-      // is a pager that silently skips a page.
+      // happens when the one-based display number is emitted instead of the zero-based index, and the
+      // result is a pager that silently skips a page.
       bind(0, 10, 100);
 
       step(STEP.next).click();
@@ -508,10 +392,6 @@ describe('PaginationComponent', () => {
     });
 
     it('(c) emits the zero-based index of the page a person reads as the highest number', () => {
-      // MIGRATION: the adaptation recorded in this file's header. There is no page-number window to click —
-      // the component deliberately renders none — so the coupling between a RENDERED LABEL and an EMITTED
-      // VALUE is asserted through the readout instead.
-      //
       // The number 3 here is read OUT OF THE DOM rather than written into the expectation, so the assertion
       // genuinely joins what a person sees to what the component reports. With 25 records at 10 a page a
       // person reads "1 / 3", and the page labelled 3 is index 2.
@@ -547,9 +427,6 @@ describe('PaginationComponent', () => {
 
       expect(emitted).toEqual([]);
 
-      // ...and calling the handlers directly proves the CLASS'S OWN GUARD independently of that, which is
-      // what keeps the emission contract safe if the template ever renders these affordances as something
-      // other than a disabled button.
       component.goPrevious();
       component.goFirst();
 
@@ -648,7 +525,7 @@ describe('PaginationComponent', () => {
     // MIGRATION: the item range is a NET ADDITION. The legacy pager showed only `Page {0} of {1}` —
     // `Website/App_GlobalResources/SharedResources.resx` defines that wording and
     // `Library/Controls/PagingControl.vb` formatted it with the one-based page number — and never named
-    // which records were on show. Both readouts are rendered here.
+    // which records were on show.
 
     it('names the range on show and the total, both one-based and absolute', () => {
       bind(1, 10, 34);
@@ -830,8 +707,8 @@ describe('PaginationComponent', () => {
 
     it('marks the position readout, which is what identifies the current page here', () => {
       // With no page-link window to mark — the class exposes none — this readout is the direct successor to
-      // the legacy inert bracketed marker `<span>[3]</span>`, which had nothing in the accessibility tree at
-      // all.
+      // the legacy inert bracketed marker `<span>[3]</span>`, which had nothing in the accessibility tree
+      // at all.
       bind(2, 25, 120);
 
       const marked = fixture.debugElement.queryAll(By.css('[aria-current="page"]'));
@@ -910,12 +787,9 @@ describe('PaginationComponent', () => {
 
   describe('the public surface', () => {
     /**
-     * The compiled component definition, narrowed by runtime checks at every step.
-     *
-     * Angular publishes no supported way to read a component's change-detection strategy or its declared
-     * inputs, so the compiled definition is read instead. Every member is taken as `unknown` and PROVED
-     * before use, so a future framework change fails here with a message naming what was missing rather than
-     * throwing from inside an expectation.
+     * The compiled component definition, narrowed by runtime checks at every step. Angular publishes no
+     * supported way to read a component's change-detection strategy or its declared inputs, so the
+     * compiled definition is read instead.
      */
     function definition(): {
       readonly onPush: boolean;
@@ -956,20 +830,6 @@ describe('PaginationComponent', () => {
     });
 
     it('accepts exactly four inputs and publishes exactly one output', () => {
-      // The surface is closed at `page`, `pageSize`, `totalCount` and `loading` in and `pageChange` out. A
-      // FIFTH input is a deviation rather than a convenience — and the one that would matter is a page
-      // count, which would let a feature smuggle the server's own total in and bypass the derivation this
-      // component owns. That derivation is asserted immediately below, from these four inputs alone.
-      //
-      // ⚠ `loading` WAS ADDED DELIBERATELY, AGAINST AN EARLIER "CLOSED AT THREE" CLAIM, and the reason is
-      // that the readout is a LIVE REGION rather than a label. The page number is bound to the page that
-      // was REQUESTED, so the number does not snap backwards while the request is in flight — right for the
-      // eye and wrong for the ear, because assistive technology announces the new range against rows that
-      // are still the old ones. Measured under deliberate Slow-3G throttling, "21–30 of 145" was announced
-      // while the grid still held rows 11–20. `loading` defers only the ANNOUNCEMENT, through `aria-busy`,
-      // and changes no number the component derives — which is why it is the narrowest repair available.
-      // Suppressing the region instead would announce its disappearance, and moving the number to the
-      // settled page would make the control appear to ignore the press.
       expect(definition().inputNames).toEqual(['loading', 'page', 'pageSize', 'totalCount']);
       expect(definition().outputNames).toEqual(['pageChange']);
     });
@@ -992,20 +852,13 @@ describe('PaginationComponent', () => {
   // ---------------------------------------------------------------------------
 
   describe('focus after a step that disables itself', () => {
-    // ⚠ FIRST AND LAST DESTROY THEIR OWN AFFORDANCE BY SUCCEEDING. Reaching the last page makes "Last
-    // page" unavailable, the template states that with the native `disabled` property, and a browser
-    // discards focus on an element that becomes disabled - dropping it to `body`. Runtime testing measured
-    // exactly that: focus reached `body` after First and after Last, while Next and Previous retained it
-    // because they stay enabled mid-range, so a keyboard operator was returned to the top of the document
-    // and had to tab through the whole page to reach the pager again.
-    //
-    // The repair hands focus to the step that is still available and in the opposite direction, which is
-    // the only step a person can use next. It is deliberately conditional on focus having been ON the
-    // button, so a programmatic call cannot pull focus out of whatever a person was using.
+    // ⚠ FIRST AND LAST DESTROY THEIR OWN AFFORDANCE BY SUCCEEDING. Reaching the last page makes "Last page"
+    // unavailable, the template states that with the native `disabled` property, and a browser discards
+    // focus on an element that becomes disabled - dropping it to `body`.
 
     /**
-     * Simulates a real activation: focus the control, then click it, the way both a pointer and a keyboard
-     * leave the document.
+     * Simulates a real activation: focus the control, then click it, the way both a pointer and a
+     * keyboard leave the document.
      */
     function activate(label: string): void {
       const control = step(label);
@@ -1082,5 +935,4 @@ describe('PaginationComponent', () => {
         .toBeTrue();
     });
   });
-
 });

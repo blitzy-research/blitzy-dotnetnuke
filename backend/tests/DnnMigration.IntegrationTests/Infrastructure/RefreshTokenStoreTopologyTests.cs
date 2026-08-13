@@ -16,25 +16,13 @@ namespace DnnMigration.IntegrationTests.Infrastructure;
 
 /// <summary>
 /// Verifies that a deployment can replace the refresh-token store without editing the Infrastructure layer,
-/// and that the host refuses to start whenever the store a deployment DECLARES is not the store the container
-/// resolves.
+/// and that the host refuses to start whenever the store a deployment DECLARES is not the store the
+/// container resolves.
 /// </summary>
 /// <remarks>
-/// <para>
-/// WHY THIS SUITE EXISTS. The store this solution ships is process-local: refresh state is neither shared
-/// between replicas nor carried across a restart, because AAP rule T4 forbids adding a table to the existing
-/// DotNetNuke schema, AAP 0.6 freezes a dependency inventory with no distributed-cache client, and AAP 0.9.3
-/// reproduces a two-service container topology verbatim. Two claims are made about that arrangement -
-/// <c>README.md</c> and <c>MIGRATION_NOTES.md</c> both say a deployment needing cross-process continuity may
-/// supply its own store behind <c>IRefreshTokenStore</c>, and the code says a mismatch between the declared
-/// and the registered store is a start-up failure - and a claim about substitutability that no test exercises
-/// is an assurance rather than a property. Every fact below is one of those two claims.
-/// </para>
-/// <para>
 /// The container is composed here rather than through a host, because the question is about REGISTRATION
 /// ORDER and nothing else: no database is reached, no request is served, and the whole graph is built and
 /// interrogated in memory.
-/// </para>
 /// </remarks>
 [Trait("Category", "Integration")]
 public class RefreshTokenStoreTopologyTests
@@ -44,8 +32,8 @@ public class RefreshTokenStoreTopologyTests
         "Server=db.example.invalid,1433;Database=DotNetNuke;User Id=dnn_app;Password=Sfx7!qLp2vRz;Encrypt=True";
 
     /// <summary>
-    /// The store <c>AddInfrastructure</c> registers is this solution's, and both service types share the one
-    /// instance.
+    /// The store <c>AddInfrastructure</c> registers is this solution's, and both service types share the
+    /// one instance.
     /// </summary>
     /// <remarks>
     /// The positive control, and the second half is not decoration: with a process-local store the state IS
@@ -84,9 +72,9 @@ public class RefreshTokenStoreTopologyTests
     /// repository's Infrastructure layer.
     /// </summary>
     /// <remarks>
-    /// This is the documented escape from the process-local limitation, stated as an executable fact. It works
-    /// because the container resolves the LAST registration of a service and because both consumers depend on
-    /// the contract - the two properties the next fact pins down.
+    /// This is the documented escape from the process-local limitation, stated as an executable fact. It
+    /// works because the container resolves the LAST registration of a service and because both consumers
+    /// depend on the contract - the two properties the next fact pins down.
     /// </remarks>
     [Fact]
     public void AStoreRegisteredAfterAddInfrastructureReplacesTheShippedOne()
@@ -107,11 +95,6 @@ public class RefreshTokenStoreTopologyTests
     /// <summary>
     /// Both consumers of the store depend on the CONTRACT, which is what makes the substitution reach them.
     /// </summary>
-    /// <remarks>
-    /// Asserted structurally rather than behaviourally, because that is where the property lives: a consumer
-    /// that took the concrete <c>RefreshTokenStore</c> would keep using the shipped store however the
-    /// container was reconfigured, and no runtime assertion about the substituted store would reveal it.
-    /// </remarks>
     [Fact]
     public void NeitherConsumerBindsToTheConcreteStore()
     {
@@ -134,10 +117,6 @@ public class RefreshTokenStoreTopologyTests
     /// <summary>
     /// Declaring an external store while registering none is refused, naming the key and both remedies.
     /// </summary>
-    /// <remarks>
-    /// The failure this whole mechanism exists for: a deployment that believes it has a shared store, scales
-    /// out behind a load balancer, and finds refresh succeeding or failing according to which replica answers.
-    /// </remarks>
     [Fact]
     public void DeclaringAnExternalStoreWithoutRegisteringOneIsRefused()
     {
@@ -157,11 +136,6 @@ public class RefreshTokenStoreTopologyTests
     /// <summary>
     /// Overriding the store while still declaring the in-process one is refused in the other direction.
     /// </summary>
-    /// <remarks>
-    /// The mirror-image failure, and the reason the check is symmetric: a deployment whose configuration, whose
-    /// health report and whose operators all describe a store the process is not running has no way to notice
-    /// until something depends on the difference.
-    /// </remarks>
     [Fact]
     public void OverridingTheStoreWhileDeclaringTheInProcessOneIsRefused()
     {
@@ -190,11 +164,12 @@ public class RefreshTokenStoreTopologyTests
     }
 
     /// <summary>
-    /// The topology check also forces the store to be constructed, so unusable store settings abort start-up.
+    /// The topology check also forces the store to be constructed, so unusable store settings abort
+    /// start-up.
     /// </summary>
     /// <remarks>
-    /// A deliberate secondary effect of resolving the contract here: without it, a capacity of zero would be
-    /// discovered at a caller's first sign-in rather than while the host was starting.
+    /// A deliberate secondary effect of resolving the contract here: without it, a capacity of zero would
+    /// be discovered at a caller's first sign-in rather than while the host was starting.
     /// </remarks>
     [Fact]
     public void UnusableStoreSettingsAbortStartUpRatherThanTheFirstSignIn()
@@ -215,23 +190,10 @@ public class RefreshTokenStoreTopologyTests
     /// deployment script that replaced it.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: SEC-05. <c>RefreshTokenStore:CreateTableIfMissing</c> used to let the durable store issue
-    /// <c>CREATE TABLE</c> and three <c>CREATE INDEX</c> statements on first use, under whatever identity the
-    /// API runs as. The table is now provisioned by a deployment step and the store only probes for it.
-    /// </para>
-    /// <para>
-    /// THE REFUSAL IS THE POINT, because the alternative is silence: options binding says nothing about keys a
-    /// class does not carry, so a deployment that had set this would have had it disregarded without a word and
-    /// would have discovered the change when its first sign-in failed against an unprovisioned catalogue. The
-    /// message has to name the script, or the operator is left to work out what replaced a setting that has
-    /// simply stopped existing.
-    /// </para>
-    /// <para>
-    /// Asserted against the raw CONFIGURATION rather than against the options object, which is the only place
-    /// the question can be asked at all - the bound object has no such property any more, which its own unit
-    /// test pins.
-    /// </para>
+    /// THE REFUSAL IS THE POINT, because the alternative is silence: options binding says nothing about
+    /// keys a class does not carry, so a deployment that had set this would have had it disregarded without
+    /// a word and would have discovered the change when its first sign-in failed against an unprovisioned
+    /// catalogue.
     /// </remarks>
     [Fact]
     public void AConfigurationStillAuthorisingRuntimeTableCreationStopsTheHost()
@@ -265,18 +227,9 @@ public class RefreshTokenStoreTopologyTests
     /// refused, and the refusal names both remedies.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// ⚠ THE FAILURE THE THREE CHECKS ABOVE CANNOT SEE. MIGRATION: SEC-06. Each of those catches a deployment
-    /// whose declaration and whose container disagree. This one is the case where they agree perfectly and the
-    /// answer is still wrong: production, the shipped default, and more than one replica. That needed no code
-    /// change, no configuration change and produced no warning - a sign-out on replica A left the family
-    /// exchangeable on replica B, a restart forgot every family issued, and both present as intermittent session
-    /// behaviour no log explains.
-    /// </para>
-    /// <para>
-    /// The refusal must name BOTH remedies, because a deployment that reaches it has a genuine choice to make -
-    /// become durable, or state the constraint - and being told only that it is wrong leaves it guessing.
-    /// </para>
+    /// The refusal must name BOTH remedies, because a deployment that reaches it has a genuine choice to
+    /// make - become durable, or state the constraint - and being told only that it is wrong leaves it
+    /// guessing.
     /// </remarks>
     [Fact]
     public void AProductionDeploymentOnAReplicaLocalStoreWithoutTheAcknowledgementIsRefused()
@@ -303,8 +256,8 @@ public class RefreshTokenStoreTopologyTests
     /// <summary>The acknowledgement lets a production host start on the shipped process-local store.</summary>
     /// <remarks>
     /// The first of the two satisfying answers, and the one the shipped container topology uses: a single
-    /// instance is genuinely what <c>docker/docker-compose.yml</c> starts, so the claim is true of it and the
-    /// file makes it on the record.
+    /// instance is genuinely what <c>docker/docker-compose.yml</c> starts, so the claim is true of it and
+    /// the file makes it on the record.
     /// </remarks>
     [Fact]
     public void AProductionDeploymentThatAcknowledgesASingleInstanceStarts()
@@ -323,19 +276,10 @@ public class RefreshTokenStoreTopologyTests
     /// with no acknowledgement.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// The second satisfying answer, and the reason the check keys on
-    /// <see cref="IRefreshTokenStore.IsAuthoritativeAcrossReplicas"/> rather than on a type test. A type test
-    /// would have exempted every deployment-supplied store without asking it anything - including the
-    /// replica-local ones this check exists to catch - while holding a genuinely shared store to a ceremony it
-    /// does not need. Asking the contract lets each store answer for itself.
-    /// </para>
-    /// <para>
-    /// The substitute here is the same stand-in the substitution facts above use, and it reports
-    /// <see langword="true"/> for exactly this reason. Declaring <c>External</c> alongside it is required by the
-    /// three checks above, so this fact composes a topology that is coherent in every other respect - which is
-    /// what makes it evidence about the invariant rather than about a mismatch.
-    /// </para>
+    /// The substitute here is the same stand-in the substitution facts above use, and it reports <see
+    /// langword="true"/> for exactly this reason. Declaring <c>External</c> alongside it is required by the
+    /// three checks above, so this fact composes a topology that is coherent in every other respect - which
+    /// is what makes it evidence about the invariant rather than about a mismatch.
     /// </remarks>
     [Fact]
     public void AProductionDeploymentOnAReplicaSafeStoreStartsWithoutTheAcknowledgement()
@@ -354,12 +298,6 @@ public class RefreshTokenStoreTopologyTests
 
     /// <summary>Non-production environments do not require the acknowledgement.</summary>
     /// <param name="environmentName">The environment to compose under.</param>
-    /// <remarks>
-    /// Deliberate, and the reason is about what an acknowledgement MEANS rather than about convenience. The
-    /// failure it guards is a production scale-out; demanding the same ceremony on a developer machine and in
-    /// every test run would make it a value that is always set, and an acknowledgement that is always set
-    /// records nothing. Pinning the exemption also keeps it from being widened by accident into production.
-    /// </remarks>
     [Theory]
     [InlineData("Development")]
     [InlineData("Staging")]
@@ -375,14 +313,12 @@ public class RefreshTokenStoreTopologyTests
     /// <summary>Composes the infrastructure graph with usable token settings.</summary>
     /// <param name="provider">The refresh-store provider to declare.</param>
     /// <param name="registerAfter">
-    /// Registrations applied AFTER <c>AddInfrastructure</c>, which is where a deployment substituting a store
-    /// puts its own registration.
+    /// Registrations applied AFTER <c>AddInfrastructure</c>, which is where a deployment substituting a
+    /// store puts its own registration.
     /// </param>
     /// <param name="configureSettings">Mutates the store settings before they are registered.</param>
     /// <param name="environment">
-    /// The hosting environment to compose under, or <see langword="null"/> to register none. Null is the
-    /// default and is what every pre-existing fact here uses: the graph is a bare service collection rather
-    /// than a host, so nothing registers an environment unless a fact is ABOUT the environment.
+    /// The hosting environment to compose under, or <see langword="null"/> to register none.
     /// </param>
     /// <returns>The built provider; the caller disposes it.</returns>
     /// <remarks>
@@ -431,11 +367,6 @@ public class RefreshTokenStoreTopologyTests
     }
 
     /// <summary>A hosting environment carrying only the name the topology check reads.</summary>
-    /// <remarks>
-    /// The three path members answer with values that address nothing on disk, because nothing in this graph
-    /// reads a file: the only member under test is the NAME, and a stub offering plausible paths would invite a
-    /// later fact to depend on one.
-    /// </remarks>
     private sealed class StubHostEnvironment : IHostEnvironment
     {
         /// <summary>Initialises a new instance of the <see cref="StubHostEnvironment"/> class.</summary>
@@ -455,24 +386,10 @@ public class RefreshTokenStoreTopologyTests
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
-    /// <summary>
-    /// A stand-in for a deployment-supplied store, registered but never exercised by this suite.
-    /// </summary>
-    /// <remarks>
-    /// It answers every member with a refusal rather than with plausible behaviour, deliberately: these facts
-    /// are about which implementation the container hands out, and a substitute that appeared to work could let
-    /// a fact pass while resolving the wrong instance.
-    /// </remarks>
+    /// <summary>A stand-in for a deployment-supplied store, registered but never exercised by this suite.</summary>
     private sealed class SubstituteRefreshTokenStore : IRefreshTokenStore
     {
         /// <inheritdoc />
-        /// <remarks>
-        /// <see langword="true"/>, because that is the only honest answer for a stand-in whose whole purpose
-        /// is to represent a deployment-supplied store: the contract admits <see langword="true"/> only for
-        /// state every replica shares and a restart survives, and a substitute claiming otherwise would be
-        /// indistinguishable from this solution's own process-local store in exactly the assertion these
-        /// facts make.
-        /// </remarks>
         public bool IsAuthoritativeAcrossReplicas => true;
 
         /// <inheritdoc />
@@ -514,13 +431,6 @@ public class RefreshTokenStoreTopologyTests
             throw new NotSupportedException("The substitute store is registered, not exercised.");
 
         /// <inheritdoc />
-        /// <remarks>
-        /// PRIV-02. Answers with an empty reclamation rather than refusing, and it is the ONE member that does.
-        /// The reclamation sweep is a hosted service that runs on a schedule in every host these facts build,
-        /// so a substitute that threw here would raise out of a background timer during an unrelated
-        /// assertion - a failure attributed to whichever fact happened to be running. Reporting "nothing to
-        /// reclaim" is also true of a store that holds nothing.
-        /// </remarks>
         public Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(RefreshTokenPurgeResult.NothingHeld());
     }

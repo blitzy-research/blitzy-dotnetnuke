@@ -15,47 +15,21 @@ using Xunit;
 namespace DnnMigration.UnitTests.Application;
 
 /// <summary>
-/// Pins the sign-in verdict: which of the seven legacy sign-in outcomes admits a caller, which refuses
-/// one, and which distinct reason each refusal carries.
+/// Pins the sign-in verdict: which of the seven legacy sign-in outcomes admits a caller, which refuses one,
+/// and which distinct reason each refusal carries.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>What this suite owns.</b> The legacy sign-in screen reported its verdict by mutating a status
 /// variable the caller had declared, and every consumer of that variable then decided for itself what the
 /// value meant. That decision is now the service's, taken once, and this suite is where it is held still.
-/// Concretely: the seven-member status ladder and its ordinals, the single predicate that turned a status
-/// into "admitted", the four-way ladder a not-yet-approved account walks, the two weak-credential
-/// outcomes that accompany a success rather than refusing it, and the stable audit name each outcome is
-/// recorded under.
 /// </para>
 /// <para>
 /// <b>What it deliberately leaves to others.</b> Hashing and token algorithms are verified against their
 /// real implementations by the two security suites, so here the hashing and token abstractions are
 /// substituted and only the ORCHESTRATION is asserted - that the comparison is performed, that a pair is
 /// minted exactly once when a credential is accepted and never when one is refused, and that a rotation
-/// retires the value presented to it. Account creation, deletion and listing belong to the account
-/// suite; request-shape rules belong to the sign-in request validator's suite; the response envelope, the
-/// transport status mapping and request throttling belong to the integration suite, because all three are
-/// properties of the hosted pipeline rather than of this service.
-/// </para>
-/// <para>
-/// <b>Every collaborator is an abstraction declared by the domain or application layer.</b> Nothing here
-/// names a persistence type, a hashing library, a token library or a web-framework type; there is no
-/// database context to reach and no host to start. Two of the substituted abstractions have no
-/// implementation in the application layer at all - the token contract is satisfied in the infrastructure
-/// layer and the caller-identity contract at the api edge - which is precisely why they are substituted
-/// here as interfaces and why no test in this file mentions a concrete token type.
-/// </para>
-/// <para>
-/// <b>Time never comes from the ambient clock.</b> Every instant this suite asserts is derived from the
-/// injected clock abstraction returning <see cref="Now"/>, so an expiry, a lock window or a recorded
-/// sign-in instant is reproducible on any machine at any moment.
-/// </para>
-/// <para>
-/// <b>No credential value is ever asserted.</b> The submitted credential and the stored representation
-/// appear only as opaque inputs; no test reads one back, compares one to an expected literal, or asserts
-/// one as a recorded property. The two credential-shaped constants below are deliberately unusable
-/// placeholders.
+/// retires the value presented to it.
 /// </para>
 /// </remarks>
 public class AuthServiceApplicationTests
@@ -63,22 +37,19 @@ public class AuthServiceApplicationTests
     /// <summary>
     /// The tenant every test signs in against. Minus one is deliberate rather than arbitrary: the tenant
     /// table's key is declared as an identity seeded at minus one, so minus one is a REAL tenant and the
-    /// legacy integer stand-in for "absent" was the same value. A suite that used a comfortable positive
-    /// number would never notice a service that had confused the two.
+    /// legacy integer stand-in for "absent" was the same value.
     /// </summary>
     private const int PortalId = -1;
 
     /// <summary>The account identifier every resolved account carries.</summary>
     private const int UserId = 41;
 
-    /// <summary>
-    /// The role identifier a tenant designates as conferring its administration.
-    /// </summary>
+    /// <summary>The role identifier a tenant designates as conferring its administration.</summary>
     /// <remarks>
-    /// ZERO ON PURPOSE. <c>Roles.RoleID</c> is declared <c>IDENTITY (0, 1)</c>
-    /// (01.00.00.SqlDataProvider L114), so zero is the FIRST REAL ROLE rather than an absent value. A suite
-    /// that used a comfortable positive number would pass against a derivation that tested the designation
-    /// for truthiness, or coalesced it, and so read the first role in the installation as no role at all.
+    /// ZERO ON PURPOSE. <c>Roles.RoleID</c> is declared <c>IDENTITY (0, 1)</c> (01.00.00.SqlDataProvider
+    /// L114), so zero is the FIRST REAL ROLE rather than an absent value. A suite that used a comfortable
+    /// positive number would pass against a derivation that tested the designation for truthiness, or
+    /// coalesced it, and so read the first role in the installation as no role at all.
     /// </remarks>
     private const int AdministratorRoleId = 0;
 
@@ -87,8 +58,8 @@ public class AuthServiceApplicationTests
 
     /// <summary>
     /// The submitted credential. Never compared to anything: the substituted hashing abstraction decides
-    /// the verdict, so this value only has to be a non-empty string that is not one of the two the
-    /// product was distributed with.
+    /// the verdict, so this value only has to be a non-empty string that is not one of the two the product
+    /// was distributed with.
     /// </summary>
     private const string SubmittedCredential = "not-a-real-credential-9F2C";
 
@@ -104,9 +75,7 @@ public class AuthServiceApplicationTests
     /// </summary>
     private const string DecoyRepresentation = "decoy-representation-placeholder";
 
-    /// <summary>
-    /// The one sentence every refused credential receives, whatever actually closed the gate.
-    /// </summary>
+    /// <summary>The one sentence every refused credential receives, whatever actually closed the gate.</summary>
     private const string UniformDenial = "The account name or credential is not correct.";
 
     private const string RequestInvalidCode = "auth.request_invalid";
@@ -130,28 +99,18 @@ public class AuthServiceApplicationTests
 
     /// <summary>
     /// The instant the injected clock reports for the whole of every test. Fixed, and in coordinated
-    /// universal time, because the legacy read the server's local wall clock and a suite that did the
-    /// same would pass or fail according to where it ran.
+    /// universal time, because the legacy read the server's local wall clock and a suite that did the same
+    /// would pass or fail according to where it ran.
     /// </summary>
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
-    /// The seven legacy status ordinals paired with the verdict the legacy sign-in screen reached for
-    /// each, transcribed from the two statements that produced it.
+    /// The seven legacy status ordinals paired with the verdict the legacy sign-in screen reached for each,
+    /// transcribed from the two statements that produced it.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Read literally from <c>Login.ascx.vb</c>. L163 seeds the status at the failure member; L164 hands
-    /// it to the account validation to be mutated; L168 tests it against the not-approved member alone;
-    /// and L187 - sitting in the ELSE arm of that test - is the whole of the verdict:
-    /// <c>authenticated = (loginStatus &lt;&gt; UserLoginStatus.LOGIN_FAILURE)</c>.
-    /// </para>
-    /// <para>
     /// Two consequences follow, and neither is obvious from reading L187 alone. The not-approved member
-    /// never reaches that inequality, so it is refused even though it is not the failure member. And
-    /// EVERY OTHER member does reach it, so three members the reader would expect to be refused are
-    /// admitted: the lockout member and the two weak-credential members.
-    /// </para>
+    /// never reaches that inequality, so it is refused even though it is not the failure member.
     /// </remarks>
     private static readonly IReadOnlyDictionary<UserLoginStatus, bool> LegacyVerdict =
         new Dictionary<UserLoginStatus, bool>
@@ -206,34 +165,18 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
-    /// The lockout and weak-credential members are the three the legacy verdict admitted and the
-    /// target does not admit unconditionally - this test states that narrowing and its justification.
+    /// The lockout and weak-credential members are the three the legacy verdict admitted and the target
+    /// does not admit unconditionally - this test states that narrowing and its justification.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// The test name is long on purpose. It is the shortest sentence that says both what the target does
     /// and what the legacy did, so that a reader who breaks this test learns immediately that they have
     /// walked into a deliberate divergence rather than a defect.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task LoginAsync_LockedOutAndInsecurePasswordStatuses_AreTreatedAsFailures_NarrowingLegacyPredicate()
     {
-        // MIGRATION: the legacy verdict was `authenticated = (loginStatus <> LOGIN_FAILURE)` at
-        // Login.ascx.vb:L187, which admitted every member except the failure member and the not-approved
-        // member -- the latter only because L168 diverted it before L187 could be reached. Three members
-        // therefore reached L187 and were admitted that a reader would expect to be refused: the
-        // lockout member (3) and the two weak-credential members (5 and 6).
-        //
-        // MIGRATION: the target narrows that predicate, and it narrows it in TWO DIFFERENT WAYS, which is
-        // why one test states both. The lockout member becomes a genuine REFUSAL, because a lock that
-        // does not lock is the failure of the only control standing between an attacker and unlimited
-        // guessing; Minimal Change Clause item 1 preserves a discovered defect unless it blocks delivery,
-        // and an authentication bypass does. The two weak-credential members stay ADMITTED -- refusing
-        // them would deny an installation the two accounts every installation begins with -- but
-        // they are narrowed from "silently authenticated" to "authenticated WITH an advisory the caller
-        // is told about". Both divergences are recorded in MIGRATION_NOTES.md.
         LegacyVerdict[UserLoginStatus.UserLockedOut].Should().BeTrue(
             "Login.ascx.vb:L187 admitted the lockout member, which is the defect this test documents");
         LegacyVerdict[UserLoginStatus.InsecureAdminPassword].Should().BeTrue(
@@ -271,20 +214,9 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// The legacy had a single boolean verdict and a message key set alongside it, so a caller could not
     /// tell a wrong credential from a locked account from a pending registration except by reading the
-    /// message. Collapsing all of them onto one code here would reproduce that, and the plan's
-    /// requirement is the opposite: the status members that replaced the by-reference argument must map
-    /// onto DISTINCT reasons.
-    /// </para>
-    /// <para>
-    /// Note which distinctions are drawn and which are deliberately withheld. A wrong credential, an
-    /// unknown account and an unknown tenant all answer identically, because telling them apart would
-    /// turn this member into an oracle for account names. The distinctions asserted here are between
-    /// conditions a caller has ALREADY proved a credential for, plus the lock, which is disclosed only to
-    /// a caller entitled to it.
-    /// </para>
+    /// message.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_TheFiveRefusingConditions_CarryFiveDistinctReasonCodes()
@@ -390,19 +322,8 @@ public class AuthServiceApplicationTests
     /// <param name="expectedAdvisory">The advisory the promotion must attach.</param>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the fact that explains why the legacy verdict admitted members 5 and 6, and it is a
-    /// measured fact rather than an inference. At <c>UserController.vb</c> L1144-L1148 an
-    /// already-successful status is REPLACED by the administrator advisory when the account name is the
-    /// distributed one and the credential is one of two the product shipped with; L1149-L1153 does the
-    /// same for the installation owner, replacing the installation-wide success. Neither branch can be
-    /// entered from any other status, so member 5 means "tenant sign-in accepted, credential is one we
-    /// published" and member 6 means the same for an installation-wide sign-in.
-    /// </para>
-    /// <para>
     /// The promotion is therefore not a refusal in disguise. A caller who reaches it has presented the
     /// correct credential; what the outcome adds is that the credential is publicly known.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(false, ShippedAdministratorName, "admin", InsecureAdminPasswordCode)]
@@ -443,13 +364,6 @@ public class AuthServiceApplicationTests
     /// <param name="username">The account name submitted.</param>
     /// <param name="password">The credential submitted.</param>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// Both halves matter. A tenant member who happens to choose one of the distributed credentials is not
-    /// the distributed administrator, and the distributed administrator holding a credential of its own
-    /// choosing is not weakly credentialed. Asserting the absence of the advisory in both directions is
-    /// what stops the promotion from widening into a general credential-quality opinion, which this
-    /// service does not hold.
-    /// </remarks>
     [Theory]
     [InlineData(AccountName, "admin")]
     [InlineData(AccountName, "dnnhost")]
@@ -479,20 +393,9 @@ public class AuthServiceApplicationTests
     /// <param name="expectedAuditName">The audit event name the promotion must be recorded under.</param>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the assertion that makes the promotion semantics observable in the trail rather than only
-    /// in the returned reason, and it is the reason the promotion has to be understood rather than merely
-    /// reproduced. Because the status variable is REPLACED by the promotion, anything downstream that maps
-    /// the status onto an audit name sees the promoted member and not the member it was promoted from -
-    /// and the accepting members are exactly what such a mapping tends to enumerate. An implementation
-    /// that enumerated only members 1 and 2 as acceptances would therefore record a promoted sign-in as a
-    /// refusal, name it with the failure event, and emit a second record besides.
-    /// </para>
-    /// <para>
     /// The required behaviour is stated positively here: one record, describing an acceptance, named for
     /// the pre-promotion outcome, so that an installation still signing in with a published credential is
     /// visible in the trail as the tenant or installation-wide sign-in it actually is.
-    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(false, ShippedAdministratorName, "dnnadmin", "LOGIN_SUCCESS")]
@@ -528,22 +431,11 @@ public class AuthServiceApplicationTests
     // Region C -- ordinal fidelity, and the audit name that depends on the member name.
     // ---------------------------------------------------------------------------------------------
 
-    /// <summary>
-    /// All seven legacy ordinals survive the rename, contiguously and in their original order.
-    /// </summary>
+    /// <summary>All seven legacy ordinals survive the rename, contiguously and in their original order.</summary>
     /// <remarks>
-    /// <para>
     /// The ordinals are load-bearing rather than incidental. The legacy enumeration was declared with
-    /// explicit values 0 through 6, the status travelled by value through a by-reference argument, and
-    /// the value reached comparisons in code the migration does not own. A rename that renumbered them -
-    /// by dropping the member this migration refuses to admit, say, or by reordering for readability -
-    /// would silently change the meaning of every persisted or transmitted integer.
-    /// </para>
-    /// <para>
-    /// Asserted by ordinal AND by count, because either check alone is satisfiable by a wrong
-    /// enumeration: seven members could be misnumbered, and the right numbers could be joined by an
-    /// eighth member the legacy never had.
-    /// </para>
+    /// explicit values 0 through 6, the status travelled by value through a by-reference argument, and the
+    /// value reached comparisons in code the migration does not own.
     /// </remarks>
     [Fact]
     public void UserLoginStatus_PreservesAllSevenLegacyOrdinals()
@@ -568,11 +460,6 @@ public class AuthServiceApplicationTests
     /// <summary>
     /// The rename is a pure case change: every member maps back to the legacy member name it replaced.
     /// </summary>
-    /// <remarks>
-    /// The mapping is asserted rather than assumed because the audit name depends on it. See
-    /// <see cref="AuditEventNames_PreserveTheLegacyLogTypeKeyStrings"/> for why that dependency is the
-    /// consequential one.
-    /// </remarks>
     [Fact]
     public void UserLoginStatus_MembersAreThePascalCaseRenameOfTheLegacyMemberNames()
     {
@@ -608,23 +495,9 @@ public class AuthServiceApplicationTests
     /// across the rename.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// This is the one place where the rename could have broken something invisible. The legacy wrote its
-    /// audit key as <c>loginStatus.ToString</c> at <c>UserController.vb</c> L80, so the key WAS the member
-    /// name: a trail accumulated before the migration holds the strings asserted below, and a query, an
-    /// alert or a report written against that trail matches on them. Renaming the members to PascalCase
-    /// and letting the audit name follow would have silently orphaned every one of those.
-    /// </para>
-    /// <para>
-    /// The migration keeps the two apart deliberately: the members are renamed for the target language
-    /// and the audit names are pinned to the legacy strings, so the audit intent survives the change of
+    /// The migration keeps the two apart deliberately: the members are renamed for the target language and
+    /// the audit names are pinned to the legacy strings, so the audit intent survives the change of
     /// mechanism. No divergence is introduced here, so this needs no entry beyond the mapping itself.
-    /// </para>
-    /// <para>
-    /// The session names are asserted alongside them for a different reason: they have no legacy
-    /// counterpart at all, because the legacy had no rotation to record. Pinning them here stops them
-    /// drifting into the login family's shape and being mistaken for ported names.
-    /// </para>
     /// </remarks>
     [Fact]
     public void AuditEventNames_PreserveTheLegacyLogTypeKeyStrings()
@@ -645,21 +518,6 @@ public class AuthServiceApplicationTests
     /// account the legacy could not.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// <para>
-    /// The legacy audited exactly two of its seven members - the failure member and the lockout member,
-    /// grouped by one condition at <c>UserController.vb</c> L1138 - and audited nothing on a success. The
-    /// grouping is worth naming, because it is the internal contradiction that justifies the narrowing
-    /// asserted in region A: the same code that recorded a lockout attempt as a failure handed the
-    /// caller a status the sign-in screen then treated as authenticated.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the account identifier is recorded. The legacy passed its integer stand-in for "absent"
-    /// - minus one, not a null - at <c>UserController.vb</c> L79, so its trail recorded that a sign-in had
-    /// failed without recording whose, which makes a run against one account indistinguishable from
-    /// scattered mistyping across many. Recorded in MIGRATION_NOTES.md as a deliberate improvement.
-    /// </para>
-    /// </remarks>
     [Fact]
     public async Task LoginAsync_TheTwoOutcomesTheLegacyAudited_AreRecordedUnderTheirLegacyNames()
     {
@@ -684,9 +542,7 @@ public class AuthServiceApplicationTests
         lockedRecord.ActorUserId.Should().Be(UserId);
     }
 
-    /// <summary>
-    /// No audit record carries a credential, a stored representation or a token value.
-    /// </summary>
+    /// <summary>No audit record carries a credential, a stored representation or a token value.</summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
     /// Asserted over the records produced by an accepted sign-in and by a refused one, since the refusal
@@ -737,28 +593,9 @@ public class AuthServiceApplicationTests
     /// <param name="legacyMessageKey">The message key the legacy screen selected in the same circumstance.</param>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// Transcribed from <c>Login.ascx.vb</c> L168-L185, which is the only branch of the legacy verdict that
-    /// did not run through the L187 inequality. Its four leaves were: L175 "EnterCode" when the code fields
-    /// had not yet been shown; L178 "InvalidCode" when they had and a non-empty code had been submitted;
-    /// L180 "EnterCode" again when they had and the field was left empty; and L184 "UserNotAuthorized" when
-    /// the tenant was not on verified registration at all.
-    /// </para>
-    /// <para>
     /// The first and third leaves are one case here rather than two, and that is a faithful mapping rather
     /// than a lost distinction. What separated them in the legacy was <em>whether the screen had already
-    /// rendered the code fields</em> - a property of the page's own view state, not of the request. A
-    /// stateless endpoint has no such memory and needs none: both leaves selected the SAME message key, so
-    /// both map onto the same reason. The distinction that survives is the one that was ever about the
-    /// submission - a code was supplied and was wrong, versus no code was supplied.
-    /// </para>
-    /// <para>
-    /// MIGRATION: these three reasons are RETURNED to the caller, where the legacy set a message key on an
-    /// event that was raised. That is safe here only because of the ordering asserted in
-    /// <see cref="LoginAsync_TheApprovalLadder_IsReachedOnlyAfterTheCredentialIsProved"/>: every caller who
-    /// receives one of them has already presented the account's correct credential, so none of the three
-    /// tells an unauthenticated caller that an account exists.
-    /// </para>
+    /// rendered the code fields</em> - a property of the page's own view state, not of the request.
     /// </remarks>
     [Theory]
     [InlineData(UserRegistrationMode.VerifiedRegistration, null, VerificationRequiredCode, "EnterCode")]
@@ -838,13 +675,6 @@ public class AuthServiceApplicationTests
     /// wrong code.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// The legacy could not reach this condition: the call it made to persist the approval returned nothing
-    /// and reported no failure, so a store that declined was indistinguishable from one that complied.
-    /// Continuing would admit an account the store still holds as unapproved, so the outcome is a refusal -
-    /// but a refusal with its own reason, because the one caller who did everything right should not be
-    /// told its code was wrong.
-    /// </remarks>
     [Fact]
     public async Task LoginAsync_AnApprovalThatCannotBeRecorded_RefusesWithItsOwnReasonAndCommitsNothing()
     {
@@ -872,23 +702,9 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the gate order is deliberately not the legacy order, and this is the test that fixes it
-    /// in place. The legacy provider evaluated the lock, then approval, then the credential, which meant
-    /// the approval gate PERSISTED AN APPROVAL before any credential had been compared. The code it
-    /// compared is not a secret - it is the tenant identifier, a hyphen and the account identifier, both of
-    /// which appear in ordinary links - so a caller who knew only an account name could submit that code
-    /// with a deliberately wrong credential, have the account approved and committed, and then be refused.
-    /// The refusal made it look harmless; the state change was permanent, and it turned a pending
-    /// registration into a live account awaiting only a credential guess.
-    /// </para>
-    /// <para>
-    /// Minimal Change Clause item 1 preserves a discovered defect unless it blocks delivery. This one does,
-    /// so the credential is proved first and MIGRATION_NOTES.md records both the defect and the reordering.
-    /// Every observable outcome for a CORRECT credential is preserved - a verified code still approves and
-    /// signs in, an absent or wrong code is still refused - and the only outcome that changes is the one
-    /// that should never have existed.
-    /// </para>
+    /// The gate order is deliberately not the legacy order, and this is the test that fixes it in place.
+    /// The legacy provider evaluated the lock, then approval, then the credential, which meant the approval
+    /// gate PERSISTED AN APPROVAL before any credential had been compared.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_TheApprovalLadder_IsReachedOnlyAfterTheCredentialIsProved()
@@ -925,9 +741,7 @@ public class AuthServiceApplicationTests
             "and the attempt counts, where under the legacy order a pending account could be guessed at without limit");
     }
 
-    /// <summary>
-    /// An installation-wide account is exempt from the approval ladder.
-    /// </summary>
+    /// <summary>An installation-wide account is exempt from the approval ladder.</summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
     /// The exemption is the legacy provider's own and it follows from how such an account comes into
@@ -949,9 +763,7 @@ public class AuthServiceApplicationTests
             .Which.EventName.Should().Be(AuditEventNames.LoginSuperUser);
     }
 
-    /// <summary>
-    /// A locked account's lock is disclosed only to a caller already entitled to that detail.
-    /// </summary>
+    /// <summary>A locked account's lock is disclosed only to a caller already entitled to that detail.</summary>
     /// <param name="callerIsSuperUser">Whether the signed-in caller is an installation-wide account.</param>
     /// <param name="callerIsTenantAdministrator">Whether the signed-in caller administers this tenant.</param>
     /// <param name="expectedCode">The reason code such a caller receives.</param>
@@ -1022,9 +834,7 @@ public class AuthServiceApplicationTests
         outcome.Value.User.PortalId.Should().Be(PortalId, "and minus one survives as a real tenant identifier");
     }
 
-    /// <summary>
-    /// No refusal mints a token, whichever gate closed.
-    /// </summary>
+    /// <summary>No refusal mints a token, whichever gate closed.</summary>
     /// <param name="arrangement">The refusing condition to arrange.</param>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
@@ -1060,16 +870,10 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// The configured lifetime lives on the bound token settings and is read by the token implementation,
     /// not by this service - which is exactly why the assertion is that the value is PROPAGATED unchanged.
     /// A service that recomputed the expiry from its own clock reading would produce a value that drifted
     /// from the one the token itself asserts, and the two would disagree by however long the sign-in took.
-    /// </para>
-    /// <para>
-    /// The instant is derived from the injected clock rather than the ambient one, which is what makes the
-    /// assertion exact rather than approximate.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task LoginAsync_PropagatesTheMintedExpiryUnchanged()
@@ -1120,17 +924,9 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// Rotation is single-use by contract: exchanging a value mints a successor and marks the presented
     /// value used in the same atomic unit, so the retirement is asserted as a delegation to that contract
     /// rather than re-implemented here.
-    /// </para>
-    /// <para>
-    /// The identity on the returned pair is re-read from stored state rather than copied from the retired
-    /// token, so a role or permission change takes effect at the next exchange. Nothing the caller supplies
-    /// alongside the token can influence whose successor is minted - the request carries the token and
-    /// nothing else.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task RefreshAsync_AValidToken_RotatesThroughTheTokenContractAndReReadsTheCaller()
@@ -1171,11 +967,6 @@ public class AuthServiceApplicationTests
     /// nothing.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// The four conditions are deliberately indistinguishable, so a guessed value cannot be confirmed to
-    /// have once existed. Collapsing them is a narrowing of information rather than an inability to tell
-    /// them apart.
-    /// </remarks>
     [Fact]
     public async Task RefreshAsync_AnUnknownOrExpiredToken_ReportsOneReasonAndMintsNothing()
     {
@@ -1198,9 +989,7 @@ public class AuthServiceApplicationTests
             Times.Never);
     }
 
-    /// <summary>
-    /// A blank refresh token is refused without troubling the token store.
-    /// </summary>
+    /// <summary>A blank refresh token is refused without troubling the token store.</summary>
     /// <param name="presented">The blank value submitted.</param>
     /// <returns>A task representing the assertions.</returns>
     [Theory]
@@ -1260,28 +1049,15 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
-    /// A logout revokes the refresh token and does nothing else: there is no server-side retraction of
-    /// an access token to assert.
+    /// A logout revokes the refresh token and does nothing else: there is no server-side retraction of an
+    /// access token to assert.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the legacy logout mechanism has no counterpart, and this is the most consequential absence on the
-    /// contract. It destroyed the ticket cookie and four further cookies by name, back-dating two of them
-    /// so the browser dropped them at once, and that ended the session instantly because the session lived
-    /// in the cookie. A bearer access token is self-contained and asserts its own validity, so once one has
-    /// been handed to a caller no server action retracts it. A logout therefore has exactly three parts:
-    /// the refresh token is revoked so no successor can be minted, the short access-token lifetime elapses,
-    /// and the client discards its own copy. No list of rejected access tokens is introduced and no
-    /// per-request revocation lookup is performed - either would turn stateless bearer authentication back
-    /// into the server-held session this migration exists to leave behind. Recorded in MIGRATION_NOTES.md.
-    /// </para>
-    /// <para>
-    /// MIGRATION: the persistence flag that accompanied the legacy ticket has no counterpart either.
-    /// Surviving beyond the browser session is exactly what that cookie was for, and a rotating refresh
-    /// token does the same job while being single-use and revocable, which the cookie was neither. Recorded
-    /// in MIGRATION_NOTES.md.
-    /// </para>
+    /// MIGRATION: the legacy logout mechanism has no counterpart, and this is the most consequential
+    /// absence on the contract. It destroyed the ticket cookie and four further cookies by name,
+    /// back-dating two of them so the browser dropped them at once, and that ended the session instantly
+    /// because the session lived in the cookie.
     /// </remarks>
     [Fact]
     public async Task LogoutAsync_RevokesTheRefreshTokenAndNothingElse()
@@ -1311,8 +1087,8 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
-    /// A logout with nothing to revoke succeeds, because the caller has already achieved the only
-    /// outcome it asked for.
+    /// A logout with nothing to revoke succeeds, because the caller has already achieved the only outcome
+    /// it asked for.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     [Fact]
@@ -1331,40 +1107,16 @@ public class AuthServiceApplicationTests
             Times.Never);
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Region F -- replacing a superseded stored representation on the first accepted sign-in.
-    // ---------------------------------------------------------------------------------------------
-
     /// <summary>
     /// A stored representation the hashing abstraction considers superseded is replaced once, on the first
     /// accepted sign-in, and the sign-in still succeeds.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// MIGRATION: the credential store changes from reversible to one-way, and that is a security fix rather
-    /// than a refactor. The original schema held the value in clear text, and the membership provider was
-    /// later configured to store it reversibly with retrieval enabled, decryptable with a key committed to
-    /// source control. A one-way store cannot verify a value held that way, so the migration path is to
-    /// replace the stored representation the first time a credential is successfully presented, with an
-    /// administrative reset as the fallback for an account that never signs in again. Recorded in
-    /// MIGRATION_NOTES.md.
-    /// </para>
-    /// <para>
-    /// MIGRATION: credential retrieval is not carried forward at all, and neither is the reminder message
-    /// the recovery screen sent. The legacy member returned the caller's own credential in clear text
-    /// whenever retrieval was enabled, and the recovery screen decrypted it and mailed it. A one-way store
-    /// makes recovery impossible by construction, which is the point of adopting one, so no member returns,
-    /// echoes or reconstructs a credential and no recovery flow exists to be tested. Recorded in
-    /// MIGRATION_NOTES.md, and asserted structurally by
-    /// <see cref="AuthService_ExposesNoMemberThatCouldReturnACredential"/>.
-    /// </para>
-    /// <para>
-    /// The replacement is written through the account store's own explicit statement rather than through
-    /// the tracked graph, so an ordinary sign-in still commits nothing - see
-    /// <see cref="LoginAsync_AnOrdinarySignIn_CommitsNothing"/>, which states that as a property in its own
-    /// right.
-    /// </para>
+    /// The credential store changes from reversible to one-way, and that is a security fix rather than a
+    /// refactor. The original schema held the value in clear text, and the membership provider was later
+    /// configured to store it reversibly with retrieval enabled, decryptable with a key committed to source
+    /// control.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_ASupersededStoredRepresentation_IsReplacedOnceOnTheFirstAcceptedSignIn()
@@ -1440,14 +1192,10 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
-    /// A stored representation the hashing abstraction is content with is left alone and nothing is written.
+    /// A stored representation the hashing abstraction is content with is left alone and nothing is
+    /// written.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// The replacement must be a one-time migration step rather than something every sign-in performs.
-    /// Rewriting a current representation on every sign-in would turn a read-mostly path into a write path
-    /// for no benefit, and would make every sign-in depend on the store accepting a write.
-    /// </remarks>
     [Fact]
     public async Task LoginAsync_ACurrentStoredRepresentation_IsNeitherReplacedNorWritten()
     {
@@ -1474,12 +1222,6 @@ public class AuthServiceApplicationTests
     /// representation is.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
-    /// <remarks>
-    /// The condition worth guarding is the pairing: an account whose representation is superseded AND whose
-    /// credential was wrong. Replacing on that path would let a caller who cannot sign in still cause a
-    /// write, and would replace the stored representation with one derived from a credential that was
-    /// rejected.
-    /// </remarks>
     [Fact]
     public async Task LoginAsync_ARefusedCredential_NeitherReplacesNorWrites()
     {
@@ -1514,7 +1256,7 @@ public class AuthServiceApplicationTests
     /// The credential was correct, so refusing the caller would deny a legitimate sign-in over a
     /// housekeeping step. Saying nothing is the other mistake: an installation whose stored representations
     /// are stuck below the cost it believes it enforces has no other way of finding out, and a store of
-    /// credentials must not report on itself by logging. The closed diagnostic vocabulary is the route.
+    /// credentials must not report on itself by logging.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_AReplacementTheStoreDeclines_StillSignsInAndReportsTheAnomaly()
@@ -1536,25 +1278,12 @@ public class AuthServiceApplicationTests
             Times.Once);
     }
 
-    /// <summary>
-    /// An ordinary accepted sign-in commits nothing through the unit of work.
-    /// </summary>
+    /// <summary>An ordinary accepted sign-in commits nothing through the unit of work.</summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// Worth stating explicitly, because the natural expectation is the opposite. A sign-in updates
     /// bookkeeping - the last accepted instant, the cleared attempt counters, and on the first accepted
-    /// sign-in the replaced stored representation - so it looks like a write path. Every one of those
-    /// writes goes to the external membership store through an explicit statement rather than through the
-    /// tracked graph, so there is nothing for a commit to flush.
-    /// </para>
-    /// <para>
-    /// The single exception is the verified-registration approval, which changes a tracked row and is the
-    /// only branch that opens the transaction boundary; that case is asserted in
-    /// <see cref="LoginAsync_TheCorrectVerificationCode_ApprovesTheAccountAndCommitsExactlyOnce"/>.
-    /// Asserting the absence here is what stops a future revision from committing on every sign-in and
-    /// making the transaction boundary meaningless.
-    /// </para>
+    /// sign-in the replaced stored representation - so it looks like a write path.
     /// </remarks>
     [Fact]
     public async Task LoginAsync_AnOrdinarySignIn_CommitsNothing()
@@ -1586,18 +1315,10 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// The shipped policy is preserved verbatim rather than tightened: a minimum length of seven, no
     /// required non-alphanumeric characters, no question-and-answer pair, and email uniqueness not
     /// enforced. Tightening any of them during a migration would bar existing members from accounts they
     /// hold today, so hardening is left as a separate, explicit decision.
-    /// </para>
-    /// <para>
-    /// Rule-for-rule coverage of those four settings belongs to the sign-in request validator's suite, which
-    /// owns the shape of a submission. What is asserted here is narrower and is this service's own
-    /// responsibility: that it HONOURS the policy it is handed rather than substituting a constant of its
-    /// own.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task LoginAsync_HonoursTheBoundLockOutPolicyRatherThanAConstantOfItsOwn()
@@ -1624,12 +1345,6 @@ public class AuthServiceApplicationTests
     /// The shipped policy values are carried across unchanged, which is what keeps existing members able to
     /// sign in.
     /// </summary>
-    /// <remarks>
-    /// Read from the legacy provider registration: retrieval and reset enabled, no question-and-answer
-    /// requirement, a minimum length of seven, no required non-alphanumeric characters, and email
-    /// uniqueness not enforced. Retrieval is the one setting deliberately NOT carried across, because the
-    /// one-way store makes it impossible.
-    /// </remarks>
     [Fact]
     public void PasswordPolicyOptions_DefaultsToTheShippedLegacyPolicy()
     {
@@ -1643,22 +1358,13 @@ public class AuthServiceApplicationTests
             "reset is the supported recovery path now that retrieval is not carried forward");
     }
 
-    /// <summary>
-    /// Four different reasons for rejecting a credential produce one indistinguishable answer.
-    /// </summary>
+    /// <summary>Four different reasons for rejecting a credential produce one indistinguishable answer.</summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
     /// An unknown tenant, an unknown account, an account holding no stored representation and a wrong
     /// credential are all answered identically. Any difference between them - a different code, a different
     /// sentence, even a different set of properties on the returned reason - turns this member into an
     /// oracle for account names or for the installation's tenants.
-    /// </para>
-    /// <para>
-    /// The comparison is also performed on every one of the four, which is what stops the RESPONSE TIME
-    /// from drawing the distinction that the wording refuses to draw. Identical wording over a
-    /// short-circuited path is not uniformity.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task LoginAsync_NoRejectedCredential_RevealsWhichGateClosed()
@@ -1697,9 +1403,9 @@ public class AuthServiceApplicationTests
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// The asserted identity is read from the injected caller-identity abstraction rather than from anything
-    /// the request carried, and the snapshot crossing this boundary is a data-transfer type: no account
-    /// entity leaves the service.
+    /// The asserted identity is read from the injected caller-identity abstraction rather than from
+    /// anything the request carried, and the snapshot crossing this boundary is a data-transfer type: no
+    /// account entity leaves the service.
     /// </remarks>
     [Fact]
     public async Task GetCurrentUserAsync_DescribesASignedInCallerAndNoOtherKind()
@@ -1727,24 +1433,15 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
-    /// The caller snapshot answers portal administration from the tenant's own designation, and never from a
-    /// role name.
+    /// The caller snapshot answers portal administration from the tenant's own designation, and never from
+    /// a role name.
     /// </summary>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// <para>
-    /// THE FIRST TWO CASES ARE THE POINT OF THIS TEST AND THEY DISAGREE WITH EACH OTHER ON PURPOSE. Both
-    /// arrange a caller holding a role NAMED <c>Administrators</c>; they differ only in whether the tenant's
-    /// <c>AdministratorRoleId</c> column names the role the caller actually holds. A client that decided
-    /// administration by testing the published role list for that literal name - which is what the console
-    /// used to do - would answer both identically and be wrong about one of them.
-    /// </para>
-    /// <para>
     /// The name is operator-editable, the designated role need not be named anything in particular, and a
     /// role of the same name may belong to another tenant entirely; so the name is evidence of nothing and
     /// the column is evidence of everything. The published names are asserted to be UNCHANGED in each case,
     /// which is what shows the new fact is derived independently of them rather than summarising them.
-    /// </para>
     /// </remarks>
     [Fact]
     public async Task GetCurrentUserAsync_DecidesPortalAdministrationFromTheDesignationAndNotFromARoleName()
@@ -1840,18 +1537,9 @@ public class AuthServiceApplicationTests
     /// verdict by mutating an argument.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Asserted structurally rather than by inspection, because both properties are the kind that a
-    /// well-meaning addition breaks. The by-reference argument is the shape this whole contract exists to
-    /// retire: three legacy members reported a sign-in verdict by mutating a status variable their caller
-    /// had declared, and all three collapse into one member returning a result. An added output argument
-    /// would quietly reintroduce the pattern.
-    /// </para>
-    /// <para>
     /// The credential half is the security property. No member may return a credential, a stored
     /// representation, a verification answer or a signing key, and there is no recovery member for one to
     /// hide behind - which is what makes the one-way store's guarantee real rather than aspirational.
-    /// </para>
     /// </remarks>
     [Fact]
     public void AuthService_ExposesNoMemberThatCouldReturnACredential()
@@ -1886,9 +1574,7 @@ public class AuthServiceApplicationTests
                 "and nothing credential-shaped travels on the response either");
     }
 
-    /// <summary>
-    /// The refusing conditions a sign-in can end in, named so that a theory can walk all of them.
-    /// </summary>
+    /// <summary>The refusing conditions a sign-in can end in, named so that a theory can walk all of them.</summary>
     /// <remarks>
     /// Public because a theory's parameter type may not be less accessible than the theory itself. The
     /// vocabulary is closed deliberately: a new refusing branch in the service should appear here and
@@ -1914,16 +1600,9 @@ public class AuthServiceApplicationTests
         /// <summary>The account has not yet been admitted to the tenant.</summary>
         AwaitingApproval = 5,
     }
-    /// <summary>
-    /// An assignment of one role whose validity window is open at the instant the tests judge.
-    /// </summary>
+    /// <summary>An assignment of one role whose validity window is open at the instant the tests judge.</summary>
     /// <param name="roleId">The role held.</param>
     /// <returns>The assignment.</returns>
-    /// <remarks>
-    /// Both bounds are stated rather than left absent, so the case proves the window is EVALUATED and not
-    /// merely ignored: an implementation that never looked at the dates would pass an open-ended assignment
-    /// just as readily.
-    /// </remarks>
     private static UserRole ActiveAssignment(int roleId) => new()
     {
         UserId = UserId,
@@ -1932,9 +1611,7 @@ public class AuthServiceApplicationTests
         ExpiryDate = Now.AddDays(1),
     };
 
-    /// <summary>
-    /// An assignment of one role whose validity window has already closed.
-    /// </summary>
+    /// <summary>An assignment of one role whose validity window has already closed.</summary>
     /// <param name="roleId">The role formerly held.</param>
     /// <returns>The assignment.</returns>
     private static UserRole ExpiredAssignment(int roleId) => new()
@@ -1945,23 +1622,15 @@ public class AuthServiceApplicationTests
         ExpiryDate = Now.AddDays(-1),
     };
 
-
     /// <summary>
     /// Assembles the service over substituted abstractions, with every default set to the state a shipped
     /// installation is actually in.
     /// </summary>
     /// <remarks>
-    /// <para>
-    /// Deliberately a private nested type rather than a shared file. Each test mutates only the one or two
-    /// properties its condition depends on, so a reader sees the whole arrangement in the test body and
-    /// nothing is inherited invisibly from somewhere else in the project.
-    /// </para>
-    /// <para>
     /// Every substituted collaborator is an abstraction declared by the domain or application layer. Two of
     /// them - the token contract and the caller-identity contract - have no implementation in the
     /// application layer at all, which is exactly why they are substituted as interfaces here and why no
     /// concrete token type is named anywhere in this file.
-    /// </para>
     /// </remarks>
     private sealed class SignInHarness
     {
@@ -2070,8 +1739,8 @@ public class AuthServiceApplicationTests
 
         /// <summary>
         /// The bound token settings. Read by this suite to derive the expiry the token contract is arranged
-        /// to mint, which is how the expiry assertion stays tied to the configured lifetime rather than to a
-        /// magic number.
+        /// to mint, which is how the expiry assertion stays tied to the configured lifetime rather than to
+        /// a magic number.
         /// </summary>
         public JwtOptions TokenSettings { get; }
 
@@ -2081,14 +1750,12 @@ public class AuthServiceApplicationTests
         /// <summary>The role names the account holds in this tenant.</summary>
         public IReadOnlyList<string> RoleNames { get; set; }
 
-        /// <summary>
-        /// The role assignments the role store answers with for the signed-in caller.
-        /// </summary>
+        /// <summary>The role assignments the role store answers with for the signed-in caller.</summary>
         /// <remarks>
         /// Held apart from <see cref="RoleNames"/> deliberately. The names are what the snapshot PUBLISHES;
         /// these carry the role KEYS and the validity windows the advisory administration fact is decided
-        /// from, and the two are not interchangeable - the designation is a column naming a role identifier,
-        /// so a test that arranged only a name could not exercise the decision at all.
+        /// from, and the two are not interchangeable - the designation is a column naming a role
+        /// identifier, so a test that arranged only a name could not exercise the decision at all.
         /// </remarks>
         public IReadOnlyList<UserRole> RoleAssignments { get; set; }
 
@@ -2451,9 +2118,7 @@ public class AuthServiceApplicationTests
             return harness;
         }
 
-        /// <summary>
-        /// Builds a harness arranged to end in one named refusing condition.
-        /// </summary>
+        /// <summary>Builds a harness arranged to end in one named refusing condition.</summary>
         /// <param name="arrangement">The condition to arrange.</param>
         /// <returns>The arranged harness.</returns>
         /// <exception cref="ArgumentOutOfRangeException">The condition is not a member of the vocabulary.</exception>

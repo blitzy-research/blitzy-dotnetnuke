@@ -8,8 +8,8 @@ using Xunit;
 namespace DnnMigration.UnitTests.Validation;
 
 /// <summary>
-/// Pins the dedicated portal-settings request to the legacy Site Settings rule set and to the shared
-/// update vocabulary used by the general portal write.
+/// Pins the dedicated portal-settings request to the legacy Site Settings rule set and to the shared update
+/// vocabulary used by the general portal write.
 /// </summary>
 public sealed class UpdatePortalSettingsRequestValidatorTests
 {
@@ -43,43 +43,18 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
         settingsMembers.Should().Equal(sharedMembers);
         settingsMembers.Should().Equal(generalMembers);
 
-        // TWENTY-SEVEN: the twenty-six shared editable members, plus the optimistic-concurrency token. The
-        // token is the only member of the shared interface that describes no portal attribute and the only one
-        // PortalMappings.ApplyUpdate never reads - it states which revision the caller read so a stale
-        // whole-record replace is refused rather than applied. It is asserted HERE, alongside the two
-        // set-equality checks above, because the value of this test is that the two portal write paths carry
-        // IDENTICAL member sets: a token on only one of them would move the lost-update surface to the sibling
-        // route rather than remove it, and that asymmetry would fail on one of those two lines.
+        // TWENTY-SEVEN: the twenty-six shared editable members, plus the optimistic-concurrency token.
         settingsMembers.Should().HaveCount(27);
         settingsMembers.Should().Contain(nameof(UpdatePortalSettingsRequest.ConcurrencyToken));
         settingsMembers.Should().NotContain(nameof(UpdatePortalRequest.PortalId));
         settingsMembers.Should().NotContain(nameof(PortalSettingsDto.Guid));
     }
 
-    /// <summary>
-    /// A blank portal title is ACCEPTED, because the legacy screen accepted one and stored it.
-    /// </summary>
+    /// <summary>A blank portal title is ACCEPTED, because the legacy screen accepted one and stored it.</summary>
     /// <remarks>
-    /// <para>
     /// This case asserts the absence of a rule, which is why it exists: a NotEmpty() on this member was
     /// declared here and refused all three of these inputs, defended on the grounds that the legacy null
     /// contract rewrote the empty string to a database null and the NOT NULL column then rejected it.
-    /// </para>
-    /// <para>
-    /// The legacy source disproves that.
-    /// <c>Library/Providers/DataProviders/SqlDataProvider/SqlDataProvider.vb:L632</c> passes
-    /// <c>PortalName</c> RAW while wrapping fourteen of its twenty-seven sibling arguments in
-    /// <c>GetNull</c>; <c>PortalController.vb:L1568-L1570</c> forwards the parameter untouched; and
-    /// <c>Website/admin/Portal/SiteSettings.ascx.vb:L772</c> passes <c>txtPortalName.Text</c> as typed.
-    /// A blank title therefore reached <c>[PortalName] [nvarchar] (128) NOT NULL</c> as the empty
-    /// string, which that constraint accepts. The legacy markup agrees: two CompareValidators on 568
-    /// lines, no RequiredFieldValidator anywhere, and <c>MaxLength="128"</c> the only attribute on the
-    /// control.
-    /// </para>
-    /// <para>
-    /// Refusing it broke Minimal Change Clause item 3 -- identical inputs must produce identical
-    /// outcomes -- so the rule is gone and this case pins its absence.
-    /// </para>
     /// </remarks>
     /// <param name="portalName">The blank form under test.</param>
     [Theory]
@@ -134,9 +109,7 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
             .Which.PropertyName.Should().Be(nameof(UpdatePortalSettingsRequest.DefaultLanguage));
     }
 
-    /// <summary>
-    /// A date accepted by the CLR but not by SQL Server's legacy datetime column is a field error.
-    /// </summary>
+    /// <summary>A date accepted by the CLR but not by SQL Server's legacy datetime column is a field error.</summary>
     [Fact]
     public void ExpiryDate_MustBeRepresentableByTheStoredColumn()
     {
@@ -149,9 +122,7 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
             .Which.PropertyName.Should().Be(nameof(UpdatePortalSettingsRequest.ExpiryDate));
     }
 
-    /// <summary>
-    /// The validator does not invent a non-negative rule the legacy screen never declared.
-    /// </summary>
+    /// <summary>The validator does not invent a non-negative rule the legacy screen never declared.</summary>
     [Fact]
     public void NegativeHostTerms_AreNotRejectedByShapeValidation()
     {

@@ -3,16 +3,7 @@ import { provideRouter } from '@angular/router';
 
 import { NotFoundComponent } from './not-found.component';
 
-/**
- * The heading and the recovery caption, RESTATED INDEPENDENTLY rather than read back off the
- * component.
- *
- * Reading an expectation out of the subject makes actual and expected move together, so an
- * accidental edit to the shipped wording would update both sides at once and the spec would stay
- * green while readers saw different words. Restating them here is what makes these assertions an
- * oracle: changing either caption now fails this spec, which is the signal a caption change
- * should produce.
- */
+/** The heading and the recovery caption, RESTATED INDEPENDENTLY rather than read back off the component. */
 const EXPECTED_TITLE = 'Not Found';
 
 const EXPECTED_RECOVERY_LABEL = 'Return to Administration Home';
@@ -29,9 +20,9 @@ describe('NotFoundComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [NotFoundComponent],
-      // The template declares a `routerLink`, which needs the directive's providers to resolve.
-      // An empty route table is enough: nothing here navigates, and the assertion below reads
-      // the rendered `href` rather than following it.
+      // The template declares a `routerLink`, which needs the directive's providers to resolve. An empty
+      // route table is enough: nothing here navigates, and the assertion below reads the rendered `href`
+      // rather than following it.
       providers: [provideRouter([])],
     }).compileComponents();
 
@@ -48,11 +39,6 @@ describe('NotFoundComponent', () => {
   }
 
   it('states a level-one heading, which is the defect that made this component necessary', () => {
-    // The wildcard route used to load the shared empty state directly, and that component
-    // states its heading as an `<h2>` because eight screens embed it BENEATH their own page
-    // heading. Rendered as a whole routed view it therefore left the address with no `<h1>`
-    // at all. Asserting the level explicitly - not merely that the words appear somewhere -
-    // is what keeps that regression from returning.
     const heading = query<HTMLHeadingElement>('h1');
 
     expect(heading).not.toBeNull();
@@ -65,9 +51,8 @@ describe('NotFoundComponent', () => {
     );
 
     expect(headings.length).toBeGreaterThan(0);
-    // The FIRST heading in document order must be the h1. The shared empty state contributes
-    // its own h2 below, which is correct and expected - what must never happen again is an h2
-    // preceding the h1.
+    // The FIRST heading in document order must be the h1. The shared empty state contributes its own h2
+    // below, which is correct and expected - what must never happen again is an h2 preceding the h1.
     expect(headings[0].tagName).toBe('H1');
   });
 
@@ -81,19 +66,13 @@ describe('NotFoundComponent', () => {
     expect(links.length).toBe(1);
     expect(textOf(links[0])).toBe(EXPECTED_RECOVERY_LABEL);
 
-    // `routerLink` resolves to an href of the root, so the navigation stays inside the
-    // application. A document reload would end the session, because the access token is held
-    // in memory only - recovering from a mistyped address must not cost the reader their
-    // session.
+    // `routerLink` resolves to an href of the root, so the navigation stays inside the application. A
+    // document reload would end the session, because the access token is held in memory only - recovering
+    // from a mistyped address must not cost the reader their session.
     expect(links[0].getAttribute('href')).toBe('/');
   });
 
   it('fills the empty state action slot that a router-loaded component could never fill', () => {
-    // The second half of the original defect: `empty-state` ends in an action slot wrapping an
-    // `<ng-content />`, and a component loaded straight from the router has no host template
-    // projecting into it, so the slot was structurally guaranteed to be empty. Asserting the
-    // slot has an element child - not just that a link exists somewhere - is what proves the
-    // projection actually lands where the reader looks for it.
     const actions = query('.empty-state__actions');
 
     expect(actions).not.toBeNull();

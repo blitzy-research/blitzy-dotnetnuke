@@ -1,214 +1,3 @@
-//
-// Specification for the account-administration store.
-//
-// ---------------------------------------------------------------------------
-// WHAT THIS FILE PROVES
-// ---------------------------------------------------------------------------
-// Six claims, and each one is a place where a plausible implementation is wrong:
-//
-//   1. THE WIRE PAGE INDEX IS ZERO-BASED. The first page travels as 0, the third as
-//      2, and no arithmetic is applied on the way out.
-//   2. THE PAGE SIZE COMES FROM THE TENANT'S ACCOUNT POLICY. It is read from a
-//      response and never written as a constant, so a store that hard-coded ten
-//      fails here rather than in front of an administrator who configured
-//      twenty-five.
-//   3. ALL THREE SEARCHES ARE PREFIX MATCHES CARRYING NO WILDCARD. The text travels
-//      exactly as typed - untrimmed, un-case-folded and undecorated.
-//   4. ABSENCE IS OMISSION. The legacy reserved word that meant "no search" is never
-//      transmitted, and the two legacy list modes that were dropped do not exist.
-//   5. SENTINELS ARE DATA. Minus one, zero, the empty string, false and the least
-//      representable date all survive a round trip unchanged.
-//   6. THE PUBLISHED SURFACE CANNOT BE WRITTEN TO, and state is replaced rather than
-//      mutated.
-//
-// The negative half of those claims is the half worth having, and it is the half a
-// stubbed transport cannot make. Every specification runs the REAL transport against
-// the mock backend, so a URL, a verb, a body and a query parameter are all asserted
-// in one pass, and every specification closes with a verification that nothing is
-// left outstanding. That verification is the mechanism; the assertions are only the
-// readable part.
-//
-// ---------------------------------------------------------------------------
-// NO PROJECT RULES DOCUMENT EXISTS
-// ---------------------------------------------------------------------------
-// The engagement supplied none. The rules review answers with a single line saying
-// so, and it answers identically for ranges that BEGIN PAST the first, the second and
-// the two-hundred-and-fiftieth line - which is what proves the answer is the whole
-// document rather than its opening line. Nothing here is justified by a project rule
-// and nothing is relaxed by their absence: the enterprise baseline the action plan
-// sets out governs instead, with rule-force.
-//
-// ---------------------------------------------------------------------------
-// WHY EVERY EXPECTED URL IS RELATIVE, AND WHY EACH IS SPELLED OUT IN FULL
-// ---------------------------------------------------------------------------
-// The workspace replaces the environment module only for the DEVELOPMENT build
-// configuration; the production configuration replaces nothing, so the unsuffixed
-// environment module IS the production one and its configured base is the relative
-// `/api/v1`. The test target declares no replacement at all, so that is the base a
-// specification compiles against, and an expectation naming an absolute host would be
-// asserting a value this target never loads.
-//
-// The paths below are written out as literal strings rather than read back from the
-// endpoint declaration module. Importing the same constant the subject imports would
-// let a wrong route template agree with itself - the specification would pass while
-// every request went somewhere the API does not serve. Spelling the expected URL
-// independently is what turns that class of defect into a failure.
-//
-// ---------------------------------------------------------------------------
-// MIGRATION CONTEXT - WHAT THE LEGACY DID, AND WHAT REPLACED IT
-// ---------------------------------------------------------------------------
-//  1. ZERO-BASED WIRE PAGE INDEX. `Website/admin/Users/Users.ascx.vb` L51 declared
-//     `Private _CurrentPage As Integer = 1` and every provider call subtracted one
-//     immediately before dispatch - L265, L269, L271 and L274 each pass
-//     `CurrentPage - 1`. Corroborated independently by
-//     `Website/admin/Users/ManageUsers.ascx.vb` L176, whose page field seeds at 0.
-//     The wire carries the zero-based value directly and nothing adds or subtracts
-//     one.
-//  2. PAGE SIZE FROM THE TENANT SETTING, NEVER A CONSTANT. `Users.ascx.vb` L114-L119
-//     read it through `UserModuleBase.GetSetting(UsersPortalId, "Records_PerPage")`,
-//     and `Library/Components/Users/UserModuleBase.vb` L134-L136 supplied ten ONLY
-//     when that setting was unset. The setting is now a member of the account policy,
-//     and the shared fallback applies only in the policy's absence.
-//  3. PREFIX SEARCH WITH THE WILDCARD APPENDED SERVER-SIDE. L269, L271 and L274 each
-//     appended one trailing per-cent character before calling down. The API
-//     reproduces that, wildcard included, so a caller passes bare text: appending one
-//     here would double the pattern and leading with one would silently widen a
-//     starts-with into a substring match.
-//  4. THE NO-SEARCH RESERVED WORD BECOMES OMISSION. L266 guarded the whole search
-//     block by comparing the typed text against a bare magic string, so that word
-//     could never be searched for. Absence is expressed here by omitting the
-//     parameter.
-//  5. THE FOURTH LEGACY BRANCH IS THE PAGED, UNFILTERED LISTING. L264-L265 called
-//     the unfiltered paged reader with page coordinates and no filter at all. It is
-//     distinct from the no-search state: this one dispatches a request matching
-//     everything, that one dispatches nothing.
-//  6. TWO LEGACY LIST MODES ARE DROPPED. L258-L260 answered one from
-//     `GetUnAuthorizedUsers` and hid the pager; L261-L263 answered the
-//     signed-in-accounts view from session tracking and hid the pager too. Neither
-//     took a page coordinate, so each returned an unbounded set, and the second
-//     depended on a scheduled purge - `Library/Components/Users/Users Online/
-//     PurgeUsersOnline.vb` L44 - that this migration does not carry forward.
-//  7. BRANCHING ON LOCALISED STRINGS IS NOT REPRODUCED. L258, L261 and L264 each
-//     compared the typed text against a resource lookup, so the query a person got
-//     depended on the rendered language. Typed discriminators replace that.
-//  8. THE THIRD SEARCH AXIS IS AN OPEN SET. L272-L274 passed its field name straight
-//     through as the property name and L275 appended it to the screen's own query
-//     string. A tenant declares whatever properties it likes, so the name is never
-//     validated, normalised or case-folded on this side.
-//  9. CONTROL STATE AND SERVER-SESSION STATE ARE ELIMINATED. The page number lived in
-//     control state at `ManageUsers.ascx.vb` L174-L185 and the account identifier at
-//     `Library/Components/Users/UserModuleBase.vb` L466-L505; both become ordinary
-//     signals. The return-address key is the router's concern. A direct search for
-//     server-session access across the five in-scope library trees and the
-//     thirty-nine administration code-behinds finds ZERO sites, so there is nothing
-//     to carry.
-// 10. AUTHORISATION MOVED SERVER-SIDE, COMPLETELY. `UserModuleBase.vb` L466-L505
-//     embedded a full decision INSIDE a page property getter - own-record at L473-474,
-//     installation administrator at L475-476, tenant administrator at L479, a nested
-//     exclusion at L481-L487, and a redirect to a denial page at L494. Not one line is
-//     reproduced. The API decides and reports a refusal as a status with a problem
-//     document; the permission vocabulary decides nothing on this side.
-// 11. THE CREATION VOCABULARY SUCCEEDS AT THIRTEEN, NOT ZERO.
-//     `Library/Components/Users/Membership/UserCreateStatus.vb` L23-L42 numbers all
-//     eighteen members explicitly; its zero member is the initial "no error yet"
-//     marker rather than an outcome, as `Website/admin/Users/User.ascx.vb` L175 and
-//     L185 prove by treating any other value as a failure. Three members describe
-//     distinct name failures and are not interchangeable.
-// 12. NO OUTCOME ORDINAL CROSSES THE WIRE. The credential-update vocabulary at
-//     `Library/Components/Users/Membership/PasswordUpdateStatus.vb` L23-L32 assigns NO
-//     explicit values, so declaration order is the ordinal and it succeeds at zero;
-//     the sign-in vocabulary succeeds at one. An assumption that zero means success is
-//     wrong two times in three, so that vocabulary is deliberately not declared on
-//     this side at all and every assertion here keys on a STRING code. The five-member
-//     validity vocabulary, which the sign-in path resolved by precedence, becomes a set
-//     of INDEPENDENT advisory flags, so combinations it could not express now are
-//     expressible.
-// 13. CREDENTIALS. A reset survives and RETRIEVAL DOES NOT: the legacy provider
-//     enabled the two independently and only retrieval required a reversible store.
-//     The policy is preserved VERBATIM and not tightened - `Website/release.config`
-//     L242 set a seven-character floor, L243 required no non-alphanumeric character,
-//     L244 did not require a unique address, L240 enabled reset and L241 required no
-//     question-and-answer pair - and it is enforced server-side. A one-way hash
-//     replaces the reversible representation whose symmetric key was committed to
-//     source control in the clear at L89-L93.
-// 14. PROFILE DECLARATIONS ARE UNPAGED, addressed by the PROPERTY-definition
-//     identifier, and reordered through the view-order FIELD on a replace. There is no
-//     move endpoint: `Website/admin/Users/ProfileDefinitions.ascx.vb` L182-L187 read
-//     the neighbouring declaration and swapped the two, which is a two-row write that a
-//     one-row route would have made look atomic.
-// 15. PAGER VISIBILITY IS PRESENTATION. L278-L280 narrowed the pager to the case where
-//     the page size was smaller than the total, and only when the tenant had asked for
-//     suppression. The advisory boolean is asserted; rendering is not.
-// 16. THE LEGACY CACHE IS NOT REPRODUCED CLIENT-SIDE.
-//     `Library/Components/Providers/Caching/DataCache.vb` is reached from a hundred and
-//     sixteen in-scope call sites, fifteen of them from
-//     `Library/Components/Users/UserController.vb`. After a write this store re-reads,
-//     and there is no cache map, expiry instant or staleness marker to assert.
-// 17. A PERMISSION REFUSAL IS A WARNING, NOT A FAULT.
-//     `Website/admin/Security/AccessDenied.ascx.vb` performs no permission check at
-//     all - the page only PRESENTS a denial - and both branches of its load handler, at
-//     L43 and L45, render at the warning message type.
-// 18. LOCALISATION IS NOT PORTED. The legacy mechanism was specific to the abandoned
-//     presentation framework and no translation runtime is added to this workspace, so
-//     nothing here holds a resource key or resolves one.
-// 19. EVERY IMPLICIT COERCION IS MADE EXPLICIT. The thirty-nine administration
-//     code-behinds compiled with strict mode OFF (`release.config` L125), which is what
-//     permitted the unguarded narrowing at `Users.ascx.vb` L117 and the control-state
-//     read at `UserModuleBase.vb` L498. Strict compilation is what forces those to
-//     surface, and the typed fixtures below are part of that forcing function: a
-//     mis-spelled member is a compilation error here rather than an `undefined` at run
-//     time.
-//
-// ---------------------------------------------------------------------------
-// MEASURED DIVERGENCES FROM THE PLANNED SURFACE (asserted as BUILT, reported as found)
-// ---------------------------------------------------------------------------
-//   * THE ACCOUNT-POLICY PATH IS `/api/v1/users/settings`. The plan named
-//     `/api/v1/users/settings/membership`; the built route is the `settings` child of
-//     the account collection, confirmed three ways - the endpoint declaration module,
-//     and the controller's own `[HttpGet("settings")]` and `[HttpPut("settings")]`. A
-//     search for the longer path across the whole server tree returns nothing. The
-//     shorter path is asserted because it is the one the API serves. Note that the API
-//     path and the screen route are different strings and neither derives from the
-//     other.
-//   * THE CREDENTIAL VERBS ARE POST. The plan named a replace verb for the credential
-//     change; the built transport posts to `password` and to `password-reset`, matching
-//     the controller. The bodiless-success proof is unaffected and is made against the
-//     verb actually used.
-//   * AN ACCOUNT'S ROLES ARRIVE AS NAMES, NOT IDENTIFIERS, so no role identifier of
-//     zero can be carried on that contract. The zero-seed symmetry is proved instead on
-//     the declaration contract, whose identifier, module association and visibility can
-//     each legitimately be zero, and on the identifiers interpolated into a path.
-//   * NO TENANT IDENTIFIER IS TRANSMITTED ANYWHERE. The API resolves one tenant per
-//     request from the host it was reached on, so the minus-one and zero proofs land on
-//     what comes BACK and on what is interpolated into a path, which is where those
-//     values actually travel.
-//   * THE SUPPORT REFERENCE IS THE CORRELATION IDENTIFIER, NOT THE TRACE IDENTIFIER.
-//     The two are independent values with different formats - the trace identifier is a
-//     trace-context value taken from whatever diagnostic activity was current. Both are
-//     asserted to survive, and the support reference is asserted to resolve to the
-//     correlation identifier.
-//   * A SPENT-BUDGET STATUS IS REACHABLE ON THREE ACCOUNT ENDPOINTS, contrary to the
-//     plan's claim that it arrives only from the sign-in family: the controller marks
-//     account creation and both credential actions as credential endpoints and each
-//     declares that status. No dedicated specification is written for it here, per the
-//     scope this file was given, and the shared summariser already resolves it to the
-//     warning severity that the refusal specifications below exercise.
-//
-// ---------------------------------------------------------------------------
-// WHAT IS DELIBERATELY NOT ASSERTED
-// ---------------------------------------------------------------------------
-//   * NO CREDENTIAL POLICY. Not a length floor, not a composition requirement, not a
-//     confirmation match. Those rules are preserved verbatim and enforced server-side,
-//     and a client-side check asserted here would institutionalise a divergence from
-//     the rule actually applied. The account policy contract deliberately carries none
-//     of them, and that absence IS asserted.
-//   * NO RENDERING. The pager advisory is a boolean and is asserted as one.
-//   * NO PRIVATE MEMBER. Every assertion reads a published signal or invokes a command.
-//   * NO REAL CREDENTIAL OR KEY. Every credential-shaped fixture value is obviously
-//     synthetic, and one specification proves that no such value reaches any published
-//     slice.
-//
-
 import { provideHttpClient } from '@angular/common/http';
 import {
   HttpTestingController,
@@ -256,47 +45,31 @@ import {
 // THE EXPECTED ADDRESSES, SPELLED OUT INDEPENDENTLY
 // ---------------------------------------------------------------------------
 
-/** The account collection. Relative, because the production base is relative. */
+/** The account collection. */
 const USERS_URL = '/api/v1/users';
 
 /**
- * The body-bound account search.
- *
- * ⚠ A SEARCH BY NAME, ADDRESS OR PROFILE PROPERTY GOES HERE, NOT TO {@link USERS_URL}, AND THE
- * REASON IS PRIVACY RATHER THAN ROUTING. All four of those filters identify a person, and a query
- * parameter travels in the REQUEST TARGET — which the browser writes to its history, every forward
- * and reverse proxy writes to an access log, the server writes to another, and URL-sampling
- * telemetry writes to a third. Every one of those recorders sits at an END of the encrypted channel
- * rather than in the middle of it, so HTTPS addresses none of them: CWE-598. The unfiltered listing,
- * which carries page coordinates, an ordering and at most an approval state, names nobody and stays
- * on the cacheable `GET`.
+ * The body-bound account search. ⚠ A SEARCH BY NAME, ADDRESS OR PROFILE PROPERTY GOES HERE, NOT TO {@link
+ * USERS_URL}, AND THE REASON IS PRIVACY RATHER THAN ROUTING. All four of those filters identify a person,
+ * and a query parameter travels in the REQUEST TARGET — which the browser writes to its history, every
+ * forward and reverse proxy writes to an access log, the server writes to another, and URL-sampling
+ * telemetry writes to a third.
  */
 const USERS_SEARCH_URL = '/api/v1/users/search';
 
-/**
- * The tenant's account policy.
- *
- * The `settings` child of the account collection. See the divergence note in the
- * header: the plan named `/api/v1/users/settings/membership`, the API serves this.
- */
+/** The tenant's account policy. The `settings` child of the account collection. */
 const SETTINGS_URL = '/api/v1/users/settings';
 
 /** The tenant's profile declarations. Unpaged, and scoped by the resolved tenant. */
 const DEFINITIONS_URL = '/api/v1/profile-definitions';
 
-/**
- * The member-services catalogue of account 7 — the account every fixture in this file uses.
- *
- * Unpaged, exactly as the legacy `grdServices` grid was.
- */
+/** The member-services catalogue of account 7 — the account every fixture in this file uses. */
 const SERVICES_URL = '/api/v1/users/7/services';
 
 /**
- * The subscription of account 7 to service ZERO.
- *
- * ⚠ THE SERVICE IDENTIFIER IS ZERO ON PURPOSE. `Roles.RoleID` seeds `IDENTITY(0, 1)`, so role
- * zero is the administrator role of every shipped installation — and it is exactly the value a
- * truthiness test drops. Every address here uses it.
+ * The subscription of account 7 to service ZERO. ⚠ THE SERVICE IDENTIFIER IS ZERO ON PURPOSE.
+ * `Roles.RoleID` seeds `IDENTITY(0, 1)`, so role zero is the administrator role of every shipped
+ * installation — and it is exactly the value a truthiness test drops. Every address here uses it.
  */
 const SERVICE_SUBSCRIPTION_URL = '/api/v1/users/7/services/0/subscription';
 
@@ -307,45 +80,25 @@ const SERVICE_TRIAL_URL = '/api/v1/users/7/services/0/trial';
 const SERVICE_REDEMPTIONS_URL = '/api/v1/users/7/services/redemptions';
 
 /**
- * The legacy reserved word that meant "no search".
- *
- * MIGRATION: `Users.ascx.vb` L266 guarded the whole search block by comparing the typed
- * text against this bare magic string, so a person could never search for it even
+ * The legacy reserved word that meant "no search". `Users.ascx.vb` L266 guarded the whole search block by
+ * comparing the typed text against this bare magic string, so a person could never search for it even
  * though it is a perfectly ordinary thing to type.
- *
- * It is declared here for exactly two uses, and NEITHER transmits it as a sentinel.
- * First, to assert that it does NOT appear on the wire when no search is applied -
- * absence is expressed by omitting the parameter, never by sending a reserved word.
- * Second, as ORDINARY SEARCH TEXT, to assert that a caller who genuinely wants to
- * search for this word gets a search for this word: that is the positive half of the
- * same claim, and it is only provable by transmitting it as a term.
  */
 const NO_SEARCH_RESERVED_WORD = 'None';
 
-/** A synthetic trace-context value. Diagnostic, and not the support reference. */
+/** A synthetic trace-context value. */
 const TRACE_ID = '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00';
 
-/** A synthetic correlation value. THIS is the support reference. */
+/** A synthetic correlation value. */
 const CORRELATION_ID = 'c0rr-3l4t10n-0000-0000-000000000001';
 
-/**
- * The prefix the server wraps a machine-readable failure code in.
- *
- * Lower-cased throughout, exactly as the server writes it. The code itself is the
- * remainder, and the shared reader folds a hyphen onto an underscore.
- */
+/** The prefix the server wraps a machine-readable failure code in. */
 const FAILURE_TYPE = 'urn:dnnmigration:error:';
 
-// ---------------------------------------------------------------------------
 // FIXTURES
-// ---------------------------------------------------------------------------
-//
-// Every fixture is a factory returning a fresh object, and every one is typed as the
-// real contract. Both properties matter: a shared mutable fixture would let one
-// specification's edit change another's subject, and an untyped literal would let a
-// mis-spelled member compile and arrive as `undefined`. The identity members carry a
-// single lower-case letter where the server's camel-case policy puts one, which is
-// precisely the spelling a hand-written literal gets wrong.
+// Every fixture is a factory returning a fresh object, and every one is typed as the real contract. Both
+// properties matter: a shared mutable fixture would let one specification's edit change another's subject,
+// and an untyped literal would let a mis-spelled member compile and arrive as `undefined`.
 
 /** Paging facts. Defaults describe an empty first page at the shared fallback size. */
 const metaFixture = (overrides: Partial<ApiMeta> = {}): ApiMeta => ({
@@ -416,18 +169,12 @@ const detailFixture = (overrides: Partial<UserDetail> = {}): UserDetail => ({
 });
 
 /**
- * The tenant's account policy.
- *
- * Every member is stated, because the contract is a replace rather than a merge and a
- * partial literal would not compile. The records-per-page member deliberately defaults
- * to a value that is NOT the shared fallback, so a specification that forgot to
- * override it would still not accidentally agree with a hard-coded constant.
+ * The tenant's account policy. Every member is stated, because the contract is a replace rather than a
+ * merge and a partial literal would not compile.
  */
 const storedSettingsFixture = (overrides: Partial<MembershipSettings> = {}): MembershipSettings => ({
   // ⚠ #5/#6 — stated rather than left to the override, so a specification that says nothing about
-  // provenance still receives a policy that claims to be stored. The unstored counterpart is
-  // {@link unstoredSettingsFixture}, and both exist as NAMED builders because a single fixture that
-  // hard-coded one value structurally prevented the other branch from ever being covered.
+  // provenance still receives a policy that claims to be stored.
   isStored: true,
   columnFirstName: true,
   columnLastName: true,
@@ -456,19 +203,10 @@ const storedSettingsFixture = (overrides: Partial<MembershipSettings> = {}): Mem
 });
 
 /**
- * The policy a tenant with NO SETTINGS SOURCE is answered with.
- *
- * ⚠ #5/#6 — A SUCCESSFUL DOCUMENT THAT REPORTS THE ABSENCE OF A STORE, which is the shape the store
- * under test has to read provenance from. The server answers a portal holding no "User Accounts"
- * module instance `200` with the measured legacy defaults and `isStored: false`; the write for the
- * same address answers `409`. The backend authority for the pair is
- * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
- * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
- *
- * The values are the legacy defaults from `Library/Components/Users/UserModuleBase.vb` L98-L190
- * rather than the sibling builder's deliberately-distinctive ones, because that is what an unstored
- * tenant really receives - ten records a page in particular, which is the value the listing then
- * opens at.
+ * The policy a tenant with NO SETTINGS SOURCE is answered with. ⚠ #5/#6 — A SUCCESSFUL DOCUMENT THAT
+ * REPORTS THE ABSENCE OF A STORE, which is the shape the store under test has to read provenance from.
+ * The server answers a portal holding no "User Accounts" module instance `200` with the measured legacy
+ * defaults and `isStored: false`; the write for the same address answers `409`.
  */
 const unstoredSettingsFixture = (
   overrides: Partial<MembershipSettings> = {},
@@ -484,10 +222,6 @@ const unstoredSettingsFixture = (
     columnCreatedDate: true,
     columnLastLogin: false,
     columnAuthorized: true,
-    // The legacy default for `Display_Mode` (`UserModuleBase.vb` L126-L130) is the NO-QUERY mode,
-    // which is the store's `DISPLAY_MODE_NONE`. Written as the literal the wire carries rather than
-    // borrowed from the profile-visibility vocabulary, which happens to share the number and means
-    // something entirely unrelated.
     displayMode: 2,
     recordsPerPage: 10,
     profileDefaultVisibility: PROFILE_VISIBILITY.adminOnly,
@@ -501,14 +235,7 @@ const unstoredSettingsFixture = (
     ...overrides,
   });
 
-/**
- * One profile declaration.
- *
- * Carries a zero-valued identifier, a zero-valued module association and a
- * zero-valued visibility by default: the role, page and module tables all seed their
- * keys at zero, and the least-restrictive visibility really is zero, so zero is DATA
- * on every one of them.
- */
+/** One profile declaration. */
 const definitionFixture = (
   overrides: Partial<ProfilePropertyDefinition> = {},
 ): ProfilePropertyDefinition => ({
@@ -529,11 +256,9 @@ const definitionFixture = (
 });
 
 /**
- * One account's whole profile.
- *
- * `displayVisibilityEnabled` is the tenant's decision on whether the per-property
- * visibility affordance is offered; it rides the profile projection because the
- * settings endpoint that declares it admits only portal administrators.
+ * One account's whole profile. `displayVisibilityEnabled` is the tenant's decision on whether the
+ * per-property visibility affordance is offered; it rides the profile projection because the settings
+ * endpoint that declares it admits only portal administrators.
  */
 const profileFixture = (userId = 7, displayVisibilityEnabled = true): UserProfile => ({
   userId,
@@ -568,14 +293,7 @@ const submissionFixture = (userId = 7): UserProfileSubmission => ({
   ],
 });
 
-/**
- * A request to create an account.
- *
- * The credential value is obviously synthetic. MIGRATION: the legacy configuration
- * committed the symmetric key that reversed every stored credential to source control
- * in the clear (`release.config` L89-L93), which is why no fixture here carries
- * anything resembling a real one.
- */
+/** A request to create an account. The credential value is obviously synthetic. */
 const createRequestFixture = (overrides: Partial<CreateUserRequest> = {}): CreateUserRequest => ({
   username: 'new.account',
   firstName: 'New',
@@ -617,10 +335,9 @@ const definitionWriteFixture = (
 const envelope = <T>(data: T): ApiResponse<T> => ({ data, meta: null });
 
 /**
- * The report the account-policy write answers with, wrapped in the shared envelope.
- *
- * Defaults to "nothing was swept", which is what an ordinary settings save produces, so a fact
- * that merely needs the write to succeed does not have to describe a rewrite it never asked for.
+ * The report the account-policy write answers with, wrapped in the shared envelope. Defaults to "nothing
+ * was swept", which is what an ordinary settings save produces, so a fact that merely needs the write to
+ * succeed does not have to describe a rewrite it never asked for.
  */
 const settingsWriteEnvelope = (
   overrides: Partial<MembershipSettingsUpdateResult> = {},
@@ -632,12 +349,10 @@ const settingsWriteEnvelope = (
   });
 
 /**
- * One row of the member-services catalogue.
- *
- * Defaults to a paid service the account already holds whose subscription has LAPSED, which is
- * the row that exercises the most contract at once: service identifier zero, a fifty-cent fee
- * the legacy projection could not express, and the `Renew` command the legacy screen derived
- * from an expiry earlier than today.
+ * One row of the member-services catalogue. Defaults to a paid service the account already holds whose
+ * subscription has LAPSED, which is the row that exercises the most contract at once: service identifier
+ * zero, a fifty-cent fee the legacy projection could not express, and the `Renew` command the legacy
+ * screen derived from an expiry earlier than today.
  */
 const serviceFixture = (overrides: Partial<MemberService> = {}): MemberService => ({
   roleId: 0,
@@ -682,9 +397,9 @@ const validationProblemFixture = (
   detail: 'The request was understood but could not be processed.',
   traceId: TRACE_ID,
   correlationId: CORRELATION_ID,
-  // The keys are the server's model-state keys, reproduced as it writes them: they
-  // name model members rather than JSON members, so the camel-case body policy does
-  // not apply to them and they stay Pascal-cased.
+  // The keys are the server's model-state keys, reproduced as it writes them: they name model members
+  // rather than JSON members, so the camel-case body policy does not apply to them and they stay
+  // Pascal-cased.
   errors: {
     UserName: ['The user name is already taken.'],
     Email: ['The address is malformed.'],
@@ -703,24 +418,15 @@ describe('UserStore', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [
-        // The real client FIRST, then the testing backend that displaces it. The order
-        // is load-bearing: the second provider overrides the first, so reversing them
-        // leaves the live backend in place and every expectation below times out
-        // against a request that was never intercepted.
+        // The real client FIRST, then the testing backend that displaces it. The order is load-bearing: the
+        // second provider overrides the first, so reversing them leaves the live backend in place and every
+        // expectation below times out against a request that was never intercepted.
         provideHttpClient(),
         provideHttpClientTesting(),
-        // The subject is listed explicitly. It is declared root-provided, so this is
-        // not strictly required to resolve it - it is stated so that the instance under
-        // test belongs to this test module and is torn down with it, which is what runs
-        // the subject's own teardown between specifications and stops an unreleased
-        // request from leaking from one into the next.
         UserStore,
-        // NO INTERCEPTOR IS REGISTERED. The correlation identifier, the bearer token and
-        // the translation of a failure into a problem document are three separately
-        // specified units; running them here would assert several units at once.
-        //
-        // This is a standalone workspace - there is no component declaration array to
-        // configure and no module to import.
+        // NO INTERCEPTOR IS REGISTERED. The correlation identifier, the bearer token and the translation of
+        // a failure into a problem document are three separately specified units; running them here would
+        // assert several units at once.
       ],
     });
 
@@ -729,10 +435,9 @@ describe('UserStore', () => {
   });
 
   afterEach(() => {
-    // THE LOAD-BEARING ASSERTION OF THIS ENTIRE FILE. It fails if a command issued a
-    // request nothing expected, and it is the only automated proof that reading the
-    // account policy does not also warm a cache, that the no-search state really
-    // dispatches nothing, and that a failure path does not retry.
+    // THE LOAD-BEARING ASSERTION OF THIS ENTIRE FILE. It fails if a command issued a request nothing
+    // expected, and it is the only automated proof that reading the account policy does not also warm a
+    // cache, that the no-search state really dispatches nothing, and that a failure path does not retry.
     httpMock.verify();
   });
 
@@ -741,12 +446,10 @@ describe('UserStore', () => {
   // -------------------------------------------------------------------------
 
   /**
-   * Expects exactly one outstanding request with the given verb and PATH.
-   *
-   * Matches on the path rather than on the path-and-query, because the string overload
-   * compares the full URL including its query string - which would couple every paged
-   * expectation to the order in which parameters happen to be composed. Query
-   * parameters are asserted separately, by name.
+   * Expects exactly one outstanding request with the given verb and PATH. Matches on the path rather than
+   * on the path-and-query, because the string overload compares the full URL including its query string -
+   * which would couple every paged expectation to the order in which parameters happen to be composed.
+   * Query parameters are asserted separately, by name.
    */
   const expectRequest = (method: string, path: string): TestRequest =>
     httpMock.expectOne(
@@ -754,14 +457,7 @@ describe('UserStore', () => {
       `${method} ${path}`,
     );
 
-  /**
-   * Reads one query parameter, narrowing it explicitly.
-   *
-   * The reader answers `string | null`, and the null branch is resolved by raising a
-   * diagnostic rather than by asserting the absence away. A non-null assertion would
-   * compile and then report `null` as the observed value, which reads as a mismatched
-   * expectation rather than as a missing parameter.
-   */
+  /** Reads one query parameter, narrowing it explicitly. */
   const parameter = (request: TestRequest, name: string): string => {
     const value = request.request.params.get(name);
 
@@ -794,10 +490,6 @@ describe('UserStore', () => {
   /**
    * One string member of a search body, narrowed by throwing.
    *
-   * The body counterpart of {@link parameter}, and it throws for the same reason: absence and the
-   * empty string are DIFFERENT values on these filters, so a reader that returned one for the other
-   * would erase the distinction several of these cases exist to prove.
-   *
    * @param request The search to read.
    * @param name The member to read.
    * @returns The member's value.
@@ -817,9 +509,6 @@ describe('UserStore', () => {
     const sent = body(request);
 
     for (const name of names) {
-      // Absence is proved by asking whether the member is THERE, for the same reason the query
-      // counterpart does: a reader answering undefined is also what a present-but-empty member
-      // answers, and empty text is a legitimate value on this contract.
       expect(Object.prototype.hasOwnProperty.call(sent, name))
         .withContext(`the body member "${name}" must be omitted, not sent empty`)
         .toBe(false);
@@ -827,10 +516,9 @@ describe('UserStore', () => {
   };
 
   /**
-   * Asserts that a request's TARGET carries none of the given values.
-   *
-   * The load-bearing assertion of the privacy cases: it is not enough that a searched value reached
-   * the server in the body, it must be ABSENT from the string that gets logged.
+   * Asserts that a request's TARGET carries none of the given values. The load-bearing assertion of the
+   * privacy cases: it is not enough that a searched value reached the server in the body, it must be
+   * ABSENT from the string that gets logged.
    *
    * @param request The request to inspect.
    * @param values The values that must not appear in the target.
@@ -850,9 +538,9 @@ describe('UserStore', () => {
   /** Asserts that none of the named query parameters was emitted at all. */
   const expectOmitted = (request: TestRequest, names: readonly string[]): void => {
     for (const name of names) {
-      // Absence is proved by asking whether the parameter is THERE. A reader answering
-      // null is a weaker claim: it is also what a present-but-empty parameter answers,
-      // and empty text is a legitimate value on this contract.
+      // Absence is proved by asking whether the parameter is THERE. A reader answering null is a weaker
+      // claim: it is also what a present-but-empty parameter answers, and empty text is a legitimate value
+      // on this contract.
       expect(request.request.params.has(name))
         .withContext(`the parameter "${name}" must be omitted, not sent empty`)
         .toBe(false);
@@ -899,11 +587,8 @@ describe('UserStore', () => {
   };
 
   /**
-   * Brings the store up the way a listing screen does, at a stated page size.
-   *
-   * Reads the account policy, flushes it, then flushes the listing the store dispatches
-   * once the policy is in hand. Returns nothing, because the specifications that use it
-   * are interested in what happens NEXT.
+   * Brings the store up the way a listing screen does, at a stated page size. Reads the account policy,
+   * flushes it, then flushes the listing the store dispatches once the policy is in hand.
    */
   const openListingAtPageSize = (recordsPerPage: number): void => {
     store.initialise();
@@ -917,8 +602,6 @@ describe('UserStore', () => {
 
   describe('list paging', () => {
     it('requests the first page as index 0, because the wire index is zero-based', () => {
-      // MIGRATION: `Users.ascx.vb` L51 held a ONE-based counter and L265 subtracted one
-      // before dispatch. Nothing subtracts one here, because nothing added one.
       store.showAllAccounts();
 
       const request = expectRequest('GET', USERS_URL);
@@ -946,9 +629,6 @@ describe('UserStore', () => {
     });
 
     it('never sends 1 for the first page', () => {
-      // The negative control. A store that carried the legacy one-based counter through
-      // to the wire would send 1 here and every listing would silently start on the
-      // second page.
       store.showAllAccounts();
 
       const request = expectRequest('GET', USERS_URL);
@@ -963,9 +643,8 @@ describe('UserStore', () => {
     });
 
     it('passes a page index through unchanged rather than shifting it by one', () => {
-      // Proves the absence of arithmetic in both directions: index 1 addresses the
-      // second page and arrives as 1, so the value is neither incremented nor
-      // decremented anywhere.
+      // Proves the absence of arithmetic in both directions: index 1 addresses the second page and arrives
+      // as 1, so the value is neither incremented nor decremented anywhere.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
 
@@ -1034,10 +713,6 @@ describe('UserStore', () => {
     });
 
     it('does not coerce away a page count of -1', () => {
-      // MIGRATION: `Users.ascx.vb` L58 declared `Protected TotalPages As Integer = -1`,
-      // a live "not yet known" marker. Minus one is simultaneously the legacy marker for
-      // a missing integer, so a store that treated it as absence would report zero pages
-      // for a set it has not counted yet.
       store.showAllAccounts();
 
       expectRequest('GET', USERS_URL).flush(
@@ -1056,9 +731,8 @@ describe('UserStore', () => {
 
       const request = expectRequest('GET', USERS_URL);
 
-      // The requested index moves immediately; the reported index only once an answer
-      // has arrived. That gap is what stops a pager claiming to be on a page whose
-      // request is still outstanding.
+      // The requested index moves immediately; the reported index only once an answer has arrived. That gap
+      // is what stops a pager claiming to be on a page whose request is still outstanding.
       expect(store.requestedPageIndex()).toBe(3);
       expect(store.currentPageIndex()).toBe(0);
 
@@ -1089,10 +763,6 @@ describe('UserStore', () => {
     });
 
     it('advises a pager only when the tenant asked for suppression and a page is short', () => {
-      // MIGRATION: the rule is `Users.ascx.vb` L278-L280 exactly - the pager was
-      // narrowed to `PageSize < TotalRecords` ONLY when suppression had been requested;
-      // otherwise the branch above left it as it was. ADVISORY: whether to render
-      // remains the shared pagination component's decision, and nothing here renders.
       openListingAtPageSize(25);
 
       store.saveMembershipSettings(
@@ -1112,17 +782,15 @@ describe('UserStore', () => {
     });
   });
 
-
   // =========================================================================
   // PAGE SIZE FROM THE TENANT'S ACCOUNT POLICY
   // =========================================================================
 
   describe('page size from the account policy', () => {
     it('reads the account policy first and only then requests the listing', () => {
-      // MIGRATION: THIS SEQUENCE IS THE WHOLE REASON COMPOSITION LIVES IN A STORE. The
-      // size of a page is a per-tenant setting (`Users.ascx.vb` L114-L119), so the
-      // listing cannot be requested correctly until the policy that declares it is in
-      // hand. A transport cannot sequence the two without deciding it for every screen.
+      // THIS SEQUENCE IS THE WHOLE REASON COMPOSITION LIVES IN A STORE. The size of a page is a per-tenant
+      // setting, so the listing cannot be requested correctly until the policy that declares it is in hand.
+      // A transport cannot sequence the two without deciding it for every screen.
       store.initialise();
 
       // Only the policy is outstanding at this point. If the listing had been dispatched
@@ -1177,10 +845,6 @@ describe('UserStore', () => {
     });
 
     it('falls back to the shared default size while no policy has been read', () => {
-      // MIGRATION: `UserModuleBase.vb` L134-L136 supplied ten ONLY when the tenant
-      // setting was unset, and the shared constant documents itself as that fallback.
-      // The expectation is written against the constant rather than against the number,
-      // so the two cannot drift apart.
       expect(store.membershipSettings()).toBeNull();
 
       store.showAllAccounts();
@@ -1194,9 +858,9 @@ describe('UserStore', () => {
     });
 
     it('still lists the accounts at the fallback size when the policy cannot be read', () => {
-      // A tenant whose policy is unavailable still has accounts. The failure is recorded
-      // rather than swallowed, and the listing goes out regardless - refusing to list
-      // would be a worse answer than listing at the default beside a reported failure.
+      // A tenant whose policy is unavailable still has accounts. The failure is recorded rather than
+      // swallowed, and the listing goes out regardless - refusing to list would be a worse answer than
+      // listing at the default beside a reported failure.
       store.initialise();
 
       expectRequest('GET', SETTINGS_URL).flush(problemFixture({ status: 500, title: 'Server' }), {
@@ -1215,10 +879,6 @@ describe('UserStore', () => {
     });
 
     it('passes a declared size on unclamped, leaving the bound to the server', () => {
-      // The paging contract states that nothing is corrected or clamped on either side
-      // and that the server reports an out-of-range size as a field-level refusal.
-      // Substituting a different size here would hide a misconfiguration; the legacy
-      // screen passed its setting on unchecked in exactly the same way.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 500 })));
 
@@ -1265,15 +925,10 @@ describe('UserStore', () => {
     });
 
     it('publishes what the policy write did to the tenant\'s display names', () => {
-      // ⚠ THE ONE SETTINGS WRITE IN THIS WORKSPACE WITH A TENANT-WIDE SIDE EFFECT. Adopting a
-      // new display-name format recomposes every account's stored display name, and the caller
-      // cannot infer from its own request that it happened or to how many accounts - so the
-      // report travels back on the response and is kept here.
-      //
-      // MIGRATION: `Website/admin/Users/UserSettings.ascx.vb:L175-L182` spawned
-      // `UserController.UpdateDisplayNames` (`Library/Components/Users/UserController.vb:L1259-L1268`)
-      // on a BACKGROUND THREAD and told the operator nothing. This slice is what replaces that
-      // silence.
+      // ⚠ THE ONE SETTINGS WRITE IN THIS WORKSPACE WITH A TENANT-WIDE SIDE EFFECT. Adopting a new
+      // display-name format recomposes every account's stored display name, and the caller cannot infer
+      // from its own request that it happened or to how many accounts - so the report travels back on the
+      // response and is kept here.
       openListingAtPageSize(25);
 
       expect(store.lastSettingsWrite())
@@ -1290,9 +945,9 @@ describe('UserStore', () => {
       );
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
 
-      // ⚠ SURVIVES THE RE-READ THAT FOLLOWS THE WRITE. The re-read clears state belonging to a
-      // previous answer, so the command publishes the report AFTER dispatching it; publishing
-      // first would discard the very report it was meant to accompany.
+      // ⚠ SURVIVES THE RE-READ THAT FOLLOWS THE WRITE. The re-read clears state belonging to a previous
+      // answer, so the command publishes the report AFTER dispatching it; publishing first would discard
+      // the very report it was meant to accompany.
       expect(store.lastSettingsWrite()).toEqual({
         displayNameFormatChanged: true,
         displayNamesRewritten: 12,
@@ -1301,11 +956,9 @@ describe('UserStore', () => {
     });
 
     it('keeps a swept-but-unchanged report distinct from no sweep at all', () => {
-      // The two are different answers and an operator is looking for the difference: a format
-      // left alone reports false and zero because no sweep ran, while a format that changed on a
-      // tenant whose accounts already read that way reports true and zero because the sweep ran
-      // and found nothing to alter. Collapsing them would make "nothing happened" and "nothing
-      // needed to happen" indistinguishable.
+      // The two are different answers and an operator is looking for the difference: a format left alone
+      // reports false and zero because no sweep ran, while a format that changed on a tenant whose accounts
+      // already read that way reports true and zero because the sweep ran and found nothing to alter.
       openListingAtPageSize(25);
 
       store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[LASTNAME]' }));
@@ -1347,10 +1000,7 @@ describe('UserStore', () => {
         .toBeNull();
       httpMock.expectNone(() => true);
 
-      // A refused write publishes a failure and NO report. The width guard refuses the whole
-      // policy when the format would overflow the stored column for any one account, so there is
-      // no partial sweep to report - and reporting a zero would read as "it ran and changed
-      // nothing", which is not what happened.
+      // A refused write publishes a failure and NO report.
       store.saveMembershipSettings(storedSettingsFixture({ securityDisplayNameFormat: '[USERNAME]' }));
       expectRequest('PUT', SETTINGS_URL).flush(
         { title: 'Bad Request', status: 400, type: 'urn:dnnmigration:error:user.display-name.too-long' },
@@ -1363,12 +1013,8 @@ describe('UserStore', () => {
     });
 
     it('publishes no credential policy of its own', () => {
-      // MIGRATION: minimum length, the non-alphanumeric requirement and the
-      // address-uniqueness rule are server-side options that never cross the boundary.
-      // Restating their values on this side would create a second copy free to drift
-      // from the one that is enforced, and tightening any of them during a migration
-      // would lock out every account satisfying the old rule and not the new one. This
-      // asserts the ABSENCE, which is the only client-side claim that is safe to make.
+      // Minimum length, the non-alphanumeric requirement and the address-uniqueness rule are server-side
+      // options that never cross the boundary.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
       expectRequest('GET', USERS_URL).flush(pageFixture([]));
@@ -1398,18 +1044,6 @@ describe('UserStore', () => {
   // =========================================================================
 
   describe('the opening view the tenant configured', () => {
-    /*
-     * MIGRATION: `Website/admin/Users/Users.ascx.vb` L494-L506 read `Display_Mode` and set the
-     * screen's opening `Filter` from it, and `BindData` (L248-L290) then branched on that value:
-     * the localised "All" word listed everything (L264), any other non-"None" value fell through to
-     * the search-axis switch (L267) whose default axis was `Username` (L577), and the bare marker
-     * "None" matched no branch at all so no query was issued.
-     *
-     * ⚠ AN EARLIER REVISION IGNORED THE SETTING ENTIRELY and always opened on the unfiltered
-     * listing. The tenant's choice made no difference to what the screen did, which is the defect
-     * these four cases close.
-     */
-
     it('opens on every account when the tenant chose the unfiltered view', () => {
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
@@ -1424,15 +1058,8 @@ describe('UserStore', () => {
     });
 
     it('opens on the first letter of the alphabet strip when the tenant chose that view', () => {
-      // The letter is `A`, and its provenance is the resource value the legacy read the first
-      // character of: `Users.ascx.resx` `Filter.Text` is "A,B,C,…,Z" and L502 kept `Substring(0, 1)`.
-      // The AXIS is the account name, because the legacy search selector's first-added item was
-      // "Username" (L577) and the first-letter filter fell through to that switch.
-      // ⚠ THE OPENING READ IS THE BODY-BOUND SEARCH, NOT THE UNFILTERED LISTING, BECAUSE A LETTER
-      // ON THE ACCOUNT-NAME AXIS NAMES PEOPLE. The transport is chosen by whether the query
-      // identifies anybody — see {@link USERS_SEARCH_URL} — and a first-letter view IS an
-      // account-name filter, so it travels in a request body like every other name search rather
-      // than putting the axis and its value in a request target that four separate recorders keep.
+      // The letter is `A`, and its provenance is the resource value the legacy read the first character of:
+      // `Users.ascx.resx` `Filter.Text` is "A,B,C,…,Z" and L502 kept `Substring(0, 1)`.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 1 })));
 
@@ -1449,14 +1076,9 @@ describe('UserStore', () => {
     });
 
     it('issues no listing query at all when the tenant chose the no-query view', () => {
-      /*
-       * ⚠ NOT A DEFECT AND NOT WORKED AROUND. This is the deliberate choice a large tenant makes so
-       * that opening the screen does not page a hundred thousand accounts, and it is also the
-       * DEFAULT the legacy applied when the setting was absent
-       * (`Library/Components/Users/UserModuleBase.vb` L126-L130), which the server reproduces. The
-       * alphabet strip and the unfiltered affordance are both on the screen for the operator to act
-       * on, so nothing is unreachable.
-       */
+      // ⚠ NOT A DEFECT AND NOT WORKED AROUND. This is the deliberate choice a large tenant makes so that
+      // opening the screen does not page a hundred thousand accounts, and it is also the DEFAULT the legacy
+      // applied when the setting was absent, which the server reproduces.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 2 })));
 
@@ -1475,17 +1097,6 @@ describe('UserStore', () => {
     });
 
     it('opens on every account for a mode it does not recognise, and for an unreadable policy', () => {
-      /*
-       * MIGRATION: the legacy `Select Case` had NO `Case Else`, so an unrecognised mode left `Filter`
-       * as the empty string - not the "All" word, not "None" - which fell through to the axis switch
-       * and queried `GetUsersByUserName(…, "" & "%")`. An empty prefix plus the server's own trailing
-       * wildcard matches every account, so the legacy outcome was the unfiltered listing.
-       *
-       * ⚠ ASKED FOR AS THE UNFILTERED LISTING RATHER THAN AS AN EMPTY-PREFIX NAME SEARCH, because
-       * the target endpoint refuses a filter supplied blank - "omit it to search without it" - so
-       * sending the legacy's literal empty prefix would be a refused request where the legacy served
-       * a page. The result set is identical; only the way of asking differs.
-       */
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 99 })));
 
@@ -1495,19 +1106,8 @@ describe('UserStore', () => {
       unrecognised.flush(pageFixture([listItemFixture()]));
       expect(store.search()).toEqual({ mode: 'all' });
 
-      /*
-       * An UNREADABLE policy is a different situation from an absent key, and is answered
-       * differently on purpose. The legacy default applied to a key missing from a policy it could
-       * still read; here the read itself failed, the page size falls back for the same reason, and
-       * a tenant whose policy is unavailable still has accounts. The failure stays recorded.
-       *
-       * ⚠ A SERVER ERROR RATHER THAN A NOT-FOUND, and the distinction is the subject of this
-       * assertion rather than an incidental choice of fixture. `404` on this read does NOT mean the
-       * policy was unreadable - it is how the transport spells "this tenant stores no policy", which
-       * is a legitimate answer the store now reports through `membershipSettingsUnconfigured` WITHOUT
-       * recording a failure. Using it here would assert the opposite of the sibling case below and
-       * would make this test pass only while that distinction was missing.
-       */
+      // An UNREADABLE policy is a different situation from an absent key, and is answered differently on
+      // purpose.
       store.reset();
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(
@@ -1530,34 +1130,10 @@ describe('UserStore', () => {
     });
 
     it('publishes an unstored policy from a SUCCESSFUL read, without recording a failure', () => {
-      /*
-       * ⚠ #5/#6 — THE ANSWER ARRIVES AS A SUCCESS AND THE ABSENCE IS INSIDE IT. A tenant with no
-       * "User Accounts" module instance is answered `200` carrying the measured legacy defaults with
-       * `isStored: false`; it is NOT answered `404`, and it has not been since the read stopped
-       * reporting absence on the status line. The backend authority is
-       * `backend/tests/DnnMigration.IntegrationTests/Api/UserApiTests.cs`
-       * `MembershipSettings_WithoutAUserAccountsModule_ReadsDefaultsAndRefusesTheWrite`.
-       *
-       * ⚠ THE DEFECT THIS PINS. This store used to derive the flag from that `404`, so once the
-       * server changed the derivation could only ever answer `false`: an unstored tenant looked
-       * stored, the settings screen opened an editable form over a policy it has nowhere to keep, and
-       * the save it invited was refused `409`. Reading the flag off the DOCUMENT is what keeps the two
-       * sides of the contract in agreement, and a test that flushed a `404` here could not detect the
-       * difference.
-       *
-       * MIGRATION: defaults rather than an absence is behaviour-preserving.
-       * `Library/Components/Users/UserModuleBase.vb` L94-L194 applied a measured default for every key
-       * it could not read, and `Library/Components/Users/UserController.vb` L656-L671 assigned its
-       * result ONLY inside a not-nothing guard, so a tenant without that module received `Nothing` -
-       * no error, no exception - and the screens above it rendered those same defaults.
-       *
-       * ⚠ AND NO LISTING FOLLOWS, WHICH IS THE POLICY BEING HONOURED RATHER THAN IGNORED. The legacy
-       * default for `Display_Mode` is the no-query mode (`UserModuleBase.vb` L126-L130), so an
-       * unstored tenant opens with no rows until an operator presses a letter or searches. That is
-       * `Users.ascx.vb` L494-L506 followed by the `BindData` switch at L248-L290, in which the bare
-       * "None" marker matched no branch. `httpMock.verify()` in the teardown is what proves no
-       * listing was requested.
-       */
+      // ⚠ #5/#6 — THE ANSWER ARRIVES AS A SUCCESS AND THE ABSENCE IS INSIDE IT. A tenant with no "User
+      // Accounts" module instance is answered `200` carrying the measured legacy defaults with `isStored:
+      // false`; it is NOT answered `404`, and it has not been since the read stopped reporting absence on
+      // the status line.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(unstoredSettingsFixture()));
 
@@ -1567,9 +1143,6 @@ describe('UserStore', () => {
       expect(store.failure())
         .withContext('and it is NOT a failure, so no screen raises an error over it')
         .toBeNull();
-      // ⚠ THE POLICY IS IN HAND, which is the other half of the change. It used to stay null, so every
-      // consumer applied its OWN copy of the defaults; the server now supplies them, so the values on
-      // screen are the server's and a consumer needs no fallback for this state.
       const policy = store.membershipSettings();
 
       expect(policy).not.toBeNull();
@@ -1597,24 +1170,13 @@ describe('UserStore', () => {
       expect(store.membershipSettingsUnconfigured()).toBeFalse();
       expect(store.membershipSettings()).not.toBeNull();
       expect(store.membershipSettings()!.isStored).toBeTrue();
-      // A standalone policy re-read does not chain the listing - only arrival does - so the opening
-      // view the first read settled on is left exactly as it was. `httpMock.verify()` in the teardown
-      // proves no listing was requested by either read.
+      // A standalone policy re-read does not chain the listing - only arrival does - so the opening view
+      // the first read settled on is left exactly as it was. `httpMock.verify()` in the teardown proves no
+      // listing was requested by either read.
       expect(store.search()).toEqual({ mode: 'none' });
     });
 
     it('reports a refused policy read as a failure, and never as an unstored policy', () => {
-      /*
-       * ⚠ A `404` ON THIS READ IS NOW A FAILURE LIKE ANY OTHER, and the assertion exists because it
-       * used to be filtered out as a legitimate absence. Absence is reported inside a `200` document
-       * (see above), so nothing arriving on the error arm is an ordinary answer any more: a status the
-       * transport could not serve is recorded, and the flag stays false because a read that produced
-       * no document said nothing about provenance.
-       *
-       * The listing still follows at the shared fallback size, which is the behaviour a failed policy
-       * read has always had: a tenant whose policy is unavailable still has accounts, and a listing
-       * beside a recorded failure is a better answer than no listing at all.
-       */
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(
         { title: 'Not Found', status: 404, type: 'urn:dnnmigration:error:resource.not_found' },
@@ -1658,9 +1220,6 @@ describe('UserStore', () => {
 
   describe('search modes', () => {
     it('transmits an account-name search verbatim, with no wildcard of its own', () => {
-      // MIGRATION: `Users.ascx.vb` L271 appended one trailing per-cent character before
-      // calling down; the API reproduces that, wildcard included. Appending one here
-      // would double the pattern. A PREFIX match - never described as a containing one.
       store.searchByUsername('abc');
 
       // ⚠ A BODY, NOT A QUERY STRING — see {@link USERS_SEARCH_URL}. A searched account name names
@@ -1677,9 +1236,6 @@ describe('UserStore', () => {
     });
 
     it('transmits an address search verbatim, with no wildcard of its own', () => {
-      // MIGRATION: `Users.ascx.vb` L269. The address is neither unique nor a sign-in
-      // key - the legacy provider was registered with uniqueness switched off at
-      // `release.config` L244 - so this can legitimately match several accounts.
       store.searchByEmail('ann@');
 
       const request = expectSearch();
@@ -1694,9 +1250,6 @@ describe('UserStore', () => {
     });
 
     it('transmits a named profile property alongside its text', () => {
-      // MIGRATION: `Users.ascx.vb` L274, the third axis, whose field name was passed
-      // straight through as the property name and appended to the screen's own query
-      // string at L275.
       store.searchByProfileProperty('Nickname', 'Ann');
 
       const request = expectSearch();
@@ -1706,18 +1259,18 @@ describe('UserStore', () => {
       expect(member(request, 'profilePropertyValue')).not.toContain('%');
       expectMembersOmitted(request, ['userName', 'email']);
 
-      // ⚠ BOTH HALVES ARE ARBITRARY TENANT DATA, which is what makes this the sharpest case: the
-      // tenant declares its own properties, so the name discloses what it collects about its members
-      // and the value may be anything at all, up to a national identifier.
+      // ⚠ BOTH HALVES ARE ARBITRARY TENANT DATA, which is what makes this the sharpest case: the tenant
+      // declares its own properties, so the name discloses what it collects about its members and the value
+      // may be anything at all, up to a national identifier.
       expectTargetCarriesNoneOf(request, ['Nickname', 'Ann']);
 
       request.flush(pageFixture([listItemFixture()]));
     });
 
     it('accepts an unfamiliar profile property name without validating it', () => {
-      // MIGRATION: the property name is an OPEN SET. A tenant declares whatever
-      // properties it likes, so an unrecognised name is the server's to refuse - not
-      // this store's to reject, normalise or check against a fixed list.
+      // The property name is an OPEN SET. A tenant declares whatever properties it likes, so an
+      // unrecognised name is the server's to refuse - not this store's to reject, normalise or check
+      // against a fixed list.
       const unusual = 'Preferred Pronoun (optional)';
 
       store.searchByProfileProperty(unusual, 'they');
@@ -1764,16 +1317,8 @@ describe('UserStore', () => {
     });
 
     it('transmits empty search text as a value rather than dropping it', () => {
-      // MIGRATION: the legacy absence marker for a string WAS the empty string
-      // (`Library/Components/Shared/Null.vb` L71-L75 returns `""` literally), so the two
-      // were indistinguishable there. Here empty text is DATA on this contract: a caller
-      // that asked to match the empty prefix asked for something, and omission is
-      // reserved for the caller that asked for nothing.
       store.searchByUsername('');
 
-      // ⚠ AN EMPTY TERM IS STILL A SEARCH, AND STILL USES THE BODY. The transport chooses its
-      // address on ABSENCE, never on emptiness, so the one input an operator produces by clearing
-      // the box does not fall back onto the query string.
       const request = expectSearch();
 
       expect(Object.prototype.hasOwnProperty.call(body(request), 'userName'))
@@ -1785,9 +1330,6 @@ describe('UserStore', () => {
     });
 
     it('publishes the search it applied as a typed discriminator', () => {
-      // MIGRATION: the legacy screen branched on LOCALISED strings at L258, L261 and
-      // L264, so the query a person got depended on the rendered language. Nothing here
-      // compares a display string.
       store.searchByProfileProperty('Nickname', 'Ann');
       expectSearch().flush(pageFixture([]));
 
@@ -1817,16 +1359,12 @@ describe('UserStore', () => {
     });
   });
 
-
   // =========================================================================
   // ABSENCE IS OMISSION, AND THE FOURTH LEGACY BRANCH
   // =========================================================================
 
   describe('search omission and the unfiltered listing', () => {
     it('issues no request at all while no search has been chosen', () => {
-      // MIGRATION: the successor to `Users.ascx.vb` L266, where a bare magic string fell
-      // through every branch and left the grid unbound. The legacy screen genuinely
-      // issued no query in that state, and neither does this.
       expect(store.searchMode()).toBe('none');
 
       store.loadUsers();
@@ -1838,9 +1376,6 @@ describe('UserStore', () => {
     });
 
     it('omits every filter parameter for the unfiltered listing', () => {
-      // MIGRATION: the successor to `Users.ascx.vb` L264-L265 - the FOURTH legacy branch,
-      // which called the unfiltered paged reader with page coordinates and no filter
-      // whatsoever.
       store.showAllAccounts();
 
       const request = expectRequest('GET', USERS_URL);
@@ -1867,9 +1402,6 @@ describe('UserStore', () => {
     });
 
     it('never transmits the reserved word as a search term either', () => {
-      // The reserved word is an ordinary thing to type, and the legacy screen made it
-      // unsearchable. Here it is searched for like any other text, which is the proof
-      // that no value is compared against a reserved word on the way out.
       store.searchByUsername(NO_SEARCH_RESERVED_WORD);
 
       const request = expectSearch();
@@ -1909,9 +1441,6 @@ describe('UserStore', () => {
 
       store.clearSearch();
 
-      // ⚠ AND THE CLEARED LISTING RETURNS TO THE `GET`. Once no filter names anybody there is
-      // nothing to keep out of a request target, and staying on the search address would give up
-      // caching and idempotence for nothing.
       const request = expectRequest('GET', USERS_URL);
 
       expect(store.searchMode()).toBe('all');
@@ -1921,9 +1450,6 @@ describe('UserStore', () => {
     });
 
     it('omits the approval restriction until one is chosen, and sends false as false', () => {
-      // MIGRATION: the legacy absence marker for a boolean was itself false
-      // (`Null.vb` L76-L80), so "unset" and "no" were the same value. False here MEANS
-      // "only the unauthorised ones" and is transmitted.
       store.showAllAccounts();
 
       const unrestricted = expectRequest('GET', USERS_URL);
@@ -1965,15 +1491,7 @@ describe('UserStore', () => {
   // =========================================================================
 
   describe('dropped list modes', () => {
-    /**
-     * Every search the store can apply, enumerated exhaustively.
-     *
-     * A COMPILE-TIME assertion as much as a run-time one. The mapped type requires one
-     * key per member of the union, so adding a sixth mode leaves this literal incomplete
-     * and the file stops compiling, and naming a mode the union does not carry is an
-     * excess property. That is what makes the run-time scan below meaningful rather than
-     * a restatement of a list this file chose for itself.
-     */
+    /** Every search the store can apply, enumerated exhaustively. */
     const EVERY_SEARCH_MODE: Readonly<Record<UserSearchMode, true>> = {
       none: true,
       all: true,
@@ -1986,10 +1504,6 @@ describe('UserStore', () => {
     const DROPPED = /unauthor|online/i;
 
     it('carries exactly five searches, and neither dropped mode is among them', () => {
-      // MIGRATION: `Users.ascx.vb` L258-L260 answered one dropped mode from
-      // `GetUnAuthorizedUsers` and hid the pager; L261-L263 answered the
-      // signed-in-accounts view from session tracking and hid the pager too. Neither
-      // took a page coordinate, so each returned an unbounded set.
       const names = Object.keys(EVERY_SEARCH_MODE);
 
       expect(names.length).toBe(5);
@@ -2002,9 +1516,6 @@ describe('UserStore', () => {
     });
 
     it('exposes no command that would fetch either dropped mode', () => {
-      // The command surface lives on the prototype, so scanning it is a genuine
-      // enumeration of what a caller can invoke rather than a restatement of an
-      // expectation.
       for (const name of Object.getOwnPropertyNames(UserStore.prototype)) {
         expect(DROPPED.test(name))
           .withContext(`the command "${name}" would restore a dropped legacy list mode`)
@@ -2013,9 +1524,6 @@ describe('UserStore', () => {
     });
 
     it('holds no slice of currently-signed-in accounts', () => {
-      // The signed-in view depended on session tracking and on a scheduled purge -
-      // `Library/Components/Users/Users Online/PurgeUsersOnline.vb` L44 - that this
-      // migration does not carry forward, so there is nothing for such a slice to hold.
       for (const name of Object.keys(store)) {
         expect(DROPPED.test(name))
           .withContext(`the slice "${name}" would restore a dropped legacy list mode`)
@@ -2031,22 +1539,14 @@ describe('UserStore', () => {
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture({ isApproved: false })]));
 
       // Counted rather than asserted through `expectNone`, which throws and therefore records no
-      // expectation: the emptiness of what `match` returns is the claim itself. The predicate is scoped
-      // to the dropped addresses alone, so the `verify()` in the teardown still guards the rest.
+      // expectation: the emptiness of what `match` returns is the claim itself. The predicate is scoped to
+      // the dropped addresses alone, so the `verify()` in the teardown still guards the rest.
       expect(httpMock.match((request) => DROPPED.test(request.url)))
         .withContext('neither dropped mode is reached, on any endpoint')
         .toEqual([]);
     });
 
     it('answers the unauthorised view as a PAGED filter, not as the dropped mode', () => {
-      // MIGRATION: the approval axis is a paged filter over the account table and is
-      // emphatically NOT a restoration of `Users.ascx.vb` L258-L260, which took no page
-      // coordinate at all and returned an unbounded set. The distinction is that this one
-      // pages.
-      //
-      // The filter is an axis OF a listing rather than a listing of its own, which is why
-      // it is applied to one: in the no-query state there is no listing for it to narrow,
-      // and the store dispatches nothing - see the specification immediately below.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
 
@@ -2067,10 +1567,6 @@ describe('UserStore', () => {
     });
 
     it('dispatches nothing for an approval filter while no listing has been chosen', () => {
-      // The complement of the specification above, and the reason it has to establish a
-      // listing first. The approval axis narrows a listing; it does not summon one. This
-      // is the same no-query rule as `Users.ascx.vb` L266, applied to a filter rather
-      // than to a search.
       expect(store.searchMode()).toBe('none');
 
       store.setApprovalFilter(false);
@@ -2088,11 +1584,6 @@ describe('UserStore', () => {
 
   describe('sentinels', () => {
     it('retains a tenant identifier of -1 exactly as it arrived', () => {
-      // MIGRATION: `Portals.PortalID` is declared `IDENTITY (-1, 1)` at L77 of the
-      // baseline schema script, so the FIRST tenant ever created really is minus one -
-      // while `Null.vb` L41-L45 simultaneously defines minus one as the marker for a
-      // missing integer. One vocabulary cannot carry both meanings, so minus one is
-      // treated as data and absence is undefined.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture({ portalId: -1 })]));
 
@@ -2116,10 +1607,9 @@ describe('UserStore', () => {
     });
 
     it('transmits no tenant identifier of its own', () => {
-      // MIGRATION: the API resolves one tenant per request from the host it was reached
-      // on, reconciled against the alias table, so a tenant identifier sent from here
-      // would either be redundant or be a second, disagreeing opinion about which tenant
-      // was meant. The tenant this store publishes is an OBSERVATION of what came back.
+      // The API resolves one tenant per request from the host it was reached on, reconciled against the
+      // alias table, so a tenant identifier sent from here would either be redundant or be a second,
+      // disagreeing opinion about which tenant was meant.
       store.showAllAccounts();
 
       const request = expectRequest('GET', USERS_URL);
@@ -2147,10 +1637,7 @@ describe('UserStore', () => {
     });
 
     it('retains a declaration identifier of 0, matching the zero-seeded key tables', () => {
-      // Defensive symmetry. The role, page and module tables all seed their keys at zero
-      // - `[RoleID] IDENTITY (0, 1)` at L115 of the baseline script, and the same for
-      // pages and module placements - so zero is a legitimate identifier throughout, and
-      // a store guarding on truthiness would lose the first row of each of those tables.
+      // Defensive symmetry.
       store.selectProfileDefinition(0);
 
       expectRequest('GET', `${DEFINITIONS_URL}/0`).flush(
@@ -2172,11 +1659,6 @@ describe('UserStore', () => {
     });
 
     it('retains an empty string rather than turning it into an absence', () => {
-      // MIGRATION: `Null.vb` L71-L75 defines the marker for a missing string as the
-      // EMPTY STRING - its body is literally a return of `""` - so a database null and an
-      // empty string were indistinguishable once read through the legacy path. Here the
-      // display-name column is declared not-null with an empty default, so an unset
-      // display name genuinely ARRIVES as the empty string.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture({ displayName: '' })]));
 
@@ -2187,9 +1669,6 @@ describe('UserStore', () => {
     });
 
     it('keeps an empty string and a null distinguishable on the members that admit both', () => {
-      // The two are treated IDENTICALLY in the sense that neither is normalised into the
-      // other. The address is projected from profile values and is nullable; the display
-      // name is not-null and empty. Both arrive as sent.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(
         pageFixture([listItemFixture({ displayName: '', address: null, telephone: '' })]),
@@ -2203,10 +1682,6 @@ describe('UserStore', () => {
     });
 
     it('retains a false boolean as data on every flag it carries', () => {
-      // MIGRATION: the legacy absence test reported FALSE as absent (`Null.vb` L76-L80
-      // makes false the marker, and the absence predicate answers true for it), so "not
-      // set" and "no" were one value. Every wire boolean here is non-nullable and false
-      // is DATA.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(
         pageFixture([
@@ -2246,8 +1721,6 @@ describe('UserStore', () => {
     });
 
     it('retains the least representable date rather than turning it into a null', () => {
-      // MIGRATION: `Null.vb` L66-L70 makes the marker for a missing date the least
-      // representable one, so that instant arrives from a legacy row as a real value.
       const legacyNullDate = '0001-01-01T00:00:00';
 
       store.showAllAccounts();
@@ -2290,11 +1763,9 @@ describe('UserStore', () => {
     });
 
     it('numbers the stored-credential representations from zero, and acts on none of them', () => {
-      // MIGRATION: the legacy installation ran with the reversible representation and a
-      // symmetric key committed to source control (`release.config` L89-L93 and L245).
-      // The vocabulary survives only so a legacy record can be READ; the target hashes
-      // one-way, and no member of it is ever selected for a new credential. Its zero
-      // member is a real value rather than an absence, which is why it is asserted here.
+      // The legacy installation ran with the reversible representation and a symmetric key committed to
+      // source control. The vocabulary survives only so a legacy record can be READ; the target hashes
+      // one-way, and no member of it is ever selected for a new credential.
       expect(PasswordFormat.Clear).toBe(0);
       expect(PasswordFormat.Hashed).toBe(1);
       expect(PasswordFormat.Encrypted).toBe(2);
@@ -2309,10 +1780,6 @@ describe('UserStore', () => {
     });
 
     it('expresses nothing-selected as undefined, never as 0 and never as -1', () => {
-      // MIGRATION: the legacy slot at `UserModuleBase.vb` L468 seeded itself from the
-      // integer null marker - that is, from minus one - and tested for absence at L469
-      // with an explicit is-nothing comparison. Minus one is not available for absence
-      // here, because it is a real identifier in this schema.
       expect(store.selectedUserId()).toBeUndefined();
 
       store.selectUser(-1);
@@ -2330,22 +1797,12 @@ describe('UserStore', () => {
     });
   });
 
-
   // =========================================================================
   // THE ACCOUNT-CREATION VOCABULARY
   // =========================================================================
 
   describe('the account-creation vocabulary', () => {
     it('succeeds at 13 and reserves 0 for the initial no-error-yet marker', () => {
-      // MIGRATION: `UserCreateStatus.vb` L23-L42 numbers all eighteen members
-      // explicitly. The zero member is NOT an outcome - it is the state the legacy screen
-      // initialised with, and `Website/admin/Users/User.ascx.vb` L175 and L185 prove it by
-      // treating any OTHER value as a failure. An assumption that zero means success
-      // would invert that test.
-      //
-      // Across the three legacy vocabularies the assumption is wrong two times in three:
-      // the validity vocabulary succeeds at zero, the sign-in vocabulary at one, and this
-      // one at thirteen.
       expect(UserCreateStatus.Success).toBe(13);
       expect(UserCreateStatus.Success).not.toBe(0);
       expect(UserCreateStatus.AddUser).toBe(0);
@@ -2373,9 +1830,6 @@ describe('UserStore', () => {
     });
 
     it('records a creation failure by its string code and never by an ordinal', () => {
-      // MIGRATION: no ordinal crosses the wire. An outcome arrives as a status plus a
-      // machine-readable STRING code, which is what makes the counter-intuitive numbering
-      // above harmless.
       store.createUser(createRequestFixture());
 
       expectRequest('POST', USERS_URL).flush(
@@ -2423,13 +1877,6 @@ describe('UserStore', () => {
     });
 
     it('records a null answer as a failure rather than holding it as an empty account', () => {
-      // MIGRATION: this case used to assert that a `200` carrying nothing was HELD as null, on the
-      //   reading that the envelope was how the server reported "no such account". It is not: the
-      //   read translates its outcome through the shared helper, which answers a not-found problem
-      //   document as soon as the value is absent, so a null payload is drift. The transport refuses
-      //   it at the boundary and this store records the refusal — which is what an operator needs,
-      //   because the previous behaviour rendered a blank account record indistinguishable from an
-      //   account with nothing in it, with no failure anywhere to explain either.
       store.selectUser(999);
 
       expectRequest('GET', `${USERS_URL}/999`).flush(envelope(null));
@@ -2477,9 +1924,9 @@ describe('UserStore', () => {
     });
 
     it('re-reads the listing after a creation rather than splicing a row in', () => {
-      // MIGRATION: the legacy cache is not reproduced. Where the new row falls depends on
-      // an ordering this side does not own, and the paging facts are the server's, so a
-      // locally spliced list would be right only until it was not.
+      // MIGRATION: the legacy cache is not reproduced. Where the new row falls depends on an ordering this
+      // side does not own, and the paging facts are the server's, so a locally spliced list would be right
+      // only until it was not.
       openListingAtPageSize(25);
 
       store.createUser(createRequestFixture());
@@ -2563,9 +2010,6 @@ describe('UserStore', () => {
     });
 
     it('exposes no bulk removal command', () => {
-      // MIGRATION: `Users.ascx.vb` L326-L328 declared a routine whose single provider call
-      // destroyed an unbounded number of accounts from one click, with no per-row
-      // confirmation and no way to review the set first. A caller names what it removes.
       for (const name of Object.getOwnPropertyNames(UserStore.prototype)) {
         expect(/deleteall|deleteunauthor|purge|bulk/i.test(name))
           .withContext(`"${name}" would restore an unbounded removal`)
@@ -2574,12 +2018,6 @@ describe('UserStore', () => {
     });
 
     it('reports a refused creation as a warning rather than as a fault', () => {
-      // MIGRATION: the account allowance of a tenant is the server's rule and is not
-      // pre-checked here - counting first would cost a request, would race every other
-      // administrator, and would still have to handle the refusal it was trying to
-      // predict. A refusal is a WARNING: `AccessDenied.ascx.vb` performs no permission
-      // check at all and both branches of its load handler, at L43 and L45, render at the
-      // warning message type.
       store.createUser(createRequestFixture());
 
       expectRequest('POST', USERS_URL).flush(problemFixture({ status: 403, title: 'Forbidden' }), {
@@ -2597,9 +2035,6 @@ describe('UserStore', () => {
     });
 
     it('reports a refused update as a warning rather than as a fault', () => {
-      // MIGRATION: an attempt to change an installation administrator is refused by the
-      // server. It is not pre-checked here - see the note on the authorisation the legacy
-      // source embedded in a page property getter at `UserModuleBase.vb` L466-L505.
       store.updateUser(1, updateRequestFixture());
 
       expectRequest('PUT', `${USERS_URL}/1`).flush(
@@ -2666,10 +2101,9 @@ describe('UserStore', () => {
     });
 
     it('completes a credential change from a response carrying no body', () => {
-      // MEASURED DIVERGENCE: the plan named a replace verb here. The built transport
-      // POSTS to the credential child of the account, matching the controller, and the
-      // response carries no body at all - so the proof that matters is that the store
-      // completes without attempting to read one.
+      // MEASURED DIVERGENCE: the plan named a replace verb here. The built transport POSTS to the
+      // credential child of the account, matching the controller, and the response carries no body at all -
+      // so the proof that matters is that the store completes without attempting to read one.
       store.changePassword(7, changeRequest());
 
       const request = expectRequest('POST', `${USERS_URL}/7/password`);
@@ -2684,11 +2118,6 @@ describe('UserStore', () => {
     });
 
     it('completes an administrative reset from a response carrying no body', () => {
-      // MIGRATION: a reset is carried forward and RETRIEVAL IS NOT. The legacy provider
-      // enabled the two independently (`release.config` L239-L240) and only retrieval
-      // required a reversible store, so only retrieval is abolished. A reset is a
-      // separate command rather than a mode, because the two differ in what they require
-      // and in who may call them.
       store.resetPassword(7, {
         operation: 'reset',
         currentPassword: null,
@@ -2706,9 +2135,8 @@ describe('UserStore', () => {
     });
 
     it('re-reads the account after a credential change, when it is the selected one', () => {
-      // A credential change moves the instant it was last changed and can clear the
-      // obligation to change it, and the response carries no body, so nothing is assumed
-      // about either.
+      // A credential change moves the instant it was last changed and can clear the obligation to change
+      // it, and the response carries no body, so nothing is assumed about either.
       store.selectUser(7);
       expectRequest('GET', `${USERS_URL}/7`).flush(
         envelope(detailFixture({ userId: 7, mustChangePassword: true })),
@@ -2728,11 +2156,10 @@ describe('UserStore', () => {
     });
 
     it('never writes a credential into any published slice', () => {
-      // MIGRATION: the point is laboured because the legacy arrangement made it necessary
-      // - the provider was registered with a reversible format and retrieval switched on
-      // (`release.config` L245 and L239) and the symmetric key that reversed it was
-      // committed to source control in the clear at L89-L93, so anyone who could read the
-      // repository could read every stored credential.
+      // The point is laboured because the legacy arrangement made it necessary - the provider was
+      // registered with a reversible format and retrieval switched on and the symmetric key that reversed
+      // it was committed to source control in the clear at L89-L93, so anyone who could read the repository
+      // could read every stored credential.
       const synthetic = 'fake-sentinel-value-that-must-not-be-retained';
 
       store.changePassword(7, {
@@ -2769,10 +2196,9 @@ describe('UserStore', () => {
     });
 
     it('exposes no credential-retrieval command, on the store or on its transport', () => {
-      // MIGRATION: there is deliberately no recover-it, remind-me or reveal-it command,
-      // and none could be written - the transport exposes no method that returns a
-      // credential. Both surfaces are scanned, because a store is only as constrained as
-      // the transport beneath it.
+      // There is deliberately no recover-it, remind-me or reveal-it command, and none could be written -
+      // the transport exposes no method that returns a credential. Both surfaces are scanned, because a
+      // store is only as constrained as the transport beneath it.
       const retrieval = /retriev|reveal|remind|recover|getpassword|readpassword|sendpassword/i;
 
       for (const name of Object.getOwnPropertyNames(UserStore.prototype)) {
@@ -2789,10 +2215,9 @@ describe('UserStore', () => {
     });
 
     it('obliges an account to change its credential without choosing one', () => {
-      // Sets the obligation only: it does not choose, generate, transmit or return a
-      // credential. Only the selected account is re-read - the obligation appears on no
-      // column of the listing, so re-reading the listing would cost a request that could
-      // not change a rendered value.
+      // Sets the obligation only: it does not choose, generate, transmit or return a credential. Only the
+      // selected account is re-read - the obligation appears on no column of the listing, so re-reading the
+      // listing would cost a request that could not change a rendered value.
       store.selectUser(7);
       expectRequest('GET', `${USERS_URL}/7`).flush(envelope(detailFixture({ userId: 7 })));
 
@@ -2814,9 +2239,6 @@ describe('UserStore', () => {
     });
 
     it('sets an approval state explicitly, transmitting false as false', () => {
-      // The state is stated rather than implied by a verb, because the server reports
-      // setting the state an account already holds as a conflict - an answer that is only
-      // meaningful if the caller said which state it meant.
       store.setApproval(7, false);
 
       const request = expectRequest('PUT', `${USERS_URL}/7/approval`);
@@ -2839,17 +2261,15 @@ describe('UserStore', () => {
     });
   });
 
-
   // =========================================================================
   // THE PROFILE
   // =========================================================================
 
   describe('the profile', () => {
     it('reads one profile and holds its values in the order the server returned them', () => {
-      // MIGRATION: a profile is a set of rows keyed by the declarations of the tenant, not
-      // a fixed field list. The legacy shape declared nineteen members of which seventeen
-      // were hardcoded named fields, so anything a tenant added was reachable only through
-      // a separate untyped collection. None of those fields is reproduced in any slice.
+      // A profile is a set of rows keyed by the declarations of the tenant, not a fixed field list. The
+      // legacy shape declared nineteen members of which seventeen were hardcoded named fields, so anything
+      // a tenant added was reachable only through a separate untyped collection.
       store.loadProfile(7);
 
       const request = expectRequest('GET', `${USERS_URL}/7/profile`);
@@ -2926,9 +2346,6 @@ describe('UserStore', () => {
 
   describe('profile declarations (unpaged)', () => {
     it('reads the declarations with no paging, ordering or filter parameter at all', () => {
-      // DELIBERATELY UNPAGED: the declaration set is bounded by how many fields an
-      // administrator chose to define, so paging it would add coordinates to every call in
-      // exchange for nothing. Not an empty coordinate, not a defaulted one.
       store.loadProfileDefinitions();
 
       const request = expectRequest('GET', DEFINITIONS_URL);
@@ -2942,9 +2359,8 @@ describe('UserStore', () => {
     });
 
     it('holds no page index, page size or total for the declarations', () => {
-      // The declarations arrive as a plain array. The paging coordinates on this store
-      // belong to the account listing alone, and reading the declarations must not
-      // populate them.
+      // The declarations arrive as a plain array. The paging coordinates on this store belong to the
+      // account listing alone, and reading the declarations must not populate them.
       store.loadProfileDefinitions();
       expectRequest('GET', DEFINITIONS_URL).flush(
         envelope([
@@ -2979,10 +2395,9 @@ describe('UserStore', () => {
     });
 
     it('addresses one declaration by its property-definition identifier', () => {
-      // The spelling is load-bearing on both sides of the wire: the route constrains an
-      // integer under that name and the contract spells its identity member the same way,
-      // so a near-miss produces a route that does not match rather than a parameter that
-      // is quietly ignored.
+      // The spelling is load-bearing on both sides of the wire: the route constrains an integer under that
+      // name and the contract spells its identity member the same way, so a near-miss produces a route that
+      // does not match rather than a parameter that is quietly ignored.
       store.selectProfileDefinition(4);
 
       expectRequest('GET', `${DEFINITIONS_URL}/4`).flush(
@@ -3001,12 +2416,6 @@ describe('UserStore', () => {
     });
 
     it('changes ordering through the view-order field on a replace, not a move endpoint', () => {
-      // MIGRATION: there is deliberately no move-up or move-down command.
-      // `Website/admin/Users/ProfileDefinitions.ascx.vb` L182-L187 read the neighbouring
-      // declaration and SWAPPED the two view orders, and a separate bulk pass at L326
-      // renumbered a whole set from each index. Modelling a two-row write as a one-row
-      // command would have made it look atomic when it is not, and would have needed a
-      // second call just to discover the neighbour.
       store.updateProfileDefinition(4, definitionWriteFixture({ viewOrder: 2 }));
 
       const written = expectRequest('PUT', `${DEFINITIONS_URL}/4`);
@@ -3023,9 +2432,9 @@ describe('UserStore', () => {
     });
 
     it('exposes no ordering helper of any kind', () => {
-      // Computing which positions to write - swapping a pair, renumbering after a drag -
-      // is the business of the feature, because only the feature knows the set it is
-      // looking at. This store writes the position it is given.
+      // Computing which positions to write - swapping a pair, renumbering after a drag is the business of
+      // the feature, because only the feature knows the set it is looking at. This store writes the
+      // position it is given.
       for (const name of Object.getOwnPropertyNames(UserStore.prototype)) {
         expect(/moveup|movedown|reorder|swap/i.test(name))
           .withContext(`"${name}" would put an ordering decision in the store`)
@@ -3079,22 +2488,11 @@ describe('UserStore', () => {
       expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
     });
 
-  // =========================================================================
   // PROFILE DECLARATIONS - THE STAGED BATCH
-  //
-  // Legacy: `Website/admin/Users/ProfileDefinitions.ascx.vb` L446-L448 - the Apply handler called
-  // `UpdateProperties()` and then `RefreshGrid()`. `UpdateProperties` (L291-L298) walked the
-  // collection and issued the update for each row whose dirty flag was up, one after another,
-  // because that is all a `For Each` inside one post-back can be; and the grid was rebound
-  // EXACTLY ONCE afterwards.
-  //
-  // ⚠ WHAT THIS BLOCK GUARDS. A screen that applied N staged rows by issuing the per-row command N
-  // times produced N CONCURRENT writes and up to N full catalogue re-reads - one per write, each
-  // firing on its own completion - while the shared saving flag fell on the first write to land,
-  // leaving a second batch startable on top of the first. The proofs below are therefore mostly
-  // NEGATIVE: at every step exactly one write is outstanding, no catalogue read has been issued
-  // yet, and after the batch settles exactly one has.
-  // =========================================================================
+  // ⚠ WHAT THIS BLOCK GUARDS. A screen that applied N staged rows by issuing the per-row command N times
+  // produced N CONCURRENT writes and up to N full catalogue re-reads - one per write, each firing on its
+  // own completion - while the shared saving flag fell on the first write to land, leaving a second batch
+  // startable on top of the first.
 
   describe('profile declarations (the staged batch)', () => {
     /** One staged row, addressing a declaration and carrying its replacement. */
@@ -3107,12 +2505,8 @@ describe('UserStore', () => {
     });
 
     /**
-     * Settles a whole batch, proving as it goes that ONE write is outstanding at a time and
-     * that the catalogue has not been re-read yet.
-     *
-     * The matched write is taken off the outstanding list by the expectation itself, so the
-     * "none" that follows it is the proof that it was the only write in flight rather than
-     * merely one of several - which is the property the concatenation exists to provide.
+     * Settles a whole batch, proving as it goes that ONE write is outstanding at a time and that the
+     * catalogue has not been re-read yet.
      *
      * @param expected The declaration identifiers, in the order they must be written.
      * @param refuse The identifiers to answer with a refusal instead of a replacement.
@@ -3172,10 +2566,8 @@ describe('UserStore', () => {
     });
 
     it('re-reads the catalogue exactly ONCE, after the last row has settled', () => {
-      // ⚠ THE FINDING THIS CLOSES. Three per-row commands re-read the whole catalogue three
-      // times, and the third read raced the first two. One read, after the batch, is what the
-      // legacy handler did and it is what a screen needs to derive which rows are still
-      // outstanding: whatever still differs from the server.
+      // ⚠ THE FINDING THIS CLOSES. Three per-row commands re-read the whole catalogue three times, and the
+      // third read raced the first two.
       store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
 
       settleBatch([4, 7, 9]);
@@ -3197,9 +2589,9 @@ describe('UserStore', () => {
     });
 
     it('holds the saving flag raised for the whole batch, and counts the rows down', () => {
-      // ⚠ THE SECOND HALF OF THE FINDING. With per-row commands the flag fell on the FIRST
-      // completion, so a form re-enabled itself while later rows were still travelling and a
-      // second Apply could be pressed on top of the first.
+      // ⚠ THE SECOND HALF OF THE FINDING. With per-row commands the flag fell on the FIRST completion, so a
+      // form re-enabled itself while later rows were still travelling and a second Apply could be pressed
+      // on top of the first.
       expect(store.saving()).toBeFalse();
       expect(store.profileDefinitionBatchRemaining()).toBe(0);
 
@@ -3237,9 +2629,9 @@ describe('UserStore', () => {
     });
 
     it('attempts every row after a refusal, and still reads the catalogue once', () => {
-      // ⚠ THE BATCH IS NOT ATOMIC, AND ABANDONING THE REST WOULD STRAND WORK. The rows address
-      // different declarations, so the server applies each on its own merits; a refusal of the
-      // middle row must not cost the operator the row behind it.
+      // ⚠ THE BATCH IS NOT ATOMIC, AND ABANDONING THE REST WOULD STRAND WORK. The rows address different
+      // declarations, so the server applies each on its own merits; a refusal of the middle row must not
+      // cost the operator the row behind it.
       store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
 
       settleBatch([4, 7, 9], [7]);
@@ -3264,9 +2656,9 @@ describe('UserStore', () => {
     });
 
     it('records the FIRST refusal when several rows are refused', () => {
-      // The failure slot holds one document, and the first refusal is the one whose cause the
-      // operator has to deal with. Recording whichever row happened to answer LAST would be an
-      // arbitrary choice presented as a diagnosis.
+      // The failure slot holds one document, and the first refusal is the one whose cause the operator has
+      // to deal with. Recording whichever row happened to answer LAST would be an arbitrary choice
+      // presented as a diagnosis.
       store.applyProfileDefinitionEdits([edit(4), edit(7), edit(9)]);
 
       expectRequest('PUT', `${DEFINITIONS_URL}/4`).flush(
@@ -3351,9 +2743,6 @@ describe('UserStore', () => {
     });
 
     it('writes nothing at all for an empty batch, and does not re-read the catalogue', () => {
-      // Nothing staged is nothing to write, and re-reading the catalogue to prove it would be a
-      // request spent to change nothing. The outstanding-request verification in the teardown is
-      // what proves the silence.
       store.applyProfileDefinitionEdits([]);
 
       expect(store.saving()).toBeFalse();
@@ -3394,9 +2783,9 @@ describe('UserStore', () => {
     });
 
     it('passes each identifier and body on exactly as supplied, sentinels included', () => {
-      // SENTINELS ARE DATA on this contract: the declaration table seeds its key at zero, a
-      // zero-valued module association is a real association and an empty default is a real
-      // default. A batch that coerced any of them would rewrite the operator's intent.
+      // SENTINELS ARE DATA on this contract: the declaration table seeds its key at zero, a zero-valued
+      // module association is a real association and an empty default is a real default. A batch that
+      // coerced any of them would rewrite the operator's intent.
       store.applyProfileDefinitionEdits([
         edit(0, { viewOrder: 0, length: 0, defaultValue: '', validationExpression: null }),
       ]);
@@ -3416,41 +2805,9 @@ describe('UserStore', () => {
       expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
     });
   });
-
   });
 
-  // =========================================================================
-  // CONCURRENT WRITES
-  //
-  // ⚠ THE GROUP THAT EXISTS BECAUSE `saving` USED TO BE A BOOLEAN. Every write set it before
-  // dispatching and cleared it in both callbacks, which is exactly right for one write and wrong
-  // for every case where two are outstanding: the FIRST response to land cleared it while the rest
-  // were still on the wire, so "not saving" stopped meaning "every write has settled" and started
-  // meaning "at least one has". There is a real screen that does this — the profile-declaration
-  // grid's Apply issues ONE WRITE PER CHANGED ROW, concurrently — and every control on it is
-  // disabled on this flag, so a mid-batch clear re-enabled all of them, admitted a second write
-  // into the middle of the batch, and let the batch's next response settle THAT write: announced
-  // as a success before its own request had answered, with the record of what was awaited
-  // discarded, so its eventual refusal had nothing left to attribute it to. A false success and a
-  // lost failure, from one shared boolean.
-  //
-  // The same defect had a second half in the single failure slot, which every write emptied as it
-  // started — so a later write's START erased a refusal an earlier one had already recorded.
-  //
-  // These cases pin both halves. They drive the STORE directly rather than through the screen,
-  // because the store is where the invariant lives and a screen could satisfy it by accident
-  // through a disabled button.
-  // =========================================================================
-
   describe('concurrent writes', () => {
-    /**
-     * Drains the re-reads a batch of successful writes leaves behind.
-     *
-     * Each write's callback re-reads the declaration list, and each re-read supersedes the one
-     * before it — so a batch of three leaves one live request and two cancelled ones. All three
-     * must be accounted for, because the teardown's `verify()` counts a cancelled request just as
-     * a live one.
-     */
     function drainDefinitionReads(): void {
       for (const read of httpMock.match((request) => request.url === DEFINITIONS_URL)) {
         if (!read.cancelled) {
@@ -3522,10 +2879,6 @@ describe('UserStore', () => {
     });
 
     it('does not let a write STARTING erase a refusal a sibling write already recorded', () => {
-      // The second half of the same defect. Every write clears the failure slot as it starts,
-      // which is correct for a fresh attempt and destructive while siblings are outstanding: the
-      // row that was refused would be left looking as though it had been written, with the
-      // refusal discarded by a request rather than by anything the operator did.
       store.updateProfileDefinition(0, definitionWriteFixture());
       store.updateProfileDefinition(4, definitionWriteFixture());
 
@@ -3581,10 +2934,6 @@ describe('UserStore', () => {
     });
 
     it('zeroes the count when a session boundary releases the writes', () => {
-      // ⚠ WITHOUT THIS THE COUNT WOULD STRAND. A released write fires neither callback, and the
-      // callbacks are where the count comes down — so a boundary crossed with two writes
-      // outstanding would leave saving stuck at true for the remaining life of the application,
-      // with every form on every account screen disabled and no request outstanding to explain it.
       store.updateProfileDefinition(0, definitionWriteFixture());
       store.createProfileDefinition({
         propertyName: 'Nickname',
@@ -3632,9 +2981,6 @@ describe('UserStore', () => {
     });
 
     it('counts writes across DIFFERENT commands, not per command', () => {
-      // The count is one fact about the store, not one per endpoint: a form disabling itself on
-      // this flag is protecting the operator from a second submission of any kind, not only from
-      // a second submission of the same shape.
       store.updateUser(7, updateRequestFixture());
       store.updateProfileDefinition(0, definitionWriteFixture());
 
@@ -3653,47 +2999,12 @@ describe('UserStore', () => {
 
       expect(store.saving()).toBeFalse();
 
-      // ⚠ NO LISTING RE-READ IS EXPECTED, and that is this store's own rule rather than an
-      // omission: the account listing dispatches nothing while no search has been chosen, which is
-      // the state this case leaves it in. The declaration write re-reads its own list, which is
-      // drained below.
       httpMock.expectNone((request) => request.url === USERS_URL);
       drainDefinitionReads();
     });
   });
 
-  // =========================================================================
-  // CONCURRENT WRITES
-  //
-  // ⚠ THE GROUP THAT EXISTS BECAUSE `saving` USED TO BE A BOOLEAN. Every write set it before
-  // dispatching and cleared it in both callbacks, which is exactly right for one write and wrong
-  // for every case where two are outstanding: the FIRST response to land cleared it while the rest
-  // were still on the wire, so "not saving" stopped meaning "every write has settled" and started
-  // meaning "at least one has". There is a real screen that does this — the profile-declaration
-  // grid's Apply issues ONE WRITE PER CHANGED ROW, concurrently — and every control on it is
-  // disabled on this flag, so a mid-batch clear re-enabled all of them, admitted a second write
-  // into the middle of the batch, and let the batch's next response settle THAT write: announced
-  // as a success before its own request had answered, with the record of what was awaited
-  // discarded, so its eventual refusal had nothing left to attribute it to. A false success and a
-  // lost failure, from one shared boolean.
-  //
-  // The same defect had a second half in the single failure slot, which every write emptied as it
-  // started — so a later write's START erased a refusal an earlier one had already recorded.
-  //
-  // These cases pin both halves. They drive the STORE directly rather than through the screen,
-  // because the store is where the invariant lives and a screen could satisfy it by accident
-  // through a disabled button.
-  // =========================================================================
-
   describe('concurrent writes', () => {
-    /**
-     * Drains the re-reads a batch of successful writes leaves behind.
-     *
-     * Each write's callback re-reads the declaration list, and each re-read supersedes the one
-     * before it — so a batch of three leaves one live request and two cancelled ones. All three
-     * must be accounted for, because the teardown's `verify()` counts a cancelled request just as
-     * a live one.
-     */
     function drainDefinitionReads(): void {
       for (const read of httpMock.match((request) => request.url === DEFINITIONS_URL)) {
         if (!read.cancelled) {
@@ -3765,10 +3076,6 @@ describe('UserStore', () => {
     });
 
     it('does not let a write STARTING erase a refusal a sibling write already recorded', () => {
-      // The second half of the same defect. Every write clears the failure slot as it starts,
-      // which is correct for a fresh attempt and destructive while siblings are outstanding: the
-      // row that was refused would be left looking as though it had been written, with the
-      // refusal discarded by a request rather than by anything the operator did.
       store.updateProfileDefinition(0, definitionWriteFixture());
       store.updateProfileDefinition(4, definitionWriteFixture());
 
@@ -3824,10 +3131,6 @@ describe('UserStore', () => {
     });
 
     it('zeroes the count when a session boundary releases the writes', () => {
-      // ⚠ WITHOUT THIS THE COUNT WOULD STRAND. A released write fires neither callback, and the
-      // callbacks are where the count comes down — so a boundary crossed with two writes
-      // outstanding would leave saving stuck at true for the remaining life of the application,
-      // with every form on every account screen disabled and no request outstanding to explain it.
       store.updateProfileDefinition(0, definitionWriteFixture());
       store.createProfileDefinition({
         propertyName: 'Nickname',
@@ -3875,9 +3178,6 @@ describe('UserStore', () => {
     });
 
     it('counts writes across DIFFERENT commands, not per command', () => {
-      // The count is one fact about the store, not one per endpoint: a form disabling itself on
-      // this flag is protecting the operator from a second submission of any kind, not only from
-      // a second submission of the same shape.
       store.updateUser(7, updateRequestFixture());
       store.updateProfileDefinition(0, definitionWriteFixture());
 
@@ -3896,10 +3196,6 @@ describe('UserStore', () => {
 
       expect(store.saving()).toBeFalse();
 
-      // ⚠ NO LISTING RE-READ IS EXPECTED, and that is this store's own rule rather than an
-      // omission: the account listing dispatches nothing while no search has been chosen, which is
-      // the state this case leaves it in. The declaration write re-reads its own list, which is
-      // drained below.
       httpMock.expectNone((request) => request.url === USERS_URL);
       drainDefinitionReads();
     });
@@ -3909,22 +3205,9 @@ describe('UserStore', () => {
   // FAILURES
   // =========================================================================
 
-  // =========================================================================
   // THE OPENING LISTING IS THE TENANT'S POLICY DECISION
-  // =========================================================================
-  //
-  // `Users.ascx.vb` L494-L506 branched on the portal's own `DisplayMode` setting to decide what a
-  // freshly opened listing shows, and its three values are three different answers:
-  //
-  //   All (0)         list every account, paged and unfiltered
-  //   FirstLetter (1) open on the first letter, so a large tenant does not render thousands of rows
-  //   None (2)        list NOTHING and wait to be asked
-  //
-  // The store used to promote the no-query state to the unfiltered listing UNCONDITIONALLY, which
-  // collapsed all three onto `All`. For a `FirstLetter` tenant that reverses a performance decision
-  // without being asked; for a `None` tenant it OVERRIDES A POLICY — the one setting whose whole
-  // purpose is to withhold the roster was the one setting with no effect, and every account was
-  // listed to anybody who opened the screen.
+  // All (0) list every account, paged and unfiltered FirstLetter (1) open on the first letter, so a large
+  // tenant does not render thousands of rows None (2) list NOTHING and wait to be asked.
   describe('the opening listing follows the tenant policy', () => {
     it('lists everything when the policy says All', () => {
       store.initialise();
@@ -3932,10 +3215,8 @@ describe('UserStore', () => {
 
       const request = expectRequest('GET', USERS_URL);
 
-      // No filter member of any kind: the unfiltered listing is the absence of one, never a
-      // reserved word transmitted as a filter. Absence is proved by asking whether the parameter
-      // is THERE — a reader answering null is the weaker claim, because that is also what a
-      // present-but-empty parameter answers, and empty text IS a value on this contract.
+      // No filter member of any kind: the unfiltered listing is the absence of one, never a reserved word
+      // transmitted as a filter.
       expectOmitted(request, ['userName', 'email']);
       expect(store.searchMode()).toBe('all');
 
@@ -3943,13 +3224,12 @@ describe('UserStore', () => {
     });
 
     it('opens on the FIRST LETTER when the policy says FirstLetter', () => {
-      // ⚠ THE BRANCH THAT WAS SILENTLY LOST. Before the fix this dispatched the unfiltered listing
-      // and this assertion found no account-name filter at all.
-      // ⚠ THE OPENING READ IS THE BODY-BOUND SEARCH, NOT THE UNFILTERED LISTING, BECAUSE A LETTER
-      // ON THE ACCOUNT-NAME AXIS NAMES PEOPLE. The transport is chosen by whether the query
-      // identifies anybody — see {@link USERS_SEARCH_URL} — and a first-letter view IS an
-      // account-name filter, so it travels in a request body like every other name search rather
-      // than putting the axis and its value in a request target that four separate recorders keep.
+      // ⚠ A BRANCH THAT IS EASILY LOST IN SILENCE: dispatching the unfiltered listing here leaves this
+      // assertion found no account-name filter at all. ⚠ THE OPENING READ IS THE BODY-BOUND SEARCH, NOT THE
+      // UNFILTERED LISTING, BECAUSE A LETTER ON THE ACCOUNT-NAME AXIS NAMES PEOPLE. The transport is chosen
+      // by whether the query identifies anybody — see {@link USERS_SEARCH_URL} — and a first-letter view IS
+      // an account-name filter, so it travels in a request body like every other name search rather than
+      // putting the axis and its value in a request target that four separate recorders keep.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 1 })));
 
@@ -3994,16 +3274,10 @@ describe('UserStore', () => {
     });
 
     it('LISTS THE ACCOUNTS when the policy cannot be read, and does not read a refusal as None', () => {
-      // ⚠ THE CONTRACT THAT MUST NOT REGRESS. Withholding the roster is a CHOICE a tenant makes,
-      // expressed as the no-query display mode; a read that failed is not that choice, so an
-      // unreadable policy falls back to the listing rather than to silence — otherwise one refused
-      // request would make a tenant's accounts unreachable.
-      //
-      // ⚠ THE STATUS HERE IS A GENUINE REFUSAL, NOT AN UNSTORED TENANT. A tenant that stores no
-      // settings is answered `200` with the platform defaults and `isStored: false`, and its default
-      // display mode IS the no-query one — so that case legitimately withholds the listing and is
-      // asserted in the policy suite above. The two must not be conflated: this fact is about a
-      // status the transport could not serve, which leaves the store with no policy at all.
+      // ⚠ THE CONTRACT THAT MUST NOT REGRESS. Withholding the roster is a CHOICE a tenant makes, expressed
+      // as the no-query display mode; a read that failed is not that choice, so an unreadable policy falls
+      // back to the listing rather than to silence — otherwise one refused request would make a tenant's
+      // accounts unreachable.
       store.initialise();
 
       expectRequest('GET', SETTINGS_URL).flush(problemFixture({ status: 404, title: 'Not Found' }), {
@@ -4022,9 +3296,9 @@ describe('UserStore', () => {
     });
 
     it('falls back to the listing for an UNRECOGNISED mode rather than to silence', () => {
-      // The contract declares this member as a plain integer validated against no closed set, so an
-      // unknown value is reachable. Treating one as "withhold everything" would let a single
-      // unrecognised integer make a tenant's accounts unreachable; the listing is recoverable.
+      // The contract declares this member as a plain integer validated against no closed set, so an unknown
+      // value is reachable. Treating one as "withhold everything" would let a single unrecognised integer
+      // make a tenant's accounts unreachable; the listing is recoverable.
       store.initialise();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 99 })));
 
@@ -4056,17 +3330,6 @@ describe('UserStore', () => {
     });
   });
 
-  // =========================================================================
-  // A WRITE SETTLES ITS OWN FLOW AND NOBODY ELSE'S
-  // =========================================================================
-  //
-  // Every one of this store's thirteen writes reports through one slice. That slice used to be a
-  // BOOLEAN, which answers "is anybody writing" — indistinguishable from "is MY write finished" only
-  // while at most one write can be outstanding. `profile-definition-list.applyChanges` dispatches
-  // ONE WRITE PER PENDING ROW, so several are genuinely in flight at once, and the first to answer
-  // set the flag false: every flow watching it concluded its own write had finished, re-enabled its
-  // form, cleared its awaited marker and announced a confirmation, while the rest were still on the
-  // wire. A later failure among them then arrived at a screen that had already reported success.
   describe('concurrent writes settle independently', () => {
     it('stays saving until the LAST of several writes settles', () => {
       // ⚠ THE DEFECT, EXPRESSED AS A TEST. With a boolean the first flush below took `saving` to
@@ -4170,10 +3433,6 @@ describe('UserStore', () => {
     });
 
     it('ZEROES the count on reset rather than decrementing it', () => {
-      // ⚠ THE ONE PLACE THE COUNTER IS SET RATHER THAN STEPPED, and the reason is that a reset
-      // releases every write handle, so none of them will ever reach a settle call. A decrement
-      // would subtract one from a counter standing at several and leave the store permanently
-      // claiming to be saving — every form on it disabled for the rest of the session.
       store.updateProfileDefinition(1, definitionWriteFixture());
       store.updateProfileDefinition(2, definitionWriteFixture());
       store.updateProfileDefinition(3, definitionWriteFixture());
@@ -4251,13 +3510,7 @@ describe('UserStore', () => {
     });
 
     it('retains the trace identifier and the correlation identifier that arrived', () => {
-      // MEASURED DIVERGENCE, and it matters: these are two INDEPENDENT identifiers with
-      // different formats. The trace identifier is a trace-context value taken from
-      // whatever diagnostic activity was current; the correlation identifier is the value
-      // the server validated for the request, and it is the one that appears on the
-      // response header, on the request envelope in the log of the server and on every
-      // audit event the request produced. Both are retained; only the second is quotable
-      // as a support reference.
+      // MEASURED DIVERGENCE, and it matters: these are two INDEPENDENT identifiers with different formats.
       store.showAllAccounts();
 
       expectRequest('GET', USERS_URL).flush(problemFixture({ status: 500 }), {
@@ -4276,11 +3529,8 @@ describe('UserStore', () => {
     });
 
     it('reads per-field messages with bracket access on the index-signature map', () => {
-      // The keys are the model-state keys of the server, reproduced byte for byte: they
-      // name model members rather than JSON members, so the camel-case body policy does
-      // not apply and they stay Pascal-cased. The map is an index signature and this
-      // workspace forbids property access on one, so a bracket is the only available form
-      // - which is what stops a typo compiling as a silent undefined.
+      // The keys are the model-state keys of the server, reproduced byte for byte: they name model members
+      // rather than JSON members, so the camel-case body policy does not apply and they stay Pascal-cased.
       store.createUser(createRequestFixture());
 
       expectRequest('POST', USERS_URL).flush(validationProblemFixture(), {
@@ -4316,12 +3566,6 @@ describe('UserStore', () => {
     });
 
     it('holds untrusted markup in a message as an inert plain string', () => {
-      // Legacy message text is untrusted markup BY MEASUREMENT, not by supposition: across
-      // the thirty-seven in-scope localised resource files, seventy-six values carry an
-      // HTML tag and four of them carry a live script element. Nothing here is ever handed
-      // to a template as trusted markup, and no sanitiser is involved, because nothing is
-      // treated as markup at all. The legacy code knew it too - `AccessDenied.ascx.vb` L43
-      // encoded the message it had just decoded before showing it.
       const hostile = '<script>alert(1)</script>';
 
       store.showAllAccounts();
@@ -4339,9 +3583,6 @@ describe('UserStore', () => {
     });
 
     it('keeps a self-closing legacy break prefix on the raw document', () => {
-      // MIGRATION: `Website/admin/Users/User.ascx.vb` L187 prefixed its message with a
-      // SELF-CLOSING break tag. Stripping is the business of the shared summariser, so the
-      // raw document keeps what arrived and only the summary is cleaned.
       store.createUser(createRequestFixture());
       expectRequest('POST', USERS_URL).flush(
         problemFixture({ status: 422, title: '<br/>The credential was rejected.' }),
@@ -4360,9 +3601,6 @@ describe('UserStore', () => {
     });
 
     it('keeps an unclosed legacy break prefix on the raw document', () => {
-      // MIGRATION: the other spelling. `Website/admin/Portal/Signup.ascx.vb` used the
-      // unclosed form at L193, L214, L221 and L323, so both spellings exist in the legacy
-      // source and both must survive unmodified on the raw document.
       store.createUser(createRequestFixture());
       expectRequest('POST', USERS_URL).flush(
         problemFixture({ status: 422, title: '<br>The credential was rejected.' }),
@@ -4439,18 +3677,8 @@ describe('UserStore', () => {
 
   describe('authorisation is the concern of the server', () => {
     it('exposes no permission-deciding member of any kind', () => {
-      // MIGRATION: `Library/Components/Users/UserModuleBase.vb` L466-L505 embedded a full
-      // authorisation decision INSIDE a page property getter - comparing the identifier of
-      // the caller against the requested one at L473-474, short-circuiting for an
-      // installation administrator at L475-476, re-reading the requested account at L481 to
-      // check at L484 that a tenant administrator was not editing an installation
-      // administrator, and redirecting to a denial page at L494 when none of that held.
-      //
-      // NOT ONE LINE OF IT IS REPRODUCED. The API decides, and reports a refusal as a
-      // status with a problem document; this store records that refusal and presents it as
-      // a refusal rather than as a fault. The permission vocabulary decides nothing on this
-      // side, and the current-identity contract of the server carries no
-      // permission-testing or role-testing method for a client to lean on either.
+      // NOT ONE LINE OF IT IS REPRODUCED. The API decides, and reports a refusal as a status with a problem
+      // document; this store records that refusal and presents it as a refusal rather than as a fault.
       const deciding =
         /canedit|candelete|canview|isallowed|ispermitted|hasperm|isinrole|authorise|authorize|accessdenied/i;
 
@@ -4468,10 +3696,9 @@ describe('UserStore', () => {
     });
 
     it('does not pre-check a rule the server owns before dispatching', () => {
-      // Counting the accounts of a tenant first would cost a request, would race every
-      // other administrator, and would still have to handle the refusal it was trying to
-      // predict. The proof is that a creation issues EXACTLY ONE request and no lookup
-      // precedes it.
+      // Counting the accounts of a tenant first would cost a request, would race every other administrator,
+      // and would still have to handle the refusal it was trying to predict. The proof is that a creation
+      // issues EXACTLY ONE request and no lookup precedes it.
       store.createUser(createRequestFixture());
 
       const posted = expectRequest('POST', USERS_URL);
@@ -4490,9 +3717,6 @@ describe('UserStore', () => {
     });
 
     it('records a refusal without redirecting or navigating anywhere', () => {
-      // The legacy decision ended in a redirect at L494. A store cannot navigate, and this
-      // one takes no router dependency at all - the refusal simply becomes recorded state
-      // for a screen to present.
       store.updateUser(1, updateRequestFixture());
       expectRequest('PUT', `${USERS_URL}/1`).flush(problemFixture({ status: 403 }), {
         status: 403,
@@ -4509,16 +3733,8 @@ describe('UserStore', () => {
     });
   });
 
-  // =========================================================================
   // THE ACCOUNT'S OWN SUBSCRIPTIONS
-  //
-  // `Website/admin/Users/MemberServices.ascx` and its 530-line code-behind. The panel was
-  // SELF-SERVICE throughout: every operation passed `UserInfo.UserID` — the signed-in
-  // account — even though its container assigned it a user identifier
-  // (`manageusers.ascx.vb` L517), and the container hid the tab whenever an administrator
-  // reached the screen (L61-L66). Each of its handlers re-bound the grid after acting
-  // (L118, L133, L430), which is the behaviour every command below reproduces.
-  // =========================================================================
+  // `Website/admin/Users/MemberServices.ascx` and its 530-line code-behind.
 
   describe("the account's own subscriptions", () => {
     it('reads the catalogue unpaged and publishes the account it belongs to', () => {
@@ -4645,10 +3861,10 @@ describe('UserStore', () => {
       );
 
       expect(store.failure()?.operation).toBe('subscribeToService');
-      // ⚠ READ AS THE CLIENT NORMALISES IT, NOT AS THE SERVER SPELLS IT. `failureCode`
-      // lower-cases the reason and rewrites every hyphen as an underscore, deliberately
-      // mirroring what `GlobalExceptionHandler` does before it chooses a status — so one
-      // spelling difference cannot make a client and a server disagree about a reason.
+      // ⚠ READ AS THE CLIENT NORMALISES IT, NOT AS THE SERVER SPELLS IT. `failureCode` lower-cases the
+      // reason and rewrites every hyphen as an underscore, deliberately mirroring what
+      // `GlobalExceptionHandler` does before it chooses a status — so one spelling difference cannot make a
+      // client and a server disagree about a reason.
       expect(store.failureReasonCode())
         .withContext('the excluded payment path is reported by its own reason')
         .toBe('user.service.payment_required_forbidden');
@@ -4666,9 +3882,6 @@ describe('UserStore', () => {
       expect(command.request.body).toBeNull();
       command.flush(null, { status: 204, statusText: 'No Content' });
 
-      // The server may EXPIRE the assignment rather than remove it — `RoleController.vb`
-      // L494-L496 expires one whose role charges a fee — and both are successes answering 204.
-      // Re-reading is what shows which happened, which is why the row's own state is the answer.
       expectRequest('GET', SERVICES_URL).flush(
         envelope([serviceFixture({ isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]),
       );
@@ -4713,9 +3926,6 @@ describe('UserStore', () => {
 
       const command = expectRequest('POST', SERVICE_REDEMPTIONS_URL);
 
-      // ⚠ UNTRIMMED AND UNFOLDED. The legacy comparison was ordinary string equality against
-      // the stored code (`MemberServices.ascx.vb` L410), so leading space and case both
-      // mattered; trimming here would admit codes the legacy application refused.
       expect(command.request.body).toEqual({ code: '  Founders-2026  ' });
 
       command.flush(
@@ -4748,8 +3958,6 @@ describe('UserStore', () => {
         { status: 400, statusText: 'Bad Request' },
       );
 
-      // The legacy screen had two distinct messages for the two outcomes, so an empty success
-      // would report a failure as a success.
       expect(store.lastRedemption()).toBeNull();
       expect(store.failure()?.operation).toBe('redeemServiceCode');
       expect(store.failureReasonCode()).toBe('user.service.code_not_matched');
@@ -4816,17 +4024,12 @@ describe('UserStore', () => {
     });
   });
 
-
   // =========================================================================
   // THE PUBLISHED SURFACE
   // =========================================================================
 
   describe('the published surface', () => {
     it('publishes state that cannot be written to from outside', () => {
-      // A writable signal exposes a setter and an updater; a read-only one exposes
-      // neither. Asking whether the members are PRESENT is the type-safe proof - reaching
-      // for one through a cast would need the very cast this workspace forbids, and would
-      // prove something about the cast rather than about the signal.
       const published = [
         store.users,
         store.search,
@@ -4871,9 +4074,6 @@ describe('UserStore', () => {
     });
 
     it('replaces the page rather than mutating the one a consumer already holds', () => {
-      // This is the property that makes a change-detection strategy comparing references
-      // work at all: an in-place mutation would not change the reference a consumer
-      // compares, so the screen would keep rendering the previous page.
       store.showAllAccounts();
       expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { totalCount: 1 }));
 
@@ -4924,9 +4124,6 @@ describe('UserStore', () => {
     });
 
     it('seeds every slice so that no consumer has to branch on absence', () => {
-      // The listing is seeded with the shared empty envelope rather than with null, and
-      // the seed reports the coordinates a server response carries for an unpaged,
-      // zero-record answer - which is what makes the branch unnecessary.
       expect(store.users().items).toEqual([]);
       expect(store.userRows()).toEqual([]);
       expect(store.totalCount()).toBe(0);
@@ -4964,10 +4161,6 @@ describe('UserStore', () => {
     });
 
     it('abandons a read in flight when a newer one supersedes it', () => {
-      // Without this, a person paging quickly can have two listing requests outstanding
-      // and the slower one can answer last, leaving the screen showing a page nobody asked
-      // for. Cancellation is per slice, so the superseded request is never flushed - which
-      // is exactly what the outstanding-request verification in the teardown confirms.
       store.showAllAccounts();
       const first = expectRequest('GET', USERS_URL);
 
@@ -4987,12 +4180,7 @@ describe('UserStore', () => {
     /**
      * ⚠ AN ABANDONED READ LOWERS ITS OWN FLAG, AND THIS SUITE EXISTS BECAUSE ONE DID NOT. Unsubscribing
      * kills a request without delivering next, error or complete, so nothing downstream ever runs the
-     * handler that would lower the flag - the flag is therefore raised forever. Measured on the account
-     * listing: the query reset that every arrival performs abandoned the listing read, and the grid then
-     * held `aria-busy="true"`, a loading indicator and five sort controls marked disabled, with zero
-     * further requests over 5.2 seconds and no self-heal. It reached the same screen by a second route,
-     * the redirect that follows a create, which is why this is asserted on the store rather than on
-     * either screen.
+     * handler that would lower the flag - the flag is therefore raised forever.
      */
     it('lowers the listing flag when the query reset abandons the read', () => {
       store.showAllAccounts();
@@ -5013,10 +4201,7 @@ describe('UserStore', () => {
     /**
      * ⚠ THE QUERY RESET ABANDONS THE QUERY'S READ AND NOTHING ELSE. The tenant's account policy and
      * profile declarations are not part of a query, and the reset's own documentation says they must
-     * survive it - discarding them "would turn one stale query into several redundant requests". The
-     * blanket cancellation contradicted that: saving the policy composes a settings re-read followed by a
-     * listing read at the size that policy declares, and arriving at the listing aborted the settings read
-     * mid-flight, throwing away the composition the write deliberately performed.
+     * survive it - discarding them "would turn one stale query into several redundant requests".
      */
     it('leaves the tenant-scoped reads alone when only the query is being replaced', () => {
       store.loadMembershipSettings();
@@ -5070,25 +4255,7 @@ describe('UserStore', () => {
       expect(store.busy()).toBeFalse();
     });
   });
-  // -------------------------------------------------------------------------
   // SESSION ISOLATION
-  //
-  // `reset` released the READS and left the WRITES listening, and the two halves of that gap were
-  // separately serious.
-  //
-  // A write's callback selects an account, re-reads the listing and records an outcome. Left
-  // listening across a session boundary it performed all three on behalf of the session that
-  // ended — repopulating the very slices the reset had just cleared with the PREVIOUS OPERATOR'S
-  // accounts. That is personal data: names, addresses, telephone numbers and profile answers,
-  // shown to whoever signed in next, with no command issued to explain where it came from.
-  //
-  // And the handles were held in an RxJS `Subscription` used as a container, which is CLOSED once
-  // unsubscribed: anything added afterwards is unsubscribed the instant it is added. So releasing
-  // them at a boundary would have released them correctly ONCE and then silently cancelled every
-  // subsequent write for the remaining life of the application — every save after one sign-out
-  // dispatched and never reporting an outcome. The handles are now a set, which is emptied and
-  // reused.
-  // -------------------------------------------------------------------------
   describe('session isolation', () => {
     it('cancels a read in flight on reset, so its answer cannot repopulate the store', () => {
       store.loadMembershipSettings();
@@ -5105,9 +4272,6 @@ describe('UserStore', () => {
     });
 
     it('cancels a WRITE in flight on reset, which reads-only cancellation did not', () => {
-      // ⚠ THE GAP THIS CLOSES. The callback of this write selects the account it wrote and re-reads
-      // the listing. Left listening it would put one operator's account into a store that a second
-      // operator's screen is about to render.
       store.createUser(createRequestFixture());
 
       const pending = expectRequest('POST', USERS_URL);
@@ -5122,9 +4286,9 @@ describe('UserStore', () => {
     });
 
     it('releases a BATCH in flight on reset, so the next operator is not refused', () => {
-      // ⚠ A CANCELLED STREAM NEVER COMPLETES, so the arm that lowers the batch count never runs.
-      // Left standing, that count would refuse the FIRST batch the next operator staged - silently,
-      // and for the remaining life of the store, because nothing else lowers it.
+      // ⚠ A CANCELLED STREAM NEVER COMPLETES, so the arm that lowers the batch count never runs. Left
+      // standing, that count would refuse the FIRST batch the next operator staged - silently, and for the
+      // remaining life of the store, because nothing else lowers it.
       store.applyProfileDefinitionEdits([
         { propertyDefinitionId: 4, request: definitionWriteFixture() },
         { propertyDefinitionId: 7, request: definitionWriteFixture() },
@@ -5195,10 +4359,6 @@ describe('UserStore', () => {
     });
 
     it('keeps accepting writes after a reset, which a Subscription container would have broken', () => {
-      // ⚠ THE REGRESSION GUARD FOR THE CLOSED-CONTAINER TRAP. With a container, this write would be
-      // cancelled the instant it was registered — dispatched, and then silently abandoned — and the
-      // operator would watch a save that never reports anything, for the rest of the application's
-      // life.
       store.reset();
 
       store.createUser(createRequestFixture());
@@ -5221,9 +4381,6 @@ describe('UserStore', () => {
     });
 
     it('releases a write handle when the write settles, so the set cannot grow without bound', () => {
-      // A set does not detach a finished child by itself, which an RxJS container did — so the
-      // teardown is registered explicitly. Without it the set would gain one entry per write ever
-      // issued and never lose one.
       store.createUser(createRequestFixture());
       expectRequest('POST', USERS_URL).flush(envelope(detailFixture({ userId: 12 })), {
         status: 201,
@@ -5242,38 +4399,14 @@ describe('UserStore', () => {
     });
   });
 
-  // -------------------------------------------------------------------------
   // WRITE IDENTITY, AND WHY AN AGGREGATE FLAG COULD NOT SETTLE A WRITE
-  //
-  // This store published ONE boolean for "a write is in flight" and ONE failure slot, and it is
-  // provided at the application root. Every screen that dispatched a write therefore watched the
-  // same boolean fall and then read the same slot to learn its own outcome. Three distinct wrong
-  // answers follow, and none is visible from inside one screen:
-  //
-  //   (a) TWO WRITES, ONE FLAG. The account list dispatches a removal, a settings pane dispatches a
-  //       save, the save settles first — the flag falls and BOTH conclude their own write is done.
-  //       The list clears the marker naming the row it was deleting, so the refusal that arrives
-  //       afterwards has nothing to attribute itself to and the row silently stays.
-  //   (b) SOMEBODY ELSE'S FAILURE. One write succeeds and another is refused; the successful one
-  //       reads the slot, finds the other's refusal and reports it as its own outcome.
-  //   (c) A REFUSAL SEEN AS A SUCCESS. Every dispatch clears the slot, so whether a screen sees its
-  //       own refusal depends on what else the application happened to do next.
-  //
-  // The profile-declaration screen made (a) routine rather than occasional: its Apply command
-  // dispatches one write per edited row, in parallel, all against the one flag and the one slot.
-  //
-  // NOTE ON WHAT THESE CASES DO NOT ANSWER. Several of these writes ask the store to re-read the
-  // account listing once they land, but a store that has never been given a query issues no listing
-  // request at all — `dispatchUsers` returns early for the no-query state, exactly as the legacy
-  // screen left its grid unbound. None of these cases sets a query, so none of them answers a
-  // listing read, and that is deliberate: write identity is a property of the write, and mixing a
-  // listing read into every case would only add an address to keep in step with the transport.
-  // -------------------------------------------------------------------------
+  // (a) TWO WRITES, ONE FLAG. The account list dispatches a removal, a settings pane dispatches a save, the
+  // save settles first — the flag falls and BOTH conclude their own write is done.
   describe('every write is settled by identity rather than by an aggregate flag', () => {
     it('hands back a distinct identifier for every write, and never the absent value', () => {
       // Zero is reserved as "no write awaited" by the screens that hold one of these, so the FIRST
-      // identifier must not be zero. The counter therefore pre-increments, asserted here rather
-      // than left to a comment.
+      // identifier must not be zero. The counter therefore pre-increments, asserted here rather than left
+      // to a comment.
       const first = store.createUser(createRequestFixture());
       const second = store.unlockUser(7);
 
@@ -5337,9 +4470,9 @@ describe('UserStore', () => {
     });
 
     it('settles the first of two open writes without settling the second', () => {
-      // ⚠ DEFECT (a), AND THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes are open; the
-      // second answers first. The result must name the SECOND, and the aggregate must stay raised
-      // because the first is still open.
+      // ⚠ DEFECT (a), AND THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. Both writes are open; the second
+      // answers first. The result must name the SECOND, and the aggregate must stay raised because the
+      // first is still open.
       const firstWrite = store.deleteUser(7);
       const secondWrite = store.unlockUser(8);
 
@@ -5364,9 +4497,9 @@ describe('UserStore', () => {
     });
 
     it('does not attach one write\u2019s refusal to another write\u2019s result', () => {
-      // ⚠ DEFECT (b). The refused write and the successful one overlap, and the successful one
-      // settles LAST — so the shared failure slot holds a refusal at the very moment the successful
-      // write's result is published. The result must still carry no failure.
+      // ⚠ DEFECT (b). The refused write and the successful one overlap, and the successful one settles LAST
+      // — so the shared failure slot holds a refusal at the very moment the successful write's result is
+      // published.
       store.deleteUser(7);
 
       const refused = expectRequest('DELETE', `${USERS_URL}/7`);
@@ -5395,12 +4528,6 @@ describe('UserStore', () => {
         .withContext('a successful write must not inherit the other write\u2019s refusal')
         .toBeNull();
 
-      // ⚠ AND DEFECT (c) IN THE SAME BREATH. Every command on this store opens by clearing the
-      // shared slot, so a screen holding the refusal there loses it the moment ANY other screen
-      // dispatches anything at all. Here the settings pane simply reads — no write, no failure, no
-      // relationship to the removal — and the refusal is gone. A screen that had read its outcome
-      // from the slot would now conclude the REFUSED removal succeeded, purely because of what the
-      // application happened to do next. The published result is unaffected, which is the point.
       store.loadMembershipSettings();
       expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture()));
 
@@ -5430,10 +4557,6 @@ describe('UserStore', () => {
     });
 
     it('lowers the pending count when a write is released rather than answered', () => {
-      // ⚠ THE CASE A PAIR OF CALLBACKS CANNOT SEE, WHICH IS WHY THE COUNT IS LOWERED FROM
-      // `finalize`. Neither the next nor the error path runs for a subscription that is simply
-      // unsubscribed, so a write released by a session boundary would otherwise leave the count
-      // raised for the life of the application and the store would report itself busy for ever.
       store.createUser(createRequestFixture());
 
       const pending = expectRequest('POST', USERS_URL);
@@ -5448,5 +4571,4 @@ describe('UserStore', () => {
         .toBeFalse();
     });
   });
-
 });

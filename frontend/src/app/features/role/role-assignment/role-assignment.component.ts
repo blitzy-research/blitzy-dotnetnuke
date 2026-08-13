@@ -1,123 +1,3 @@
-/**
- * Manage Users in Role — the role-centric half of the legacy security-roles screen.
- *
- * Route `/roles/:roleId/users`. This is the routed CONTAINER for the screen: it reads the
- * role from the route, lists the accounts holding it, enrols a new account with optional
- * effective and expiry bounds, and removes an existing membership behind a confirmation.
- *
- * ## Legacy provenance
- *
- * Ported from `Website/admin/Security/SecurityRoles.ascx.vb` (668 lines, the workflow
- * authority) and `Website/admin/Security/securityroles.ascx` (92 lines, authoritative for
- * the fields, the three validators and the grid), with wording taken from
- * `Website/admin/Security/App_LocalResources/SecurityRoles.ascx.resx` and
- * `Website/App_GlobalResources/SharedResources.resx`. Behavioural authority for the
- * assignment rules is `Library/Components/Security/Roles/RoleController.vb`. All of those
- * files are read-only references and are unchanged by this work.
- *
- * MIGRATION: the legacy control served TWO workflows from one file, choosing between them
- * on a mode discriminator — `plUsers`/`plRoles` shared one table cell
- * (`securityroles.ascx:L14`) and `cboUsers`/`cboRoles` shared another (`:L26`/`:L27`).
- * This component implements ONLY the role-centric half. `SecurityRoles.ascx.vb:L183-L198`
- * is the proof of what that half renders: it puts the single role into `cboRoles`, sets
- * the title from `RoleTitle.Text`, and then hides BOTH the role dropdown and its label
- * (`:L195` and `:L196`). The account-centric half — "Manage Roles for User", reached at
- * `:L201-L224` and `:L249-L255` — belongs to the account feature and is out of scope, so
- * `plRoles.*`, `AddRole.Text`, `UserTitle.Text` and the design-time `cmdAdd.Text`
- * default of 'Add Role' are deliberately unused here. A documented reduction.
- *
- * ## What the sibling template must declare
- *
- * The `.html` and `.scss` beside this file, and the feature's route table, are authored
- * separately. This class publishes the whole contract the template binds to, and the four
- * grid columns are assembled from `<ng-template>` references the template declares. The
- * reference names are published as {@link ROLE_ASSIGNMENT_CELL_TEMPLATE} so there is one
- * spelling of each rather than two. Every cell template receives the shared grid's cell
- * context, so `let-row="row"` (or the implicit value) is one {@link UserRole} row:
- *
- * - `#roleAssignmentCommandsCell` — the row command. Wrap it in
- *   `@if (canRemove(row))` and call {@link RoleAssignmentComponent.requestRemoval}. This
- *   reproduces `visible='<%# DeleteButtonVisible(UserID, RoleID) %>'` from
- *   `securityroles.ascx:L68`, which the shared grid cannot express because it publishes no
- *   row-command output — row commands are projected by the consuming feature precisely so
- *   a per-row predicate like this one is possible.
- * - `#roleAssignmentUserCell` — `<a [routerLink]="['/users', row.userId]">{{ row.displayName }}</a>`.
- * - `#roleAssignmentEffectiveDateCell` — `{{ row.effectiveDate | dateDisplay }}`.
- * - `#roleAssignmentExpiryDateCell` — `{{ row.expiryDate | dateDisplay }}`.
- *
- * All four must be declared at the TOP LEVEL of the template. A view query does not descend
- * into an embedded view, so a reference nested inside `@if`, `@for` or another `<ng-template>`
- * is invisible to the query and its column would silently fall back.
- *
- * Rows are keyed by `userRoleId`, which is the membership's own surrogate key, even though
- * the removal address is keyed by `userId`. The grid's caption is projected with the
- * `dataTableCaption` attribute and its wording is {@link ROLE_ASSIGNMENT_TEXT.caption}.
- *
- * Each column degrades safely: when a template reference has not resolved the column still
- * renders its value as plain text, so the grid can never come up empty because a reference
- * name drifted. The commands column is the one exception — a command has no plain-text
- * form — so {@link RoleAssignmentComponent.requestRemoval} is public and may be reached
- * from anywhere in the template.
- *
- * ## Every role read and every role write goes through the store
- *
- * The role, the membership listing and both membership writes are all owned by
- * {@link RoleStore}. This component holds NO copy of any of them: the role and the rows are
- * derived from the store's slices, and the two writes are commands issued to it.
- *
- * That is a correction. This screen previously called the role transport directly while the
- * store held its own copy of the same role and the same memberships, so the two could
- * disagree — a removal accepted here left a sibling screen's listing showing the row, and a
- * role renamed on the editor left this heading showing the old name. One owner removes the
- * possibility rather than papering over it.
- *
- * The listing is read ONE PAGE AT A TIME, `RoleStore.loadAssignments`, and the shared pager
- * reaches the rest. The legacy grid declared no pager — `securityroles.ascx:L56` carries no
- * `AllowPaging`, no pager style and `enableviewstate="false"` — and a first port reproduced
- * that literally, by reading every page the server reported and rendering the union: an
- * unbounded read of a listing the endpoint counts and windows per request, and an unbounded
- * render of whatever came back. One page is held instead. Every membership stays addressable
- * because the pager reaches it, so the Delete command on an eleventh member is one click away
- * rather than out of reach, and the pager is drawn on the same predicate as every other
- * listing here — only when more memberships exist than fit on one page — which means a role
- * small enough to have fitted in the legacy grid renders with no pager at all and looks
- * exactly as it did.
- *
- * The two questions the legacy screen answered by SCANNING that whole grid — what bounds to
- * show for the account the operator chose, and whether to relabel the action 'Update User
- * Role' — are answered by a keyed probe instead, `RoleStore.probeAssignment`. A scan of one
- * page would answer "holds nothing" for an account whose row sits on another page, which the
- * legacy screen never did; one request addressing the PAIRING itself — role key and account key,
- * both in the path — reproduces the legacy answer without materialising the membership, and
- * without putting the account's login name in a request target where it would be logged.
- *
- * The one transport this screen still calls directly is the ACCOUNT CANDIDATE LIST behind
- * whichever account control the tenant asked for, `UserService.list`. That is deliberate and is
- * not the defect above: the candidates it returns are a transient list held nowhere else, owned
- * by nothing else and discarded when the choice is made, so there is no second copy to diverge
- * from. Routing it through the account store would instead make this screen mutate that store's
- * shared search term and page coordinate, which would move a sibling account listing under its
- * own operator — trading a copy that cannot diverge for state that genuinely can.
- *
- * The tenant's ACCOUNT POLICY is the other way round, and comes from {@link UserStore} for
- * exactly the same reason stated in reverse: the policy IS held elsewhere and IS owned elsewhere,
- * so a private copy here could disagree with the screen that edits it. Reading it disturbs no
- * coordinate another screen holds, which is what makes the two decisions consistent rather than
- * arbitrary.
- *
- * ## How an outcome is observed
- *
- * A store command reports nothing to its caller; it settles a flag and, on failure, records a
- * document. Every outcome on this screen is therefore observed by an effect that waits for
- * the flag to fall and matches the recorded failure's OPERATION against the command that was
- * issued. The operation match is load-bearing: the store re-reads the listing after a
- * successful write, so without it that re-read's failure would be reported as the write's.
- *
- * A message that must appear AFTER the listing has refreshed — the removal refusal, whose
- * order `SecurityRoles.ascx.vb:L579-L584` fixes — is deferred and raised once the read
- * settles, rather than being raised beside the write.
- */
-
 import {
   ChangeDetectionStrategy,
   Component,
@@ -202,34 +82,14 @@ import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-fir
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
 /**
- * Every user-facing string on this screen, taken from the resource VALUE rather than from a
- * markup attribute.
- *
- * The resource value is authoritative because the markup attributes are demonstrably
- * unreliable: on the sibling role editor two validator messages are exactly swapped
- * relative to their own operators while the resource file has them the right way round.
- *
- * MIGRATION: localisation is NOT ported. The legacy screen resolved every one of these
- * through the Web Forms resource pipeline, and there is no translation runtime in this
- * workspace, so the wording is authored here directly and the resource files are read for
- * their wording only.
- *
- * MIGRATION: resource text is treated as UNTRUSTED MARKUP and rendered as plain text
- * everywhere. Across the in-scope resource files 76 values carry an HTML tag and one holds
- * a live remote script; the tags are stored escaped, so a literal scan for an opening
- * script tag finds nothing and would wrongly clear the risk. This screen's own
- * `ModuleHelp.Text` is `'<h1>About Manage Security Roles</h1><p>…</p>'` — module help has
- * no home in the shared component set, so it is read for context and never rendered.
+ * Every user-facing string on this screen, taken from the resource VALUE rather than from a markup
+ * attribute. The resource value is authoritative because the markup attributes are demonstrably
+ * unreliable: on the sibling role editor two validator messages are exactly swapped relative to their own
+ * operators while the resource file has them the right way round.
  */
-/**
- * One entry of the account drop-down, with its label already composed.
- *
- * `alreadyInRole` is published alongside the label rather than being inferred from it, so a
- * specification asserts the FACT rather than matching on wording, and a stylesheet or a future
- * affordance can react to it without parsing prose.
- */
+/** One entry of the account drop-down, with its label already composed. */
 export interface AccountChoiceEntry {
-  /** The account the entry denotes. Every integer is meaningful; nought is a real identifier. */
+  /** The account the entry denotes. */
   readonly userId: number;
 
   /** The text the option renders. */
@@ -278,17 +138,9 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   notifyLabel: 'Send Notification?',
 
   /**
-   * The sentence stating why the notification choice cannot be made.
-   *
-   * MIGRATION: `SecurityRoles.ascx.vb:L542` and `:L569` passed this choice to a routine that mailed the
-   * account holder, and the assignment contract still carries the member — so the member is transmitted
-   * rather than dropped. What is NOT carried is the mail subsystem, which this migration excludes
-   * wholesale, so no notification is sent for any value of the flag.
-   *
-   * ⚠ SAID HERE, BEFORE THE DECISION, RATHER THAN NOT AT ALL. The control used to arrive TICKED and its
-   * true value was transmitted, so the operator asked for a notification, received a success, and had
-   * every reason to believe one had gone out. Stating the gap beside the control is the honest
-   * alternative, and it is the same treatment the account editor's notify control receives.
+   * The sentence stating why the notification choice cannot be made. `SecurityRoles.ascx.vb:L542` and
+   * `:L569` passed this choice to a routine that mailed the account holder, and the assignment contract
+   * still carries the member — so the member is transmitted rather than dropped.
    */
   notifyHelp:
     'Unavailable: this installation exposes no mail endpoint, so no notification e-mail can be sent.',
@@ -312,63 +164,33 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   delete: 'Delete',
 
   /**
-   * Why no membership of this role offers a removal command — R-M24.
-   *
-   * ⚠ WITHOUT THIS SENTENCE THE WITHHELD COLUMN IS UNEXPLAINED. `RoleController.vb:L745` forbids
-   * removal from the registered-users role for every account, so the command column is not emitted
-   * at all on that role; an operator who has removed accounts from every other role then finds the
-   * affordance simply absent, with nothing stating that the absence is a rule rather than a fault.
-   *
-   * AUTHORED, on exactly the footing the sibling role editor uses for the same class of state: the
-   * legacy disabled its protected-role controls silently, which left a sighted user with greyed
-   * fields and no reason for them, and that screen states the reason for the same reason this one
-   * does. It names the RULE rather than the role's current name, because the rule is what does not
-   * change.
+   * Why no membership of this role offers a removal command — R-M24. ⚠ WITHOUT THIS SENTENCE THE WITHHELD
+   * COLUMN IS UNEXPLAINED. `RoleController.vb:L745` forbids removal from the registered-users role for
+   * every account, so the command column is not emitted at all on that role; an operator who has removed
+   * accounts from every other role then finds the affordance simply absent, with nothing stating that the
+   * absence is a rule rather than a fault.
    */
   removalUnavailable:
     'Accounts cannot be removed from this role. Membership of the registered-users role is what ' +
     'makes an account part of this site, so it is withdrawn by deleting the account rather than by ' +
     'removing the role.',
 
-  /**
-   * Qualifier beside an expiry bound that has already passed — R-M24.
-   *
-   * MIGRATION: AUTHORED-BUT-MEASURED WORDING. The word itself is taken verbatim from the two
-   * sibling screens that DO test the clock and DO carry the resource entry —
-   * `Website/admin/Users/App_LocalResources/MemberServices.ascx.resx` and
-   * `Website/admin/Portal/App_LocalResources/Portals.ascx.resx` — because this screen's own
-   * resource file has no such entry: `SecurityRoles.ascx.resx` declares `EffectiveDate.Header`
-   * and `ExpiryDate.Header` and nothing about their state. It is not presented as this screen's
-   * measured wording, and the qualifier is a net addition; see {@link membershipState}.
-   */
+  /** Qualifier beside an expiry bound that has already passed — R-M24. */
   expired: 'Expired',
 
   /**
-   * Qualifier beside an effective bound that has not yet arrived — R-M24.
-   *
-   * FULLY AUTHORED: no legacy screen tested an effective bound against the clock at all, so
-   * there is no wording anywhere in the resource set to recover.
-   *
-   * ONE WORD, DELIBERATELY, and the longer alternative was rejected on measured grounds rather
-   * than on taste. `Not yet effective` states the fact more explicitly, but it is roughly three
-   * times the width of the date it would sit beside in a cell the shared grid sizes as a fraction
-   * of the container — and the portal listing already measured what happens when a qualifier
-   * outgrows its cell: at 1280 a wide mark rendered 130.86px inside a 102px cell and overprinted
-   * the neighbouring column by 32.86px. A single word can also be held together with `nowrap`,
-   * which a phrase cannot without risking exactly that overflow. `Pending` is unambiguous beside a
-   * date in a column headed 'Effective Date', and it is symmetric with {@link expired}, so the two
-   * states read as one vocabulary.
+   * Qualifier beside an effective bound that has not yet arrived — R-M24. FULLY AUTHORED: no legacy
+   * screen tested an effective bound against the clock at all, so there is no wording anywhere in the
+   * resource set to recover.
    */
   pending: 'Pending',
 
-
-  /** Global `DeleteItem.Text`, raised by `SecurityRoles.ascx.vb:L608`. */
   confirmRemoval: 'Are You Sure You Wish To Delete This Item?',
 
   /** Global `Cancel.Action`, the screen's single module action at `:L634`. */
   cancel: 'Cancel',
 
-  /** `valEffectiveDate.Text`. Its leading break is followed by a SPACE, unlike its sibling. */
+  /** `valEffectiveDate.Text`. */
   invalidEffectiveDate: '<br> Invalid effective date',
 
   /** `valExpiryDate.Text`. */
@@ -381,71 +203,31 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   removalRefused: 'You Can Not Remove The Portal Administrator Or The Registered Users Role',
 
   /**
-   * MIGRATION: the legacy lookup failed SILENTLY. `SecurityRoles.ascx.vb:L476-L488` looked
-   * the account up by name and, on no match, simply blanked the box at `:L484` with no
-   * message at all. That is replaced by a visible state; a documented improvement.
-   *
-   * ⚠ IT NAMES THE PREDICATE, AND THAT IS A CORRECTION. The wording was "No accounts match that
-   * name.", which describes a search this screen does not perform and made a working lookup look
-   * broken: the request filters on the LOGIN NAME and matches a PREFIX of it, so typing 'Admin'
-   * finds nothing on a site whose administrator logs in as 'runtime_admin' - an account plainly
-   * visible in the listing and named in every button this control offers, since a match is captioned
-   * with its display name first. An operator reading "no accounts match" concludes the account is
-   * absent; an operator reading this one knows what to type instead.
-   *
-   * THE PREDICATE ITSELF IS NOT WIDENED TO A SUBSTRING, and the wording is the remedy precisely
-   * because widening it would cost more than it returns. The legacy lookup was an EXACT-name
-   * confirmation (`GetUserByName`), so the prefix match is already a documented superset of it. The
-   * request additionally asks the listing to order by login name ascending, which is what puts the
-   * exact match first and lets the walk stop on the first page; over a substring-matched set that
-   * guarantee is gone, because a longer name containing the term can sort ahead of the name itself.
-   * The general-purpose filter is also matched across more than the login name server-side, so a
-   * field captioned 'User Name' would start answering with accounts whose EMAIL contained the term.
+   * The legacy lookup failed SILENTLY. `SecurityRoles.ascx.vb:L476-L488` looked the account up by name
+   * and, on no match, simply blanked the box at `:L484` with no message at all.
    */
   noMatchingUsers:
     "No account's login name starts with that. The search matches the beginning of the login " +
     'name, not the display name.',
 
   /**
-   * Names the list of offered matches.
-   *
-   * Without it the list is announced by its role and length alone - "list, three items" - which
-   * says how many things there are and nothing about what they are, and leaves an operator to
-   * infer the purpose from the contents of the first entry. The wording is authored here because
-   * the legacy screen offered no list and therefore no resource entry to defer to: it looked one
-   * account up by exact name and blanked the box on no match (`SecurityRoles.ascx.vb:L476-L488`).
-   *
-   * It names the list, NOT the selection. The pressed state on each entry is what conveys which
-   * account is chosen, and that state is already announced with the entry it belongs to.
+   * Names the list of offered matches. Without it the list is announced by its role and length alone -
+   * "list, three items" - which says how many things there are and nothing about what they are, and
+   * leaves an operator to infer the purpose from the contents of the first entry.
    */
   matchesLabel: 'Matching accounts',
 
   /**
-   * Standing context under the offered matches, shown only when MORE accounts match than are
-   * being offered. `{0}` is how many are offered, `{1}` the server's own count of the match set.
-   *
-   * It exists because the lookup examines every page of the match set rather than only the
-   * first, so the number of accounts it found and the number it can reasonably offer as buttons
-   * are now different numbers. Saying both is what keeps the shorter list from reading as the
-   * whole answer.
+   * Standing context under the offered matches, shown only when MORE accounts match than are being
+   * offered. `{0}` is how many are offered, `{1}` the server's own count of the match set.
    */
   lookupPartial:
     'Showing {0} of {1} matching accounts. Type more of the name to narrow the list.',
 
-  /**
-   * The same context for a lookup that DID find the exact name, on the same two substitutions.
-   *
-   * Separate wording rather than one sentence for both, because the narrowing advice is wrong here:
-   * the operator typed the whole name and got it, so telling them to type more of it would be
-   * advice against an outcome that already succeeded. What they still need to know is that the
-   * shorter list is not the whole match set.
-   */
+  /** The same context for a lookup that DID find the exact name, on the same two substitutions. */
   lookupExact: 'The exact match is offered first. Showing {0} of {1} matching accounts.',
 
-  /**
-   * Shown when the walk stopped at its own page ceiling without finding an exact match. `{0}` is
-   * how many accounts it examined, `{1}` the server's own count of the match set.
-   */
+  /** Shown when the walk stopped at its own page ceiling without finding an exact match. */
   lookupCurtailed:
     'The search examined {0} of {1} matching accounts without finding an exact match and stopped ' +
     'there. Type more of the name to narrow it.',
@@ -454,65 +236,31 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   userChoiceLabel: 'User Name',
 
   /**
-   * MIGRATION: `plUsers.HelpText` belongs to the name box and says 'Enter The User Name and
-   * click Validate to confirm', which is untrue of the drop-down the other policy value selects.
-   * The legacy screen carried one help string for both controls because both shared one label
-   * cell (`securityroles.ascx:L14`); this states what the drop-down actually does.
+   * `plUsers.HelpText` belongs to the name box and says 'Enter The User Name and click Validate to
+   * confirm', which is untrue of the drop-down the other policy value selects. The legacy screen carried
+   * one help string for both controls because both shared one label cell; this states what the drop-down
+   * actually does.
    */
   userChoiceHelp: 'Choose an account from every account in this site.',
 
   /** The unselected entry of that drop-down. */
   userChoicePrompt: '<None Specified>',
 
-  /**
-   * Appended to a drop-down entry for an account this role ALREADY holds.
-   *
-   * ⚠ THE ENTRY IS STILL OFFERED, AND THAT IS LEGACY PARITY RATHER THAN AN OVERSIGHT.
-   * `SecurityRoles.ascx.vb:L204` fills the control from `UserController.GetUsers(PortalId, False)` -
-   * every account in the tenant, with no exclusion of existing members - and the legacy screen relied on
-   * that: choosing an account that already held the role is how its `GetDates` first branch
-   * (`:L279-L288`) showed the membership's stored bounds, which is the only way the screen ever offered
-   * to AMEND one. Removing those entries would look tidier and would delete a workflow.
-   *
-   * What was genuinely missing is that the entry said nothing. An operator choosing it got a form that
-   * silently meant something different from the one beside it - the command renames itself to "Update
-   * User Role" only AFTER the choice is made. Saying so on the entry itself moves that knowledge to
-   * before the choice, which costs no affordance.
-   */
   accountAlreadyInRoleSuffix: ' — already in this role',
 
   /**
-   * Confirmation for a membership WRITE. `{0}` is the account, `{1}` is the role.
-   *
-   * MIGRATION - net-new at the SUCCESS band, and the omission it closes was measured. The legacy handler
-   * was silent: `SecurityRoles.ascx.vb:L546` rebound the grid and said nothing, and nothing in
-   * `SecurityRoles.ascx.resx` carries an outcome sentence for either write. Silence was serviceable on a
-   * postback screen because the whole page came back and the grid visibly changed; on this screen the
-   * grid is one region of a document that does not otherwise move, so a write could complete with no
-   * announcement at all - while every OTHER write in this application, role create, role update, role
-   * delete, group delete, portal save and alias save, announces at the success band. Runtime testing
-   * measured a membership added and a membership removed with nothing said either time.
-   *
-   * The three sentences are distinct because the three outcomes are: enrolling an account, amending the
-   * bounds of an enrolment it already had, and ending one. The legacy screen's own command label made the
-   * first two distinction (`AddUser.Text` against `UpdateRole.Text`), so honouring it here is parity of
-   * vocabulary rather than an invention.
+   * Confirmation for a membership WRITE. `{0}` is the account, `{1}` is the role. MIGRATION - net-new at
+   * the SUCCESS band, and the omission it closes was measured.
    */
   assignmentAdded: '{0} was added to the {1} role.',
 
-  /** Confirmation for amending an existing membership's bounds. `{0}` account, `{1}` role. */
+  /** Confirmation for amending an existing membership's bounds. */
   assignmentUpdated: "{0}'s membership of the {1} role was updated.",
 
-  /** Confirmation for ending a membership. `{0}` account, `{1}` role. */
+  /** Confirmation for ending a membership. */
   assignmentRemoved: '{0} was removed from the {1} role.',
 
-  /**
-   * Stands in for an account name the screen does not hold when a write settles.
-   *
-   * A floor rather than an expected path: the name is captured at dispatch for an assignment and comes
-   * from the targeted row for a removal, so both ordinary paths have one. Reporting the outcome without a
-   * name is deliberately preferred to withholding the outcome, which is the defect being closed.
-   */
+  /** Stands in for an account name the screen does not hold when a write settles. */
   unnamedAccount: 'The account',
 
   /** Stands in for the role's name before the role read has settled. Same reasoning as above. */
@@ -522,28 +270,23 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   accountPolicyLoading: 'Reading how this site asks you to choose an account…',
 
   /**
-   * Shown while a lookup is walking pages.
-   *
-   * ⚠ THE LOOKUP'S OWN, distinct from {@link accountChoicesLoading}. A lookup searches for a name
-   * and the drop-down walk lists every account; one wording for both would tell an operator who
-   * typed a name that the site was being enumerated.
+   * Shown while a lookup is walking pages. ⚠ THE LOOKUP'S OWN, distinct from {@link
+   * accountChoicesLoading}.
    */
   lookupLoading: 'Searching for matching accounts…',
 
   /**
-   * Shown when the account policy could not be read, so the name box is offered without knowing
-   * which control the tenant prefers.
+   * Shown when the account policy could not be read, so the name box is offered without knowing which
+   * control the tenant prefers.
    */
   accountPolicyUnavailable:
     "This site's preferred account selector could not be read, so the name box is offered.",
 
   /**
-   * Shown when the tenant asked for the drop-down but the complete account list could not be
-   * assembled, so the name box is offered in its place.
-   *
-   * The name box needs no complete list, which is why this degrades rather than fails: the
-   * capability the operator loses is browsing, and the capability they keep — naming the account
-   * — is the one the legacy screen's own help text described.
+   * Shown when the tenant asked for the drop-down but the complete account list could not be assembled,
+   * so the name box is offered in its place. The name box needs no complete list, which is why this
+   * degrades rather than fails: the capability the operator loses is browsing, and the capability they
+   * keep — naming the account — is the one the legacy screen's own help text described.
    */
   accountChoicesUnavailable:
     'Every account in this site could not be listed, so the name box is offered instead.',
@@ -552,14 +295,9 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   accountChoicesLoading: 'Listing every account in this site…',
 
   /**
-   * Shown when the account policy could not be read AND the site holds more accounts than the
-   * legacy's own enumeration threshold, so the name box is offered by that rule rather than by
-   * failure. `{0}` is the threshold.
-   *
-   * It is a separate sentence from {@link accountPolicyUnavailable} because it describes a
-   * different situation: nothing is broken and nothing is degraded - this is the control the legacy
-   * itself would have chosen for a site this size. Telling the operator only that the policy could
-   * not be read would leave the impression that a working screen is malfunctioning.
+   * Shown when the account policy could not be read AND the site holds more accounts than the legacy's
+   * own enumeration threshold, so the name box is offered by that rule rather than by failure. `{0}` is
+   * the threshold.
    */
   accountPolicyDefaultedBySize:
     "This site's preferred account selector could not be read, and the site holds more than {0} " +
@@ -570,12 +308,11 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
 
   /** Shown when the route did not carry a usable role identifier. */
   roleUnresolved: 'No security role was addressed, so no memberships can be shown.',
-
 } as const);
 
 /**
- * Document identifiers for the three labelled controls, so the shared field wrapper's `for`
- * input and the control's own `id` attribute cannot drift apart.
+ * Document identifiers for the three labelled controls, so the shared field wrapper's `for` input and the
+ * control's own `id` attribute cannot drift apart.
  */
 export const ROLE_ASSIGNMENT_CONTROL_ID = Object.freeze({
   /** The account lookup field. */
@@ -592,22 +329,14 @@ export const ROLE_ASSIGNMENT_CONTROL_ID = Object.freeze({
 } as const);
 
 /**
- * Column keys for the membership grid.
- *
- * A key is a UNIQUE IDENTITY and is deliberately not the display label: the shared grid
- * rejects a duplicate key outright because the key tracks both the heading and every cell
- * in its column.
+ * Column keys for the membership grid. A key is a UNIQUE IDENTITY and is deliberately not the display
+ * label: the shared grid rejects a duplicate key outright because the key tracks both the heading and
+ * every cell in its column.
  */
 /**
- * The endpoint field the account column is ordered by.
- *
- * ⚠ DELIBERATELY NOT THE COLUMN KEY. The key is `userName`, which the endpoint's allowlist would accept as
- * `Username` - the account's sign-in name, a DIFFERENT field from the display name this column's cell
- * actually renders. Ordering by a value the reader cannot see would produce a sequence they cannot explain
- * from the column in front of them, so the field is named here rather than derived from the key. Both are
- * members of `SortableFields.RoleUsers` in
- * `backend/src/DnnMigration.Application/Validation/SortableFields.cs`, so this is a choice between two
- * accepted fields rather than a way around a refused one.
+ * The endpoint field the account column is ordered by. ⚠ DELIBERATELY NOT THE COLUMN KEY. The key is
+ * `userName`, which the endpoint's allowlist would accept as `Username` - the account's sign-in name, a
+ * DIFFERENT field from the display name this column's cell actually renders.
  */
 const ACCOUNT_SORT_FIELD = 'DisplayName';
 
@@ -625,13 +354,6 @@ export const ROLE_ASSIGNMENT_COLUMN_KEY = Object.freeze({
   expiryDate: 'expiryDate',
 } as const);
 
-/**
- * The `<ng-template>` reference names this component queries out of its own view.
- *
- * Published so the template and the class agree on one spelling. A reference the template
- * does not declare is not an error: the column falls back to plain text, except for the
- * commands column, which is omitted because a command has no plain-text form.
- */
 export const ROLE_ASSIGNMENT_CELL_TEMPLATE = Object.freeze({
   /** Wraps the row command in the per-row removability predicate. */
   commands: 'roleAssignmentCommandsCell',
@@ -646,46 +368,16 @@ export const ROLE_ASSIGNMENT_CELL_TEMPLATE = Object.freeze({
   expiryDate: 'roleAssignmentExpiryDateCell',
 } as const);
 
-/**
- * The screen's typed form.
- *
- * Declared as an explicit model so the group is `FormGroup<RoleAssignmentFormModel>` and its
- * value is fully typed rather than a partial. Every control is constructed non-nullable, so
- * a reset returns each one to its initial value instead of to `null`.
- *
- * MIGRATION: there is NO required validator on {@link RoleAssignmentFormModel.userId}, and
- * that is settled by the source rather than chosen. `SecurityRoles.ascx.vb:L520` gated the
- * write on `Page.IsValid`, which covered only the three DATE validators, and the account
- * was checked separately at `:L521` by `(Not Role Is Nothing) AndAlso (Not User Is Nothing)`
- * — a guard clause, not a validator. The equivalent here is
- * {@link RoleAssignmentComponent.canSubmit}, which gates the action; adding a validator with
- * no legacy counterpart would change which messages the screen shows.
- *
- * MIGRATION: neither date carries a required validator either. An ASP.NET comparison
- * validator passes on an empty field, and both help strings say so in as many words —
- * '( Optional ). Entering No Value Will Indicate…'. Adding one would break parity.
- */
 export interface RoleAssignmentFormModel {
   /**
-   * The chosen account, or `null` when none has been chosen yet.
-   *
-   * `null` here means "nothing chosen", which is a fact about the form and never a stand-in
-   * for an identifier. Account identifiers are seeded from one, but role identifiers are
-   * seeded from zero and tenant identifiers from minus one, so no identifier anywhere on
-   * this screen is tested for truthiness or for sign — absence is tested with `=== null`.
+   * The chosen account, or `null` when none has been chosen yet. `null` here means "nothing chosen",
+   * which is a fact about the form and never a stand-in for an identifier.
    */
   userId: FormControl<number | null>;
 
   /**
-   * The effective bound as the `yyyy-MM-dd` value of a native date control, or `''`.
-   *
-   * MIGRATION: `''` is the empty state and it is converted to `null` on the way out. The
-   * legacy screen substituted the integer/date null sentinel for an empty box
-   * (`SecurityRoles.ascx.vb:L528-L539`), but the assignment contract documents that the
-   * sentinel cannot reach the wire at all — the column is a SQL Server `datetime`, whose
-   * range begins in 1753 and which refuses 0001-01-01 — so an unset bound is a genuine
-   * `null` and `null` is what is sent. The contract is followed exactly; no third
-   * representation is invented.
+   * The effective bound as the `yyyy-MM-dd` value of a native date control, or `''`. `''` is the empty
+   * state and it is converted to `null` on the way out.
    */
   effectiveDate: FormControl<string>;
 
@@ -693,26 +385,13 @@ export interface RoleAssignmentFormModel {
   expiryDate: FormControl<string>;
 
   /**
-   * Whether the account should be notified, defaulting to checked.
-   *
-   * MIGRATION: retained because the assignment contract carries `notifyUser`.
-   * `securityroles.ascx:L49` declares `chkNotify` with `Checked="True"` and places it AFTER
-   * `</asp:panel>`, outside the add form, because it governed removal as well
-   * (`SecurityRoles.ascx.vb:L542` for the add and `:L569` for the removal). The removal
-   * address is a `DELETE` and carries no body, and the interface exposes no notification
-   * argument on it, so the choice reaches the ADD only. That the mail subsystem itself is
-   * out of scope is recorded on the contract, not decided here.
+   * Whether the account should be notified, defaulting to checked. retained because the assignment
+   * contract carries `notifyUser`.
    */
   notify: FormControl<boolean>;
 }
 
-/**
- * The form's state, mirrored into a signal so the derived views below can be `computed`.
- *
- * Reactive-form state is not itself reactive in the signal sense, and touched-state changes
- * do not surface on the value or status streams at all. The control event stream does carry
- * them, so it is the single subscription that keeps this snapshot current.
- */
+/** The form's state, mirrored into a signal so the derived views below can be `computed`. */
 interface RoleAssignmentFormState {
   /** The chosen account, or `null`. */
   readonly userId: number | null;
@@ -727,11 +406,10 @@ interface RoleAssignmentFormState {
   readonly valid: boolean;
 
   /**
-   * Whether the effective bound is holding something it cannot pass to the store — for ANY of the
-   * three reasons a date field has, not only the parse failure this screen authors itself.
-   *
-   * ⚠ READING ONLY THIS SCREEN'S OWN KEY LEFT THE OTHER TWO STATES SILENT. See
-   * {@link DATE_UNUSABLE_ERRORS} for the measured defect.
+   * Whether the effective bound is holding something it cannot pass to the store — for ANY of the three
+   * reasons a date field has, not only the parse failure this screen authors itself. ⚠ READING ONLY THIS
+   * SCREEN'S OWN KEY LEFT THE OTHER TWO STATES SILENT. See {@link DATE_UNUSABLE_ERRORS} for the measured
+   * defect.
    */
   readonly effectiveDateInvalid: boolean;
 
@@ -739,17 +417,14 @@ interface RoleAssignmentFormState {
   readonly effectiveDateTouched: boolean;
 
   /**
-   * Whether the effective bound's failure is one the BROWSER reported rather than one this screen
-   * derived from the value — an unparseable entry, or a complete date outside the storable range.
-   *
-   * Separate from {@link effectiveDateInvalid} only so the message can be shown without waiting for
-   * the field to be visited; the reasoning is on {@link DATE_UNUSABLE_ERRORS}.
+   * Whether the effective bound's failure is one the BROWSER reported rather than one this screen derived
+   * from the value — an unparseable entry, or a complete date outside the storable range.
    */
   readonly effectiveDateNativelyUnusable: boolean;
 
   /**
    * Whether the expiry bound is holding something it cannot pass to the store, for any of the three
-   * reasons. Mirrors {@link effectiveDateInvalid}.
+   * reasons.
    */
   readonly expiryDateInvalid: boolean;
 
@@ -772,14 +447,12 @@ interface DeferredNotice {
   readonly message: string;
 
   /**
-   * The support reference to quote, or `null` when this outcome has none.
-   *
-   * ⚠ REQUIRED, NOT OPTIONAL, SO EVERY PRODUCER HAS TO STATE ITS ANSWER. A server refusal
-   * carries a correlation identifier and a success does not, and the difference is a property of the
-   * outcome rather than of the call site - so leaving the member optional would let a refusal-shaped
-   * producer inherit a success's silence by simply not mentioning it, which is precisely how the
-   * duplicate-name refusal on the sibling role form came to render a message with no reference beside
-   * a banner that had one. Declared required, a new producer arrives having to say which it is.
+   * The support reference to quote, or `null` when this outcome has none. ⚠ REQUIRED, NOT OPTIONAL, SO
+   * EVERY PRODUCER HAS TO STATE ITS ANSWER. A server refusal carries a correlation identifier and a
+   * success does not, and the difference is a property of the outcome rather than of the call site - so
+   * leaving the member optional would let a refusal-shaped producer inherit a success's silence by simply
+   * not mentioning it, which is precisely how the duplicate-name refusal on the sibling role form came to
+   * render a message with no reference beside a banner that had one.
    */
   readonly reference: string | null;
 }
@@ -788,21 +461,11 @@ interface DeferredNotice {
 const INVALID_DATE_ERROR = 'invalidDate';
 
 /**
- * Every reason a date box on this screen can be holding something the store cannot accept.
- *
- * ⚠ THIS LIST EXISTS BECAUSE READING ONE KEY WAS NOT ENOUGH, AND THE GAP WAS INVISIBLE. The
- * snapshot below used to test `hasError(INVALID_DATE_ERROR)` alone — this screen's own parse check,
- * which reads the control's VALUE. The other two states never reach the value: an unparseable entry
- * is blanked by the browser before it is committed, and a complete-but-unstorable date such as
- * `0001-01-01` parses perfectly well. Both are reported by the shared native-validity directive
- * under its own keys. Measured with only the one key tested: an out-of-range year left the control
- * `ng-valid`, `aria-invalid` absent, NO message anywhere in the document, and — decisively — with an
- * account chosen the submit control was fully enabled over a date the column cannot hold. Testing
- * the whole set is what connects the directive's verdict to something the operator can see.
- *
- * The order matters to nothing: the three are mutually exclusive in practice, because each is
- * derived from a state of the element the other two cannot be in at the same time, and the message
- * is raised once regardless.
+ * Every reason a date box on this screen can be holding something the store cannot accept. ⚠ THIS LIST
+ * EXISTS BECAUSE READING ONE KEY WAS NOT ENOUGH, AND THE GAP WAS INVISIBLE. The snapshot below used to
+ * test `hasError(INVALID_DATE_ERROR)` alone — this screen's own parse check, which reads the control's
+ * VALUE. The other two states never reach the value: an unparseable entry is blanked by the browser
+ * before it is committed, and a complete-but-unstorable date such as `0001-01-01` parses perfectly well.
  */
 const DATE_UNUSABLE_ERRORS: readonly string[] = [
   INVALID_DATE_ERROR,
@@ -812,15 +475,8 @@ const DATE_UNUSABLE_ERRORS: readonly string[] = [
 
 /**
  * The subset of {@link DATE_UNUSABLE_ERRORS} the BROWSER reports, as opposed to the one this screen
- * derives from the control's value.
- *
- * These two are not gated on the field having been visited, and that is a deliberate departure from
- * how this screen gates its own parse message. The legacy gating exists so a field is not scolded
- * before the operator has engaged with it — but neither of these states is reachable WITHOUT
- * engaging with the field: both require something to have been typed into it. Waiting for a blur
- * would mean the operator sits looking at a box the browser has emptied, or a year it has already
- * refused, next to a submit control that is disabled for a reason nothing on screen states. That is
- * the same silent-refusal defect being closed here, in a different disguise.
+ * derives from the control's value. These two are not gated on the field having been visited, and that is
+ * a deliberate departure from how this screen gates its own parse message.
  */
 const NATIVE_DATE_UNUSABLE_ERRORS: readonly string[] = [BAD_INPUT_ERROR, OUT_OF_RANGE_ERROR];
 
@@ -838,22 +494,10 @@ function hasAnyError(control: AbstractControl, keys: readonly string[]): boolean
 /** Validation key raised when the expiry bound is not strictly later than the effective one. */
 const DATE_ORDER_ERROR = 'expiryNotAfterEffective';
 
-/**
- * The earliest date either bound can hold, as an `input[type=date]` `min` value.
- *
- * NOT an invented limit: it is the storable range of the columns themselves. Both
- * `UserRoles.EffectiveDate` and `UserRoles.ExpiryDate` are SQL Server `datetime`
- * (`[ExpiryDate] [datetime] NULL` in the baseline script), whose range begins on 1753-01-01 —
- * which is exactly why `0001-01-01` was the measured failing case: it is not merely unusual, it
- * cannot be stored at all. Declaring it here lets the browser refuse out-of-range years in its own
- * picker and in its own validity state instead of leaving the operator to discover the limit from a
- * server refusal.
- */
+/** The earliest date either bound can hold, as an `input[type=date]` `min` value. */
 const EARLIEST_STORABLE_DATE = '1753-01-01';
 
-/**
- * The latest date either bound can hold. The upper end of the same `datetime` range.
- */
+/** The latest date either bound can hold. */
 const LATEST_STORABLE_DATE = '9999-12-31';
 
 /** Control name of the effective bound, used for group-level and server-side lookups. */
@@ -876,123 +520,53 @@ const NO_DATE = '';
 const SENTINEL_YEAR = 1;
 
 /**
- * How many accounts one request of the lookup walk asks for.
- *
- * ⚠ THE SERVER'S OWN MAXIMUM, and it replaced the shared DEFAULT of ten. The account listing's
- * paging validator refuses a larger page, so this is the widest legal request and it is what
- * keeps the number of round trips the walk in {@link RoleAssignmentComponent.onUserSearch} has
- * to make as low as the endpoint allows. It is NOT by itself the fix for that walk — see the
- * note there.
+ * How many accounts one request of the lookup walk asks for. ⚠ THE SERVER'S OWN MAXIMUM, and it replaced
+ * the shared DEFAULT of ten.
  */
 const USER_LOOKUP_PAGE_SIZE = MAX_PAGE_SIZE;
 
 /**
- * How many matched accounts are offered as choices at once.
- *
- * A rendering bound rather than a search bound, and the distinction is what makes it honest.
- * The walk examines every page the server reports until it finds the exact name or exhausts the
- * match set; this limits only how many of the near matches become buttons, because a one-letter
- * prefix in a large tenant legitimately matches thousands of accounts and offering thousands of
- * buttons is not a choice anybody can make. Whenever it bites, the template says so and reports
- * the server's own total — see {@link RoleAssignmentComponent.userLookupSummary}.
- *
- * An exact match is ALWAYS offered regardless of this bound, because it is the one result the
- * legacy screen existed to produce.
+ * How many matched accounts are offered as choices at once. A rendering bound rather than a search bound,
+ * and the distinction is what makes it honest.
  */
 const USER_LOOKUP_DISPLAY_LIMIT = MAX_PAGE_SIZE;
 
 /**
- * The hard ceiling on how many pages one account lookup will request.
- *
- * ⚠ DELIBERATELY MODEST, BECAUSE THE WALK IS A GUARANTEE RATHER THAN THE MECHANISM. The lookup
- * asks the listing to order by login name, which — the filter being a literal prefix match — puts
- * an exact match first among every account it can return, so the ordinary answer arrives in ONE
- * request. The walk exists so that correctness does not *depend* on the server honouring that
- * order, and it goes deep only for a term short enough to match thousands of accounts none of
- * which is the name typed. At {@link USER_LOOKUP_PAGE_SIZE} accounts a page it still examines two
- * thousand of them, which is far past the point at which the operator is better served by typing
- * more of the name — and far cheaper than a ceiling generous enough to make a one-character search
- * cost hundreds of round trips.
- *
- * ⚠ REACHING IT DOES NOT PRODUCE A REFUSAL, and that asymmetry with the store's walks is
- * deliberate. Those walks answer "every module" and "every membership", where a partial answer
- * masquerading as complete is the defect; this one answers "does this name exist", where the
- * matches already examined are genuinely useful and the operator's next move — typing more of
- * the name — is both obvious and offered. The template states that the search was cut short
- * rather than pretending it was exhaustive.
+ * The hard ceiling on how many pages one account lookup will request. ⚠ DELIBERATELY MODEST, BECAUSE THE
+ * WALK IS A GUARANTEE RATHER THAN THE MECHANISM. The lookup asks the listing to order by login name,
+ * which — the filter being a literal prefix match — puts an exact match first among every account it can
+ * return, so the ordinary answer arrives in ONE request.
  */
 const MAX_USER_LOOKUP_PAGES = 20;
 
 /**
- * The account count above which the legacy defaulted to the NAME BOX rather than the drop-down,
- * when the tenant had never chosen either.
- *
- * ⚠ THIS IS THE LEGACY'S OWN RULE, MEASURED, NOT A LIMIT INVENTED HERE.
- * `Library/Components/Users/UserModuleBase.vb:L178-L183` is the whole of it: when
- * `Security_UsersControl` was absent from the tenant's settings, the framework asked
+ * The account count above which the legacy defaulted to the NAME BOX rather than the drop-down, when the
+ * tenant had never chosen either. ⚠ THIS IS THE LEGACY'S OWN RULE, MEASURED, NOT A LIMIT INVENTED HERE.
+ * `Library/Components/Users/UserModuleBase.vb:L178-L183` is the whole of it: when `Security_UsersControl`
+ * was absent from the tenant's settings, the framework asked
  * `UserController.GetUserCountByPortal(portalId)` and defaulted to `UsersControl.TextBox` above one
- * thousand accounts and to `UsersControl.Combo` at or below it - and then WROTE THAT DEFAULT BACK as
- * the tenant's setting. So an unread policy did not mean "offer the name box": it meant "decide by
- * how many accounts this site holds", and for all but the largest sites the answer was the
- * drop-down.
- *
- * The figure is the enumeration threshold, which is exactly why the count is read before the list:
- * the rule exists so that a site with more accounts than this is never enumerated to fill a select.
- *
- * @see RoleAssignmentComponent.usersControlMode - applies it.
+ * thousand accounts and to `UsersControl.Combo` at or below it - and then WROTE THAT DEFAULT BACK as the
+ * tenant's setting.
  */
 const LEGACY_ACCOUNT_LISTING_CEILING = 1000;
 
-/**
- * The hard ceiling on how many pages the complete-account-list walk will request.
- *
- * ⚠ DERIVED FROM THE LEGACY THRESHOLD RATHER THAN CHOSEN, AND IT USED TO BE A HUNDRED TIMES
- * LARGER. It was one thousand PAGES, which at {@link USER_LOOKUP_PAGE_SIZE} accounts a page
- * accommodated a hundred thousand accounts — two orders of magnitude past the very threshold at
- * which the legacy code stopped offering this drop-down at all (`UserModuleBase.vb:L178-L186`). A
- * performance review measured what that permitted: a walk issuing up to a thousand sequential
- * requests and retaining up to a hundred thousand rows, to fill a native `<select>` nobody could
- * use. The ceiling is now exactly {@link LEGACY_ACCOUNT_LISTING_CEILING} accounts expressed in
- * pages, so an eagerly materialised choice list can never exceed the size the legacy screen was
- * itself willing to enumerate.
- *
- * Above that size the answer is the NAME BOX and its server-paged lookup, which is what
- * {@link RoleAssignmentComponent.usersControlMode} decides and what the legacy did in the same
- * situation. Reaching this ceiling is therefore a REFUSAL rather than a reported stop — see
- * {@link RoleAssignmentComponent.walkAllAccounts} for why that asymmetry with the lookup walk is
- * deliberate — and it is normally unreachable, because the count probe has already sent a tenant
- * this large to the name box before any walk begins. It remains as the guarantee for the one case
- * the count cannot cover: a tenant that GREW past the threshold between the probe and the walk.
- *
- * Declared after the threshold it is derived from, because a `const` initialiser that read a
- * later `const` would be evaluating a binding still in its temporal dead zone.
- */
 const MAX_ACCOUNT_CHOICE_PAGES = LEGACY_ACCOUNT_LISTING_CEILING / USER_LOOKUP_PAGE_SIZE;
 
-/**
- * The page size used for the count probe.
- *
- * One record, because the answer wanted is the server's own `totalCount` and not the records
- * themselves. It is the smallest size the API's paging contract admits - `PagedRequestValidator`
- * declares the page size at least one - so nothing larger is transferred to learn one number.
- */
+/** The page size used for the count probe. */
 const ACCOUNT_COUNT_PROBE_PAGE_SIZE = 1;
 
 /**
- * How the tenant's account policy says this screen should let an operator pick an account.
- *
- * MIGRATION: this is `Security_UsersControl`, read at `SecurityRoles.ascx.vb:L133-L136` through
- * `UserModuleBase.GetSetting(PortalId, "Security_UsersControl")` and acted on at `:L202-L221`,
- * where `UsersControl.Combo` bound `cboUsers` to the tenant's whole account listing and hid the
- * text box, and the other value did the reverse. `:L106-L109` then read the chosen account from
- * whichever control was live. The two numeric values are the legacy enumeration's own and are
- * the values the settings contract carries, so they are preserved rather than renamed.
+ * How the tenant's account policy says this screen should let an operator pick an account. this is
+ * `Security_UsersControl`, read at `SecurityRoles.ascx.vb:L133-L136` through
+ * `UserModuleBase.GetSetting(PortalId, "Security_UsersControl")` and acted on at `:L202-L221`, where
+ * `UsersControl.Combo` bound `cboUsers` to the tenant's whole account listing and hid the text box, and
+ * the other value did the reverse.
  */
 const USERS_CONTROL = Object.freeze({
   /** A drop-down list of every account in the tenant. `UsersControl.Combo`. */
   combo: 0,
 
-  /** A name box with a lookup. `UsersControl.TextBox`. */
+  /** A name box with a lookup. */
   textBox: 1,
 } as const);
 
@@ -1008,12 +582,7 @@ type UserLookupCompletion =
   /** {@link MAX_USER_LOOKUP_PAGES} was reached first. */
   | 'curtailed';
 
-/**
- * What one completed account lookup found.
- *
- * Carried as one value rather than as three separate signals so the matches, the counts and the
- * reason the walk stopped are published together and cannot describe different lookups.
- */
+/** What one completed account lookup found. */
 interface UserLookupOutcome {
   /** The accounts offered as choices — already limited to {@link USER_LOOKUP_DISPLAY_LIMIT}. */
   readonly matches: readonly UserChoice[];
@@ -1037,13 +606,9 @@ const NO_USER_LOOKUP: UserLookupOutcome = Object.freeze({
 });
 
 /**
- * Chooses which of a lookup's matches become buttons, keeping the exact one whatever else goes.
- *
- * The head of the set is offered, because the listing returns matches in the server's own order
- * and the nearest prefixes come first. THE EXACT MATCH IS HOISTED TO THE FRONT when it falls
- * outside that head: the walk stops on the page that holds it, so a name found on the fourth page
- * of a large match set would otherwise be examined and then dropped from the very list it ended
- * the search — which would reproduce the unreachable-account defect one layer higher up.
+ * Chooses which of a lookup's matches become buttons, keeping the exact one whatever else goes. The head
+ * of the set is offered, because the listing returns matches in the server's own order and the nearest
+ * prefixes come first.
  *
  * @param collected Every account the walk examined, in the order the server supplied them.
  * @param isExact Whether one account carries exactly the name that was searched for.
@@ -1070,15 +635,7 @@ function offerableMatches(
   return [exact, ...head.slice(0, USER_LOOKUP_DISPLAY_LIMIT - 1)];
 }
 
-/**
- * The paging facts to report while no answer for the addressed role is in hand.
- *
- * Its applied size is NOUGHT, which is the value the shared pager treats as unresolved and
- * declines to render for — so a screen that has not yet received a page shows no pager at all
- * rather than one claiming a single empty page. The same envelope the paging contract returns
- * for an empty result, restated here because this screen must publish something while the
- * store's slice belongs to another role.
- */
+/** The paging facts to report while no answer for the addressed role is in hand. */
 const UNRESOLVED_PAGE_META: ApiMeta = Object.freeze({
   totalCount: 0,
   pageIndex: 0,
@@ -1087,31 +644,18 @@ const UNRESOLVED_PAGE_META: ApiMeta = Object.freeze({
 });
 
 /**
- * The failure code a refused removal carries.
- *
- * The API answers a protected membership and a caller who does not administer the tenant with
- * the SAME status — 403 — and distinguishes them on the problem type alone, so this code is
- * what separates the legacy refusal wording from a permission failure. Its published wording is
- * the legacy `RoleRemoveError` text verbatim, which is why the message is read from the shared
- * table rather than restated in the branch that raises it.
+ * The failure code a refused removal carries. The API answers a protected membership and a caller who
+ * does not administer the tenant with the SAME status — 403 — and distinguishes them on the problem type
+ * alone, so this code is what separates the legacy refusal wording from a permission failure.
  */
 const PROTECTED_ASSIGNMENT_CODE = 'role_assignment.protected';
 
-/**
- * The membership write this screen is waiting on, named by the store operation that reports it.
- *
- * Held rather than inferred from the store's saving flag, because that flag is raised by EVERY
- * role write in the application — a sibling screen's role rename would otherwise look to this
- * screen like its own membership write settling.
- */
+/** The membership write this screen is waiting on, named by the store operation that reports it. */
 type AwaitedAssignmentWrite = Extract<RoleStoreOperation, 'assignUser' | 'removeAssignment'>;
 
-
 /**
- * Whether a year, month and day name a day that exists.
- *
- * Round-tripped through a UTC probe so that, for example, the thirty-first of February is
- * rejected rather than silently rolled forward into March.
+ * Whether a year, month and day name a day that exists. Round-tripped through a UTC probe so that, for
+ * example, the thirty-first of February is rejected rather than silently rolled forward into March.
  *
  * @param year Four-digit calendar year.
  * @param month One-based calendar month.
@@ -1133,17 +677,9 @@ function isRealCalendarDay(year: number, month: number, day: number): boolean {
 }
 
 /**
- * Reads a `yyyy-MM-dd` date-box value as an instant at UTC midnight.
- *
- * MIGRATION: this replaces an UNGUARDED parse. `SecurityRoles.ascx.vb:L528-L539` called
- * `Date.Parse` on whatever the box held, with no `TryParse` anywhere and with the
- * administration pages compiled with strict type checking off, so a value the parser could
- * not read threw out of the click handler. Here an unreadable value is `null`, the caller
- * decides what that means, and nothing throws.
- *
  * @param text The raw value of a date box.
- * @returns Milliseconds since the epoch at UTC midnight, or `null` when the value is empty
- * or is not a calendar date.
+ * @returns Milliseconds since the epoch at UTC midnight, or `null` when the value is empty or is not a
+ * calendar date.
  */
 export function parseCalendarDateValue(text: string): number | null {
   const fields = CALENDAR_DATE_VALUE.exec(text.trim());
@@ -1163,21 +699,10 @@ export function parseCalendarDateValue(text: string): number | null {
 }
 
 /**
- * Converts a bound as the API publishes it into the value a native date control accepts.
- *
- * The date part is taken as written and read as a UTC calendar date, which is the same
- * reading the shared date pipe applies when it renders the bound in the grid, so the box and
- * the grid can never disagree about which day a membership starts.
- *
- * This is not a second copy of that pipe: the pipe produces a LOCALISED DISPLAY string and
- * this produces the control's `yyyy-MM-dd` value, which is a different job with a fixed
- * format. What the two do share is the emptiness rule, and that is deliberate.
- *
- * MIGRATION: the legacy sentinel is honoured on the way IN even though the contract says it
- * cannot be stored. `Library/Components/Shared/Null.vb` defines the date sentinel as
- * `Date.MinValue`, and `SecurityRoles.ascx.vb:L281-L286` skipped a bound the sentinel test
- * reported as unset rather than showing it. A minimum-value instant therefore reads as "no
- * bound" here too and never as the first day of the first year.
+ * Converts a bound as the API publishes it into the value a native date control accepts. The date part is
+ * taken as written and read as a UTC calendar date, which is the same reading the shared date pipe
+ * applies when it renders the bound in the grid, so the box and the grid can never disagree about which
+ * day a membership starts.
  *
  * @param wire The published bound, which may be `null` when the membership has none.
  * @returns A `yyyy-MM-dd` value, or `''` when there is no bound to show.
@@ -1221,10 +746,6 @@ function readTextControl(group: AbstractControl, name: string): string {
 /**
  * The data-type check both date boxes carry.
  *
- * Reproduces the two comparison validators declared at `securityroles.ascx:L45` and `:L46`,
- * each of which is `type="Date"` with `operator="DataTypeCheck"`. Both PASS on an empty
- * field, which is what makes the bounds optional.
- *
  * @param control The date control being checked.
  * @returns `null` when the value is empty or is a calendar date, otherwise the failure.
  */
@@ -1238,21 +759,9 @@ export function calendarDateValidator(control: AbstractControl): ValidationError
 }
 
 /**
- * The cross-field ordering rule, attached to the group and surfaced on the expiry field.
- *
- * Reproduces the third validator at `securityroles.ascx:L47`: `type="Date"`,
- * `operator="GreaterThan"`, validating `txtExpiryDate` against `txtEffectiveDate`.
- *
- * Two properties of that declaration are load-bearing and are reproduced exactly. It is
- * `GreaterThan` rather than `GreaterThanEqual`, so EQUAL BOUNDS ARE INVALID and the expiry
- * must be strictly later. And an ASP.NET comparison validator passes on an empty field, so
- * this rule SKIPS whenever either bound is empty; an unreadable bound is skipped too,
- * because the field's own data-type check already reports that and reporting it twice would
- * put two messages on screen for one mistake.
- *
- * The correctly-typed declaration on this screen is worth stating plainly, because the
- * sibling role editor carries four comparison validators that omit `type` altogether: all
- * three validators HERE are typed, so there is no such defect on this screen to annotate.
+ * The cross-field ordering rule, attached to the group and surfaced on the expiry field. Reproduces the
+ * third validator at `securityroles.ascx:L47`: `type="Date"`, `operator="GreaterThan"`, validating
+ * `txtExpiryDate` against `txtEffectiveDate`.
  *
  * @param group The form group holding both date controls.
  * @returns `null` when the rule passes or does not apply, otherwise the failure.
@@ -1267,39 +776,18 @@ export function dateOrderValidator(group: AbstractControl): ValidationErrors | n
 }
 
 /**
- * Reads the route's raw parameter as a role identifier.
- *
- * Route parameters arrive as strings, so the conversion is explicit. It is also strict: a
- * value with anything other than an optional sign and digits is rejected outright rather
- * than salvaged, because a partial parse would address a different role than the one asked
- * for. There is no non-null assertion and no cast anywhere in it.
- *
- * MIGRATION: minus one is NOT treated as absent here, and zero is not treated as missing.
- * The role table is seeded `IDENTITY(0, 1)`, so zero is the first role a tenant is given and
- * the screen must load normally for it, while the tenant table is seeded `IDENTITY(-1, 1)`,
- * which is simultaneously the legacy integer null sentinel. `SecurityRoles.ascx.vb:L51-L53`
- * initialised its three identifiers to minus one and `:L413-L419` overwrote them from the
- * query string, so minus one was that screen's "not supplied" marker. On this screen a
- * missing parameter is `null` and every supplied number is a real identifier.
+ * Reads the route's raw parameter as a role identifier. Route parameters arrive as strings, so the
+ * conversion is explicit.
  *
  * @param value The route parameter, which arrives as a string.
  * @returns The identifier, or `null` when the route carried nothing usable.
  */
 export function parseRouteIdentifier(value: number | string | null | undefined): number | null {
-  // The parse is delegated to the one parser in the workspace that performs it: it applies
-  // the same shape test this function applied, plus the safe-integer ceiling and the API's
-  // 32-bit range, which this function did not. `null` for absence is already this screen's
-  // representation, so nothing is adapted — and on this screen a missing parameter is
-  // `null` while every supplied number, minus one and zero included, is a real identifier.
   return parseRouteId(value);
 }
 
 /**
  * Extracts a problem document from a failed request without importing the HTTP layer.
- *
- * The shape is read structurally rather than by class, which is the pattern the client layer
- * already uses: a component has no business importing anything from the HTTP client, and the
- * structural read is exactly as safe because the guard validates every member it relies on.
  *
  * @param error Whatever the request stream failed with.
  * @returns The problem document, or `null` when the failure carried none.
@@ -1328,23 +816,12 @@ function pairingKey(roleId: number, userId: number): string {
   return `${roleId}:${userId}`;
 }
 
-/**
- * Where one membership stands in its own lifecycle — R-M24.
- *
- * THREE states, and there is deliberately no fourth. `expiring soon` would need a threshold, and
- * no threshold exists anywhere in the in-scope tree to take one from; inventing one is a design
- * decision this refactor is not entitled to make. `current` covers both a membership with no
- * bounds at all and one whose bounds straddle today, because the legacy screen drew those two
- * identically and the qualifier exists to mark the states it did NOT distinguish.
- */
 export type MembershipLifecycle = 'current' | 'pending' | 'expired';
 
 /**
- * Reduces a wire instant to the start of its UTC day, or `null` when there is no usable date.
- *
- * Uses the shared pipe's OWN parser, so a bound the cell paints as empty can never acquire a
- * qualifier and a bound the cell paints can never be left unqualified. That parser answers the
- * legacy null-date sentinel, an absent value and an unparseable value alike with `null`.
+ * Reduces a wire instant to the start of its UTC day, or `null` when there is no usable date. Uses the
+ * shared pipe's OWN parser, so a bound the cell paints as empty can never acquire a qualifier and a bound
+ * the cell paints can never be left unqualified.
  *
  * @param wire The bound exactly as it arrived.
  * @returns The instant, or `null`.
@@ -1355,13 +832,6 @@ function boundInstant(wire: string | null | undefined): Date | null {
 
 /**
  * The start of a clock's UTC day.
- *
- * MIGRATION: the comparison is made in UTC because the CELLS ARE RENDERED IN UTC. The shared date
- * pipe formats in UTC deliberately — the wire carries an absolute instant and localising it would
- * shift dates across midnight — so a qualifier computed against local midnight would contradict
- * the date printed beside it for every reader whose offset is not zero. The legacy `Date.Today`
- * was the server's own local midnight, which is the closest available analogue of "the midnight of
- * the zone the date is displayed in".
  *
  * @param now The moment to reduce.
  * @returns Midnight UTC on the same calendar day.
@@ -1375,31 +845,11 @@ function startOfUtcDay(now: Date): Date {
 }
 
 /**
- * Resolves where a membership stands against a clock — R-M24.
- *
- * ⚠ THE DEFECT THIS CLOSES. `securityroles.ascx` declares four visible columns and neither the
- * markup nor `SecurityRoles.ascx.vb` compares either bound against the clock anywhere, so a
- * membership that lapsed in 2020, one that begins in 2030 and one in force today were drawn in the
- * same colour, the same weight and with no other mark — on the one screen whose purpose is
- * administering who holds a role. Runtime testing measured exactly that: expired, pending and
- * active rows rendered byte-identically. The DATES were and are correct; what no reader could
- * obtain from them was their meaning relative to now, across a listing of a hundred and twenty
- * rows.
- *
- * MIGRATION: A NET ADDITION WITH A MEASURED LEGACY PRECEDENT ELSEWHERE, and the precedent supplies
- * the test rather than being cited as loose justification.
- * `Website/admin/Users/MemberServices.ascx.vb:L172-L186` — the one in-scope screen that DOES own a
- * clock — reads: an absent expiry yields the empty string, an expiry LATER than today yields the
- * date, and anything else yields the word `Expired`. Both halves of that are reproduced here: the
- * strict comparison, and the boundary it puts today's own midnight on, so a bound falling exactly
- * on today counts as passed. The effective side has no legacy test at all and takes the mirror of
- * it: a bound strictly LATER than today has not yet arrived.
- *
- * EXPIRY IS TESTED FIRST. A membership can be both lapsed and not yet begun only if its bounds are
- * inverted, which the form's own `dateOrderValidator` refuses and which the server refuses too —
- * but stored data predates both rules, so the order settles it deterministically rather than
- * leaving it to whichever branch happens to be written first. Lapsed is the more consequential of
- * the two, because it means the account does not hold the role now.
+ * Resolves where a membership stands against a clock — R-M24. ⚠ THE DEFECT THIS CLOSES.
+ * `securityroles.ascx` declares four visible columns and neither the markup nor `SecurityRoles.ascx.vb`
+ * compares either bound against the clock anywhere, so a membership that lapsed in 2020, one that begins
+ * in 2030 and one in force today were drawn in the same colour, the same weight and with no other mark —
+ * on the one screen whose purpose is administering who holds a role.
  *
  * @param row The membership as it arrived.
  * @param now The moment to judge against.
@@ -1422,14 +872,7 @@ function resolveMembershipLifecycle(row: UserRole, now: Date): MembershipLifecyc
   return 'current';
 }
 
-
-/**
- * Routed container for `/roles/:roleId/users`.
- *
- * Declared standalone with the push change-detection strategy and a single stylesheet, and
- * with NO providers of its own: every interface it consumes is registered at the application
- * root, so declaring them here would give this screen its own copies of shared state.
- */
+/** Routed container for `/roles/:roleId/users`. */
 @Component({
   selector: 'app-role-assignment',
   standalone: true,
@@ -1454,65 +897,29 @@ function resolveMembershipLifecycle(row: UserRole, now: Date): MembershipLifecyc
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RoleAssignmentComponent {
-  // MIGRATION: index of every deliberate divergence from the legacy control. Each entry names the
-  // member whose documentation carries the full note, so this list cannot drift out of date the way
-  // line references would. Legacy citations without a filename are `SecurityRoles.ascx.vb`.
-  // MIGRATION:  1. XSS anchor -> escaped interpolation + routerLink; :L394-L396; see columns.
-  // MIGRATION:  2. user-centric half of the bidirectional screen dropped; :L183-L198; see file header.
-  // MIGRATION:  3. all-accounts dropdown -> paged starts-with lookup; :L455-L468; see onUserSearch.
-  // MIGRATION:  4. calendar pop-ups -> native date inputs; :L329-L335; see controlId.
-  // MIGRATION:  5. integer-vs-string admin compare + non-short-circuit And made explicit; :L522-L526.
-  // MIGRATION:  6. unguarded Date.Parse -> safe parsing; :L528-L539; see parseCalendarDateValue.
-  // MIGRATION:  7. chkNotify retained because the contract carries notifyUser; :L542, :L569.
-  // MIGRATION:  8. list re-read after add and removal, error after the rebind; :L546, :L579-L584.
-  // MIGRATION:  9. br-prefixed messages stripped by shared/form-field, rendered as plain text.
-  // MIGRATION: 10. resource text treated as untrusted markup; ModuleHelp.Text never rendered.
-  // MIGRATION: 11. localisation not ported; wording authored directly from the resource values.
-  // MIGRATION: 12. permission denial surfaced at warning severity; AccessDenied.ascx.vb:L43, :L45.
-  // MIGRATION: 13. 'Security Role' column omitted because role-centric mode hid it; :L245.
-  // MIGRATION: 14. no required validator on the account field; :L520-L521 was a guard clause.
-  // MIGRATION: 15. silent blank on a failed lookup -> visible no-matches state; :L476-L488.
-  // MIGRATION: 16. unpaged grid -> one page plus the shared pager; securityroles.ascx:L56; see
-  // MIGRATION:     loadAssignments and pagerRequired.
-  // MIGRATION: 17. whole-set scans for the label and the prefill -> one keyed server probe;
-  // MIGRATION:     :L253, :L273-L303, :L656-L658; see selectUser and selectedMembership.
+  // MIGRATION: index of every deliberate divergence from the legacy control. Each entry names the member
+  // whose documentation carries the full note, so this list cannot drift out of date the way line
+  // references would.
 
   private readonly store = inject(RoleStore);
   private readonly userService = inject(UserService);
 
   /**
-   * The identity, read for ONE fact: which tenant the caller belongs to.
-   *
-   * Taken from the caller rather than from a route, because this screen addresses a role and names
-   * no portal.
+   * The identity, read for ONE fact: which tenant the caller belongs to. Taken from the caller rather
+   * than from a route, because this screen addresses a role and names no portal.
    */
   private readonly auth = inject(AuthStore);
 
   /**
-   * The tenant's own record, for the protected pairing this screen must not offer to remove.
-   *
-   * CORE state, injected as the account listing and the role editor both inject it. The store owns
-   * the request, de-duplicates it across screens, and discards one tenant's facts the moment
-   * another tenant is asked for.
+   * The tenant's own record, for the protected pairing this screen must not offer to remove. CORE state,
+   * injected as the account listing and the role editor both inject it.
    */
   private readonly portals = inject(PortalStore);
 
   /**
-   * The owner of the tenant's account policy, which decides how an account is chosen here.
-   *
-   * ⚠ THE STORE RATHER THAN THE TRANSPORT, and that is this file's own rule applied rather than
-   * an inconsistency with the lookup beside it. The lookup calls the transport because its
-   * matches are "held nowhere else, owned by nothing else"; the account policy is held somewhere
-   * else and owned by something else — {@link UserStore} publishes it and the account-listing
-   * screen already reads it from there — so a second copy here is exactly the divergence this
-   * screen's header records having corrected for the role and its memberships.
-   *
-   * Reading it disturbs no coordinate another screen holds: `loadMembershipSettings` touches the
-   * policy slice and that store's failure slice, and never the account listing's search term, page
-   * coordinate or rows — which is the one objection that kept the lookup on the transport. Clearing
-   * the failure slice is the store's own contract for starting a read and costs nothing here, since
-   * only one routed screen is mounted at a time and the account listing re-records its own failures
-   * when it next reads.
+   * The owner of the tenant's account policy, which decides how an account is chosen here. ⚠ THE STORE
+   * RATHER THAN THE TRANSPORT, and that is this file's own rule applied rather than an inconsistency with
+   * the lookup beside it.
    */
   private readonly accounts = inject(UserStore);
   private readonly notifications = inject(NotificationService);
@@ -1521,29 +928,24 @@ export class RoleAssignmentComponent {
   private readonly roleIdSignal: WritableSignal<number | null> = signal<number | null>(null);
 
   /**
-   * The role whose read this screen is waiting on, or `null` when none is outstanding.
-   *
-   * Absence is `null` and nothing else: `Roles.RoleID` is seeded `IDENTITY(0, 1)`, so a role
-   * key of zero is the portal's first role and `0` cannot mean "not waiting".
+   * The role whose read this screen is waiting on, or `null` when none is outstanding. Absence is `null`
+   * and nothing else: `Roles.RoleID` is seeded `IDENTITY(0, 1)`, so a role key of zero is the portal's
+   * first role and `0` cannot mean "not waiting".
    */
   private readonly awaitedRoleKey: WritableSignal<number | null> = signal<number | null>(null);
 
   /**
-   * The account lookup in flight, or `null` when none is.
-   *
-   * ⚠ A HANDLE, NOT MERELY A TEARDOWN. `takeUntilDestroyed` ends a lookup when the screen goes away,
-   * which is a different question from ending the one a newer term replaces. Two lookups outstanding
-   * at once answer in whichever order the network chooses, so without this the answer to `a` can land
-   * after the answer to `ann` and leave the wider match set on screen under the narrower term.
+   * The account lookup in flight, or `null` when none is. ⚠ A HANDLE, NOT MERELY A TEARDOWN.
+   * `takeUntilDestroyed` ends a lookup when the screen goes away, which is a different question from
+   * ending the one a newer term replaces.
    */
   private userLookupRequest: Subscription | null = null;
 
   /**
-   * The complete-account-list walk in flight, or `null` when none is.
-   *
-   * Held for the same reason as {@link userLookupRequest}: a walk the screen has stopped waiting
-   * for is still a sequence of requests the tenant pays for, and its answer would repopulate a
-   * drop-down the policy may since have replaced with the name box.
+   * The complete-account-list walk in flight, or `null` when none is. Held for the same reason as {@link
+   * userLookupRequest}: a walk the screen has stopped waiting for is still a sequence of requests the
+   * tenant pays for, and its answer would repopulate a drop-down the policy may since have replaced with
+   * the name box.
    */
   private accountChoicesRequest: Subscription | null = null;
 
@@ -1554,85 +956,39 @@ export class RoleAssignmentComponent {
     signal<AwaitedAssignmentWrite | null>(null);
 
   /**
-   * The identifier the store issued for {@link RoleAssignmentComponent.awaitedWrite}.
-   *
-   * Zero means "no write of ours is outstanding". That is safe rather than a sentinel collision: the
-   * store pre-increments, so the first identifier it ever issues is 1 and no real write holds 0.
+   * The identifier the store issued for {@link RoleAssignmentComponent.awaitedWrite}. Zero means "no
+   * write of ours is outstanding".
    */
   private readonly awaitedWriteId: WritableSignal<number> = signal<number>(0);
 
-  /**
-   * The generation of the account lookup now wanted.
-   *
-   * ⚠ CANCELLATION ALONE IS NOT SUFFICIENT HERE, WHICH IS WHY THIS EXISTS ALONGSIDE THE HANDLE.
-   * Releasing the handle stops a superseded lookup being delivered, and it is the stronger fix where
-   * it applies — but the handle is released on two paths that are not "a newer lookup started": the
-   * box being emptied, and the addressed role changing. A response already scheduled to commit is not
-   * recalled by either, so the callback also asks whether the answer it is holding is still the answer
-   * to the question that was asked.
-   */
   private readonly userLookupGeneration = new OperationGeneration();
 
-  /**
-   * The membership an outstanding removal addressed, so a refusal can be attributed to it.
-   *
-   * Needed because the store command reports the failure without echoing what was addressed,
-   * and a refused pairing has to be remembered against the row that was refused.
-   */
+  /** The membership an outstanding removal addressed, so a refusal can be attributed to it. */
   private readonly outstandingRemoval: WritableSignal<UserRole | null> = signal<UserRole | null>(
     null,
   );
 
   /**
-   * A message to raise once the membership listing has finished refreshing, or `null`.
-   *
-   * The order is load-bearing rather than cosmetic: `SecurityRoles.ascx.vb:L579-L584` rebound
-   * the grid unconditionally and raised the refusal only afterwards, so the operator read the
-   * message against a refreshed grid.
+   * A message to raise once the membership listing has finished refreshing, or `null`. The order is
+   * load-bearing rather than cosmetic: `SecurityRoles.ascx.vb:L579-L584` rebound the grid unconditionally
+   * and raised the refusal only afterwards, so the operator read the message against a refreshed grid.
    */
   private readonly deferredNotice: WritableSignal<DeferredNotice | null> =
     signal<DeferredNotice | null>(null);
 
   /**
-   * The account whose probe answer may still write the two date boxes, or `null`.
-   *
-   * A one-shot marker rather than a mode. The probe runs in two circumstances — the operator
-   * has just chosen an account, and a write has just settled — and only the FIRST of those may
-   * touch the form: `SecurityRoles.ascx.vb:L546` rebound the grid after a write and left the
-   * form alone, so an operator who left the expiry empty and let the server derive one saw an
-   * empty box afterwards, not the derived value. Writing the stored bounds back after a write
-   * would put a value the operator never typed into a box that a second submit would then send
-   * explicitly — a change to what gets STORED, not merely to what is shown.
-   *
-   * Held as the account's identifier and compared with `===`, because a probe answer that
-   * arrives after the operator has moved on to a different account must not prefill from it.
-   * Absence is `null`: account identifiers seed at one on this schema, but sibling tables seed
-   * at zero and minus one, so absence is never a number here.
+   * The account whose probe answer may still write the two date boxes, or `null`. A one-shot marker
+   * rather than a mode.
    */
   /**
    * The account whose boxes must be RE-BASELINED once the membership listing settles after a write, or
-   * `null` when no write is awaiting one.
-   *
-   * Deliberately a SECOND marker rather than a reuse of {@link awaitedPrefillUserId}. The two are read by
-   * different bridges at different moments: the prefill marker is consumed when a PROBE settles, and this
-   * one when the LISTING settles. Sharing one signal would let the prefill bridge fire immediately on a
-   * post-write marker - the probe is not in flight then - and write the boxes from rows the write has not
-   * yet refreshed.
+   * `null` when no write is awaiting one. Deliberately a SECOND marker rather than a reuse of {@link
+   * awaitedPrefillUserId}.
    */
-  /**
-   * Whether the membership write in flight AMENDS an existing enrolment rather than creating one.
-   *
-   * Captured at dispatch: the write itself changes the fact, so reading it afterwards would report the
-   * post-write state and every add would announce itself as an update.
-   */
+  /** Whether the membership write in flight AMENDS an existing enrolment rather than creating one. */
   private readonly writeWasAnAmendment: WritableSignal<boolean> = signal(false);
 
-  /**
-   * The account name the write in flight concerns, captured at dispatch for the same reason.
-   *
-   * A REMOVAL takes its name from the row it targets instead - see `outstandingRemoval` - because the row
-   * is what the operator pressed the command on and it may not be the account the picker holds.
-   */
+  /** The account name the write in flight concerns, captured at dispatch for the same reason. */
   private readonly writeSubjectName: WritableSignal<string | null> = signal<string | null>(null);
 
   private readonly awaitedRebaselineUserId: WritableSignal<number | null> = signal<number | null>(null);
@@ -1642,21 +998,16 @@ export class RoleAssignmentComponent {
   );
 
   /**
-   * Whether a membership read is in flight that this screen has not yet reported on.
-   *
-   * A latch rather than a mirror. The listing flag falls once per read, and the deferred
-   * message must be raised on that fall exactly once — including for the re-read the store
-   * performs after a write, which this screen did not dispatch itself.
+   * Whether a membership read is in flight that this screen has not yet reported on. A latch rather than
+   * a mirror.
    */
   private readonly assignmentsSettling: WritableSignal<boolean> = signal(false);
 
   private readonly problemSignal: WritableSignal<ProblemDetails | null> =
     signal<ProblemDetails | null>(null);
   /**
-   * What the last completed account lookup found.
-   *
-   * One value rather than several so the offered matches and the two counts beside them can never
-   * describe different lookups. See {@link UserLookupOutcome}.
+   * What the last completed account lookup found. One value rather than several so the offered matches
+   * and the two counts beside them can never describe different lookups.
    */
   private readonly userLookupSignal: WritableSignal<UserLookupOutcome> =
     signal<UserLookupOutcome>(NO_USER_LOOKUP);
@@ -1672,38 +1023,21 @@ export class RoleAssignmentComponent {
   private readonly accountChoicesLoadingSignal: WritableSignal<boolean> = signal(false);
 
   /**
-   * How many accounts the tenant holds, or `null` while that is unknown.
-   *
-   * Read ONLY when the account policy could not be read, because it is only then that the count
-   * decides anything: see {@link LEGACY_ACCOUNT_LISTING_CEILING}. A tenant whose policy answered has
-   * already said which control it wants and the count would change nothing.
-   *
-   * It is the server's own `totalCount`, not the length of anything gathered here, so a site far too
-   * large to enumerate still reports its size in one small request.
+   * How many accounts the tenant holds, or `null` while that is unknown. Read ONLY when the account
+   * policy could not be read, because it is only then that the count decides anything: see {@link
+   * LEGACY_ACCOUNT_LISTING_CEILING}.
    */
   private readonly accountCountSignal: WritableSignal<number | null> = signal<number | null>(null);
 
   private readonly accountCountLoadingSignal: WritableSignal<boolean> = signal(false);
 
   /**
-   * Whether the count probe itself failed.
-   *
-   * The name box is the answer in that case, on the same reasoning as everywhere else on this
-   * screen: it is the affordance that needs no tenant-wide read. Recorded separately from the
-   * count so that "not asked yet" and "asked and unanswerable" are never the same state - conflating
-   * them would hold the field for good behind a read that is never coming back.
+   * Whether the count probe itself failed. The name box is the answer in that case, on the same reasoning
+   * as everywhere else on this screen: it is the affordance that needs no tenant-wide read.
    */
   private readonly accountCountFailedSignal: WritableSignal<boolean> = signal(false);
 
-  /**
-   * Whether the complete account list could NOT be assembled, so the drop-down cannot be offered.
-   *
-   * A refusal rather than a truncation, on the same terms the membership and module walks settled:
-   * a drop-down that claims to hold every account and silently holds some of them hides the
-   * accounts it dropped, and an operator cannot tell a missing account from an absent one. What is
-   * different here is the remedy — the name box needs no complete list and reaches any account by
-   * name, so the screen falls back to it and says so instead of failing outright.
-   */
+  /** Whether the complete account list could NOT be assembled, so the drop-down cannot be offered. */
   private readonly accountChoicesFailedSignal: WritableSignal<boolean> = signal(false);
   private readonly selectedUserSignal: WritableSignal<UserChoice | null> =
     signal<UserChoice | null>(null);
@@ -1715,49 +1049,20 @@ export class RoleAssignmentComponent {
   >(new Set<string>());
 
   /**
-   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it.
-   *
-   * ⚠ THE ROUTE DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate
-   * was answered by a reflective sweep over this component's fields. The sweep is gone — it pulled
-   * `@angular/forms` into the eagerly loaded bundle for an application whose every form is lazily
-   * loaded — and this registration replaces it. Without it the declaration on `roles/:roleId/users`
-   * would be inert: the guard would find no probe, read a part-completed enrolment as clean, and
-   * discard it silently.
-   *
-   * ⚠ THE ACCOUNT SELECTION IS PART OF WHAT IS AT STAKE HERE, and on a tenant above the enumeration
-   * ceiling that makes the loss larger than it looks. Above the ceiling the account is reached by
-   * typing a login name and waiting on a lookup, so an operator who has found the right account and
-   * set both bounds has performed three separate acts of work that the form is holding and the
-   * server knows nothing about.
-   *
-   * {@link saving} rather than the role store's flag: the store's flag is raised by EVERY role write
-   * in the application, so reading it here would let an unrelated write elsewhere suppress this
-   * screen's warning. It is `true` exactly while this screen's own enrolment is in flight, which is
-   * the entry that is no longer unsaved.
+   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it. ⚠ THE ROUTE
+   * DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate was answered by
+   * a reflective sweep over this component's fields.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
     () => this.form.dirty && this.saving() === false,
   );
 
-  /**
-   * The screen's typed form.
-   *
-   * Public so the template can bind the group and its controls, and so a specification can
-   * drive it without reaching through the view.
-   */
+  /** The screen's typed form. */
   public readonly form = new FormGroup<RoleAssignmentFormModel>(
     {
       userId: new FormControl<number | null>(null, { nonNullable: true }),
-      // MIGRATION: the two CALENDAR POP-UPS ARE DROPPED and each bound is a native date
-      // control inside the shared field wrapper instead. `SecurityRoles.ascx.vb:L329-L335`
-      // pointed two hyperlinks at a pop-up calendar helper and gave each one a raster image
-      // with localised alternative text; the helper is a Web Forms client-script facility with
-      // no counterpart here, the shared component set is closed and holds no date picker, and
-      // no eleventh member may be added to it. A plain control inside the wrapper is the
-      // sanctioned shape for exactly this situation, and the native control brings its own
-      // picker, keyboard handling and locale. The two raster assets are dropped with it. A
-      // documented substitution: the affordance changes, the value the operator can express
-      // does not.
+      // MIGRATION: the two CALENDAR POP-UPS ARE DROPPED and each bound is a native date control inside the
+      // shared field wrapper instead.
       effectiveDate: new FormControl<string>(NO_DATE, {
         nonNullable: true,
         validators: [calendarDateValidator],
@@ -1766,10 +1071,6 @@ export class RoleAssignmentComponent {
         nonNullable: true,
         validators: [calendarDateValidator],
       }),
-      // ⚠ UNTICKED AND DISABLED, DEPARTING FROM THE MEASURED INITIAL STATE DELIBERATELY. The contract's
-      // member is still transmitted — a disabled control reports its value like any other — but it now
-      // carries FALSE, which is the truthful request: nothing is asking for a notification, because
-      // nothing can send one. See the help wording above.
       notify: new FormControl<boolean>({ value: false, disabled: true }, { nonNullable: true }),
     },
     { validators: [dateOrderValidator] },
@@ -1781,14 +1082,6 @@ export class RoleAssignmentComponent {
   /** The role addressed by the route, or `null` when the route carried nothing usable. */
   public readonly resolvedRoleId: Signal<number | null> = this.roleIdSignal.asReadonly();
 
-  /**
-   * The addressed role once the store holds it, used for the heading.
-   *
-   * Derived from the store's selected role and GATED ON IDENTITY, so a role another screen
-   * selected can never appear in this heading. The gate also makes the reset on a change of
-   * address automatic: the moment the addressed key changes, the previously held role stops
-   * matching and this reads `null` without anything being cleared.
-   */
   public readonly role: Signal<Role | null> = computed(() => {
     const addressed = this.roleIdSignal();
     const selected = this.store.selectedRole();
@@ -1803,13 +1096,7 @@ export class RoleAssignmentComponent {
   /** Whether the addressed role is still being fetched. */
   public readonly roleLoading: Signal<boolean> = computed(() => this.awaitedRoleKey() !== null);
 
-  /**
-   * The page of memberships on screen. Exactly one page is held; the pager reaches the rest.
-   *
-   * Gated on identity for the same reason as {@link role}: the store's assignment slice is
-   * keyed by the role it was read for, and a slice read for another role is not this screen's
-   * grid.
-   */
+  /** The page of memberships on screen. Exactly one page is held; the pager reaches the rest. */
   public readonly assignments: Signal<readonly UserRole[]> = computed(() => {
     const addressed = this.roleIdSignal();
 
@@ -1820,13 +1107,7 @@ export class RoleAssignmentComponent {
     return this.store.assignmentItems();
   });
 
-  /**
-   * The paging facts of the page in hand, gated on the addressed role.
-   *
-   * One gate for all three pager inputs, so they cannot disagree with each other or with the
-   * rows: a slice read for another role reports {@link UNRESOLVED_PAGE_META}, whose applied size
-   * of nought is what withholds the pager entirely until a real answer has landed.
-   */
+  /** The paging facts of the page in hand, gated on the addressed role. */
   private readonly assignmentsMeta: Signal<ApiMeta> = computed(() => {
     const addressed = this.roleIdSignal();
 
@@ -1838,41 +1119,18 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * The drop-down's entries, each carrying the label the option renders.
-   *
-   * Built here rather than in the template so the "already in this role" note is composed in one place
-   * and can be asserted from a specification. The identifier is untouched: the option's value stays the
-   * account key, so annotating a label cannot change which account an entry denotes.
-   *
-   * An account is marked from the ROWS IN HAND. On a role whose membership exceeds one page an unmarked
-   * entry therefore means "not on the page you are looking at" rather than "not a member" - which is
-   * why the mark is an ADDITIVE note and never a disabled or withheld entry: an absent mark must not be
-   * readable as a promise.
+   * The drop-down's entries, each carrying the label the option renders. Built here rather than in the
+   * template so the "already in this role" note is composed in one place and can be asserted from a
+   * specification.
    */
   public readonly accountChoiceEntries: Signal<readonly AccountChoiceEntry[]> = computed(() => {
-    // ⚠ ONE SET, BUILT ONCE, RATHER THAN A SCAN PER CHOICE. The membership test used to be
-    // `members.some(...)` inside the map, which is O(choices × memberships): at the eagerly
-    // materialised ceiling of a thousand choices against a full page of a hundred memberships that
-    // is a hundred thousand comparisons, and it runs again on every recomputation of either input -
-    // every page turn, every assignment written, every notification. Indexing the memberships first
-    // makes it O(choices + memberships) for an identical answer.
-    //
-    // A `Set<number>` rather than an object or an array of keys: the values are account identifiers,
-    // and `Portals.PortalID` being `IDENTITY(-1, 1)` and `Roles.RoleID` `IDENTITY(0, 1)` is a
-    // standing reminder that identifiers here are plain integers with no reserved values - so a
-    // structure that stringifies its keys, or one that answers membership by scanning, is the wrong
-    // one. `Set` compares by value for numbers, which is exactly the comparison being replaced.
     const memberIds = new Set<number>();
     for (const row of this.assignments()) {
       memberIds.add(row.userId);
     }
 
     return this.accountChoicesSignal().map((choice: UserChoice) => {
-      // POSITIVELY KNOWN MEMBERSHIP ONLY, and the set changes nothing about that. It is built from
-      // the rows IN HAND, so on a role whose membership exceeds one page an unmarked entry still
-      // means "not on the page you are looking at" rather than "not a member" - which is why the
-      // mark stays an ADDITIVE note and is never a disabled or withheld entry. Absence of the mark
-      // must not be readable as a promise, and it is not.
+      // POSITIVELY KNOWN MEMBERSHIP ONLY, and the set changes nothing about that.
       const already: boolean = memberIds.has(choice.userId);
       const base = `${choice.displayName} (${choice.username})`;
 
@@ -1885,17 +1143,9 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Whether the page of memberships in hand IS the whole membership.
-   *
-   * ⚠ THIS IS WHAT MAKES A LOCAL ANSWER TRUSTWORTHY. The membership listing is paged, so an account
-   * absent from the rows on screen is normally UNKNOWN rather than a non-member. When the served total
-   * is no greater than the number of rows held, there is no second page for a membership to hide on,
-   * and absence from the rows becomes proof of absence from the role.
-   *
-   * The served total is used rather than a requested size, so this answers `false` — the cautious
-   * direction, which asks the server — until a real answer has landed. `UNRESOLVED_PAGE_META` reports a
-   * total of nought against nought rows, which is deliberately NOT treated as complete: a slice read
-   * for another role must not license a conclusion about this one.
+   * Whether the page of memberships in hand IS the whole membership. ⚠ THIS IS WHAT MAKES A LOCAL ANSWER
+   * TRUSTWORTHY. The membership listing is paged, so an account absent from the rows on screen is
+   * normally UNKNOWN rather than a non-member.
    */
   private readonly membershipPageIsComplete: Signal<boolean> = computed(() => {
     const addressed = this.roleIdSignal();
@@ -1911,9 +1161,8 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * The chosen account's membership as the ROWS IN HAND report it, or `null` when they do not.
-   *
-   * Compared with `===` because zero and minus one are legitimate account identifiers on this schema.
+   * The chosen account's membership as the ROWS IN HAND report it, or `null` when they do not. Compared
+   * with `===` because zero and minus one are legitimate account identifiers on this schema.
    */
   private readonly membershipFromRows: Signal<UserRole | null> = computed(() => {
     const chosen = this.selectedUserSignal();
@@ -1926,26 +1175,18 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * The page on screen, counted from nought, for the shared pager's `page` input.
-   *
-   * The index the SERVER reported is bound rather than the one this screen last asked for, so
-   * the pager can never claim to be on a page whose request failed. No arithmetic appears
-   * anywhere on this path: the pager's input and its output are both zero-based, as the wire
-   * is.
+   * The page on screen, counted from nought, for the shared pager's `page` input. The index the SERVER
+   * reported is bound rather than the one this screen last asked for, so the pager can never claim to be
+   * on a page whose request failed.
    */
   public readonly pageIndex: Signal<number> = computed(() => this.assignmentsMeta().pageIndex);
 
   /**
-   * The COLUMN KEY the membership listing is ordered by, or `null` for the order the server chose.
-   *
-   * ⚠ A COLUMN KEY, NOT THE ENDPOINT FIELD THE COORDINATE HOLDS. The shared grid compares this input
-   * against a column key to decide which heading announces itself sorted, so handing it the stored
-   * `DisplayName` would leave the account heading announcing "sortable, not sorted" while the request
-   * carried an ordering - the grid would be telling the reader the opposite of what the server was asked.
-   * Only one column is orderable, so the projection is a single test rather than a map.
-   *
-   * Reported as absent until the coordinate describes THIS role, on the same terms as the page metadata
-   * above: the store is shared, so during a read of role B its coordinate may still describe role A.
+   * The COLUMN KEY the membership listing is ordered by, or `null` for the order the server chose. ⚠ A
+   * COLUMN KEY, NOT THE ENDPOINT FIELD THE COORDINATE HOLDS. The shared grid compares this input against
+   * a column key to decide which heading announces itself sorted, so handing it the stored `DisplayName`
+   * would leave the account heading announcing "sortable, not sorted" while the request carried an
+   * ordering - the grid would be telling the reader the opposite of what the server was asked.
    */
   public readonly sortColumnKey: Signal<string | null> = computed(() => {
     const addressed = this.roleIdSignal();
@@ -1961,10 +1202,9 @@ export class RoleAssignmentComponent {
 
   /**
    * The direction {@link RoleAssignmentComponent.sortColumnKey} is applied in, or `null` for the server's
-   * default.
-   *
-   * The token is the server's own member name; an abbreviated spelling is refused by the model binder with
-   * `400`, which is why the type comes from the paging contract rather than being written out here.
+   * default. The token is the server's own member name; an abbreviated spelling is refused by the model
+   * binder with `400`, which is why the type comes from the paging contract rather than being written out
+   * here.
    */
   public readonly sortDirection: Signal<SortDirection | null> = computed(() => {
     const addressed = this.roleIdSignal();
@@ -1976,43 +1216,22 @@ export class RoleAssignmentComponent {
     return this.store.assignmentsPage().sortDir;
   });
 
-  /**
-   * The page size in effect, for the shared pager's `pageSize` input.
-   *
-   * Also the server's own figure and deliberately not a constant declared here: the size that
-   * was applied is a fact about the answer in hand, and binding a local constant would make the
-   * pager compute a page count the server did not.
-   */
+  /** The page size in effect, for the shared pager's `pageSize` input. */
   public readonly pageSize: Signal<number> = computed(() => this.assignmentsMeta().pageSize);
 
   /** How many memberships the role has in total, for the shared pager's `totalCount` input. */
   public readonly totalCount: Signal<number> = computed(() => this.assignmentsMeta().totalCount);
 
   /**
-   * Whether there is a result COUNT worth stating, which is what mounts the shared pager.
-   *
-   * ⚠ WIDER THAN "MORE THAN ONE PAGE", AND NARROWER THAN "ALWAYS". The pager decides its own shape - the
-   * range summary alone when everything fits on one page, the summary plus the steps when it does not -
-   * so mounting it on navigability would remove the only on-screen confirmation of how many records
-   * matched, which runtime testing measured happening on every list screen. Mounting it unconditionally
-   * would instead leave an empty custom element in the document on a zero-result screen, where the
-   * empty-state component already says what happened in words. Counting from one upwards is the
-   * condition that gives both statements a place to live.
+   * Whether there is a result COUNT worth stating, which is what mounts the shared pager. ⚠ WIDER THAN
+   * "MORE THAN ONE PAGE", AND NARROWER THAN "ALWAYS".
    */
   public readonly hasResults: Signal<boolean> = computed(() => this.totalCount() > 0);
 
-
   /**
-   * Whether the pager has anything to offer.
-   *
-   * The same predicate the rest of the workspace draws its pager on — more memberships exist
-   * than fit on one page — so a role with ten or fewer members renders exactly what the unpaged
-   * legacy grid rendered, with no pager in sight. This says whether the control has work to do;
-   * whether it is DRAWN is the template's decision and the control's own.
-   *
-   * The size is tested for a positive value first, because the slice starts at the empty
-   * envelope whose applied size is nought, and `0 < 0` would otherwise be the only thing
-   * standing between an unresolved page size and a pager bound to it.
+   * Whether the pager has anything to offer. The same predicate the rest of the workspace draws its pager
+   * on — more memberships exist than fit on one page — so a role with ten or fewer members renders
+   * exactly what the unpaged legacy grid rendered, with no pager in sight.
    */
   public readonly pagerRequired: Signal<boolean> = computed(() => {
     const size = this.pageSize();
@@ -2021,11 +1240,9 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Whether the membership listing is in flight.
-   *
-   * Read from the store rather than latched here, so the re-read the store performs after a
-   * write also turns the spinner — without it the rows would change under the operator with no
-   * indication that anything was happening.
+   * Whether the membership listing is in flight. Read from the store rather than latched here, so the
+   * re-read the store performs after a write also turns the spinner — without it the rows would change
+   * under the operator with no indication that anything was happening.
    */
   public readonly assignmentsLoading: Signal<boolean> = computed(() => {
     const addressed = this.roleIdSignal();
@@ -2037,23 +1254,13 @@ export class RoleAssignmentComponent {
     return this.store.assignmentsLoading();
   });
 
-  /**
-   * Whether a membership write of this screen's is in flight, so the action can be held.
-   *
-   * Deliberately NOT the store's saving flag, which every role write in the application
-   * raises. See {@link AwaitedAssignmentWrite}.
-   */
+  /** Whether a membership write of this screen's is in flight, so the action can be held. */
   public readonly saving: Signal<boolean> = computed(() => this.awaitedWrite() !== null);
 
   /** The last failure as a problem document, for the shared banner's `problem` input. */
   public readonly problem: Signal<ProblemDetails | null> = this.problemSignal.asReadonly();
 
-  /**
-   * The accounts the current lookup offers as choices.
-   *
-   * Not every account it matched: see {@link USER_LOOKUP_DISPLAY_LIMIT}, and
-   * {@link userLookupSummary} for the sentence that reports the difference whenever there is one.
-   */
+  /** The accounts the current lookup offers as choices. */
   public readonly userMatches: Signal<readonly UserChoice[]> = computed(
     () => this.userLookupSignal().matches,
   );
@@ -2061,13 +1268,7 @@ export class RoleAssignmentComponent {
   /** Whether an account lookup is in flight. */
   public readonly userLookupLoading: Signal<boolean> = this.userLookupLoadingSignal.asReadonly();
 
-  /**
-   * The sentence describing a lookup whose match set is larger than what is offered, or `null`.
-   *
-   * `null` in the ordinary case, where every matching account is a button and there is nothing to
-   * explain. It reports the server's own count rather than a count of what is displayed, because
-   * the whole point of saying anything is that the two differ.
-   */
+  /** The sentence describing a lookup whose match set is larger than what is offered, or `null`. */
   public readonly userLookupSummary: Signal<string | null> = computed(() => {
     const outcome = this.userLookupSignal();
     if (outcome.matches.length === 0) {
@@ -2098,32 +1299,8 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Which account-selection control the tenant's policy asks this screen to present.
-   *
-   * MIGRATION: this is `Security_UsersControl`, acted on at `SecurityRoles.ascx.vb:L202-L221`.
-   * The legacy screen resolved it once during page load and rendered exactly one of the two
-   * controls, hiding the other; the same holds here, and {@link accountPolicyPending} is what
-   * keeps a control from being offered before the policy is known and then swapped underneath the
-   * operator.
-   *
-   * The name box is the answer whenever the drop-down cannot be honoured — a complete account list
-   * that could not be assembled, a site too large to enumerate, or a count that could not be read —
-   * because it is the affordance that needs no tenant-wide read, and it is the one the legacy help
-   * text described.
-   *
-   * ⚠ AN UNREAD POLICY DOES NOT MEAN THE NAME BOX, and this used to return it here, which was the
-   * defect. `GET /api/v1/users/settings` answers 404 on a tenant with no User Accounts module
-   * instance to store the setting against — a permanent state, not a transient fault — and the screen
-   * then offered the name box on every visit while the legacy, in exactly that situation, would have
-   * offered the DROP-DOWN. `UserModuleBase.vb:L178-L183` is explicit: an absent
-   * `Security_UsersControl` was resolved from the account count, defaulting to the drop-down at or
-   * below one thousand accounts. So an unread policy falls back to THE LEGACY'S OWN DEFAULT RULE,
-   * not to the more convenient control.
-   *
-   * The count is read before the list, never after, so the ceiling means what it meant in the
-   * legacy: a site larger than it is never enumerated to fill a select. While the count is
-   * outstanding {@link accountPolicyPending} holds the field, so neither control is shown and then
-   * swapped underneath the operator.
+   * Which account-selection control the tenant's policy asks this screen to present. this is
+   * `Security_UsersControl`, acted on at `SecurityRoles.ascx.vb:L202-L221`.
    */
   public readonly usersControlMode: Signal<UsersControlMode> = computed(() => {
     if (this.accountChoicesFailedSignal()) {
@@ -2136,25 +1313,14 @@ export class RoleAssignmentComponent {
         return 'lookup';
       }
 
-      // ⚠ A STORED PREFERENCE FOR THE DROP-DOWN DOES NOT OVERRIDE THE ENUMERATION THRESHOLD, and
-      // this test is what a performance review found missing. The threshold above is not a default
-      // that a setting replaces: it is the size at which enumerating a tenant to fill a select
-      // stops being a sensible thing to do, and the legacy framework applied it by WRITING the name
-      // box back as the tenant's setting the first time the count exceeded it
-      // (`UserModuleBase.vb:L178-L186`). A tenant whose stored preference predates its growth — or
-      // was set by hand — therefore keeps asking for the drop-down while holding far more accounts
-      // than the drop-down was ever meant to hold, and the walk that fills it was the one unbounded
-      // read on this screen. The count decides in that case, exactly as it decides for an unread
-      // policy.
-      //
-      // The stored preference still governs everything the threshold does not: a tenant at or below
-      // it that asked for the name box gets the name box.
+      // ⚠ A STORED PREFERENCE FOR THE DROP-DOWN DOES NOT OVERRIDE THE ENUMERATION THRESHOLD, and this test
+      // is what a performance review found missing.
       return this.exceedsEnumerationThreshold() ? 'lookup' : 'combo';
     }
 
-    // The policy is unreadable, so the legacy's own default rule decides. A count that is still
-    // outstanding reads as the name box here and is masked by `accountPolicyPending`, which renders
-    // neither control; a count that could not be read at all reads as the name box for real.
+    // The policy is unreadable, so the legacy's own default rule decides. A count that is still outstanding
+    // reads as the name box here and is masked by `accountPolicyPending`, which renders neither control; a
+    // count that could not be read at all reads as the name box for real.
     const accountCount = this.accountCountSignal();
     if (accountCount === null) {
       return 'lookup';
@@ -2164,19 +1330,8 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Whether the tenant holds more accounts than the drop-down may enumerate.
-   *
-   * ⚠ AN UNREAD COUNT IS NOT AN EXCEEDED THRESHOLD, and the direction of that default is chosen
-   * rather than incidental. Answering `true` while the probe is outstanding would swap a stored
-   * drop-down preference for the name box on every visit and then swap it back, which is the
-   * control-exchanged-underneath-the-operator behaviour {@link accountPolicyPending} exists to
-   * prevent. Answering `false` keeps the tenant's own stored preference until there is evidence
-   * against it, and the walk that preference triggers is bounded by
-   * {@link MAX_ACCOUNT_CHOICE_PAGES} regardless — so the unknown case is safe in a way it was not
-   * before that ceiling was tied to this same threshold.
-   *
-   * A count that could not be read at all is treated the same way, for the same reason: a tenant is
-   * not sent to a different control because a probe failed.
+   * Whether the tenant holds more accounts than the drop-down may enumerate. ⚠ AN UNREAD COUNT IS NOT AN
+   * EXCEEDED THRESHOLD, and the direction of that default is chosen rather than incidental.
    */
   private readonly exceedsEnumerationThreshold: Signal<boolean> = computed(() => {
     const accountCount = this.accountCountSignal();
@@ -2185,27 +1340,16 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Whether the account policy has not yet resolved, so neither control should be offered.
-   *
-   * The legacy screen never had this state — it decided before it rendered — and reproducing that
-   * means holding the field rather than guessing and correcting.
-   *
-   * TWO READS CAN LEAVE IT UNRESOLVED, not one. The policy read is the first. When that read comes
-   * back empty the legacy's default rule takes over, and that rule needs the tenant's account count,
-   * so the count probe is the second — and until it settles the answer is genuinely unknown. Holding
-   * the field through both is what keeps a control from being offered and then exchanged for the
-   * other one underneath an operator who has already started typing into it.
+   * Whether the account policy has not yet resolved, so neither control should be offered. The legacy
+   * screen never had this state — it decided before it rendered — and reproducing that means holding the
+   * field rather than guessing and correcting.
    */
   public readonly accountPolicyPending: Signal<boolean> = computed(() => {
     const settings = this.accounts.membershipSettings();
 
     if (settings !== null) {
-      // A STORED PREFERENCE FOR THE DROP-DOWN STILL WAITS FOR THE COUNT, because the enumeration
-      // threshold overrides it and the threshold cannot be applied without the count. Rendering the
-      // drop-down first and exchanging it for the name box when the probe lands is precisely the
-      // swap this state exists to prevent. A stored preference for the NAME BOX waits for nothing:
-      // the threshold can only move a tenant towards the name box, so its answer cannot change
-      // that one.
+      // A STORED PREFERENCE FOR THE DROP-DOWN STILL WAITS FOR THE COUNT, because the enumeration threshold
+      // overrides it and the threshold cannot be applied without the count.
       return settings.securityUsersControl === USERS_CONTROL.combo && this.accountCountOutstanding();
     }
 
@@ -2218,26 +1362,17 @@ export class RoleAssignmentComponent {
     return this.accountCountOutstanding();
   });
 
-  /**
-   * Whether the account-count probe has neither answered nor failed.
-   *
-   * A failure counts as answered, deliberately: a probe that cannot be completed is a decision the
-   * screen must still make, and holding the field for a fault that will not clear would leave an
-   * operator with no control at all.
-   */
+  /** Whether the account-count probe has neither answered nor failed. */
   private readonly accountCountOutstanding: Signal<boolean> = computed(
     () => this.accountCountSignal() === null && this.accountCountFailedSignal() === false,
   );
 
   /**
    * Whether the account policy could not be read AND the name box is what replaced it because the
-   * fallback rule could not be applied — the count itself was unreadable.
-   *
-   * ⚠ NARROWER THAN IT LOOKS, AND THE NARROWING IS THE POINT. An unread policy alone no longer
-   * means the name box: the legacy's default rule may well have chosen the drop-down, in which case
-   * nothing was degraded and there is nothing to explain. This is true only when the name box is
-   * standing in for a decision that could not be made at all, which is the one case where an
-   * operator would otherwise see a control the site's own settings might say should not be there.
+   * fallback rule could not be applied — the count itself was unreadable. ⚠ NARROWER THAN IT LOOKS, AND
+   * THE NARROWING IS THE POINT. An unread policy alone no longer means the name box: the legacy's default
+   * rule may well have chosen the drop-down, in which case nothing was degraded and there is nothing to
+   * explain.
    */
   public readonly accountPolicyUnavailable: Signal<boolean> = computed(
     () =>
@@ -2249,9 +1384,6 @@ export class RoleAssignmentComponent {
   /**
    * Whether the name box is offered because the site holds more accounts than the legacy's own
    * enumeration threshold.
-   *
-   * A separate state from {@link accountPolicyUnavailable} because it is not a degradation: this is
-   * the control the legacy itself would have chosen for a site this size.
    */
   public readonly accountPolicyDefaultedBySize: Signal<boolean> = computed(() => {
     if (this.accounts.membershipSettings() !== null) {
@@ -2278,7 +1410,7 @@ export class RoleAssignmentComponent {
   public readonly accountChoicesLoading: Signal<boolean> =
     this.accountChoicesLoadingSignal.asReadonly();
 
-  /** Whether the drop-down was asked for but could not be built. See {@link usersControlMode}. */
+  /** Whether the drop-down was asked for but could not be built. */
   public readonly accountChoicesUnavailable: Signal<boolean> =
     this.accountChoicesFailedSignal.asReadonly();
 
@@ -2294,17 +1426,9 @@ export class RoleAssignmentComponent {
   public readonly selectedUser: Signal<UserChoice | null> = this.selectedUserSignal.asReadonly();
 
   /**
-   * The chosen account's existing membership of the addressed role, or `null` when none is
-   * known.
-   *
-   * `null` covers three cases this screen treats identically, because the legacy screen did:
-   * no account is chosen, the account holds no membership, and the probe could not settle the
-   * question. All three show empty bounds and the 'Add User to Role' label — the state the
-   * legacy grid scan produced when no row matched.
-   *
-   * Gated on the store's probe KEY, so an answer about another pairing can never be read as
-   * this one's. Both halves of the key are compared with `===` because zero and minus one are
-   * legitimate identifiers on this schema.
+   * The chosen account's existing membership of the addressed role, or `null` when none is known. `null`
+   * covers three cases this screen treats identically, because the legacy screen did: no account is
+   * chosen, the account holds no membership, and the probe could not settle the question.
    */
   public readonly selectedMembership: Signal<UserRole | null> = computed(() => {
     const addressed = this.roleIdSignal();
@@ -2323,20 +1447,10 @@ export class RoleAssignmentComponent {
       return fromRows;
     }
 
-    // ABSENT FROM A COMPLETE LISTING IS PROOF OF NON-MEMBERSHIP, so the answer is `null` without a
-    // request. This is the arm that removes the 404: the probe asked a question whose ordinary answer is
-    // "not found", and Chrome logs every 4xx as a console error however cleanly the application handles
-    // it - runtime testing measured three red console entries in one short session on the happy path,
-    // one for selecting a non-member and one more after each successful removal left the account
-    // selected. A checkpoint requirement of "no console errors during ordinary use" cannot be met by
-    // handling that response better; it can only be met by not asking a question shaped that way.
     if (this.membershipPageIsComplete()) {
       return null;
     }
 
-    // ONLY A MEMBERSHIP THAT COULD BE ON A PAGE NOT IN HAND still needs the server, and that request may
-    // still answer 404. It is reachable only on a role whose membership exceeds one page, which is not
-    // the ordinary case this screen is used in.
     const key = this.store.probedAssignmentKey();
 
     if (key === null || key.roleId !== addressed || key.userId !== chosen.userId) {
@@ -2355,18 +1469,6 @@ export class RoleAssignmentComponent {
   /** The wording table, so the template needs no literals of its own. */
   public readonly text = ROLE_ASSIGNMENT_TEXT;
 
-  /**
-   * The moment the two lifecycle qualifiers are judged against, captured when the screen opens.
-   *
-   * A SIGNAL rather than a clock read inside the cell accessor, and the difference is not academic:
-   * an accessor that reads the clock returns a different answer on every change-detection pass, so
-   * a membership expiring in the next second could flicker between two qualifiers and no
-   * specification could pin the boundary. Held once so the whole page agrees with itself.
-   *
-   * NOT refreshed on a timer. The legacy screen resolved everything it drew once per server render,
-   * and a grid that silently re-qualified a row while an operator was reading it would be a change
-   * nobody asked for. The same decision, for the same reasons, as the portal listing's own clock.
-   */
   private readonly today = signal<Date>(new Date());
 
   /** The control identifiers, so `for` and `id` cannot drift apart. */
@@ -2389,12 +1491,8 @@ export class RoleAssignmentComponent {
   );
 
   /**
-   * The heading, with the role's name substituted into the legacy title template.
-   *
-   * MIGRATION: the placeholder is filled by INTERPOLATION and never by a markup-injecting
-   * binding. `SecurityRoles.ascx.vb:L193` formatted the same template with the role's name
-   * and identifier, and the template itself uses only the first of the two, so only the name
-   * is substituted here.
+   * The heading, with the role's name substituted into the legacy title template. the placeholder is
+   * filled by INTERPOLATION and never by a markup-injecting binding.
    */
   public readonly title: Signal<string> = computed(() => {
     const current = this.role();
@@ -2405,21 +1503,9 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Whether the write may proceed.
-   *
-   * This is the guard clause from `SecurityRoles.ascx.vb:L521` expressed as a derived view
-   * rather than as a validator, which is why the account field carries no required rule. The
-   * account is tested with `=== null` because zero would be a legitimate identifier on other
-   * tables and a truthiness test would lose it.
-   *
-   * ⚠ AND NO MESSAGE IS OWED WHEN NO ACCOUNT IS CHOSEN. Pressing the legacy Add command with no
-   * account selected did nothing whatsoever and said nothing: `:L521` simply skipped the write and
-   * `:L546` re-bound the grid, so the page came back looking identical. Reproducing that as a
-   * REFUSED CONTROL rather than as a silent no-op is already the improvement — the affordance itself
-   * says the action is unavailable, before it is pressed, instead of accepting a press and swallowing
-   * it. Adding a validation message on top would report a requirement on a field that carries no
-   * required rule precisely because the legacy carried none, and it would speak about a control the
-   * operator cannot even reach.
+   * Whether the write may proceed. This is the guard clause from `SecurityRoles.ascx.vb:L521` expressed
+   * as a derived view rather than as a validator, which is why the account field carries no required
+   * rule.
    */
   public readonly canSubmit: Signal<boolean> = computed(() => {
     const state = this.formStateSignal();
@@ -2432,19 +1518,8 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * The action's label, which becomes 'Update User Role' once the chosen account already
-   * holds the role.
-   *
-   * MIGRATION: only ONE of the two legacy relabel branches is live in this mode.
-   * `SecurityRoles.ascx.vb:L650` tested the role identifier against the null sentinel, which
-   * is false here, so `:L651-L653` was dead code on this screen; `:L656` tested the ACCOUNT
-   * identifier, which is true here, and `:L657-L658` is the branch that ran — it relabelled
-   * the action when a grid row's account matched the chosen one. That is reproduced exactly.
-   *
-   * MIGRATION: the fact comes from the KEYED PROBE and never from the rows on screen. The
-   * legacy scan covered every membership because its grid was unpaged; a scan of one page would
-   * relabel for an account on this page and not for the same account on the next, which is a
-   * different answer from the legacy one. See {@link RoleAssignmentComponent.selectedMembership}.
+   * The action's label, which becomes 'Update User Role' once the chosen account already holds the role.
+   * only ONE of the two legacy relabel branches is live in this mode.
    */
   public readonly actionLabel: Signal<string> = computed(() => {
     const chosen = this.formStateSignal().userId;
@@ -2456,12 +1531,6 @@ export class RoleAssignmentComponent {
     return holdsRole ? ROLE_ASSIGNMENT_TEXT.updateUserRole : ROLE_ASSIGNMENT_TEXT.addUser;
   });
 
-  /**
-   * Whether the lookup ran and matched nothing, so the template can say so.
-   *
-   * MIGRATION: this is the replacement for the silent failure at
-   * `SecurityRoles.ascx.vb:L484`, which blanked the box and said nothing at all.
-   */
   public readonly showNoMatchingUsers: Signal<boolean> = computed(
     () =>
       this.userLookupTermSignal().length > 0 &&
@@ -2472,24 +1541,7 @@ export class RoleAssignmentComponent {
   /** Whether the route addressed a role at all, so the template can explain its absence. */
   public readonly roleUnresolved: Signal<boolean> = computed(() => this.roleIdSignal() === null);
 
-
-  /**
-   * Messages for the effective-bound field, gated the way `Display="Dynamic"` gated them.
-   *
-   * A dynamic validator showed nothing until it had something to say, so a message appears
-   * here only once the field has been VISITED and is failing. That gating is the caller's
-   * obligation: the shared field wrapper renders whatever it is given and does not decide
-   * when to show it.
-   *
-   * MIGRATION: the wording is passed through EXACTLY as the resource file holds it, leading
-   * break tag and all, because the shared field wrapper already strips a leading
-   * `<br>`/`<br/>`/`<br />` case-insensitively together with the whitespace that follows it
-   * and then trims. That matters for this particular message: `valEffectiveDate.Text` is
-   * `'<br> Invalid effective date'` — a break followed by a SPACE — so a stripper that
-   * removed only the tag would leave the message indented by one space, and its sibling
-   * `valExpiryDate.Text` has no such space. The wrapper strips; this component does not, and
-   * either way the message is rendered as plain text and never as markup.
-   */
+  /** Messages for the effective-bound field, gated the way `Display="Dynamic"` gated them. */
   /** The earliest date either bound accepts, from the stored column's own range. */
   public readonly earliestDate = EARLIEST_STORABLE_DATE;
 
@@ -2499,9 +1551,6 @@ export class RoleAssignmentComponent {
   public readonly effectiveDateMessages: Signal<readonly string[]> = computed(() => {
     const state = this.formStateSignal();
     const messages: string[] = [];
-    // Raised ONCE for any of the three unusable states. The native ones are shown as soon as they
-    // occur and this screen's own parse check still waits for the field to have been visited, for
-    // the reason recorded on `NATIVE_DATE_UNUSABLE_ERRORS`.
     if (
       state.effectiveDateNativelyUnusable ||
       (state.effectiveDateTouched && state.effectiveDateInvalid)
@@ -2513,12 +1562,8 @@ export class RoleAssignmentComponent {
   });
 
   /**
-   * Messages for the expiry-bound field.
-   *
-   * The group-level ordering rule surfaces HERE rather than on the effective bound, because
-   * the legacy validator declared `controltovalidate="txtExpiryDate"`. It waits for BOTH
-   * fields to have been visited, since a rule about the pair has nothing to say until the
-   * operator has engaged with both halves of it.
+   * Messages for the expiry-bound field. The group-level ordering rule surfaces HERE rather than on the
+   * effective bound, because the legacy validator declared `controltovalidate="txtExpiryDate"`.
    */
   public readonly expiryDateMessages: Signal<readonly string[]> = computed(() => {
     const state = this.formStateSignal();
@@ -2539,69 +1584,11 @@ export class RoleAssignmentComponent {
     this.serverMessagesFor('userId'),
   );
 
-  /**
-   * The membership grid's columns: FOUR of them, and deliberately not five.
-   *
-   * MIGRATION: the 'Security Role' column is OMITTED. `securityroles.ascx:L76` declares it as
-   * the third column, but `SecurityRoles.ascx.vb:L245` hides it — `Columns(2).Visible = False`
-   * — precisely in the role-centric mode this component implements, because every row on this
-   * screen belongs to the one role already named in the heading. Emitting it would be a
-   * column the legacy screen never showed. The mirrored branch at `:L252` hides the account
-   * column instead, which is the out-of-scope account-centric mode.
-   *
-   * MIGRATION: EXACTLY ONE COLUMN IS SORTABLE - the account - and that is a net-new affordance
-   * bounded by the endpoint rather than a ported one. It was previously declined because
-   * `grdUserRoles` declares no `AllowSorting` at `securityroles.ascx:L56`, which is true; a
-   * case-insensitive census across BOTH legacy trees finds the attribute exactly ONCE in either
-   * of them, in `Website/admin/Files/filemanager.ascx`, a screen the AAP places out of scope. Not
-   * one in-scope legacy grid could be reordered, INCLUDING the module listing which has offered
-   * sorting since it was written, so the census says the same thing about every grid in this
-   * application and cannot support the affordance on one screen and its absence on the rest.
-   *
-   * ⚠ THE TWO DATE COLUMNS MUST STAY UNSORTABLE, AND THAT IS THE SERVER'S RULE RATHER THAN THIS
-   * SCREEN'S PREFERENCE. `SortableFields.RoleUsers` in
-   * `backend/src/DnnMigration.Application/Validation/SortableFields.cs` admits ACCOUNT fields only
-   * and records that the two assignment dates the projection carries are deliberately excluded, so
-   * a control on either would compose a name the boundary refuses with a field-level message. The
-   * account column is ordered by `DisplayName` and NOT by `Username`, because the cell renders the
-   * display name - ordering by a value the reader cannot see would produce a sequence they cannot
-   * explain from the column in front of them. Both names are in the permitted set, so this is a
-   * choice between two accepted fields and not a workaround.
-   *
-   * MIGRATION: the commands column carries an ACCESSIBLE NAME even though the legacy column
-   * had no heading text at all (`securityroles.ascx:L60`). The heading is hidden rather than
-   * absent, so the name reaches assistive technology while the grid looks as it did. The
-   * shared grid refuses a column that is both sortable and heading-hidden, which is a further
-   * reason the commands column is not sortable.
-   *
-   * MIGRATION: NO COLUMN STATES A HEADING ALIGNMENT, so every heading here falls to the shared
-   * grid's neutral `start`. That is deliberate and it is why this grid's headings are start-aligned
-   * while the role LISTING's are centred — a difference measured in a browser and then checked
-   * against the two legacy declarations, which genuinely disagree:
-   *
-   *  - `securityroles.ascx:L57` declares `<headerstyle cssclass="NormalBold" />` with NO
-   *    `horizontalalign`, and its `<itemstyle cssclass="Normal" />` at `:L58` likewise. So this
-   *    grid's headings and body cells were BOTH start-aligned.
-   *  - `roles.ascx:L26` declares `<headerstyle cssclass="NormalBold" verticalalign="Top"
-   *    horizontalalign="Center"/>` against `<itemstyle cssclass="Normal" horizontalalign="Left" />`
-   *    at `:L27`. So that grid centred its headings over start-aligned cells.
-   *
-   * The alignment came from those attributes and NOT from a shared stylesheet rule: `.NormalBold`
-   * (`Website/Portals/_default/default.css:L106-L111`) declares no `text-align` at all, and the
-   * centred `.DataGrid_Header` rule at `:L147-L155` is used by exactly ONE in-scope admin grid,
-   * `portals.ascx:L15`. Nor did a `<th>` default supply it: `useaccessibleheader` appears ZERO times
-   * in the whole of `Website/admin/`, so every legacy DataGrid rendered its heading row as `<td>`
-   * cells, which start-align unless told otherwise.
-   */
   public readonly columns: Signal<readonly DataTableColumn<UserRole>[]> = computed(() => {
     const columns: DataTableColumn<UserRole>[] = [];
 
     // ⚠ THE COMMAND COLUMN IS WITHHELD ON A ROLE WHOSE MEMBERSHIPS CANNOT BE REMOVED — R-M24. See
-    // `removalAvailable`, which carries the measurement and the legacy precedent
-    // (`SecurityRoles.ascx.vb:L245` hides a whole column in this very mode). A column whose every
-    // cell is empty states a capability the screen does not have, and its heading is clipped, so a
-    // sighted reader saw an unexplained empty track while a screen-reader user was told about a
-    // `Delete` column that never holds a command.
+    // `removalAvailable`, which carries the measurement and the legacy precedent.
     const commands = this.commandsCellTemplate();
     if (commands !== undefined && this.removalAvailable()) {
       columns.push({
@@ -2615,26 +1602,12 @@ export class RoleAssignmentComponent {
       });
     }
 
-    // MIGRATION: `FormatUser` at `SecurityRoles.ascx.vb:L394-L396` was a LIVE STORED-XSS SINK.
-    // It built an anchor by string concatenation and interpolated the account's display name
-    // into the markup UNENCODED, so a name containing markup executed in the administrator's
-    // browser. The replacement is an escaped interpolation inside a router link, which the
-    // framework escapes by default; no markup-injecting binding, no sanitiser and no bypass
-    // appears anywhere in this component. The legacy tree already knew better in the same
-    // folder — `AccessDenied.ascx.vb:L43` wraps an externally supplied message in an HTML
-    // encoder before showing it. The link's target belongs to the account feature, and a link
-    // is a URL rather than an import, so no feature imports another here.
     const user = this.userCellTemplate();
     columns.push(
       user === undefined
         ? {
             key: ROLE_ASSIGNMENT_COLUMN_KEY.userName,
             label: ROLE_ASSIGNMENT_TEXT.userNameHeader,
-            // The row's NAME - the account this membership belongs to. Emitted as
-            // `<th scope="row">` so a reader traversing the effective and expiry dates is told
-            // WHOSE membership they are reading. Declared on BOTH variants of this column,
-            // because the templated form and the plain-text form are the same column and a row
-            // must be named whether or not the account feature's link template is supplied.
             rowHeader: true,
             // Ordering: see the note above. Declared on BOTH variants of this column, because the
             // templated form and the plain-text form are the same column.
@@ -2645,11 +1618,6 @@ export class RoleAssignmentComponent {
             key: ROLE_ASSIGNMENT_COLUMN_KEY.userName,
             label: ROLE_ASSIGNMENT_TEXT.userNameHeader,
             sortable: true,
-            // The row's NAME - the account this membership belongs to. Emitted as
-            // `<th scope="row">` so a reader traversing the effective and expiry dates is told
-            // WHOSE membership they are reading. Declared on BOTH variants of this column,
-            // because the templated form and the plain-text form are the same column and a row
-            // must be named whether or not the account feature's link template is supplied.
             rowHeader: true,
             kind: 'template',
             cellTemplate: user,
@@ -2691,19 +1659,7 @@ export class RoleAssignmentComponent {
     return columns;
   });
 
-  /**
-   * The role addressed by the route.
-   *
-   * The name is LITERALLY `roleId` because the application binds route parameters onto
-   * component inputs of the same name, and the parameter is spelled `roleId` with one
-   * lower-case `d`. Renaming it would break the binding silently, with no compilation error
-   * anywhere, so the spelling is part of the contract rather than a preference. It is public
-   * because the workspace compiles inputs with strict access modifiers.
-   *
-   * The legacy screens made this hazard concrete: one of them wrote a query-string key as
-   * `RoleGroupId` while its sibling read `RoleGroupID`, which worked only because ASP.NET
-   * looked query-string keys up case-insensitively. Route parameters are case-SENSITIVE.
-   */
+  /** The role addressed by the route. */
   @Input()
   public set roleId(value: number | string | null | undefined) {
     const resolved = parseRouteIdentifier(value);
@@ -2714,18 +1670,17 @@ export class RoleAssignmentComponent {
     this.roleIdSignal.set(resolved);
     this.resetForRole();
     if (resolved === null) {
-      // The route stopped naming a role, so this screen is no longer looking at any listing. Said
-      // before returning, because the early return below skips the reads and would otherwise leave
-      // the store believing the previous role is still on screen.
+      // The route stopped naming a role, so this screen is no longer looking at any listing. Said before
+      // returning, because the early return below skips the reads and would otherwise leave the store
+      // believing the previous role is still on screen.
       if (previous !== null) {
         this.store.closeAssignmentsView(previous);
       }
       return;
     }
-    // ⚠ ANNOUNCED BEFORE THE READS, AND ON EVERY CHANGE OF ROLE. The store refuses to refresh a
-    // membership listing that is not the one on screen, and it can only know which that is because
-    // this screen tells it. Announcing the new role is the whole of what a reused instance owes:
-    // `open` replaces `open`, and no close is due because the screen never left.
+    // ⚠ ANNOUNCED BEFORE THE READS, AND ON EVERY CHANGE OF ROLE. The store refuses to refresh a membership
+    // listing that is not the one on screen, and it can only know which that is because this screen tells
+    // it.
     this.store.openAssignmentsView(resolved);
     this.loadRole(resolved);
     this.loadAssignments(resolved, null);
@@ -2735,29 +1690,7 @@ export class RoleAssignmentComponent {
     return this.roleIdSignal();
   }
 
-  /*
-   * THE TENANT'S PROTECTED PAIRING IS READ, NOT SUPPLIED.
-   *
-   * ⚠ THESE WERE THREE OPTIONAL INPUTS THAT NOTHING SUPPLIED, AND THAT IS WHY THEY ARE GONE. They
-   * were declared "supplied rather than derived because the tenant's settings are not part of this
-   * screen's contract", with the documented consequence that "when it is not supplied the row
-   * command is offered and the server refuses the write, which is the same outcome by a different
-   * route". No route in `role.routes.ts` and no parent template ever supplied one, so the guard
-   * shipped permanently disarmed — and a refusal is NOT the same outcome by a different route. It
-   * invites the operator to confirm the removal of the membership that makes an account part of the
-   * tenant, waits, and then reports a failure the screen already had the facts to prevent.
-   *
-   * {@link PortalStore} is CORE state and every feature may inject it; this is not a reach into the
-   * portal FEATURE. `GET /api/v1/portals/{portalId}` is declared under the same
-   * `PortalAdministrator` policy this screen's own route declares, and the tenant key comes from
-   * the caller's identity rather than from a route segment — this screen addresses a ROLE, not a
-   * portal, and must never be able to protect one tenant's membership using another tenant's keys.
-   *
-   * ⚠ AN UNRESOLVED READ STILL DISARMS THE GUARD, which is the fail-safe direction here: until the
-   * record arrives each key is `null`, {@link canRemove} offers the command and the server's
-   * refusal governs — exactly the behaviour that shipped — rather than a capability being withheld
-   * from every row for the duration of a request.
-   */
+  // THE TENANT'S PROTECTED PAIRING IS READ, NOT SUPPLIED.
 
   /** The tenant's designated administrator account, or `null` until its record resolves. */
   public readonly administratorUserId: Signal<number | null> = computed(() =>
@@ -2770,27 +1703,18 @@ export class RoleAssignmentComponent {
   );
 
   /**
-   * The tenant's registered-users role, on the same terms as {@link administratorUserId}.
-   *
-   * `Roles.RoleID` is `IDENTITY(0, 1)`, so nought is a real role key; every comparison against
-   * these values is an explicit equality test against `null` and never a truthiness test.
+   * The tenant's registered-users role, on the same terms as {@link administratorUserId}. `Roles.RoleID`
+   * is `IDENTITY(0, 1)`, so nought is a real role key; every comparison against these values is an
+   * explicit equality test against `null` and never a truthiness test.
    */
   public readonly registeredRoleId: Signal<number | null> = computed(() =>
     this.portals.registeredRoleId(),
   );
 
   public constructor() {
-    // ⚠ THE STORE IS TOLD WHEN THIS SCREEN GOES, AND THAT IS NOT COSMETIC BOOKKEEPING. Both
-    // membership writes re-read the listing when they settle, and a write dispatched here can settle
-    // after the operator has moved on. The store refuses that re-read only if it knows the screen has
-    // gone; without this it would go on believing this role's grid is still in front of somebody,
-    // re-read a listing nobody is looking at, and clear the shared failure slot underneath whichever
-    // screen replaced it. Runtime validation reproduced exactly that, three times out of three, by
-    // enrolling an account and returning to the role listing before the write settled.
-    //
-    // The role is passed so the close is idempotent and order-independent — see
-    // `RoleStore.closeAssignmentsView`. Reading the signal here is safe: destruction hooks run
-    // outside change detection, and this only reads.
+    // ⚠ THE STORE IS TOLD WHEN THIS SCREEN GOES, AND THAT IS NOT COSMETIC BOOKKEEPING. Both membership
+    // writes re-read the listing when they settle, and a write dispatched here can settle after the
+    // operator has moved on.
     this.destroyRef.onDestroy(() => {
       const roleId = this.roleIdSignal();
 
@@ -2799,56 +1723,26 @@ export class RoleAssignmentComponent {
       }
     });
 
-    // The control event stream is the only source that reports a TOUCHED change as well as a
-    // value or status change, which is what the dynamic-display gating above needs. One
-    // subscription keeps the mirrored snapshot current for every derived view.
     this.form.events.pipe(takeUntilDestroyed()).subscribe(() => {
       this.formStateSignal.set(this.readFormState());
     });
 
-    // The tenant's own record, for the protected pairing. Read from the CALLER'S identity and never
-    // from a route, and idempotent in the store — several screens asking on initialisation issue one
-    // request between them. Presence is tested explicitly because `Portals.PortalID` is
-    // `IDENTITY(-1, 1)`, so -1 and 0 are both real tenants and a truthiness test would silently
-    // skip the request for either.
+    // The tenant's own record, for the protected pairing. Read from the CALLER'S identity and never from a
+    // route, and idempotent in the store — several screens asking on initialisation issue one request
+    // between them.
     const portalId: number | undefined = this.auth.currentUser()?.portalId;
 
     if (portalId !== undefined) {
       this.portals.loadCurrentPortalContext(portalId);
     }
 
-    // ACCOUNT POLICY. Which control this screen offers for choosing an account is the tenant's
-    // decision, not this screen's, so the policy is read before either control is rendered -
-    // reproducing `SecurityRoles.ascx.vb:L202-L221`, which resolved `Security_UsersControl` during
-    // page load and rendered exactly one of the two.
-    //
-    // Read through the store rather than the transport, and read UNCONDITIONALLY rather than only
-    // when absent: the store owns the policy and a screen cannot tell a policy read from this
-    // session apart from one cached before a setting was changed elsewhere. A policy already in the
-    // slice is still shown at once, so the refresh costs the operator no wait.
+    // Read through the store rather than the transport, and read UNCONDITIONALLY rather than only when
+    // absent: the store owns the policy and a screen cannot tell a policy read from this session apart from
+    // one cached before a setting was changed elsewhere.
     this.accounts.loadMembershipSettings();
 
-    // ACCOUNT COUNT, WHENEVER THE COUNT DECIDES SOMETHING. There are two such cases and this effect
-    // used to serve only one of them.
-    //
     // The first is an ABSENT policy: the legacy resolved an absent `Security_UsersControl` from the
-    // tenant's account count (`UserModuleBase.vb:L178-L183`), so reproducing that needs the count.
-    //
-    // The second is a STORED PREFERENCE FOR THE DROP-DOWN, and a performance review found it
-    // missing. The enumeration threshold is not a default a setting replaces - it is the size at
-    // which enumerating a tenant to fill a select stops being sensible, and the legacy framework
-    // enforced it by writing the name box back as the tenant's setting the first time the count
-    // exceeded it. Without the count here, a tenant whose stored preference predates its growth kept
-    // asking for the drop-down and the walk that fills it was the one unbounded read on this screen.
-    // One extra single-row request per visit buys that bound, and it is the cheapest request the API
-    // offers: `GET /api/v1/users/choices?pageSize=1` answers a total beside one key and two captions.
-    //
-    // A stored preference for the NAME BOX probes nothing, because the threshold can only move a
-    // tenant towards the name box and cannot change an answer that is already there.
-    //
-    // The guard set is the same shape as the walk's below and for the same reason: the probe must
-    // fire ONCE. `accountCountSignal` stays null after a failure, so without the failure flag a
-    // refusal would re-enter this effect on every unrelated notification and probe forever.
+    // tenant's account count, so reproducing that needs the count.
     effect(() => {
       const settings = this.accounts.membershipSettings();
       const reading: boolean = this.accounts.membershipSettingsLoading();
@@ -2875,20 +1769,15 @@ export class RoleAssignmentComponent {
       });
     });
 
-    // COMPLETE ACCOUNT LIST. Assembled only when the policy actually asks for the drop-down, which
-    // is what keeps a tenant that uses the name box from paying for a walk of every account it
-    // holds. The mode is derived, so this fires when the policy arrives rather than on a guess, and
-    // the emptiness test is what makes it fire ONCE rather than on every unrelated notification -
-    // a re-entry after a refusal would otherwise loop, because a refusal leaves the list empty.
+    // COMPLETE ACCOUNT LIST. Assembled only when the policy actually asks for the drop-down, which is what
+    // keeps a tenant that uses the name box from paying for a walk of every account it holds.
     effect(() => {
       const mode = this.usersControlMode();
 
-      // ⚠ THE WALK WAITS FOR THE POLICY TO SETTLE, INCLUDING THE COUNT IT NOW DEPENDS ON. Reading
-      // the pending state in the TRACKED half is deliberate: the mode reads `combo` while the count
-      // is still outstanding - that is the safe default, so that a stored preference is not
-      // momentarily contradicted - and a walk started on it would enumerate a tenant the count is
-      // about to disqualify. Waiting costs one round trip that was already in flight, and it is what
-      // keeps an oversized tenant from ever being walked at all.
+      // ⚠ THE WALK WAITS FOR THE POLICY TO SETTLE, INCLUDING THE COUNT IT NOW DEPENDS ON. Reading the
+      // pending state in the TRACKED half is deliberate: the mode reads `combo` while the count is still
+      // outstanding - that is the safe default, so that a stored preference is not momentarily contradicted
+      // - and a walk started on it would enumerate a tenant the count is about to disqualify.
       const pending: boolean = this.accountPolicyPending();
 
       untracked(() => {
@@ -2908,12 +1797,6 @@ export class RoleAssignmentComponent {
       });
     });
 
-    // ROLE READ BRIDGE. The store reports a read by settling its flag, so the outcome is
-    // observed rather than returned: once the flag falls with a read of ours outstanding, a
-    // failure recorded AGAINST THAT OPERATION is reported and the marker is released. The
-    // operation match matters because the store's flag is shared with every screen that
-    // selects a role.
-    //
     // Nothing is copied out on success. The heading reads the store's selected role through an
     // identity-gated projection, so the only work left here is releasing the marker.
     effect(() => {
@@ -2934,15 +1817,6 @@ export class RoleAssignmentComponent {
       });
     });
 
-    // MEMBERSHIP PROBE BRIDGE. The probe answers the two questions the legacy grid scan answered,
-    // and only ONE of its two callers may write the form. The marker names the account whose
-    // answer is allowed to prefill, so the probe issued after a write refreshes the label and
-    // leaves the boxes alone — the ordering `SecurityRoles.ascx.vb:L546` fixed.
-    //
-    // The answer is read through the identity-gated projection rather than from the store
-    // directly, so an answer about another pairing cannot prefill from a row that is not the
-    // chosen account's. A probe that failed publishes no membership, which prefills empty bounds:
-    // the state the legacy screen showed for an account it found no row for.
     effect(() => {
       const awaited = this.awaitedPrefillUserId();
       const inFlight = this.store.assignmentProbeLoading();
@@ -2965,13 +1839,9 @@ export class RoleAssignmentComponent {
       });
     });
 
-    // MEMBERSHIP READ BRIDGE. Raises the deferred message on the fall of the listing flag, and
-    // reports a listing failure alongside it — the order the legacy handler fixed
-    // (`SecurityRoles.ascx.vb:L579-L584`) and the pairing its error path used, which raised the
-    // deferred message and the read failure both.
-    //
-    // The latch is what makes this fire exactly once per read, including for the re-read the
-    // store performs after a write, which this screen never dispatched and so cannot mark.
+    // MEMBERSHIP READ BRIDGE. Raises the deferred message on the fall of the listing flag, and reports a
+    // listing failure alongside it — the order the legacy handler fixed and the pairing its error path
+    // used, which raised the deferred message and the read failure both.
     effect(() => {
       const loading = this.assignmentsLoading();
       const failure = this.store.failure();
@@ -2995,37 +1865,15 @@ export class RoleAssignmentComponent {
           this.raise(this.failureNoticeFor(failure));
         }
 
-        // ⚠ THE POST-WRITE RE-BASELINE, PERFORMED HERE BECAUSE THIS IS THE MOMENT THE ROWS BECOME
-        // TRUSTWORTHY. `reprobeSelectedMembership` only left a marker; the listing this write re-read has
-        // just settled, so the rows now describe the membership as stored.
         this.rebaselineAfterWrite();
       });
     });
 
-    // MEMBERSHIP WRITE BRIDGE. A write is reported the same way: the marker proves the write was
-    // ours, the flag falling proves it settled, and the operation-matched failure proves which
-    // way it went.
-    //
-    // Success announces NOTHING and re-reads no LISTING. The legacy handler was silent on both
-    // writes — `SecurityRoles.ascx.vb:L546` rebound the grid and said nothing — and the store
-    // performs that re-read itself, so a second one here would race the first. What IS re-asked
-    // is the keyed probe, because a write is exactly what can change whether the chosen account
-    // holds the role: the legacy rebind refreshed that fact as a side effect of rebuilding the
-    // grid it scanned, and with a paged grid the fact has its own request. The re-probe carries
-    // no prefill marker, so it moves the label and never the boxes.
-    //
-    // A refusal is the ordered path: the pairing is remembered against the row that was
-    // refused, the listing is re-read, and the message is raised only once that read settles.
     effect(() => {
       const awaited = this.awaitedWrite();
       const awaitedId = this.awaitedWriteId();
       const settled = this.store.mutation();
 
-      // ⚠ SETTLED ON THE IDENTIFIER, NOT ON THE AGGREGATE FLAG FALLING. The published result carries
-      // the identifier the store handed back at dispatch, so a result belonging to any other screen's
-      // write fails this comparison and is ignored — a total test that needs no knowledge of what else
-      // is in flight. The operation is asserted as well, which cannot disagree with the identifier but
-      // states the expectation the branches below rely on.
       if (awaited === null || settled === null || settled.id !== awaitedId) {
         return;
       }
@@ -3041,10 +1889,6 @@ export class RoleAssignmentComponent {
         const failure = settled.failure;
 
         if (failure === null || settled.operation !== awaited) {
-          // ⚠ SUCCESS IS ANNOUNCED, WHICH IT PREVIOUSLY WAS NOT. See `assignmentAdded` for the measured
-          // omission and why the legacy screen's silence does not carry over to a document that does not
-          // reload. The sentence is chosen from the state captured AT DISPATCH, so it agrees with the
-          // command label the operator pressed rather than with the state the write produced.
           this.raise(this.writeSuccessNotice(awaited, target));
 
           // ⚠ ON SUCCESS ONLY. A refused write changed nothing, so re-asking the probe after one would
@@ -3077,58 +1921,9 @@ export class RoleAssignmentComponent {
     });
   }
 
-
   /**
-   * Whether the row command should be offered for one membership.
-   *
-   * MIGRATION: this is `DeleteButtonVisible` from `SecurityRoles.ascx.vb:L360-L363`, which
-   * delegated to `RoleController.CanRemoveUserFromRole`. That rule is one expression at
-   * `RoleController.vb:L745`: a membership may not be removed when it is the designated
-   * administrator's hold on the administrator role, nor when the role is the registered-users
-   * role — the membership that makes an account part of the tenant at all. The legacy source
-   * carried the rule TWICE, in two bodies with a comment admitting the duplication
-   * (`:L741-L746` and `:L764-L769`); it appears once here.
-   *
-   * MIGRATION: the legacy expression joined its two administrator comparisons with `And`
-   * rather than `AndAlso`, so it did NOT short-circuit and both comparisons always ran. For
-   * two integer comparisons that is behaviourally identical, so the outcome is preserved
-   * while the target reads left to right and stops as soon as it knows; recorded because the
-   * operator differs, not because the answer does.
-   *
-   * The affordance is ADVISORY and the server is authoritative. The tenant facts the rule
-   * needs are inputs rather than fetched here, and when they are absent the command is
-   * offered and the write is refused with a machine-readable code, which
-   * {@link confirmRemoval} turns into the legacy refusal wording. A pairing the server has
-   * already refused is remembered, so the affordance corrects itself without another attempt.
-   *
-   * @param row One membership of the addressed role.
-   * @returns `true` when the command should be rendered.
-   */
-  /**
-   * Whether ANY membership of the addressed role can ever be removed — R-M24.
-   *
-   * ⚠ THIS GATES WHETHER THE COMMAND COLUMN IS EMITTED AT ALL, and the reason is measured.
-   * `RoleController.vb:L745` forbids removal from the registered-users role for every account
-   * without exception — that membership is what makes an account part of the tenant — so on that
-   * one role {@link canRemove} answers `false` for every row and the column renders a heading over
-   * a hundred and twenty empty cells. Runtime testing measured precisely that. The heading is
-   * clipped rather than painted, so a sighted reader saw only an unexplained empty track while a
-   * screen-reader user was told the listing has a `Delete` column that never holds a command.
-   *
-   * MIGRATION: withholding a column that cannot bear content is THIS SCREEN'S OWN LEGACY
-   * BEHAVIOUR, not an invention. `SecurityRoles.ascx.vb:L245` is `Columns(2).Visible = False`,
-   * dropping the security-role column outright in exactly the mode this screen implements, because
-   * every row belonged to the one role already named in the heading. The same reasoning applies to
-   * a command column on a role whose memberships are not removable.
-   *
-   * The designated-administrator rule is deliberately NOT considered here: it withholds ONE row's
-   * command on the administrators role, so the column still has commands and must still be
-   * emitted. Only the role-level prohibition can empty it.
-   *
-   * FAIL-SAFE DIRECTION. The tenant's registered-role identifier is `null` until the tenant read
-   * settles, and this answers `true` throughout — the column is offered and the server's refusal
-   * governs — rather than withholding a capability from every role until a read completes. That is
-   * the same direction {@link canRemove} takes for the same reason.
+   * Whether ANY membership of the addressed role can ever be removed — R-M24. ⚠ THIS GATES WHETHER THE
+   * COMMAND COLUMN IS EMITTED AT ALL, and the reason is measured.
    *
    * @returns `true` when the column should be emitted.
    */
@@ -3142,9 +1937,6 @@ export class RoleAssignmentComponent {
   /**
    * Where one membership stands in its own lifecycle, for the two date cells to qualify — R-M24.
    *
-   * Judged against {@link today}, which is captured once when the screen opens, so the whole page
-   * agrees with itself and the boundary is reachable from a specification.
-   *
    * @param row The membership.
    * @returns The lifecycle state.
    */
@@ -3152,6 +1944,13 @@ export class RoleAssignmentComponent {
     return resolveMembershipLifecycle(row, this.today());
   }
 
+  /**
+   * Whether the row command should be offered for one membership. This is `DeleteButtonVisible` from
+   * `SecurityRoles.ascx.vb:L360-L363`, which delegated to `RoleController.CanRemoveUserFromRole`.
+   *
+   * @param row One membership of the addressed role.
+   * @returns `true` when the command should be rendered.
+   */
   public canRemove(row: UserRole): boolean {
     if (this.protectedPairingsSignal().has(pairingKey(row.roleId, row.userId))) {
       return false;
@@ -3169,23 +1968,10 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * The accessible name for a row's removal command, qualified by the account it removes.
-   *
-   * ⚠ THE VISIBLE WORD IS UNTOUCHED. The button still reads the global `cmdDelete.Text` and looks exactly as
-   * it did; this name is supplied through `aria-label`, so nothing about the painted row changes and the
-   * legacy wording is preserved. What it fixes was measured directly from the accessibility tree: BOTH
-   * removal commands on the fixture computed the byte-identical name "Delete", with `aria-label`, `title` and
-   * `aria-describedby` all null, so a screen-reader user heard "Delete, button ... Delete, button" and had no
-   * way to tell which membership each one ended - on an irreversible action.
-   *
-   * This is the pattern this application already uses everywhere else it renders a row command: the roles
-   * listing computes "Delete Administrators", the portals listing "Delete FIX010 Verify Portal", and the
-   * modules listing composes its four commands the same way. This screen was the one that did not, which
-   * made it an inconsistency rather than a considered exception. The review named the class explicitly,
-   * recording that two control pairs shared one label in a way an automated checker cannot detect.
-   *
-   * The display name is the single spelling the membership contract publishes, for the reason recorded on the
-   * account cell: the legacy tree spelled the same concept three ways and none of them is reintroduced here.
+   * The accessible name for a row's removal command, qualified by the account it removes. ⚠ THE VISIBLE
+   * WORD IS UNTOUCHED. The button still reads the global `cmdDelete.Text` and looks exactly as it did;
+   * this name is supplied through `aria-label`, so nothing about the painted row changes and the legacy
+   * wording is preserved.
    *
    * @param row The membership the command would end.
    * @returns The command's accessible name, qualified by the account's display name.
@@ -3194,70 +1980,17 @@ export class RoleAssignmentComponent {
     return `${this.text.delete} ${row.displayName}`;
   }
 
-  /**
-   * Runs the account lookup behind the shared search field.
-   *
-   * MIGRATION: this replaces a dropdown holding EVERY account in the tenant.
-   * `securityroles.ascx:L26` declared `cboUsers` with `autopostback="True"`, bound at
-   * `SecurityRoles.ascx.vb:L204` to the unfiltered account listing, which does not scale past
-   * a small tenant. The screen's own help text says what was intended — 'Enter The User Name
-   * and click Validate to confirm' — so the text box was the primary affordance and the
-   * lookup replaces the dropdown with it.
-   *
-   * The term is sent RAW. The listing matches on a prefix, so appending a wildcard would
-   * search for the wildcard itself.
-   *
-   * ## Why it walks pages instead of reading one
-   *
-   * ⚠ THE PREFIX MATCH SET IS UNBOUNDED AND A PAGE OF IT IS NOT THE ANSWER. This previously
-   * asked for page zero alone and published its items, which made an account reachable only when
-   * it happened to fall in the first page of everything sharing its prefix. In a tenant where a
-   * hundred accounts begin `sm`, `smith` was findable and `smithson` was not — and nothing on
-   * screen distinguished "no such account" from "further down a list you cannot see", because the
-   * no-matches state and a full first page look the same to an operator who typed the whole name.
-   * The account that could not be selected could not be enrolled in the role, which is the entire
-   * purpose of this screen.
-   *
-   * So the walk requests pages in sequence and stops at the FIRST of these:
-   *
-   * - a page containing the EXACT name, case-insensitively. This is the legacy capability
-   *   (`GetUserByName` at `SecurityRoles.ascx.vb:L480`) and once it is in hand nothing further can
-   *   improve the answer, so the walk ends there however many pages remain. Ordinarily this is the
-   *   FIRST page, because the request asks the listing to order by login name and the filter is a
-   *   literal prefix match — see the note on the request itself.
-   * - having examined as many accounts as the server says match. The server's own total, not a
-   *   short page — a short page is NOT treated as the end, for the reason the store's walks record.
-   * - an empty page, which can only mean the reported total will never be reached.
-   * - {@link MAX_USER_LOOKUP_PAGES}, which is reported rather than hidden.
-   *
-   * Sequential rather than fanned out, because the exact match usually arrives on the first page
-   * and every request after it would be work nobody needed; and because a prefix that matches
-   * thousands of accounts would otherwise open thousands of concurrent requests at once.
-   *
-   * The walk examines the whole match set; {@link USER_LOOKUP_DISPLAY_LIMIT} bounds how much of it
-   * becomes buttons, and {@link userLookupSummary} states both figures whenever they differ.
-   *
-   * @param term The name fragment the operator typed.
-   */
+  /** @param term The name fragment the operator typed. */
   public onUserSearch(term: string): void {
     const query = term.trim();
     this.userLookupTermSignal.set(query);
 
-    // The lookup this term replaces is ABANDONED before the next one starts, and also when the box
-    // is emptied - a lookup nobody is waiting for is still a request the tenant pays for, and its
-    // answer would otherwise repopulate a list the operator has just cleared. With a walk rather
-    // than a single read this matters more than it did: an abandoned walk would otherwise keep
-    // requesting pages for a term the operator has already replaced.
+    // The lookup this term replaces is ABANDONED before the next one starts, and also when the box is
+    // emptied - a lookup nobody is waiting for is still a request the tenant pays for, and its answer would
+    // otherwise repopulate a list the operator has just cleared.
     this.userLookupRequest?.unsubscribe();
     this.userLookupRequest = null;
 
-    // ⚠ THE PREVIOUS TERM'S RESULTS ARE DISCARDED HERE, NOT LEFT UNTIL THE NEW ONES ARRIVE, and the
-    // same goes for the banner. Superseding a term used to leave both in place: the matches for `a`
-    // stayed on screen for the whole of the lookup for `ann`, so the operator could read - and
-    // CHOOSE - an account that does not match what the box says, and a refusal from the previous
-    // lookup stayed visible beside a lookup that had not failed. Emptying them at dispatch means the
-    // screen only ever shows matches for the term it is displaying. The register holds the matches
-    // AND whether the bounded walk reached the row being looked for, so emptying it empties both.
     this.userLookupSignal.set(NO_USER_LOOKUP);
     this.problemSignal.set(null);
 
@@ -3276,9 +2009,6 @@ export class RoleAssignmentComponent {
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
         next: (outcome: UserLookupOutcome): void => {
-          // Fenced as well as cancelled. See {@link RoleAssignmentComponent.userLookupGeneration}:
-          // the handle is released on paths that are not "a newer lookup started", and a response
-          // already scheduled to commit is not recalled by any of them.
           if (this.userLookupGeneration.isCurrent(generation) === false) {
             return;
           }
@@ -3299,29 +2029,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Chooses an account and prefills the bounds from its existing membership, if it has one.
-   *
-   * MIGRATION: this is `GetDates` from `SecurityRoles.ascx.vb:L273-L303`, and only its first
-   * branch is reproduced. Where a membership already exists the legacy screen showed its two
-   * bounds, skipping either one the null test reported as unset (`:L281-L286`); that is done
-   * here, from the values the membership contract publishes.
-   *
-   * MIGRATION: the second branch — the DERIVED DEFAULT EXPIRY at `:L290-L296` — is
-   * deliberately NOT reproduced, and this is a reduction rather than an omission. That branch
-   * computed a suggested expiry from the role's BILLING terms alone, whereas the write path it
-   * fed prefers the role's TRIAL terms whenever the trial has not been used
-   * (`RoleController.vb:L521`), so the suggestion and the stored value could already disagree
-   * in the legacy screen. The membership contract does not publish whether a trial has been
-   * used, so a client-side suggestion could not tell which terms apply. Leaving the bound
-   * empty sends `null`, which the assignment contract documents as "let the server derive one
-   * from the role's terms" — the server holds the clock and the trial fact, so it derives the
-   * same bound the legacy write path did. What is lost is only the SUGGESTION appearing in the
-   * box before the write; what is stored is unchanged.
-   *
-   * MIGRATION: the membership is ASKED FOR rather than looked up in the rows on screen, because
-   * the grid holds one page. The marker is set before the command so the answer this call
-   * produces is the one allowed to write the boxes; see
-   * {@link RoleAssignmentComponent.awaitedPrefillUserId}.
+   * Chooses an account and prefills the bounds from its existing membership, if it has one. this is
+   * `GetDates` from `SecurityRoles.ascx.vb:L273-L303`, and only its first branch is reproduced.
    *
    * @param user The account the operator chose from the lookup.
    */
@@ -3336,14 +2045,6 @@ export class RoleAssignmentComponent {
       return;
     }
 
-    // ⚠ THE SERVER IS ASKED ONLY WHEN THE ANSWER IS NOT ALREADY ON SCREEN. A row of the membership
-    // listing carries every member the probe would return, and absence from a COMPLETE listing is proof
-    // of non-membership, so both of those cases prefill immediately and issue no request at all. The
-    // probe survives for the one case neither covers: a membership that could be sitting on a page this
-    // screen has not read.
-    //
-    // This is what removes the console error the probe produced on the happy path - see the note on
-    // `selectedMembership` - and it also removes a whole round trip from the ordinary interaction.
     if (this.membershipFromRows() !== null || this.membershipPageIsComplete()) {
       this.awaitedPrefillUserId.set(null);
       this.store.clearProbedAssignment();
@@ -3357,20 +2058,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Chooses an account from the drop-down the tenant's account policy asked for.
-   *
-   * MIGRATION: this is `cboUsers`, read at `SecurityRoles.ascx.vb:L106-L109`. The legacy control
-   * carried `autopostback="True"` (`securityroles.ascx:L26`) so choosing an entry round-tripped the
-   * whole page to reach the prefill at `:L273-L303`; the prefill happens here without one.
-   *
-   * The raw value is matched rather than parsed, so no numeric coercion stands between the entry
-   * the operator chose and the account it denotes — the empty prompt value simply matches nothing
-   * and clears the choice, which is what `<None Specified>` meant.
-   *
-   * The event is narrowed here rather than in the template. A template that reached through the
-   * event target would need the type-check escape hatch to do it, which would switch strict template
-   * checking off for that expression; narrowing in TypeScript keeps the check on and makes a
-   * non-select target return rather than throw.
+   * Chooses an account from the drop-down the tenant's account policy asked for. this is `cboUsers`, read
+   * at `SecurityRoles.ascx.vb:L106-L109`.
    *
    * @param event The change event the drop-down raised.
    */
@@ -3408,24 +2097,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Enrols the chosen account in the addressed role.
-   *
-   * MIGRATION: the write is accepted on BOTH a created and a no-content answer. The legacy
-   * path was an upsert — `RoleController.vb:L503` started from the null identifier and
-   * `:L550-L555` updated an existing membership instead of failing — and the interface this
-   * screen calls resolves to nothing at all, so no status is inspected here and either answer
-   * lands on the success path. A behavioural nuance worth knowing rather than coding around:
-   * the legacy path logged and notified only when the membership was NEW
-   * (`RoleController.vb:L655`), so an update was silent.
-   *
-   * MIGRATION: the listing is RE-READ after a successful write, reproducing the unconditional
-   * rebind at `SecurityRoles.ascx.vb:L546`.
-   *
-   * MIGRATION: an invalid form marks its fields visited and writes nothing, which is what the
-   * client-side validators achieved. The legacy handler also rebound the grid on that path
-   * (`:L546` sits outside the validity test); the rebind is skipped here because the listing
-   * is already current and re-reading it would render identical rows. An immaterial
-   * difference, recorded rather than absorbed.
+   * Enrols the chosen account in the addressed role. the write is accepted on BOTH a created and a
+   * no-content answer.
    */
   public submit(): void {
     if (this.saving() === true) {
@@ -3460,11 +2133,6 @@ export class RoleAssignmentComponent {
   /**
    * Opens the confirmation for one membership.
    *
-   * MIGRATION: opening the dialogue does NOT touch the form. The legacy row command declared
-   * `causesvalidation="False"` (`securityroles.ascx:L65`), so a removal worked while the add
-   * form was invalid and never marked a field visited. Nothing on this path validates,
-   * marks or resets the form.
-   *
    * @param row The membership the operator asked to remove.
    */
   public requestRemoval(row: UserRole): void {
@@ -3477,29 +2145,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Removes the confirmed membership.
-   *
-   * MIGRATION: the listing is ALWAYS re-read and the row is NEVER removed from local state
-   * optimistically. A no-content answer does not mean the row is gone: for a paid role whose
-   * trial has been used the legacy path back-dated the expiry bound and kept the row so the
-   * trial-usage fact survived (`RoleController.vb:L494`, `:L496` and `:L497`, against the
-   * plain delete at `:L500`), and the address this screen calls documents the same two
-   * outcomes behind one answer. Splicing the row out locally would make a membership that
-   * still exists disappear from the screen, which is a correctness defect rather than a
-   * cosmetic one.
-   *
-   * MIGRATION: the ORDER is load-bearing. `SecurityRoles.ascx.vb:L579-L584` rebound the grid
-   * unconditionally and only THEN raised the message, so a refusal was read against a
-   * refreshed grid. The refusal message is therefore deferred and raised once the re-read has
-   * settled, on both its outcomes.
-   *
-   * MIGRATION: a refusal is told apart from a permission failure by its CODE, not its status.
-   * The API answers both with 403 and distinguishes them on the problem type: a protected
-   * membership carries `role_assignment.protected`, whose published wording is the legacy
-   * `RoleRemoveError` text verbatim, and it is raised at ERROR severity because the legacy
-   * screen raised it as a red error (`:L583`). Any other 403 is a permission failure, which
-   * the access-denied page presented as a yellow WARNING (`AccessDenied.ascx.vb:L43` and
-   * `:L45`), and the shared summariser already maps that status to a warning.
+   * Removes the confirmed membership. the listing is ALWAYS re-read and the row is NEVER removed from
+   * local state optimistically.
    */
   public confirmRemoval(): void {
     const target = this.pendingRemovalSignal();
@@ -3535,16 +2182,9 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Moves the grid to another page of memberships.
-   *
-   * The index is passed through untouched: the shared pager reports a ZERO-BASED index and the
-   * listing takes one, so there is no base to convert between, and the pager only ever emits an
-   * index inside the range it was given. The store's read cancels whichever page read was in
-   * flight, so clicking through the pager cannot leave an earlier page's answer to land on top
-   * of a later one.
-   *
-   * The keyed probe is NOT re-asked: whether the chosen account holds the role does not depend
-   * on which page is on screen, which is the whole reason the fact has its own request.
+   * Moves the grid to another page of memberships. The index is passed through untouched: the shared
+   * pager reports a ZERO-BASED index and the listing takes one, so there is no base to convert between,
+   * and the pager only ever emits an index inside the range it was given.
    *
    * @param pageIndex The page to read, counted from nought.
    */
@@ -3557,22 +2197,10 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Applies the reader's ordering to the membership listing, or removes it.
-   *
-   * ⚠ THE TRANSMITTED FIELD IS `DisplayName`, NOT THE COLUMN KEY. The grid identifies the account column
-   * by the key `userName`, which the endpoint's allowlist would accept as `Username` - a DIFFERENT account
-   * field from the one this cell renders. Ordering by a value the reader cannot see produces a sequence they
-   * cannot explain from the column in front of them, so the field is stated explicitly here rather than
-   * forwarded from the key. Both names are permitted by `SortableFields.RoleUsers`, so this is a choice
-   * between two accepted fields.
-   *
-   * Only the account column offers a control, and any other key is refused rather than composed into a
-   * request: the two date columns are excluded by the server's own set, so forwarding one would produce a
-   * field-level rejection. That refusal is unreachable through the rendered grid and exists so the rule
-   * holds however the output is reached.
-   *
-   * A NULL DIRECTION CLEARS THE ORDERING RATHER THAN DEFAULTING IT, which returns the listing to the order
-   * it arrived in - the state the coordinate starts in, with neither parameter on the wire.
+   * Applies the reader's ordering to the membership listing, or removes it. ⚠ THE TRANSMITTED FIELD IS
+   * `DisplayName`, NOT THE COLUMN KEY. The grid identifies the account column by the key `userName`,
+   * which the endpoint's allowlist would accept as `Username` - a DIFFERENT account field from the one
+   * this cell renders.
    *
    * @param change The key the reader activated and the direction to apply, or null to stop ordering.
    */
@@ -3586,7 +2214,6 @@ export class RoleAssignmentComponent {
       change.direction,
     );
   }
-
 
   /** Reads the live form into the snapshot the derived views above depend on. */
   private readFormState(): RoleAssignmentFormState {
@@ -3612,10 +2239,6 @@ export class RoleAssignmentComponent {
   /**
    * Messages a rejected write reported against one field.
    *
-   * The shared narrowing guard decides whether the document carried field messages at all,
-   * rather than a predicate written here, and the shared lookup matches the field name against
-   * the server's own key spelling — which is not camel-cased and may be prefixed.
-   *
    * @param controlName The form control the messages would belong to.
    * @returns The messages, already plain text, or an empty list.
    */
@@ -3628,17 +2251,10 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Walks the account listing for one name until the exact account is found or the whole match
-   * set has been examined.
-   *
-   * The termination rules and the reasoning behind them are stated on
-   * {@link RoleAssignmentComponent.onUserSearch}; this is their implementation.
-   *
-   * ⚠ THE PAGES ARE JOINED IN PLACE inside the projector rather than by re-spreading an
-   * accumulator per page. Copying the whole accumulation on every page makes the join quadratic
-   * in the number of pages, which at this walk's ceiling would be millions of element copies for a
-   * result nobody would wait for. The array is never observable while it is being built: the
-   * outcome is composed once, after the walk completes.
+   * Walks the account listing for one name until the exact account is found or the whole match set has
+   * been examined. The termination rules and the reasoning behind them are stated on {@link
+   * RoleAssignmentComponent.onUserSearch}; this is their implementation. ⚠ THE PAGES ARE JOINED IN PLACE
+   * inside the projector rather than by re-spreading an accumulator per page.
    *
    * @param term The name the operator typed, already trimmed and known non-empty.
    * @returns The completed lookup, emitted exactly once.
@@ -3650,10 +2266,6 @@ export class RoleAssignmentComponent {
     let reportedTotal = 0;
     let completion: UserLookupCompletion = 'complete';
 
-    // MIGRATION: the comparison is CASE-INSENSITIVE because the legacy one was. `GetUserByName`
-    // resolved through a SQL Server lookup under the database's own collation, which for a default
-    // installation does not distinguish case, so an operator who typed 'Admin' found 'admin'. A
-    // case-sensitive test here would refuse a name the legacy screen accepted.
     const isExact = (candidate: UserChoice): boolean =>
       candidate.username.toLocaleLowerCase() === wanted;
 
@@ -3662,21 +2274,12 @@ export class RoleAssignmentComponent {
         pageIndex,
         pageSize: USER_LOOKUP_PAGE_SIZE,
 
-        // ⚠ THE PICKER'S OWN FILTER, WHICH MATCHES A PREFIX OF THE LOGIN NAME - the same value and
-        // the same semantics the account listing's `userName` filter carried, so the ordering
-        // guarantee below is unchanged. The endpoint matches the login name alone and deliberately
-        // not the display name, precisely so that this walk's first page still holds the exact match.
+        // ⚠ THE PICKER'S OWN FILTER, WHICH MATCHES A PREFIX OF THE LOGIN NAME - the same value and the same
+        // semantics the account listing's `userName` filter carried, so the ordering guarantee below is
+        // unchanged.
         query: term,
-        // ⚠ THE ORDER IS WHAT MAKES THE COMMON CASE ONE REQUEST, and it is a guarantee rather
-        // than a heuristic. The filter is a literal PREFIX match, so every account this listing
-        // returns has `term` at the start of its login name; ascending by that name therefore puts
-        // the SHORTEST match first, and the shortest possible match is `term` itself. So when an
-        // account with exactly this name exists it is the first row of the first page, and the walk
-        // below stops there.
-        //
-        // Without it the listing orders by display name — which bears no relation to the login name
-        // being searched for — and an exact match could sit on any page of the set. That is the
-        // defect this walk exists to survive, and the ordering is what keeps surviving it cheap.
+        // ⚠ THE ORDER IS WHAT MAKES THE COMMON CASE ONE REQUEST, and it is a guarantee rather than a
+        // heuristic.
         sortBy: 'Username',
         sortDir: 'Ascending',
       };
@@ -3702,18 +2305,12 @@ export class RoleAssignmentComponent {
           return EMPTY;
         }
 
-        // The server's own total is what ends the walk. A SHORT PAGE IS NOT AN ENDING - a page
-        // shorter than requested is what a filtered listing produces mid-set, and treating it as
-        // the end is precisely how a truncated answer passes for a complete one.
         if (examined >= page.meta.totalCount) {
           completion = 'complete';
 
           return EMPTY;
         }
 
-        // An empty page cannot be followed by a fuller one, so the reported total will never be
-        // reached. There is nothing further to examine and nothing to refuse: what was gathered is
-        // every account the server was willing to supply for this name.
         if (page.items.length === 0) {
           completion = 'complete';
 
@@ -3745,28 +2342,9 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Assembles the complete account list the tenant's drop-down policy needs, or fails.
-   *
-   * The same termination rules as {@link walkUserLookup} minus the exact-match ending, which has
-   * no meaning when the whole list is the answer, and with the ceiling turned into a REFUSAL rather
-   * than a reported stop. That asymmetry is the point: a lookup that stops early still answers a
-   * question the operator asked, whereas a drop-down claiming to hold every account while holding
-   * some of them hides the accounts it dropped. {@link accountChoicesFailedSignal} records the
-   * refusal and the screen offers the name box instead.
-   *
-   * ⚠ THE PAGES IT ASKS FOR ARE THE PICKER'S PROJECTION, NOT ACCOUNT ROWS, and that is what makes
-   * this walk affordable at all. It used to page the account LISTING, so each of up to a thousand
-   * accounts arrived with a postal address, a telephone number, an electronic-mail address, two
-   * audit instants and four status flags attached - every one of them transferred and retained so
-   * that a display name and a login name could be put in an option's caption. `listChoices` answers
-   * three members per account and nothing else.
-   *
-   * ⚠ AND IT IS BOUNDED BY THE LEGACY'S OWN ENUMERATION THRESHOLD. The ceiling was one thousand
-   * PAGES, a hundred thousand accounts; it is now {@link MAX_ACCOUNT_CHOICE_PAGES} pages, which is
-   * exactly {@link LEGACY_ACCOUNT_LISTING_CEILING} accounts. Above that size this walk is not
-   * reached: {@link usersControlMode} has already resolved to the name box on the strength of the
-   * count probe, whatever the tenant's stored preference says, because a tenant larger than the
-   * threshold is one the legacy framework itself refused to enumerate.
+   * Assembles the complete account list the tenant's drop-down policy needs, or fails. The same
+   * termination rules as {@link walkUserLookup} minus the exact-match ending, which has no meaning when
+   * the whole list is the answer, and with the ceiling turned into a REFUSAL rather than a reported stop.
    *
    * @returns Every account in the tenant, emitted once.
    */
@@ -3774,10 +2352,9 @@ export class RoleAssignmentComponent {
     const collected: UserChoice[] = [];
     let gathered = 0;
 
-    // NO SORT IS ASKED FOR, and that is the right request rather than an omission. The picker's own
-    // default orders by DISPLAY name, which is what the drop-down's entries are captioned with, so
-    // the entries read in the order they are shown. Asking for the login-name order the lookup uses
-    // would sort the list by the value in brackets rather than the one being read.
+    // NO SORT IS ASKED FOR, and that is the right request rather than an omission. The picker's own default
+    // orders by DISPLAY name, which is what the drop-down's entries are captioned with, so the entries read
+    // in the order they are shown.
     const requestPage = (pageIndex: number): Observable<PagedResponse<UserChoice>> =>
       this.userService.listChoices({ pageIndex, pageSize: USER_LOOKUP_PAGE_SIZE });
 
@@ -3822,30 +2399,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Reads how many accounts the tenant holds, for the enumeration threshold.
-   *
-   * One page of one record: the answer wanted is the server's own total, so nothing is gathered from
-   * the response. That is what makes the probe affordable on precisely the site the threshold exists
-   * to protect - a site with a hundred thousand accounts is measured by the same single request as a
-   * site with two.
-   *
-   * ⚠ IT PROBES THE PICKER'S ADDRESS, NOT THE ACCOUNT LISTING, and the difference is why the one row
-   * it receives is no longer a disclosure. Probing the listing to read a number returned a complete
-   * account row - a postal address, a telephone number, an electronic-mail address, two audit
-   * instants and four status flags - for a request that reads none of them. This one carries a key
-   * and two captions beside the total. Nothing is read from the row either way; what changed is what
-   * the row contains if anything ever did read it.
-   *
-   * ⚠ IT ALSO SERVES A STORED DROP-DOWN PREFERENCE, not only an unread policy. The threshold is not a
-   * default a setting replaces - the legacy framework enforced it by writing the name box back as the
-   * tenant's setting the first time the count exceeded it - so a tenant whose preference predates its
-   * growth is measured against it too. See {@link usersControlMode}.
-   *
-   * A refusal is recorded and NOT announced. The screen still works: the name box needs no
-   * tenant-wide read, and it is offered with a sentence of its own explaining why. Raising a banner
-   * as well would report a fault the operator can neither act on nor be harmed by - unlike the
-   * drop-down walk's refusal, which is announced because it means an account may be missing from a
-   * list that claims to be complete.
+   * Reads how many accounts the tenant holds, for the enumeration threshold. One page of one record: the
+   * answer wanted is the server's own total, so nothing is gathered from the response.
    */
   private loadAccountCount(): void {
     this.accountCountRequest?.unsubscribe();
@@ -3868,27 +2423,9 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Assembles the complete account list for the drop-down, abandoning any earlier attempt.
-   *
-   * A refusal is reported TWICE deliberately, and the two say different things: the banner names
-   * what went wrong, and the note beside the name box says what is offered in its place. Reporting
-   * only the second would leave a server fault looking like a policy choice.
-   *
-   * ⚠ THE WALK IS RE-RUN ON EVERY ARRIVAL, AND THAT IS DELIBERATE — DO NOT HOIST IT INTO A STORE.
-   * Measured: arriving here costs three `GET /api/v1/users/choices?pageSize=100` requests, because
-   * the server caps a page at a hundred (`PagedRequestValidator.MaximumPageSize`) and this tenant
-   * holds more than two hundred accounts. Caching the roster in one of the root-provided stores would
-   * remove those three requests on a second arrival — and would also mean that an account created
-   * moments earlier on the account screens was ABSENT from this drop-down until the whole
-   * application was reloaded, with nothing on screen to suggest why. An operator would conclude the
-   * account had not been created. That is a functional defect, and a worse one than three bounded
-   * reads on a screen an operator reaches deliberately.
-   *
-   * The scope of the retention is therefore chosen rather than accidental, and {@link resetForRole}
-   * states the other half of it: WITHIN one visit the list is kept across a change of addressed
-   * role, because this screen offers no way to create an account and the answer cannot have changed;
-   * ACROSS visits it is read again, because in between the operator may have created one. Freshness
-   * is bought where it can change and skipped where it cannot.
+   * Assembles the complete account list for the drop-down, abandoning any earlier attempt. A refusal is
+   * reported TWICE deliberately, and the two say different things: the banner names what went wrong, and
+   * the note beside the name box says what is offered in its place.
    */
   private loadAccountChoices(): void {
     this.accountChoicesRequest?.unsubscribe();
@@ -3912,21 +2449,9 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Returns the screen to its initial state, which a change of addressed role requires.
-   *
-   * The role and the rows are NOT cleared here and do not need to be: both are derived from
-   * the store gated on the addressed key, so they empty themselves the moment the key changes.
-   * What is cleared is everything this screen owns outright — the outstanding markers, the
-   * banner, the lookup, the confirmation and the form.
-   *
-   * THE ACCOUNT LIST, THE ACCOUNT POLICY AND THE ACCOUNT COUNT ARE DELIBERATELY KEPT. All three are
-   * tenant-scoped rather than role-scoped — the same accounts are selectable whichever role is
-   * addressed — so clearing them would re-walk every account in the site each time the operator
-   * moved between roles, for an identical answer.
-   *
-   * The lookup walk in flight is ABANDONED rather than merely ignored. Clearing the matches without
-   * ending the walk would leave it requesting pages for a role nobody is looking at, and its answer
-   * would land in a field belonging to a different role.
+   * Returns the screen to its initial state, which a change of addressed role requires. The role and the
+   * rows are NOT cleared here and do not need to be: both are derived from the store gated on the
+   * addressed key, so they empty themselves the moment the key changes.
    */
   private resetForRole(): void {
     this.awaitedRoleKey.set(null);
@@ -3938,21 +2463,6 @@ export class RoleAssignmentComponent {
     this.assignmentsSettling.set(false);
     this.problemSignal.set(null);
 
-    // ⚠ THE LOOKUP IS RELEASED, NOT MERELY BLANKED, AND ITS GENERATION IS INVALIDATED.
-    //
-    // Clearing the signals without doing either was the defect. Because the route reuses one
-    // component instance, moving from role A to role B runs this method while a lookup started under
-    // role A may still be outstanding — and nothing here stopped it. The sequence was:
-    //
-    //     role A: operator types 'ann'                -> lookup A dispatched
-    //     operator navigates to role B                -> resetForRole blanks the matches
-    //     lookup A lands                              -> role A's matches rendered under role B
-    //
-    // The matches are then a live selection list: choosing one prefills the enrolment form from that
-    // account's membership of a DIFFERENT role, and submitting enrols it into role B with bounds read
-    // from role A. Both are done because they answer different questions — the handle stops the
-    // delivery, and the generation refuses a commit already scheduled, which no cancellation can
-    // recall.
     this.userLookupRequest?.unsubscribe();
     this.userLookupRequest = null;
     this.userLookupGeneration.invalidate();
@@ -3971,10 +2481,9 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Asks the store for the addressed role, which supplies the heading's name.
-   *
-   * The marker is set BEFORE the command, because the command dispatches synchronously and the
-   * bridge that observes its outcome needs to know a read of ours is outstanding.
+   * Asks the store for the addressed role, which supplies the heading's name. The marker is set BEFORE
+   * the command, because the command dispatches synchronously and the bridge that observes its outcome
+   * needs to know a read of ours is outstanding.
    *
    * @param roleId The role to read.
    */
@@ -3984,19 +2493,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Asks the store for ONE PAGE of the addressed role's memberships, deferring one message
-   * until it has settled.
-   *
-   * MIGRATION: the grid IS paged and the legacy one was not. `securityroles.ascx:L56` declares
-   * no `AllowPaging` and no pager style, and a first port reproduced that by reading every page
-   * the server reported and rendering the union — an unbounded read of a listing that counts and
-   * windows per request. One page is read instead and the shared pager reaches the rest, so
-   * every membership is still addressable and no Delete command is out of reach. The store keeps
-   * the coordinate for a role it is already showing and returns to the first page on a change of
-   * role, so a refresh after a write leaves the operator on the window they were looking at.
-   *
-   * The notice is recorded before the command is issued, so the read that raises it is always
-   * the read this call started. See {@link RoleAssignmentComponent.deferredNotice}.
+   * Asks the store for ONE PAGE of the addressed role's memberships, deferring one message until it has
+   * settled. the grid IS paged and the legacy one was not.
    *
    * @param roleId The addressed role.
    * @param notice A message to raise once the read has settled, or `null`.
@@ -4007,15 +2505,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Re-asks whether the chosen account holds the role, after a write may have changed it.
-   *
-   * MIGRATION: this refreshes the FACT and deliberately leaves the two date boxes alone — no
-   * prefill marker is set. `SecurityRoles.ascx.vb:L546` rebound the grid after a write and
-   * touched nothing else, so an operator who left the expiry empty and let the server derive one
-   * saw an empty box afterwards, not the derived value.
-   *
-   * Does nothing when there is no pairing to ask about, which is the ordinary case for a removal
-   * the operator performed without having chosen an account.
+   * Re-asks whether the chosen account holds the role, after a write may have changed it. this refreshes
+   * the FACT and deliberately leaves the two date boxes alone — no prefill marker is set.
    */
   private reprobeSelectedMembership(): void {
     const chosen = this.selectedUserSignal();
@@ -4024,36 +2515,12 @@ export class RoleAssignmentComponent {
       return;
     }
 
-    // ⚠ A MARKER ONLY. NOTHING IS READ HERE, BECAUSE NOTHING TRUSTWORTHY IS AVAILABLE YET. The store
-    // re-reads the membership listing as part of the write, and that read is still IN FLIGHT at this
-    // point - so the rows in hand are the PRE-write rows. Consulting them here would conclude that a
-    // just-added member is not a member, and that a just-removed member still is. The re-baseline
-    // therefore waits for the listing to settle; the membership read bridge performs it.
     this.awaitedRebaselineUserId.set(chosen.userId);
   }
 
   /**
-   * Prefills the two bounds from the probe's answer.
-   *
-   * Passing `null` is how "no membership is known" is expressed, and it produces exactly the
-   * state the legacy screen showed for an account with no row: both boxes empty and neither
-   * marked as visited, so no dynamic validator has anything to say about a value the operator
-   * never typed.
-   *
-   * @param membership The chosen account's membership of the addressed role, or `null`.
-   */
-  /**
-   * The confirmation a SUCCESSFUL membership write reports.
-   *
-   * Three outcomes, three sentences: enrolling an account, amending the bounds of an enrolment it already
-   * had, and ending one. The distinction between the first two comes from the flag captured at dispatch,
-   * which is the same state the command's own label was rendered from.
-   *
-   * The subject name is the account's DISPLAY name, taken from the row for a removal - the row the command
-   * was pressed on, which need not be the account the picker holds - and from the picker for an
-   * assignment. Where neither is available the sentence still stands, naming the account generically
-   * rather than being withheld: an outcome reported without a name is far better than an outcome not
-   * reported at all, which is the defect this closes.
+   * The confirmation a SUCCESSFUL membership write reports. Three outcomes, three sentences: enrolling an
+   * account, amending the bounds of an enrolment it already had, and ending one.
    *
    * @param awaited Which write settled.
    * @param target The membership row a removal targeted, or `null` for an assignment.
@@ -4090,32 +2557,10 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Re-baselines the two bounds from the stored membership once a write's listing re-read has settled.
-   *
-   * ⚠ WHAT THIS CLOSES. A successful addition left the form exactly as the operator had typed it while
-   * the command's own label flipped to the amend wording - so the screen offered to UPDATE a membership
-   * from boxes that no longer described it. With the expiry left empty the server DERIVES a bound
-   * (`RoleController.vb:L493-L501` back-dates a used trial, and the paid-term rules set one otherwise),
-   * so the empty box was not merely stale, it was a value: pressing the amend command would have written
-   * the derived bound away without the operator ever seeing it. Runtime testing measured exactly that
-   * sequence - add with an expiry, `204`, listing re-read carrying the stored bound, and two boxes still
-   * holding the pre-write entry beneath an "Update User Role" command.
-   *
-   * MIGRATION: a deliberate divergence, and a small one. The legacy handler rebound only its GRID after
-   * a write (`SecurityRoles.ascx.vb:L546`) and left its own boxes alone, which it could afford because
-   * its command's wording came from the control's ROLE/USER mode (`:L243`, `:L250`) and never claimed to
-   * be updating anything. This screen's wording does make that claim, so the values behind it are made
-   * to agree with it.
-   *
-   * Does nothing unless a write left a marker AND the account it named is still the chosen one, so a
-   * listing read the operator triggered by paging or sorting never rewrites boxes they are typing in.
-   * The marker is its own signal rather than the prefill marker: the prefill bridge fires when a PROBE
-   * settles, which on this path is before the re-read lands, so sharing one marker would re-baseline
-   * from pre-write rows.
-   *
-   * The rows are consulted first and the server is asked only when they cannot answer, which is the same
-   * rule {@link selectedMembership} and {@link selectUser} follow - one rule, in three places that need
-   * it, rather than three rules.
+   * Re-baselines the two bounds from the stored membership once a write's listing re-read has settled. ⚠
+   * WHAT THIS CLOSES. A successful addition left the form exactly as the operator had typed it while the
+   * command's own label flipped to the amend wording - so the screen offered to UPDATE a membership from
+   * boxes that no longer described it.
    */
   private rebaselineAfterWrite(): void {
     const awaited: number | null = this.awaitedRebaselineUserId();
@@ -4144,6 +2589,11 @@ export class RoleAssignmentComponent {
     this.store.probeAssignment(roleId, chosen.userId);
   }
 
+  /**
+   * Prefills the two date controls from the chosen account's existing membership, if it has one.
+   *
+   * @param membership The chosen account's membership of the addressed role, or `null`.
+   */
   private applyProbeAnswer(membership: UserRole | null): void {
     const effective = membership === null ? NO_DATE : toCalendarDateValue(membership.effectiveDate);
     const expiry = membership === null ? NO_DATE : toCalendarDateValue(membership.expiryDate);
@@ -4155,27 +2605,8 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Composes the assignment body from the form.
-   *
-   * MIGRATION: an empty box becomes `null` and never a minimum-value instant. The legacy
-   * handler substituted the date sentinel for an empty box
-   * (`SecurityRoles.ascx.vb:L528-L539`), but the assignment contract states that the sentinel
-   * cannot be stored — the column's range begins in 1753 — and that `null` is how an unset
-   * bound is expressed. The contract is followed exactly.
-   *
-   * MIGRATION: a bound is sent as the BARE calendar date the control produced, with no time
-   * part and no zone. Adding a zone would let a conversion move the stored day, and the legacy
-   * write stored the day the operator typed at local midnight with no conversion at all, so
-   * the bare date is the form that preserves the day.
-   *
-   * MIGRATION: the designated administrator's own membership of the administrator role has
-   * BOTH bounds cleared before the write, reproducing `SecurityRoles.ascx.vb:L522-L526`. Two
-   * things about that line are made explicit rather than inherited. It compared an INTEGER
-   * role identifier against a STRING — `Role.RoleID = PortalSettings.AdministratorRoleId.ToString`
-   * — which compiled only because the administration pages were built with strict type
-   * checking off (`Website/release.config:L125` declares `strict="false"`); here both sides are
-   * numbers. And it joined the two comparisons with `And` rather than `AndAlso`, so neither
-   * side short-circuited; the outcome is identical for integer comparisons and is preserved.
+   * Composes the assignment body from the form. an empty box becomes `null` and never a minimum-value
+   * instant.
    *
    * @param roleId The addressed role.
    * @param userId The chosen account.
@@ -4202,12 +2633,6 @@ export class RoleAssignmentComponent {
   }
 
   /**
-   * Turns a refused removal into the message the legacy screen showed.
-   *
-   * The refusal is recognised by the store's own CONFLICT CODE rather than by a status: the API
-   * answers a protected membership and an unprivileged caller alike with 403 and separates them
-   * on the problem type. The store already ran that recognition, so no code is re-read here.
-   *
    * @param failure The failure the store recorded for the removal.
    * @returns The deferred message, to be raised after the re-read.
    */
@@ -4215,11 +2640,6 @@ export class RoleAssignmentComponent {
     if (failure.conflict === PROTECTED_ASSIGNMENT_CODE) {
       const published = conflictMessage(failure.conflict);
       return {
-        // ⚠ THE WORDING IS OVERRIDDEN HERE; THE SEVERITY IS NOT. The published legacy sentence says
-        // something the generic summary cannot, so it replaces the message - but the severity has one
-        // home, the shared summariser, which reads it from the status. Hard-coding it here gave this
-        // refusal a red error while an access refusal answered with the same 403 was a yellow warning,
-        // so one decision had two homes and they disagreed.
         severity: failure.summary.severity,
         message: published === null ? ROLE_ASSIGNMENT_TEXT.removalRefused : published,
         // The wording is overridden above; the identifier the server recorded it under is not.
@@ -4236,11 +2656,6 @@ export class RoleAssignmentComponent {
   /**
    * Records a store failure for the banner and describes it for the notification queue.
    *
-   * The counterpart of {@link RoleAssignmentComponent.failureNotice} for an outcome the store
-   * observed rather than one this screen's own request threw. The wording and severity come
-   * from the summary the store already composed, so the two paths cannot describe the same
-   * answer differently.
-   *
    * @param failure The failure the store recorded.
    * @returns The message to raise.
    */
@@ -4255,11 +2670,6 @@ export class RoleAssignmentComponent {
 
   /**
    * Records a failure for the banner and describes it for the notification queue.
-   *
-   * The severity comes from the shared summariser, which maps an unauthenticated, forbidden,
-   * not-found or throttled answer to a WARNING and everything else to an error — the
-   * three-valued vocabulary the legacy screens used, where an access failure was presented as
-   * a yellow warning rather than a red error.
    *
    * @param error Whatever the request stream failed with.
    * @returns The message to raise.
@@ -4297,20 +2707,13 @@ export class RoleAssignmentComponent {
   }
   /**
    * How a row identifies itself to the shared grid, so a re-read of the rows already shown reuses their
-   * row elements instead of rebuilding them.
-   *
-   * ⚠ THE RECORD'S OWN KEY, NOT THE ARRAY POSITION AND NOT THE OBJECT. The grid's fallback is the row
-   * OBJECT, which is a correct key only while the same objects stay in play; every read from the server
-   * decodes fresh objects, so without this a refetch presents entirely new keys and the whole body is
-   * rebuilt to display records that never changed. `userRoleId` is unique by definition, being the
-   * record's own identifier, which is what `@for` requires - a repeated key is an error there.
-   *
-   * Declared as a bound field rather than an inline arrow so the reference is stable across change
-   * detection; a new function each redraw would set the grid's input every time and defeat its purpose.
+   * row elements instead of rebuilding them. ⚠ THE RECORD'S OWN KEY, NOT THE ARRAY POSITION AND NOT THE
+   * OBJECT. The grid's fallback is the row OBJECT, which is a correct key only while the same objects
+   * stay in play; every read from the server decodes fresh objects, so without this a refetch presents
+   * entirely new keys and the whole body is rebuilt to display records that never changed.
    *
    * @param row The row about to be rendered.
    * @returns The record's identifier.
    */
   protected readonly assignmentRowKey = (row: UserRole): number => row.userRoleId;
-
 }

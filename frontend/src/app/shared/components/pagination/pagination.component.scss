@@ -119,24 +119,13 @@
 
 @use '../../../../styles/mixins' as mx;
 
-// A custom element has no intrinsic display, so an unset host would lay out
-// inline and collapse the block-level flex container below it. Declared block
-// rather than flex so the host stays a plain box and the landmark element owns
-// every layout decision — which keeps the responsive rule in one place.
 :host {
   display: block;
 }
 
-// The landmark. Authored narrow-first, matching the mixin partial's documented
-// direction: the stacked layout is unconditional and the wide one is layered on
-// top, so the two can never overlap and fight over source order.
-//
-// MIGRATION: the vertical separation replaces two literal line-break elements
-// that the legacy markup placed between the grid and its pager — portals.ascx L57
-// and users.ascx L82. A spacing token carries that gap instead, so it scales with
-// the reader's type size and can never be a stray element in the accessibility
-// tree. It is a single logical, single-side margin so a consuming feature can
-// still override it in one declaration.
+// The landmark. Authored narrow-first, matching the mixin partial's documented direction: the stacked
+// layout is unconditional and the wide one is layered on top, so the two can never overlap and fight over
+// source order.
 .pagination {
   display: flex;
   flex-direction: column;
@@ -152,13 +141,8 @@
   }
 }
 
-// The range summary. A live region in the template, so it must stay in normal
-// flow and visible — hiding or collapsing it would silence the only announcement
-// a screen-reader user gets when the page changes.
-//
-// The base type step is used rather than a smaller one: this is the legacy body
-// text role, and the muted ink already supplies the de-emphasis. Muted on the page
-// fill measures 5.49-to-1, clearing WCAG AA for normal text.
+// The range summary. A live region in the template, so it must stay in normal flow and visible — hiding or
+// collapsing it would silence the only announcement a screen-reader user gets when the page changes.
 .pagination__status {
   margin: 0;
   color: var(--color-text-muted);
@@ -166,9 +150,6 @@
   line-height: var(--line-height-base);
 }
 
-// The control group. Wraps rather than overflowing, so the four steps and the
-// readout stay reachable at any width without a horizontal scrollbar. The tight
-// gap keeps the steps reading as one group instead of four unrelated buttons.
 .pagination__controls {
   display: flex;
   flex-wrap: wrap;
@@ -177,49 +158,17 @@
 }
 
 // The four step buttons — first, previous, next and last.
-//
-// A uniform minimum inline size is the ONLY appearance this file sets, and it is
-// genuinely pager-specific: each button holds a single punctuation glyph, and the
-// double-angle and single-angle glyphs have different advance widths, so without
-// a floor the four buttons would be visibly unequal and would shift as the label
-// set changed. It is a MINIMUM rather than a fixed size, so a longer label still
-// grows the button instead of overflowing it. Native buttons already centre their
-// content, so no alignment is needed.
-//
-// ⚠ THE FLOOR COMES FROM THE TARGET FAMILY, AND IT DID NOT ALWAYS. It read
-// `var(--space-7)` — a SPACING token evaluating to 2rem — and runtime measurement
-// found the consequence directly: the four buttons rendered 32.00 x 44 and
-// 33.80 x 44, i.e. 10 to 12px short in WIDTH of the 2.75rem the token vocabulary
-// names for "pager controls" by name. The house button supplies the floor on both
-// axes, so the HEIGHT was always right; only this narrower override on the inline
-// axis pulled the width back under it. Sizing a target from the spacing scale is
-// the same mistake the profile-definition row actions carried, and it is worth
-// naming twice: the two scales are free to diverge on any future change to either,
-// and a control floored from the wrong one would then drift in silence.
 
-//
-// Everything else — ink, fill, border, corner radius, both padding axes, type
-// step, weight, line height, cursor, hover, press and the entire disabled
-// appearance including the not-allowed cursor — is inherited from the house
-// button. See the specificity note in the header for why restating any of it here
-// would be a defect rather than a duplication.
 .pagination__button {
   min-inline-size: var(--target-size-min);
 
-  // Included even though the shared forms partial already rings every button, on
-  // the mixin's documented guarantee that it is idempotent. It makes the
-  // component's focus behaviour self-contained rather than dependent on a partial
-  // this file does not load, and it is the one accessibility affordance the legacy
-  // portal lacked entirely. No rule anywhere in this file suppresses an outline.
+  // Included even though the shared forms partial already rings every button, on the mixin's documented
+  // guarantee that it is idempotent.
   @include mx.focus-ring;
 }
 
-// The position readout. Text rather than a control: there is nothing to activate,
-// and a disabled button here would put an unusable stop in the tab order.
-//
-// Tabular figures keep every digit on the same advance width, so the readout does
-// not change width as the page number gains a digit — without it the two buttons
-// to its right shift sideways mid-interaction and invite a mis-click.
+// The position readout. Text rather than a control: there is nothing to activate, and a disabled button
+// here would put an unusable stop in the tab order.
 .pagination__position {
   padding-inline: var(--space-2);
   color: var(--color-text-muted);

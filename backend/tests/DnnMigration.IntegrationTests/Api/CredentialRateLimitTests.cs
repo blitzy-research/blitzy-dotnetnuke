@@ -75,9 +75,6 @@ public sealed class CredentialRateLimitTests
     private const string MarkerAttributeName = "CredentialEndpointAttribute";
 
     /// <summary>The address the proxied host presents as the connecting peer, and declares as trusted.</summary>
-    /// <remarks>
-    /// A documentation-range address, so it can never coincide with anything the build environment routes.
-    /// </remarks>
     private const string ProxyAddress = "198.51.100.7";
 
     /// <summary>The forwarded-address header the proxy in the shipped topology sets.</summary>
@@ -100,8 +97,8 @@ public sealed class CredentialRateLimitTests
     public CredentialRateLimitTests(ApiTestFixture fixture) => _fixture = fixture;
 
     /// <summary>
-    /// Account creation is bounded. Before the classifier consulted endpoint metadata this endpoint hashed a
-    /// credential on every call with no window and no concurrency bound whatsoever.
+    /// Account creation is bounded. Before the classifier consulted endpoint metadata this endpoint hashed
+    /// a credential on every call with no window and no concurrency bound whatsoever.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -130,10 +127,7 @@ public sealed class CredentialRateLimitTests
     public async Task CreatePortal_IsRateLimited() =>
         await AssertBoundedAsync(new Uri("/api/v1/portals", UriKind.Relative));
 
-    /// <summary>
-    /// The self-service credential change is bounded. It was already covered by the path matcher, so this
-    /// fact guards against the marker work having narrowed what was previously bounded.
-    /// </summary>
+    /// <summary>The self-service credential change is bounded.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
     public async Task ChangePassword_IsStillRateLimited() =>
@@ -142,9 +136,9 @@ public sealed class CredentialRateLimitTests
             UriKind.Relative));
 
     /// <summary>
-    /// THE NEGATIVE CONTROL. An ordinary write that handles no credential is NOT bounded, however many times
-    /// it is called. Without this, every fact above would pass equally well against a limiter that had been
-    /// widened to bound the whole API - which would spend one shared credential budget on ordinary
+    /// THE NEGATIVE CONTROL. An ordinary write that handles no credential is NOT bounded, however many
+    /// times it is called. Without this, every fact above would pass equally well against a limiter that
+    /// had been widened to bound the whole API - which would spend one shared credential budget on ordinary
     /// administration traffic and take the console down under its own load.
     /// </summary>
     /// <returns>A task representing the test.</returns>
@@ -186,10 +180,8 @@ public sealed class CredentialRateLimitTests
         {
             await using var host = new TightlyLimitedHost();
             using HttpClient client = host.CreateClient();
-            // FLAT: the account routes are mounted at api/v1/users and name no portal segment, so the tenant
-            // comes from the arrival host. Addressed with the portal in the path this reached NO endpoint,
-            // and an unmatched request carries no rate-limiting metadata - so the limiter never charged and
-            // every attempt was answered by authentication instead of by the budget under test.
+            // FLAT: the account routes are mounted at api/v1/users and name no portal segment, so the
+            // tenant comes from the arrival host.
             var route = new Uri("/api/v1/users/1/profile", UriKind.Relative);
 
             for (int permitted = 0; permitted < ProfileWritePermitLimit; permitted++)
@@ -220,19 +212,9 @@ public sealed class CredentialRateLimitTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
     /// SEC: THE REGRESSION TEST FOR AN UNBOUNDED ROLE-GRANT ORACLE. The action takes a secret, compares it
-    /// against every role of the tenant - published or not, free or not - grants membership of every role that
-    /// bears it, and answers a match and a miss differently. Nothing bounded it: it declared no policy, and
-    /// the fall-back path classifier matched a closed word list naming nothing in this route, so an
-    /// authenticated account could guess without limit.
-    /// </para>
-    /// <para>
-    /// BOTH HALVES ARE ASSERTED, and one alone proves neither. That the window refuses once spent is what
-    /// shows the endpoint is bounded at all; that it takes FIVE attempts rather than the two this host allows
-    /// a credential request is what shows the budget is its OWN rather than a share of the credential window -
-    /// which is the property that stops guessing traffic suppressing sign-in.
-    /// </para>
+    /// against every role of the tenant - published or not, free or not - grants membership of every role
+    /// that bears it, and answers a match and a miss differently.
     /// </remarks>
     [Fact]
     public async Task Redemption_IsRateLimitedOnItsOwnBudget()
@@ -267,27 +249,13 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// The redemption window keys on the ACCOUNT as well as on the client address, so one account exhausting
-    /// its budget does not refuse another account reaching the API from the same address.
+    /// The redemption window keys on the ACCOUNT as well as on the client address, so one account
+    /// exhausting its budget does not refuse another account reaching the API from the same address.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// SEC: THE PARTITION IS THE OTHER HALF OF THE BOUND. An address-only key would let one account spread its
-    /// guessing over as many addresses as it can reach; an account-only key would let a pool of accounts behind
-    /// one address share the work out. This fact proves the account half is present, and the fact above proves
-    /// the window is enforced - together they say a fresh budget costs a fresh account AND a fresh address. The
-    /// client address is identical for both callers here, because the test server presents no peer address at
-    /// all, so the account half is the only thing that can separate them.
-    /// </para>
-    /// <para>
-    /// The account half is read from the ROUTE, because the limiter runs before authentication and there is no
-    /// authenticated principal to read when the partition is chosen. Each caller here therefore names its own
-    /// account twice - in the route it posts to and in the credential it presents - which is the only
-    /// combination the action's <c>AccountOwner</c> policy admits, and is why a caller cannot usefully invent
-    /// route values to mint itself extra budgets: every request in such a partition is refused before a code is
-    /// compared.
-    /// </para>
+    /// The account half is read from the ROUTE, because the limiter runs before authentication and there is
+    /// no authenticated principal to read when the partition is chosen.
     /// </remarks>
     [Fact]
     public async Task RedemptionWindow_PartitionsOnTheAccount()
@@ -337,17 +305,15 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// Mints a bearer credential for one seeded account, so each caller acts as the account its route names.
+    /// Mints a bearer credential for one seeded account, so each caller acts as the account its route
+    /// names.
     /// </summary>
     /// <param name="userId">The account the credential names.</param>
     /// <returns>The authorisation header to present.</returns>
     /// <remarks>
     /// Minted rather than obtained by signing in, because signing in is itself a credential-bearing request
     /// and would spend the very budget these facts measure - the sign-in window is set to two permits while
-    /// they run, so two sign-ins would exhaust it before the fact under test began. The token names the
-    /// seeded tenant so the request resolves an arrival tenant and reaches the action's own authorisation,
-    /// which is what makes each caller a genuine owner of the account it posts to rather than a stranger
-    /// bouncing off authorisation.
+    /// they run, so two sign-ins would exhaust it before the fact under test began.
     /// </remarks>
     private AuthenticationHeaderValue BearerFor(int userId)
         => new(
@@ -363,19 +329,6 @@ public sealed class CredentialRateLimitTests
     /// <summary>
     /// The set of actions declaring themselves credential endpoints is exactly the reviewed inventory.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Both directions of drift matter. A hashing action added without the mark is silently unbounded, which
-    /// is the defect this work corrected; and a mark added to an ordinary action quietly spends a shared
-    /// budget on traffic that does no cryptographic work. Pinning the inventory turns either into a failing
-    /// test rather than a property nobody is looking at.
-    /// </para>
-    /// <para>
-    /// Matched by attribute NAME rather than by type, because the attribute is internal to the API assembly
-    /// and exposing internals to a test project purely to name it here would weaken the production
-    /// assembly's surface for the convenience of one assertion.
-    /// </para>
-    /// </remarks>
     [Fact]
     public void CredentialEndpointMarks_AreExactlyTheReviewedInventory()
     {
@@ -387,12 +340,10 @@ public sealed class CredentialRateLimitTests
             "PortalsController.CreateAsync",
             "UsersController.ChangePasswordAsync",
             "UsersController.CreateAsync",
-            // SEC: REDEMPTION IS IN THE INVENTORY, AND ITS ABSENCE WAS THE DEFECT. The action does not hash a
-            // credential, which is why it was not here, but it SUBMITS a secret - an invitation code that
+            // SEC: REDEMPTION IS IN THE INVENTORY. The action does not hash a credential, which is what
+            // makes it look out of place here, but it SUBMITS a secret - an invitation code that
             // grants role membership when it matches - and its two answers are distinguishable, so it is an
-            // online guessing oracle in substance. The mark brings it under the process-wide concurrency bound
-            // and the body limit; the window it draws on is its own, declared on the action, because guessing
-            // must not be able to spend the budget sign-in needs.
+            // online guessing oracle in substance.
             "UsersController.RedeemServiceCodeAsync",
             "UsersController.ResetPasswordAsync",
         };
@@ -430,16 +381,10 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// SEC-022. The caller-description read is bounded by a window OF ITS OWN, so polling it cannot spend the
-    /// budget every other caller needs in order to sign in.
+    /// The caller-description read is bounded by a window OF ITS OWN, so polling it cannot spend the budget
+    /// every other caller needs in order to sign in.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// Both halves matter and a single assertion proves neither. Spending the read's whole window and then
-    /// finding sign-in still permitted is what shows the budgets are separate; finding the read itself refused
-    /// once its own window is spent is what shows it is still bounded, so the fix did not simply exempt it.
-    /// One controller-wide declaration produced the coupling this fact rules out.
-    /// </remarks>
     [Fact]
     public async Task SessionRead_DoesNotSpendTheCredentialBudget()
     {
@@ -478,23 +423,15 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// SEC-022. With the deployment's proxy declared, the credential window partitions on the FORWARDED
-    /// client address, so one caller behind the proxy cannot spend every other caller's budget.
+    /// With the deployment's proxy declared, the credential window partitions on the FORWARDED client
+    /// address, so one caller behind the proxy cannot spend every other caller's budget.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// This is the fact the previous suite could not express. Addressed directly, every request already
-    /// arrives from a distinct socket, so a per-address partition looks correct however the forwarded headers
-    /// are treated. Behind a proxy every request arrives from the PROXY's address, and without the forwarded
-    /// headers stage all callers collapse into one partition and therefore one budget - which is a denial of
-    /// service against authentication for everyone, reachable by any one caller.
-    /// </para>
-    /// <para>
-    /// The test server exposes no remote address of its own, so the fixture host below assigns one before the
-    /// application's own pipeline runs and declares that same address as the trusted proxy. That is exactly
-    /// the shipped topology in miniature: one proxy, named explicitly, forwarding the caller's address.
-    /// </para>
+    /// The test server exposes no remote address of its own, so the fixture host below assigns one before
+    /// the application's own pipeline runs and declares that same address as the trusted proxy. That is
+    /// exactly the shipped topology in miniature: one proxy, named explicitly, forwarding the caller's
+    /// address.
     /// </remarks>
     [Fact]
     public async Task CredentialWindow_PartitionsOnTheForwardedAddress_WhenTheProxyIsTrusted()
@@ -529,16 +466,10 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// SEC-022, the safe default. With NO proxy declared, a forwarded address is ignored, so a caller cannot
-    /// name its own partition and mint itself an unlimited budget.
+    /// the safe default. With NO proxy declared, a forwarded address is ignored, so a caller cannot name
+    /// its own partition and mint itself an unlimited budget.
     /// </summary>
     /// <returns>A task representing the test.</returns>
-    /// <remarks>
-    /// The forwarded headers stage is not even registered unless the deployment names what it trusts, which is
-    /// what this fact pins. A header honoured from an undeclared hop is worse than one ignored: the value is
-    /// supplied by whoever made the request, so trusting it lets a caller choose a fresh partition per
-    /// request and defeat the window entirely.
-    /// </remarks>
     [Fact]
     public async Task CredentialWindow_IgnoresTheForwardedAddress_WhenNoProxyIsTrusted()
     {
@@ -565,14 +496,14 @@ public sealed class CredentialRateLimitTests
     }
 
     /// <summary>
-    /// SEC-016. A refusal from the credential limiter is marked non-cacheable, exactly like the token-bearing
+    /// A refusal from the credential limiter is marked non-cacheable, exactly like the token-bearing
     /// success it stands in for.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// This is the response an action filter cannot reach: the limiter short-circuits the pipeline before any
-    /// action or filter runs, which is why the directive is applied by a pipeline stage placed immediately
-    /// after routing.
+    /// This is the response an action filter cannot reach: the limiter short-circuits the pipeline before
+    /// any action or filter runs, which is why the directive is applied by a pipeline stage placed
+    /// immediately after routing.
     /// </remarks>
     [Fact]
     public async Task CredentialRefusal_IsNotCacheable()
@@ -634,9 +565,7 @@ public sealed class CredentialRateLimitTests
     /// <remarks>
     /// The permitted attempts are expected to answer <c>401</c> rather than to succeed: the limiter runs
     /// before authentication, so an anonymous request is charged a permit and then turned away without
-    /// reaching the action. Asserting that status is also what proves the requests really arrived - a routing
-    /// mistake would answer <c>404</c> and the fact would otherwise pass on the strength of the final
-    /// refusal alone.
+    /// reaching the action.
     /// </remarks>
     private async Task AssertBoundedAsync(Uri route)
     {
@@ -669,31 +598,13 @@ public sealed class CredentialRateLimitTests
         }
     }
 
-    /// <summary>
-    /// Revocation draws on a window OF ITS OWN, so sign-in traffic cannot starve it.
-    /// </summary>
+    /// <summary>Revocation draws on a window OF ITS OWN, so sign-in traffic cannot starve it.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// <para>
-    /// Both halves matter and a single assertion proves neither. Spending the whole credential window and
-    /// then finding revocation still permitted is what shows the budgets are separate; finding revocation
-    /// itself refused once ITS window is spent is what shows it is still bounded, so the fix did not simply
-    /// exempt it. An exempt revocation endpoint would be worse than the coupling: it is
-    /// <c>AllowAnonymous</c> by design - so that a caller whose access token has already expired can still
-    /// withdraw its refresh token - and therefore an unbounded one is an unauthenticated endpoint anybody
-    /// may hammer.
-    /// </para>
-    /// <para>
-    /// The starvation this rules out did not require the same person. The window partitions on the caller's
-    /// address, so any peer sharing one - everyone behind a single NAT or corporate egress - could spend it
-    /// by guessing credentials, and thereby suppress a revocation somebody else was trying to perform.
-    /// </para>
-    /// <para>
     /// Every request here is refused on its merits rather than succeeding: the credentials are deliberately
     /// wrong and the token deliberately unknown, so nothing is authorised and no row is touched. What is
-    /// asserted is only WHICH refusal arrives - a limiter refusal is <c>429</c>, and any other status proves
-    /// the limiter permitted the request and the application then judged it.
-    /// </para>
+    /// asserted is only WHICH refusal arrives - a limiter refusal is <c>429</c>, and any other status
+    /// proves the limiter permitted the request and the application then judged it.
     /// </remarks>
     [Fact]
     public async Task Revocation_IsNotStarvedByTheCredentialBudget()
@@ -793,12 +704,10 @@ public sealed class CredentialRateLimitTests
     /// The same host, with a connecting peer address assigned before the application's own pipeline runs.
     /// </summary>
     /// <remarks>
-    /// The test server exposes no remote address, and the forwarded-headers stage refuses to promote anything
-    /// unless the peer it can see is one the deployment named - so without this the proxied facts above could
-    /// not distinguish "the header was ignored because the proxy is untrusted" from "there was no peer to
-    /// compare". A startup filter is what makes the assignment possible: filters wrap the application's
-    /// pipeline from the outside, so this runs ahead of every stage the application registers, including the
-    /// forwarded-headers stage that must see it.
+    /// The test server exposes no remote address, and the forwarded-headers stage refuses to promote
+    /// anything unless the peer it can see is one the deployment named - so without this the proxied facts
+    /// above could not distinguish "the header was ignored because the proxy is untrusted" from "there was
+    /// no peer to compare".
     /// </remarks>
     private sealed class ProxiedHost : WebApplicationFactory<Program>
     {
