@@ -141,6 +141,19 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// </remarks>
     private readonly TimeSpan _concurrentUseGrace;
 
+    /// <summary>
+    /// How long a REVOKED generation is retained before reclamation erases it, from
+    /// <c>RefreshTokenStore:RevokedRecordRetentionHours</c>.
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. Reclamation used to be expiry-only, so a revoked generation stayed in the dictionary until its
+    /// family's absolute ceiling elapsed - up to the whole refresh lifetime - carrying the account, the tenant
+    /// and the token digest of a session that had already ended. The window is what the record is kept FOR: a
+    /// revoked digest is the signal that makes a replay of that family recognisable rather than an unknown
+    /// value. Once it has elapsed the signal is worthless and the record is only personal data, so it goes.
+    /// </remarks>
+    private readonly TimeSpan _revokedRetention;
+
     /// <summary>Initialises a new instance of the <see cref="RefreshTokenStore"/> class.</summary>
     /// <param name="clock">UTC clock used for every lifecycle decision.</param>
     /// <param name="jwtOptions">Validated access and refresh-token options.</param>
@@ -203,6 +216,7 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         _familyLifetime = TimeSpan.FromDays(jwtOptions.Value.RefreshTokenAbsoluteExpirationDays);
         _maximumTrackedTokens = storeOptions.Value.MaximumTrackedTokens;
         _concurrentUseGrace = TimeSpan.FromSeconds(storeOptions.Value.ConcurrentUseGraceSeconds);
+        _revokedRetention = TimeSpan.FromHours(storeOptions.Value.RevokedRecordRetentionHours);
     }
 
     /// <summary>
@@ -498,6 +512,77 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         }
     }
 
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// PRIV-02. Removes the entries outright rather than stamping them, which is the distinction this member
+    /// exists for: a sign-out revokes, a deletion erases. Every removed key is zeroised as it goes, for the
+    /// same reason the digest of a presented token is - the array is the only copy of a value derived from a
+    /// credential, and leaving it to the collector leaves it legible in the heap until then.
+    /// </para>
+    /// <para>
+    /// It cannot report <see cref="RefreshTokenOutcome.StoreUnavailable"/>: the state is a dictionary in this
+    /// process, so there is no store to be unavailable. An implementation reached over a network can and
+    /// does.
+    /// </para>
+    /// </remarks>
+    public Task<RefreshTokenPurgeResult> PurgeSubjectAsync(
+        RefreshTokenPurgeScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        lock (_gate)
+        {
+            List<byte[]>? matched = null;
+
+            foreach (KeyValuePair<byte[], StoredToken> entry in _tokens)
+            {
+                if (scope.Includes(entry.Value.UserId, entry.Value.PortalId))
+                {
+                    (matched ??= []).Add(entry.Key);
+                }
+            }
+
+            if (matched is null)
+            {
+                return Task.FromResult(RefreshTokenPurgeResult.NothingHeld());
+            }
+
+            foreach (byte[] key in matched)
+            {
+                _tokens.Remove(key);
+
+                // The key is the digest of a refresh token. The dictionary no longer references it, so this is
+                // the last moment at which its bytes can be cleared deliberately.
+                CryptographicOperations.ZeroMemory(key);
+            }
+
+            return Task.FromResult(RefreshTokenPurgeResult.Removed(matched.Count));
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// PRIV-02. The operation-independent entry point into the same reclamation that issuing and rotating
+    /// already perform. It exists because those two were the ONLY callers: an installation with no sign-in
+    /// traffic reclaimed nothing at all, so every expired family and every revoked record it had ever written
+    /// stayed in memory for the life of the process. Driven on a schedule by
+    /// <c>RefreshTokenRetentionService</c>.
+    /// </remarks>
+    public Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        DateTime now = Utc(_clock.UtcNow);
+
+        lock (_gate)
+        {
+            return Task.FromResult(RefreshTokenPurgeResult.Removed(PruneExpired(now)));
+        }
+    }
+
     /// <summary>Decides what a presented generation is, without changing anything.</summary>
     /// <param name="stored">The generation the presented token addresses.</param>
     /// <param name="clientDigest">Fingerprint of the client presenting it.</param>
@@ -601,13 +686,22 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
         return affected.Count;
     }
 
-    /// <summary>Discards every generation whose family has passed its absolute ceiling.</summary>
+    /// <summary>
+    /// Discards every generation whose family has passed its absolute ceiling, and every revoked generation
+    /// held beyond the configured retention.
+    /// </summary>
     /// <param name="now">The instant to prune against.</param>
+    /// <returns>How many generations were discarded.</returns>
     /// <remarks>
     /// <para>
     /// Bounded by the family lifetime rather than by a batch size: a family past its ceiling can never be
     /// redeemed and is no longer a theft signal, so keeping it would only grow the dictionary. Callers must
     /// already hold <see cref="_gate"/>.
+    /// </para>
+    /// <para>
+    /// PRIV-02: it reclaims on TWO grounds now, not one. The second - a revoked generation past
+    /// <see cref="_revokedRetention"/> - is what makes retention here a bounded period rather than "until the
+    /// family would have expired anyway". See the note in the body.
     /// </para>
     /// <para>
     /// Expiry ONLY. This method used to enforce the capacity ceiling as well, and the two were separated
@@ -616,25 +710,42 @@ internal sealed class RefreshTokenStore : IRefreshTokenStore
     /// written. Each caller now performs both explicitly and in that order.
     /// </para>
     /// </remarks>
-    private void PruneExpired(DateTime now)
+    private int PruneExpired(DateTime now)
     {
+        // PRIV-02. Anything revoked at or before this instant has outlived the replay signal it was kept for.
+        DateTime revokedBefore = now - _revokedRetention;
         List<byte[]>? expired = null;
 
         foreach (KeyValuePair<byte[], StoredToken> entry in _tokens)
         {
-            if (entry.Value.FamilyExpiresAtUtc <= now)
+            bool familyOver = entry.Value.FamilyExpiresAtUtc <= now;
+
+            // PRIV-02. THE SECOND CONDITION IS THE NEW ONE, AND IT IS THE WHOLE OF THE RETENTION POLICY IN
+            // THIS STORE. Before it, the only thing that reclaimed a revoked generation was its family's
+            // absolute ceiling, so an ordinary sign-out left a record naming the account, the tenant and the
+            // token digest for the remainder of the refresh lifetime. A revoked record is retained because a
+            // presentation of that family afterwards is recognisable as a replay; once the configured window
+            // has elapsed nobody is going to read that signal, and what remains is personal data about a
+            // session that ended.
+            bool retentionElapsed = entry.Value.RevokedAtUtc is { } revokedAt && revokedAt <= revokedBefore;
+
+            if (familyOver || retentionElapsed)
             {
                 (expired ??= []).Add(entry.Key);
             }
         }
 
-        if (expired is not null)
+        if (expired is null)
         {
-            foreach (byte[] key in expired)
-            {
-                _tokens.Remove(key);
-            }
+            return 0;
         }
+
+        foreach (byte[] key in expired)
+        {
+            _tokens.Remove(key);
+        }
+
+        return expired.Count;
     }
 
     /// <summary>

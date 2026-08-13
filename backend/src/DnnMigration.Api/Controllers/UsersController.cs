@@ -631,6 +631,64 @@ public sealed class UsersController : ControllerBase
         return this.Complete(outcome);
     }
 
+    /// <summary>Exports everything held about one account within the addressed portal.</summary>
+    /// <param name="userId">The account whose record is exported.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>The portability document.</returns>
+    /// <response code="200">The document, describing this portal only.</response>
+    /// <response code="403">
+    /// The caller is neither the account holder nor an administrator of the addressed portal, or the portal
+    /// could not be resolved from the request.
+    /// </response>
+    /// <response code="404">The account is not a member of the addressed portal.</response>
+    /// <remarks>
+    /// <para>
+    /// PRIV-01. THE PORTABILITY AFFORDANCE THIS API DID NOT HAVE. A module's content could be exported and a
+    /// subject's own record could not: the account, the profile and the role assignments were readable through
+    /// three separate endpoints, the third of them addressed by role rather than by account, and there was no
+    /// single answer to "what do you hold about me".
+    /// </para>
+    /// <para>
+    /// SAME POLICY AS THE ACCOUNT READ IT COMPOSES, DELIBERATELY. <c>AccountOwnerOrPortalAdministrator</c> is
+    /// what already governs <c>GET users/{userId}</c> and <c>GET users/{userId}/profile</c>, and this document
+    /// contains what those two return plus role assignments that tenant role administration already shows. A
+    /// narrower policy would withhold from an administrator something they can read one request at a time; a
+    /// wider one would make portability a route to data that had been withheld.
+    /// </para>
+    /// <para>
+    /// A GET rather than a POST. It changes nothing - the audit record the service writes describes a read -
+    /// and a subject asking for their own record should be able to do it by following a link. The response
+    /// carries <c>Cache-Control: no-store, private, max-age=0</c> like every other authorised response here,
+    /// which is what keeps this document in particular out of a private browser cache.
+    /// </para>
+    /// <para>
+    /// SHAPED AS ONE DOCUMENT RATHER THAN AS A FILE DOWNLOAD. No <c>Content-Disposition</c>, no archive and no
+    /// second media type: the caller is a single-page application that renders it and offers the download
+    /// itself, and inventing a file format here would put a presentation decision in the API.
+    /// </para>
+    /// </remarks>
+    [HttpGet("{userId:int}/personal-data")]
+    [Authorize(Policy = PolicyNames.AccountOwnerOrPortalAdministrator)]
+    [ProducesResponseType(typeof(ApiResponse<UserPersonalDataExportDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<UserPersonalDataExportDto?>>> ExportPersonalDataAsync(
+        int userId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result<UserPersonalDataExportDto?> outcome = await _users
+            .ExportPersonalDataAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
     /// <summary>Creates a user in a portal.</summary>
     /// <param name="request">The user to create.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>

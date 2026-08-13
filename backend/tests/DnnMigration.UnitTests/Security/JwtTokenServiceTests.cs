@@ -171,10 +171,17 @@ public class JwtTokenServiceTests
     ];
 
     /// <summary>
-    /// The contract offers exactly four operations, and they are these four.
+    /// The contract offers exactly six operations, and they are these six.
     /// </summary>
+    /// <remarks>
+    /// PRIV-02: it offered four until the two ERASURE members were added, and the count is asserted rather
+    /// than the mere presence of the members it names precisely so that widening the contract has to be a
+    /// deliberate act. Revocation and erasure are separate operations on purpose - a revoked record is
+    /// retained so a replay of its family stays recognisable, an erased one is gone - so neither pair could
+    /// be collapsed into the other without losing one of the two behaviours.
+    /// </remarks>
     [Fact]
-    public void TokenContract_OffersExactlyFourOperations()
+    public void TokenContract_OffersExactlySixOperations()
     {
         typeof(ITokenService).GetMethods().Select(member => member.Name).Should().BeEquivalentTo(
             new[]
@@ -183,6 +190,8 @@ public class JwtTokenServiceTests
                 nameof(ITokenService.RefreshAsync),
                 nameof(ITokenService.RevokeRefreshTokenAsync),
                 nameof(ITokenService.RevokeAllRefreshTokensAsync),
+                nameof(ITokenService.PurgeAccountSessionRecordsAsync),
+                nameof(ITokenService.PurgePortalSessionRecordsAsync),
             });
     }
 
@@ -309,6 +318,13 @@ public class JwtTokenServiceTests
         Type[] permitted =
         [
             typeof(int),
+
+            // PRIV-02. The tenant a session erasure is confined to is OPTIONAL, and the optionality is the
+            // load-bearing part rather than a convenience: an account removed outright is erased across every
+            // tenant, whereas one retained because it belongs to another tenant may only be erased within the
+            // tenant it left. A non-nullable parameter would have needed a sentinel to express "every tenant",
+            // and every sentinel in this schema - -1 and 0 among them - is a legitimate tenant key.
+            typeof(int?),
             typeof(bool),
             typeof(string),
             typeof(IReadOnlyList<string>),

@@ -366,6 +366,31 @@ public static class AuditEventNames
     /// exist.
     /// </para>
     /// </remarks>
+    /// <summary>An account's personal data was assembled and returned as a portability document.</summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: NET-NEW, and the legacy register has nothing to cite. The legacy administration had no
+    /// data-portability affordance at all, so there was no operation to record; the name follows the
+    /// <c>USER_*</c> convention of the members it sits beside.
+    /// </para>
+    /// <para>
+    /// PRIV-01. IT IS THE ACTOR THAT MAKES THIS WORTH RECORDING. The export is reachable by the account holder
+    /// and by an administrator of the tenant, and reading a subject's whole record out of the system is a
+    /// materially different event depending on which of the two did it. Nothing else distinguishes them
+    /// afterwards: both are ordinary authorised reads that change no state, so without a record an
+    /// administrator could take every subject's record and leave no trace of having done so.
+    /// </para>
+    /// <para>
+    /// ⚠ THE EXPORTED VALUES ARE NEVER PROPERTIES OF THIS EVENT. The audit sink is retained independently and
+    /// for longer than the data it describes, so copying an account's e-mail address, profile values or role
+    /// list into it would duplicate the subject's personal data into a second store as a side effect of a read
+    /// - and would do it every time anybody exercised the very endpoint that exists to serve the subject. What
+    /// is recorded is that the export happened, who took it, whose record it described and how much it
+    /// contained.
+    /// </para>
+    /// </remarks>
+    public const string UserDataExported = "USER_DATA_EXPORTED";
+
     public const string ServiceCodeRedemptionFailure = "SERVICE_CODE_REDEMPTION_FAILURE";
 
     /// <summary>An invitation code was redeemed and granted at least one service.</summary>

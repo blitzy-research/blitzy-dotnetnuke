@@ -79,7 +79,22 @@
 
 import { Injectable, computed, inject, signal } from '@angular/core';
 import type { Signal } from '@angular/core';
-import { catchError, defer, finalize, map, of, retry, shareReplay, switchMap, tap, throwError, timer } from 'rxjs';
+import {
+  catchError,
+  concatMap,
+  defer,
+  finalize,
+  from,
+  map,
+  of,
+  retry,
+  shareReplay,
+  switchMap,
+  tap,
+  throwError,
+  timer,
+  toArray,
+} from 'rxjs';
 import type { Observable } from 'rxjs';
 
 import { sessionFromLoginResponse } from '../models/auth.model';
@@ -414,6 +429,20 @@ export class AuthStore {
    * Holds a BOOLEAN and never a credential, a status code or the server's wording.
    */
   private readonly _revocationOutstanding = signal(false);
+
+  /**
+   * The withdrawal drain currently running, or null when none is.
+   *
+   * SEC-03. The same coalescing slot as {@link renewalInFlight}, for the same reason and with
+   * the same release discipline: the drain is driven from a screen's initialisation, and a
+   * screen can be initialised twice in quick succession — a re-entrant navigation, two
+   * outlets resolving the same route — which without a slot would post the same withdrawal
+   * twice and spend a rate-limit budget proving it.
+   *
+   * Not a signal. No derived state reads it, and it holds an observable rather than a
+   * credential.
+   */
+  private revocationRetryInFlight: Observable<void> | null = null;
 
   /**
    * A ticket identifying the command that currently owns {@link _phase}.
@@ -1637,6 +1666,184 @@ export class AuthStore {
   }
 
   /**
+   * Retries every outstanding sign-out revocation with the credentials held aside for them.
+   *
+   * SEC-F14. Signing out discards the session at once, so a revocation the server never
+   * acknowledged used to be unrecoverable. The credential is now retained by
+   * {@link TokenStorageService.retainForRevocation} until the server either acknowledges the
+   * revocation or says the value can never name a session, and this method is how a later
+   * attempt is made.
+   *
+   * ⚠ SEC-03. THE PRODUCTION CALLER IS `features/auth/login/login.component.ts`, AND IT HAD
+   * NONE. This method, the retention slot and the bounded ladder below were all written and
+   * all reachable, and nothing in the application ever called any of them: every failed
+   * withdrawal was retained and then left retained, so the mechanism that existed to end those
+   * sessions never ran once. A security review found it dead. The sign-in screen drives it on
+   * arrival, which is the one screen a sign-out is certain to land on and the one that renders
+   * {@link AuthStore.revocationOutstanding}.
+   *
+   * ⚠ AND IT IS DRIVEN FROM THERE RATHER THAN FROM APPLICATION START-UP, which the comment
+   * standing here used to offer as the alternative. It is not one. The retention set lives in
+   * memory inside a root-provided service, so it is empty at every bootstrap by construction —
+   * the only thing that can populate it is a sign-out, and a sign-out cannot precede the
+   * bootstrap of the page it happens on. An initialiser would have been a second piece of
+   * provably dead code standing beside the first.
+   *
+   * ⚠ EVERY RETAINED CREDENTIAL IS ATTEMPTED, SEQUENTIALLY, ONE BOUNDED LADDER EACH. Sequential
+   * rather than concurrent because the failure this recovers from is usually a rate limit or a
+   * restarting server, and firing the whole set at once is the surest way to be refused again.
+   * The set is snapshotted when the drain starts: a credential retained while it runs is picked
+   * up by the next drive rather than extending this one indefinitely.
+   *
+   * Completes immediately, and does nothing, when nothing is outstanding — which is the
+   * ordinary case on the sign-in screen and costs one signal read.
+   *
+   * @returns Completion, shared by every caller that arrives while a drain is running. Never
+   * errors: the outcome is reported through {@link AuthStore.revocationOutstanding}.
+   */
+  retryOutstandingRevocation(): Observable<void> {
+    const inFlight = this.revocationRetryInFlight;
+
+    if (inFlight !== null) {
+      return inFlight;
+    }
+
+    const drain: Observable<void> = defer(() => {
+      const retained: readonly string[] = this.tokenStorage.pendingRevocations();
+
+      if (retained.length === 0) {
+        return of(undefined);
+      }
+
+      /*
+       * The epoch this drain belongs to, captured before the first request goes out.
+       *
+       * ⚠ IT GATES THE OPERATOR-FACING REPORT, NOT THE WITHDRAWALS. The withdrawals are
+       * deliberately unconditional: a retained credential names a session that has already
+       * ended, so withdrawing it is correct whoever is signed in by the time the server
+       * answers — that independence from the current session is the entire reason the
+       * retention set survives {@link TokenStorageService.clear}.
+       *
+       * The REPORT is a different thing. {@link AuthStore.revocationOutstanding} has a
+       * documented lifetime of exactly one session boundary: it is retired the moment a new
+       * sign-in attempt begins, so that one operator is never shown a sentence about another's
+       * session. A drain outlives that boundary — its ladder can still be climbing when
+       * somebody signs in — so an unconditional write here would raise a retired report behind
+       * the boundary that retired it. Testing the epoch withholds only the write, exactly as
+       * every other late callback in this file does.
+       */
+      const startedAt = this.tokenStorage.generation();
+
+      return from(retained).pipe(
+        concatMap((credential: string) => this.withdrawRetained(credential)),
+        toArray(),
+        map(() => {
+          this.reportRetainedResidue(startedAt);
+
+          return undefined;
+        }),
+      );
+    }).pipe(
+      // Released by OBJECT IDENTITY on completion, error and unsubscription alike, for the
+      // reason set out on the renewal slot: the question is whether the slot still holds THIS
+      // drain, which is a question about identity rather than about the session.
+      finalize(() => {
+        if (this.revocationRetryInFlight === drain) {
+          this.revocationRetryInFlight = null;
+        }
+      }),
+      // `refCount: false` keeps the requests alive even if the screen that started the drain is
+      // destroyed mid-ladder — a navigation away must not abandon a withdrawal that is the only
+      // thing standing between a refused sign-out and a session live until its absolute expiry.
+      shareReplay({ bufferSize: 1, refCount: false }),
+    );
+
+    this.revocationRetryInFlight = drain;
+
+    return drain;
+  }
+
+  /**
+   * Withdraws one retained credential, retiring it when the server has finished with it.
+   *
+   * SEC-03. Never errors, so one credential the server will not withdraw cannot abandon the
+   * rest of the drain behind it.
+   *
+   * @param refreshToken The retained credential to withdraw.
+   * @returns Completion, whatever the server answered.
+   */
+  private withdrawRetained(refreshToken: string): Observable<void> {
+    return this.revokeWithRetry(refreshToken).pipe(
+      map(() => {
+        this.tokenStorage.releasePendingRevocation(refreshToken);
+
+        return undefined;
+      }),
+      catchError((cause: unknown) => {
+        /*
+         * SEC-F14. A TERMINAL REFUSAL RETIRES THE CREDENTIAL; A TRANSIENT ONE KEEPS IT.
+         * A 400, a 404 or a 422 is the server saying this value can never name a session, so
+         * retaining it would leave a residue nothing could ever clear. Anything else — an
+         * outage, a rate limit, an unreachable server — leaves the session possibly live, so
+         * the credential stays and a later drive tries again.
+         */
+        if (isTerminalRevocationRefusal(cause)) {
+          this.tokenStorage.releasePendingRevocation(refreshToken);
+        }
+
+        return of(undefined);
+      }),
+    );
+  }
+
+  /**
+   * Records whether any residue survived a completed drain.
+   *
+   * SEC-03. Reads the retention set rather than accumulating outcomes, so the report describes
+   * what is actually still held — including a credential retained by a sign-out that happened
+   * while the drain was running, which the drain itself did not attempt.
+   *
+   * @param startedAt The session epoch the drain began under.
+   */
+  private reportRetainedResidue(startedAt: number): void {
+    if (!this.tokenStorage.isCurrentGeneration(startedAt)) {
+      return;
+    }
+
+    this._revocationOutstanding.set(this.tokenStorage.pendingRevocations().length !== 0);
+  }
+
+  /**
+   * Posts one revocation, retrying only outcomes that can plausibly succeed later.
+   *
+   * SEC-F14. The bound is deliberate on both sides. WITHOUT a bound a sign-out could hold the
+   * command phase open indefinitely against an unreachable server; WITHOUT any retry a single
+   * rate-limited or briefly unavailable attempt left a live session behind. The delay honours a
+   * `Retry-After` header when the server sends one — a rate limiter that names its own window is
+   * the only party that knows it — and otherwise doubles from one second, so three attempts span
+   * a few seconds rather than a minute.
+   *
+   * @param refreshToken The credential to withdraw.
+   * @returns Completion, or the last error when every permitted attempt failed.
+   */
+  private revokeWithRetry(refreshToken: string): Observable<void> {
+    return this.auth.logout({ refreshToken }).pipe(
+      retry({
+        count: REVOCATION_RETRY_ATTEMPTS,
+        delay: (cause: unknown, attempt: number) => {
+          // A terminal refusal is rethrown rather than retried: repeating a request the server
+          // has already judged unanswerable only delays the honest report of it.
+          if (isTerminalRevocationRefusal(cause)) {
+            return throwError(() => cause);
+          }
+
+          return timer(retryDelayMs(cause, attempt));
+        },
+      }),
+    );
+  }
+
+  /**
    * Ends the session, locally without condition.
    *
    * MIGRATION: `FormsAuthentication.SignOut` has no stateless counterpart. It cleared a
@@ -1674,93 +1881,25 @@ export class AuthStore {
    *   propagates the real refusal and the policy — local sign-out regardless, plus a report —
    *   is applied here, where the session and the operator-facing state both live.
    *
-   * ⚠ NO RETRY IS OFFERED, AND NO CREDENTIAL IS CACHED TO MAKE ONE POSSIBLE. A client-side
-   * retry would mean holding the renewal credential in a field of this store so a later attempt
-   * could re-send it, and custody of that credential belongs to `TokenStorageService` alone.
-   * What makes that acceptable is the other half of the same fix, on the server: revocation
-   * draws on a rate-limit budget of its own rather than the one sign-in attempts spend, so the
-   * 429 that made this failure common can no longer be caused by traffic that has nothing to do
-   * with this caller.
+   * ⚠ ONE ATTEMPT IS MADE HERE, AND THE CREDENTIAL IS RETAINED SO A LATER ONE IS POSSIBLE.
+   * The paragraph this replaces said the opposite — that no retry was offered and no credential
+   * was cached to make one possible — and it was stale rather than merely misplaced: the body
+   * below has called {@link TokenStorageService.retainForRevocation} since SEC-F14, and a
+   * comment asserting the absence of the mechanism standing beside the mechanism is an
+   * invitation to remove it. Custody of the credential still belongs to `TokenStorageService`
+   * alone; what changed is that it now holds a value aside instead of destroying it.
+   *
+   * The LADDER is deliberately not climbed here. Signing out must not hold the operator on a
+   * spinner while a backoff plays out against an unreachable server, so this posts once and the
+   * bounded retries belong to {@link AuthStore.retryOutstandingRevocation}, which the sign-in
+   * screen drives on arrival. What makes a single attempt acceptable is also the other half of
+   * the same fix, on the server: revocation draws on a rate-limit budget of its own rather than
+   * the one sign-in attempts spend, so the 429 that made this failure common can no longer be
+   * caused by traffic that has nothing to do with this caller.
    *
    * @returns Completion of the revocation attempt. Must be subscribed for the request
    * to be issued.
    */
-  /**
-   * Retries an outstanding sign-out revocation with the credential held aside for it.
-   *
-   * SEC-F14. Signing out discards the session at once, so a revocation the server never
-   * acknowledged used to be unrecoverable. The credential is now retained by
-   * {@link TokenStorageService.retainForRevocation} until the server either acknowledges the
-   * revocation or says the value can never name a session, and this method is how a later
-   * attempt is made — from application start-up, or from the sign-in screen that renders
-   * {@link AuthStore.revocationOutstanding}.
-   *
-   * Completes immediately, and does nothing, when nothing is outstanding.
-   *
-   * @returns Completion. Never errors: the outcome is reported through
-   * {@link AuthStore.revocationOutstanding}.
-   */
-  retryOutstandingRevocation(): Observable<void> {
-    return defer(() => {
-      const pending: string | null = this.tokenStorage.pendingRevocation();
-
-      if (pending === null || pending.length === 0) {
-        return of(undefined);
-      }
-
-      return this.revokeWithRetry(pending).pipe(
-        map(() => {
-          this.tokenStorage.clearPendingRevocation();
-          this._revocationOutstanding.set(false);
-
-          return undefined;
-        }),
-        catchError((cause: unknown) => {
-          if (isTerminalRevocationRefusal(cause)) {
-            this.tokenStorage.clearPendingRevocation();
-            this._revocationOutstanding.set(false);
-
-            return of(undefined);
-          }
-
-          this._revocationOutstanding.set(true);
-
-          return of(undefined);
-        }),
-      );
-    });
-  }
-
-  /**
-   * Posts one revocation, retrying only outcomes that can plausibly succeed later.
-   *
-   * SEC-F14. The bound is deliberate on both sides. WITHOUT a bound a sign-out could hold the
-   * command phase open indefinitely against an unreachable server; WITHOUT any retry a single
-   * rate-limited or briefly unavailable attempt left a live session behind. The delay honours a
-   * `Retry-After` header when the server sends one — a rate limiter that names its own window is
-   * the only party that knows it — and otherwise doubles from one second, so three attempts span
-   * a few seconds rather than a minute.
-   *
-   * @param refreshToken The credential to withdraw.
-   * @returns Completion, or the last error when every permitted attempt failed.
-   */
-  private revokeWithRetry(refreshToken: string): Observable<void> {
-    return this.auth.logout({ refreshToken }).pipe(
-      retry({
-        count: REVOCATION_RETRY_ATTEMPTS,
-        delay: (cause: unknown, attempt: number) => {
-          // A terminal refusal is rethrown rather than retried: repeating a request the server
-          // has already judged unanswerable only delays the honest report of it.
-          if (isTerminalRevocationRefusal(cause)) {
-            return throwError(() => cause);
-          }
-
-          return timer(retryDelayMs(cause, attempt));
-        },
-      }),
-    );
-  }
-
   logout(): Observable<void> {
     return defer(() => {
       const ticket = this.claimPhase('signingOut');
@@ -1859,10 +1998,19 @@ export class AuthStore {
        */
       return this.auth.logout({ refreshToken }).pipe(
         map(() => {
-          // Cleared only by a withdrawal that actually succeeded, so a screen that reported an
+          // Retired only by a withdrawal that actually succeeded, so a screen that reported an
           // unconfirmed sign-out stops reporting it once a later one is confirmed.
-          this._revocationOutstanding.set(false);
-          this.tokenStorage.clearPendingRevocation();
+          this.tokenStorage.releasePendingRevocation(refreshToken);
+
+          /*
+           * ⚠ SEC-03. DERIVED FROM WHAT IS STILL HELD, NOT SET TO FALSE OUTRIGHT. Retiring this
+           * credential is not the same as there being no residue: an earlier sign-out whose
+           * withdrawal was refused has its own credential retained, and reporting "confirmed"
+           * because a LATER session was withdrawn cleanly is precisely the silence this finding
+           * was about. Release first, then read, so the answer describes the set after this
+           * withdrawal rather than before it.
+           */
+          this._revocationOutstanding.set(this.tokenStorage.pendingRevocations().length !== 0);
 
           return undefined;
         }),
@@ -1878,7 +2026,7 @@ export class AuthStore {
           const terminal: boolean = isTerminalRevocationRefusal(cause);
 
           if (terminal) {
-            this.tokenStorage.clearPendingRevocation();
+            this.tokenStorage.releasePendingRevocation(refreshToken);
           }
 
           /*
@@ -1891,6 +2039,14 @@ export class AuthStore {
           // A terminal refusal leaves NO residue - the server has said the value cannot name a
           // session - so the flag stays down and no notice is raised for it. Everything else may
           // have left a live session behind and is reported.
+          //
+          // ⚠ SEC-03. DELIBERATELY ABOUT THIS WITHDRAWAL AND NOT ABOUT THE WHOLE RETENTION SET,
+          // which is the opposite of the success path a few lines above, and the asymmetry is
+          // intended. `SessionLifecycleService.signOut` reads this flag to decide whether to
+          // announce {@link REVOCATION_FAILED_MESSAGE} about THIS sign-out, so deriving it from
+          // an older session's residue would attribute that residue to the sign-out just
+          // performed. The set-wide answer is the drain's to report, from the screen that
+          // renders it - see {@link AuthStore.reportRetainedResidue}.
           this._revocationOutstanding.set(!terminal);
 
           /*

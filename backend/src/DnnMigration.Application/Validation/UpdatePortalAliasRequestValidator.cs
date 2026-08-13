@@ -41,6 +41,8 @@ public class UpdatePortalAliasRequestValidator : AbstractValidator<UpdatePortalA
             .MaximumLength(PortalAliasRules.MaximumLength)
             .WithMessage(PortalAliasRules.TooLongMessage)
             .Must(PortalAliasRules.IsAcceptable)
-            .WithMessage(PortalAliasRules.InvalidMessage);
+            .WithMessage(PortalAliasRules.InvalidMessage)
+            .Must(PortalAliasRules.IsWithinSupportedTopology)
+            .WithMessage(PortalAliasRules.UnsupportedPathMessage);
     }
 }

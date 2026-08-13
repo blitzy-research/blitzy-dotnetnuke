@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Data;
 using System.Data.Common;
 using System.Globalization;
+using System.Reflection;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Infrastructure.Persistence;
@@ -625,6 +626,70 @@ public sealed class HostSettingsServiceTests
         await _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(1) FROM [dbo].[HostSettings] WHERE [SettingName] = @name;",
             new Dictionary<string, object?> { ["name"] = settingName });
+
+    /// <summary>
+    /// A secure-marked value cannot escape through the API layer, because nothing in that layer depends on
+    /// this abstraction at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// INFO-03. This service deliberately does NOT filter on <c>SettingIsSecure</c> - the reasoning is beside
+    /// the flag in <c>HostSettingsService</c> - and that is only safe while no caller publishes what it
+    /// returns. Today none does: the abstraction has exactly two consumers, both Application services, and
+    /// each reads NAMED rows and projects them into typed internals rather than echoing values outward.
+    /// </para>
+    /// <para>
+    /// That is a property of the consumer set rather than of any class, so it cannot be asserted by reading one
+    /// file - and an invariant nothing checks is an invariant that expires quietly. This fact checks it at the
+    /// only boundary where a leak could become a response: the API assembly. If a controller, a filter, a
+    /// middleware or any other type there ever takes <see cref="IHostSettingsService"/> as a dependency, this
+    /// fails, and whoever added it is then required to decide - filter the secure rows at the point of
+    /// publication, or gate that endpoint on host administration - and to update the note beside the flag.
+    /// </para>
+    /// <para>
+    /// Constructor parameters AND fields are both examined, because injection is not the only route: a type
+    /// could resolve the service from a provider and hold it. Reflection over the assembly rather than a text
+    /// search, so a rename cannot silently defeat it.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void SecureValuesCannotEscapeThroughTheApiLayer()
+    {
+        Assembly api = typeof(DnnMigration.Api.Controllers.PortalsController).Assembly;
+
+        List<string> offenders = [];
+
+        foreach (Type type in api.GetTypes())
+        {
+            bool injected = type
+                .GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .SelectMany(constructor => constructor.GetParameters())
+                .Any(parameter => parameter.ParameterType == typeof(IHostSettingsService));
+
+            bool held = type
+                .GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+                    | BindingFlags.Static)
+                .Any(field => field.FieldType == typeof(IHostSettingsService));
+
+            bool exposed = type
+                .GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance
+                    | BindingFlags.Static)
+                .Any(property => property.PropertyType == typeof(IHostSettingsService));
+
+            if (injected || held || exposed)
+            {
+                offenders.Add(type.FullName ?? type.Name);
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "INFO-03: host settings are returned WITHOUT filtering the SettingIsSecure flag, which is safe "
+            + "only while nothing publishes them. A type in the API assembly now depends on "
+            + "IHostSettingsService, so a secure value has a route to a response: either withhold secure rows "
+            + "at the point of publication or gate that endpoint on host administration, and update the note "
+            + "beside the flag in HostSettingsService");
+    }
+
 
     /// <summary>
     /// Composes a setting name this suite owns, short enough for the column and unlikely to collide.

@@ -705,9 +705,16 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    public async Task<bool> SetPasswordHashAsync(
+    /// <remarks>
+    /// An account row that cannot be resolved to a membership user name is reported as an absent RECORD
+    /// rather than as an unreachable store, for the same reason the bookkeeping members below do it: the store
+    /// was never consulted, so its availability is not what failed. It is reported as absent rather than as a
+    /// supersession because nothing was refused - there was nothing to refuse against.
+    /// </remarks>
+    public async Task<CredentialWriteOutcome> SetPasswordHashAsync(
         int userId,
         string passwordHash,
+        string? expectedPasswordValue,
         DateTime utcNow,
         CancellationToken cancellationToken = default)
     {
@@ -715,9 +722,15 @@ internal sealed class UserRepository : IUserRepository
 
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        return userName is not null
-            && await _membership
-                .SetPasswordHashAsync(userName, passwordHash, utcNow, cancellationToken)
+        return userName is null
+            ? CredentialWriteOutcome.NoRecord
+            : await _membership
+                .SetPasswordHashAsync(
+                    userName,
+                    passwordHash,
+                    expectedPasswordValue,
+                    utcNow,
+                    cancellationToken)
                 .ConfigureAwait(false);
     }
 

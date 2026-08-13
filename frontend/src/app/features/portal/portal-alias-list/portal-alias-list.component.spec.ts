@@ -1453,6 +1453,100 @@ describe('PortalAliasListComponent', () => {
 
       expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
     });
+
+    // -------------------------------------------------------------------------------------------------
+    //  THE ADDRESSABLE TOPOLOGY
+    // -------------------------------------------------------------------------------------------------
+    //
+    // ⚠ WHY THESE CASES EXIST. This screen is one of FIVE mirrors of one contract, whose authority is
+    // backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs. The five disagreed: the server's
+    // write path stored aliases of unbounded depth with dots in any segment, the request pipeline
+    // considered four path segments and then fell back to the BARE HOST when none matched, and the
+    // reverse proxy could only ever deliver one segment. So an alias this screen happily submitted
+    // could be stored and then be unreachable, and an address naming no tenant was answered by the
+    // parent tenant. Each case below pins one clause of the unified contract on this side of it.
+
+    it('refuses an entry carrying more than one path segment', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      type('example.com/first/second');
+      submit();
+
+      // The precise sentence, not merely "something was reported": an operator who is told only that
+      // the value is not a storable form cannot tell WHICH part of it was refused.
+      expect(fieldMessages()).toContain(
+        'An HTTP alias may carry at most 1 path segment beneath its host name; that segment may ' +
+          'contain only letters, digits, hyphens and underscores, and may not be one of the addresses ' +
+          'this application reserves for itself (api, health, login, modules, openapi, portals, ' +
+          'role-groups, roles, settings, swagger, users).',
+      );
+
+      expect(entryField().value).toBe('example.com/first/second');
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    it("refuses an entry whose segment names one of the deployment's own addresses", () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      // `api` is the one that matters most: a tenant addressed at host/api would make every request
+      // this console issues ambiguous with the API's own root.
+      type('example.com/api');
+      submit();
+
+      expect(fieldMessages()).not.toHaveSize(0);
+      expect(entryField().value).toBe('example.com/api');
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    it('refuses an entry whose segment names one of the console screens', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      type('example.com/users');
+      submit();
+
+      expect(fieldMessages()).not.toHaveSize(0);
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    it('refuses an entry whose path segment carries a dot', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      // A dot in the AUTHORITY is ordinary - example.com above is accepted - so this case proves the
+      // rule applies to the segment beneath it and not to the whole value.
+      type('example.com/acme.co');
+      submit();
+
+      expect(fieldMessages()).not.toHaveSize(0);
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    it('accepts a single segment of letters, digits, hyphens and underscores', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      // The positive control for the tightening: everything that WAS addressable still is.
+      type('example.com/acme_legal-7');
+      submit();
+
+      expect(fieldMessages()).withContext('an addressable segment is not refused').toHaveSize(0);
+
+      const call = expectRequest('POST', aliasesUrl(-1));
+
+      expect(transmittedAlias(call)).toBe('example.com/acme_legal-7');
+
+      call.flush(envelope(alias(22, 'example.com/acme_legal-7')), {
+        status: 201,
+        statusText: 'Created',
+      });
+      settle();
+      settleWriteReread([alias(7, 'localhost'), alias(22, 'example.com/acme_legal-7')]);
+
+      expect(notifications()).toEqual([{ severity: 'success', message: SAVED_MESSAGE }]);
+    });
   });
 
   // ---------------------------------------------------------------------------------------------------

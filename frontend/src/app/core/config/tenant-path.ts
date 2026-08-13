@@ -49,16 +49,36 @@
  * exactly the top-level paths `APP_ROUTES` declares.
  *
  * ---------------------------------------------------------------------------
- * THE TWO LIMITS OF THE RULE, STATED RATHER THAN HIDDEN
+ * THE RULE IS THE SERVER'S, AND THE SERVER NOW ENFORCES IT ON THE WRITE PATH
  * ---------------------------------------------------------------------------
- * 1. A tenant whose path segment SPELLS one of the reserved words - a child alias of
- *    `host/users`, say - is indistinguishable from this application's own account listing to a
- *    browser that has not yet spoken to the API, and is read as the application's. There is no
- *    fix available on this side: the document that would tell them apart is the same document
- *    for both. Recorded in `MIGRATION_NOTES.md`.
- * 2. ONE segment of prefix is honoured, matching what the legacy signup screen could compose.
- *    A deeper stored alias would need the proxy's own matcher widened in step, so the bound is
- *    the same on both sides rather than being generous on one of them.
+ * MIGRATION: SEC-01. The five mirrors named below DID disagree, demonstrably rather than
+ * theoretically: one stored alias row spelling `api` turned a successful sign-in into a 401.
+ * This module is now derived from the one server-side authority. Recorded in MIGRATION_NOTES.md.
+ *
+ * ⚠ THIS MODULE IS ONE OF FIVE MIRRORS OF ONE CONTRACT, and the authority is
+ * `backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs`. The other four are the alias
+ * write path, the request pipeline that resolves an arriving address, the screen that binds an
+ * alias, and the reverse-proxy location in `docker/api-proxy.conf`. They previously disagreed:
+ * the write path stored addresses of unbounded depth with dots in any segment, the resolver
+ * considered four segments and then fell back to the bare host when none matched, this module
+ * honoured one segment, and the proxy could deliver one. An alias the server accepted could
+ * therefore be undeliverable, and an address naming no tenant was answered by the PARENT tenant.
+ *
+ * Two consequences for the rule below, both of which SIMPLIFY it:
+ *
+ * 1. A SEGMENT CONTAINING A DOT CAN NO LONGER BE A TENANT, because the server refuses to store
+ *    one. That is why the closed list of nineteen document extensions this module used to carry
+ *    is gone: with dots excluded from the alias vocabulary, "names a served file" and "names a
+ *    tenant" are disjoint by construction, and no extension can be omitted from a list that no
+ *    longer exists. `/context.html`, `/main-ABCD1234.js` and `/robots.txt` are all read as the
+ *    application's own addresses for the same structural reason.
+ * 2. A SEGMENT SPELLING ONE OF THE RESERVED WORDS CAN NO LONGER BE A TENANT either. This used to
+ *    be an unavoidable ambiguity - the document served for `host/users` is the same document
+ *    whether that names a child portal or this console's account listing - and it is now
+ *    prevented at the point of storage instead of tolerated at the point of reading.
+ *
+ * ONE segment of prefix is honoured, matching what the legacy signup screen could compose and
+ * what the proxy can deliver. Widening it means widening all five mirrors in one change.
  *
  * This module is a DECLARATION module in the same sense as `api-endpoints.ts`: pure functions
  * over strings, no injectable, no state, no side effect.
@@ -86,51 +106,51 @@ export const RESERVED_TOP_LEVEL_SEGMENTS: readonly string[] = [
 ];
 
 /**
- * Extensions that identify a served DOCUMENT OR ASSET rather than a tenant.
+ * The first path segments the SERVER itself owns, which no stored alias may use either.
  *
- * ⚠ WITHOUT THIS THE RULE MISREADS A TEST HARNESS AND A DIRECTLY OPENED ASSET. The Karma
- * context page is served at `/context.html`, so its first segment is neither reserved nor a
- * tenant, and reading it as a tenant would silently prefix every URL every specification
- * asserts. The same is true of any address that names a file the proxy serves from disk: the
- * static-asset location answers those before the document fallback is ever reached, so an
- * address ending in one of these was never a tenant address to begin with.
+ * ⚠ HELD SEPARATELY FROM {@link RESERVED_TOP_LEVEL_SEGMENTS} ON PURPOSE. That set is asserted by
+ * `tenant-path.spec.ts` to be EXACTLY the route table's own top-level paths, which is what keeps
+ * a newly added route from being read as a tenant. These four are not routes at all - they are
+ * the roots the API answers - so folding them into that array would break the assertion that
+ * makes it trustworthy. `PortalAliasTopology.ReservedPathSegments` on the server is the union of
+ * the two, and a unit test there asserts that every prefix the request pipeline exempts from
+ * tenant resolution appears in it.
  *
- * A CLOSED LIST rather than "any segment containing a dot", because a dot is legal in a tenant
- * path - `host/acme.co` is a perfectly good child alias - and refusing every dotted segment
- * would break such a tenant to solve a problem only these extensions cause.
+ * `api` matters most: every request this application makes is addressed beneath it, so a tenant
+ * segment spelling `api` would make the console unusable for that tenant.
  */
-const DOCUMENT_EXTENSIONS: readonly string[] = [
-  '.css',
-  '.gif',
-  '.htm',
-  '.html',
-  '.ico',
-  '.jpeg',
-  '.jpg',
-  '.js',
-  '.json',
-  '.map',
-  '.mjs',
-  '.png',
-  '.svg',
-  '.txt',
-  '.wasm',
-  '.webp',
-  '.woff',
-  '.woff2',
-  '.xml',
+export const RESERVED_PLATFORM_SEGMENTS: readonly string[] = [
+  'api',
+  'health',
+  'openapi',
+  'swagger',
 ];
 
+/** Matches one segment made only of ASCII letters, digits, hyphens and underscores. */
+const ADDRESSABLE_SEGMENT = /^[0-9A-Za-z_-]+$/u;
+
 /**
- * Whether a path segment names a document or asset rather than a tenant.
+ * Whether a path segment is one the server could have stored as a tenant address.
+ *
+ * Mirrors `PortalAliasTopology.IsAddressableSegment`. A segment the server cannot store cannot
+ * name a tenant, so anything this refuses belongs to the application's own address space -
+ * including every served file, since a file name carries a dot and a dot is not in the
+ * vocabulary.
  *
  * @param segment The raw first segment of a path.
- * @returns True when the segment ends in one of {@link DOCUMENT_EXTENSIONS}.
+ * @returns True when the segment could name a tenant.
  */
-function namesADocument(segment: string): boolean {
+function isAddressableSegment(segment: string): boolean {
+  if (ADDRESSABLE_SEGMENT.test(segment) === false) {
+    return false;
+  }
+
   const lowered = segment.toLowerCase();
 
-  return DOCUMENT_EXTENSIONS.some((extension) => lowered.endsWith(extension));
+  return (
+    RESERVED_TOP_LEVEL_SEGMENTS.includes(lowered) === false &&
+    RESERVED_PLATFORM_SEGMENTS.includes(lowered) === false
+  );
 }
 
 /**
@@ -154,16 +174,12 @@ export function detectTenantPathBase(pathname: string): string {
 
   const first = segments[0];
 
-  if (RESERVED_TOP_LEVEL_SEGMENTS.includes(first.toLowerCase())) {
-    // One of the application's own screens, reached at the root deployment. Compared
-    // case-insensitively because a caller may type an address in any case, while the segment
-    // itself is preserved verbatim in the returned prefix for the case where it IS a tenant -
-    // an alias is stored as it was authored and the API matches it under the database's own
-    // collation.
-    return '';
-  }
-
-  if (namesADocument(first)) {
+  if (isAddressableSegment(first) === false) {
+    // One of the application's own screens, one of the server's own roots, or a served file.
+    // Reserved words are compared case-insensitively because a caller may type an address in any
+    // case, while the segment itself is preserved verbatim in the returned prefix for the case
+    // where it IS a tenant - an alias is stored as it was authored and the API matches it under
+    // the database's own collation.
     return '';
   }
 

@@ -188,6 +188,52 @@ internal sealed class JwtTokenService : ITokenService
         return Retired(outcome);
     }
 
+    /// <inheritdoc />
+    public async Task<Result> PurgeAccountSessionRecordsAsync(
+        int userId,
+        int? portalId = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        RefreshTokenPurgeScope scope = portalId is { } tenant
+            ? RefreshTokenPurgeScope.ForAccountInPortal(userId, tenant)
+            : RefreshTokenPurgeScope.ForAccount(userId);
+
+        return Erased(await _refreshTokens.PurgeSubjectAsync(scope, cancellationToken).ConfigureAwait(false));
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> PurgePortalSessionRecordsAsync(
+        int portalId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        RefreshTokenPurgeResult purged = await _refreshTokens
+            .PurgeSubjectAsync(RefreshTokenPurgeScope.ForPortal(portalId), cancellationToken)
+            .ConfigureAwait(false);
+
+        return Erased(purged);
+    }
+
+    /// <summary>Translates an erasure outcome into the contract's result vocabulary.</summary>
+    /// <param name="purged">What the store reported.</param>
+    /// <returns>Success once no record remains, or the store-unavailable failure.</returns>
+    /// <remarks>
+    /// PRIV-02. Only two answers are possible and both are stated here rather than left to the caller.
+    /// "Nothing matched" is SUCCESS - an erasure whose subject held no records has achieved exactly what it
+    /// was asked to - and it is not conditioned on
+    /// <see cref="IRefreshTokenStore.IsAuthoritativeAcrossReplicas"/> the way a revocation's "unknown" is.
+    /// The distinction is real: a revocation that finds nothing may have left a live session on another
+    /// replica, whereas a process-local store that holds no record of a subject genuinely holds no personal
+    /// data about it, which is the whole claim this member makes. A replica that does hold records erases its
+    /// own when its own sweep or its own deletion request reaches it.
+    /// </remarks>
+    private static Result Erased(RefreshTokenPurgeResult purged) => purged.Answered
+        ? Result.Success()
+        : Result.Failure(TokenStoreUnavailableCode, TokenStoreUnavailableMessage);
+
     private LoginResponse BuildResponse(
         RefreshTokenSubject subject,
         string refreshToken)

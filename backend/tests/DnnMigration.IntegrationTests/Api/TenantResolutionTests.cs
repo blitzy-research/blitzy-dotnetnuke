@@ -867,6 +867,227 @@ public sealed class TenantResolutionTests
         problem!.Status.Should().Be(StatusCodes.Status404NotFound);
     }
 
+    /// <summary>
+    /// An alias whose path segment names one of the deployment's own roots cannot hijack the requests
+    /// addressed to that root.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE TENANT-ISOLATION DEFECT THE UNIFIED ALIAS CONTRACT CLOSES, AND IT IS REACHABLE FROM
+    /// THE OUTSIDE. Resolution used to build a DESCENDING chain of candidates from the request path -
+    /// <c>host/api/v1</c>, <c>host/api</c>, <c>host</c> - and take the first that matched. A stored alias
+    /// of <c>host/api</c> therefore matched on EVERY API request addressed to the bare host, so a second
+    /// tenant that owned that alias answered requests intended for the first, and the segment was then
+    /// moved into the path base leaving <c>/v1/...</c>, which routes to nothing. One row in
+    /// <c>PortalAlias</c> was enough to take the bare host's entire API surface away from it.
+    /// </para>
+    /// <para>
+    /// Two independent changes close it, and this fact exercises both. The alias write paths now REFUSE a
+    /// reserved segment - <c>PortalAliasTopology.ReservedPathSegments</c>, proved unit-side in
+    /// <c>PortalAliasContractTests</c> - and the resolver treats a reserved first segment as belonging to
+    /// the deployment rather than to a tenant, so it looks up the bare authority and nothing else. The
+    /// alias below therefore has to be INSERTED directly: no endpoint will accept it any more, which is
+    /// itself the point.
+    /// </para>
+    /// <para>
+    /// Asserted by reading ONE role by identifier at the bare host. The seeded administrators role belongs
+    /// to the parent, the by-identifier read is portal-scoped, and it reports a role from another portal as
+    /// absent - so a 200 carrying the parent's own row can only be explained by the request having resolved
+    /// the parent. It also exercises the identity seed deliberately: <c>Roles.RoleID</c> is
+    /// <c>IDENTITY(0, 1)</c>, so this identifier is legitimately 0 and must not be treated as missing.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AnAliasNamingAReservedSegment_CannotHijackTheDeploymentsOwnRoot()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string suffix = Guid.NewGuid().ToString("N")[..8];
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = "Reserved Segment Tenant " + suffix,
+                portalAlias = "reserved-tenant-" + suffix + ".local",
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Reserved",
+                administratorLastName = "Administrator",
+                administratorUsername = "reserved_admin_" + suffix,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "reserved." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the rival tenant has to be a fully designated portal, or it could not resolve for any reason");
+
+        using JsonDocument document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int rivalPortalId = document.RootElement.GetProperty("data").GetProperty("portalId").GetInt32();
+
+        // The row no endpoint will accept: an alias whose path segment is the API's own root.
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[PortalAlias] ([PortalID], [HTTPAlias]) VALUES (@portalId, @alias);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@portalId"] = rivalPortalId,
+                ["@alias"] = ApiTestFixture.TestHost + "/api",
+            });
+
+        int parentRoleId = _fixture.Seed.AdministratorRoleId;
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/api/v1/roles/{parentRoleId}", UriKind.Relative));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a stored alias of host/api names nothing this deployment resolves, so the bare host still "
+                + "resolves the tenant it always did");
+
+        (await response.Content.ReadAsStringAsync()).Should().Contain(
+            IntegrationSeed.AdministratorsRoleName,
+            "and the row that answers belongs to the arrival tenant rather than to the alias's owner");
+    }
+
+    /// <summary>
+    /// A stored alias carrying more path segments than the deployment can route resolves nothing, rather
+    /// than resolving a tenant at an address no request can legitimately reach.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ AN ADDRESS THE SHIPPED TOPOLOGY CANNOT DELIVER USED TO RESOLVE ANYWAY. The resolver considered
+    /// FOUR path segments while the reverse-proxy location in <c>docker/api-proxy.conf</c> matches exactly
+    /// one optional segment ahead of <c>/api/</c> - so <c>/first/second/api/v1/roles</c> never reaches the
+    /// API through the proxy at all, and yet a direct call resolved the two-segment alias, rebased the path
+    /// and answered with that tenant's rows. The write path admitted such an alias too, because the create
+    /// contract measured only the segment after the LAST separator. The bound is now one figure,
+    /// <c>PortalAliasTopology.MaximumPathSegments</c>, and all five components read it.
+    /// </para>
+    /// <para>
+    /// The outcome is 404 for the reason the sibling fact above explains: nothing resolves, so the path is
+    /// not rebased, the unrebased path matches no route, and routing answers before any tenant-dependent
+    /// endpoint is reached. The alias is not silently ignored either - it is unreachable, and
+    /// <c>PortalAliasConformanceMonitor</c> reports every stored alias in this condition at start-up.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AnAliasDeeperThanTheDeploymentCanRoute_ResolvesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        string suffix = Guid.NewGuid().ToString("N")[..8];
+        string firstSegment = "deep-" + suffix;
+        string secondSegment = "nested-" + suffix;
+
+        using HttpResponseMessage created = await client.PostAsJsonAsync(
+            new Uri("/api/v1/portals", UriKind.Relative),
+            new
+            {
+                portalName = "Deep Tenant " + suffix,
+                portalAlias = "deep-tenant-" + suffix + ".local",
+                homeDirectory = string.Empty,
+                templateFile = "admin.template",
+                isChildPortal = false,
+                administratorFirstName = "Deep",
+                administratorLastName = "Administrator",
+                administratorUsername = "deep_admin_" + suffix,
+                administratorPassword = ApiTestFixture.KnownPassword,
+                administratorEmail = "deep." + suffix + "@example.com",
+            },
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        using JsonDocument document = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        int deepPortalId = document.RootElement.GetProperty("data").GetProperty("portalId").GetInt32();
+
+        await _fixture.Database.ExecuteAsync(
+            """
+            INSERT INTO [dbo].[PortalAlias] ([PortalID], [HTTPAlias]) VALUES (@portalId, @alias);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["@portalId"] = deepPortalId,
+                ["@alias"] = ApiTestFixture.TestHost + "/" + firstSegment + "/" + secondSegment,
+            });
+
+        using HttpResponseMessage response = await client.GetAsync(
+            new Uri($"/{firstSegment}/{secondSegment}/api/v1/roles", UriKind.Relative));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.NotFound,
+            "the resolver considers one path segment, so a two-segment alias is never a candidate and "
+                + "nothing is rebased");
+
+        ProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Status.Should().Be(StatusCodes.Status404NotFound);
+    }
+
+    /// <summary>
+    /// An addressable segment that matches no stored alias resolves NOTHING, rather than falling back to
+    /// the bare host.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ WHAT THIS PINS, STATED EXACTLY. The resolver's candidate chain used to end in the bare authority,
+    /// so an address naming a tenant segment that did not exist RESOLVED THE PARENT. It no longer does: the
+    /// chain now holds one candidate and nothing else. The credential submitted below is a VALID one for
+    /// the bare host's tenant, so a fallback that resolved the parent and a path base that had been rebased
+    /// would together mint a session - and the property being pinned is that no session is issued for an
+    /// address the caller did not actually address.
+    /// </para>
+    /// <para>
+    /// THE 401 IS THE PIPELINE'S ANSWER FOR AN UNMATCHED ADDRESS AND IS NOT A CREDENTIAL VERDICT. Nothing
+    /// resolves, so the path is not rebased; the unrebased path matches no route; and an anonymous caller
+    /// at a path with no endpoint is answered by the authentication challenge rather than by routing's own
+    /// 404, which is what the authenticated sibling fact above receives. Both are refusals. This fact
+    /// therefore asserts the SECURITY property - no token, whatever the status - rather than pinning a
+    /// particular refusal, because the two independent guarantees that produce it (no fallback in the
+    /// resolver, and no rebasing without a resolved tenant) can each be broken without changing the status
+    /// the other produces.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AnUnknownTenantSegment_DoesNotFallBackToTheBareHost()
+    {
+        using HttpClient client = _fixture.CreateClient();
+
+        string unknownSegment = "absent-" + Guid.NewGuid().ToString("N")[..8];
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            new Uri($"/{unknownSegment}/api/v1/auth/login", UriKind.Relative),
+            new
+            {
+                username = IntegrationSeed.HostUserName,
+                password = ApiTestFixture.KnownPassword,
+            },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().NotBe(
+            HttpStatusCode.OK,
+            "the credential is valid for the bare host's tenant, so a fallback to it would answer 200 - "
+                + "an address naming a tenant segment that matches no stored alias must not be served as "
+                + "though it had named the bare host");
+
+        string body = await response.Content.ReadAsStringAsync();
+
+        body.Should().NotContain(
+            "accessToken",
+            "no session may be minted for an address that resolved no tenant, whichever refusal the "
+                + "pipeline reaches first");
+    }
+
     /// <summary>Selects the tenant-optional marks out of a set of attributes, by name.</summary>
     /// <param name="attributes">The attributes declared on a controller or an action.</param>
     /// <returns>The tenant-optional marks among them.</returns>

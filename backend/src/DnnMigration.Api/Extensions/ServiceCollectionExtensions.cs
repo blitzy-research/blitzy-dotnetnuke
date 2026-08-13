@@ -264,9 +264,32 @@ public static class ServiceCollectionExtensions
         AddTransportSecurity(services, configuration);
         AddForwardedHeaders(services, configuration);
         AddEphemeralDataProtection(services);
+        AddStartupDiagnostics(services);
 
         return services;
     }
+
+    /// <summary>
+    /// Registers the one-shot start-up scan that reports stored portal aliases this deployment cannot
+    /// address.
+    /// </summary>
+    /// <param name="services">The container being populated.</param>
+    /// <remarks>
+    /// <para>
+    /// Registered here rather than in the Infrastructure layer even though it reads a repository,
+    /// because a hosted service is a property of the HOST and the host is composed in this layer. It
+    /// resolves the scoped repository through a scope of its own, so nothing about the registration
+    /// widens the lifetime of anything.
+    /// </para>
+    /// <para>
+    /// The reason a hosted service exists at all - in a solution whose refresh-token topology
+    /// validation is deliberately a post-build call precisely to avoid one - is argued on
+    /// <see cref="Diagnostics.PortalAliasConformanceMonitor"/> and recorded in
+    /// <c>MIGRATION_NOTES.md</c>.
+    /// </para>
+    /// </remarks>
+    private static void AddStartupDiagnostics(IServiceCollection services) =>
+        services.AddHostedService<Diagnostics.PortalAliasConformanceMonitor>();
 
     /// <summary>
     /// Declares the data-protection key ring EPHEMERAL, because this application protects nothing that

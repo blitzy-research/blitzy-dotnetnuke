@@ -615,4 +615,220 @@ describe('TokenStorageService', () => {
       expect((projection as { update?: unknown }).update).toBeUndefined();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // THE RETENTION SET FOR UNACKNOWLEDGED WITHDRAWALS
+  //
+  // ⚠ WHY THIS SECTION EXISTS AT ALL. Signing out discards the session at once, and the refresh
+  // token inside it is the ONLY credential that can end that session on the server — so a
+  // withdrawal refused by a rate limit, an outage or a dropped connection needs the credential
+  // to survive the discard or the session stays renewable until its absolute expiry with nothing
+  // left to withdraw it. The slot that survives the discard was the first half of that fix.
+  //
+  // ⚠ AND WHY IT IS A SET RATHER THAN A SLOT. A security review found the second half: one slot
+  // held one credential, so `sign out (refused) → sign in → sign out` overwrote the first
+  // session's credential with the second's and abandoned it silently. Every case below that
+  // names more than one credential exists because of that sequence. The expectations here
+  // measure CUSTODY only — that the right values are held, retired and ordered. Whether anything
+  // ever withdraws them belongs to `core/state/auth.store.spec.ts`, and whether the application
+  // ever asks it to belongs to the sign-in screen's own specification.
+  // -------------------------------------------------------------------------
+
+  describe('pending revocations', () => {
+    it('holds nothing before any sign-out', () => {
+      expect(service.pendingRevocations()).toEqual([]);
+    });
+
+    it('returns the same empty array instance on repeated reads, so a derived signal is stable', () => {
+      expect(service.pendingRevocations()).toBe(service.pendingRevocations());
+    });
+
+    it('retains a credential exactly as supplied', () => {
+      service.retainForRevocation('fake-refresh-token');
+
+      expect(service.pendingRevocations()).toEqual(['fake-refresh-token']);
+    });
+
+    it('ignores an empty credential, which would be answered 400 and reported as a false residue', () => {
+      service.retainForRevocation('');
+
+      expect(service.pendingRevocations()).toEqual([]);
+    });
+
+    it('retains several credentials, oldest first', () => {
+      // The sequence the review named: each sign-out whose withdrawal was refused leaves its
+      // own credential, and none may displace another.
+      service.retainForRevocation('first-session');
+      service.retainForRevocation('second-session');
+      service.retainForRevocation('third-session');
+
+      expect(service.pendingRevocations()).toEqual(['first-session', 'second-session', 'third-session']);
+    });
+
+    it('does not retain the same credential twice, so one withdrawal is not posted twice', () => {
+      service.retainForRevocation('fake-refresh-token');
+      service.retainForRevocation('fake-refresh-token');
+
+      expect(service.pendingRevocations()).toEqual(['fake-refresh-token']);
+    });
+
+    it('keeps a repeated credential in its ORIGINAL position rather than moving it to the back', () => {
+      // It has been outstanding since the first retention, and the order is what decides which
+      // credential is given up when the bound is reached — so re-retaining must not make an old
+      // residue look new.
+      service.retainForRevocation('first-session');
+      service.retainForRevocation('second-session');
+      service.retainForRevocation('first-session');
+
+      expect(service.pendingRevocations()).toEqual(['first-session', 'second-session']);
+    });
+
+    it('holds at most four, dropping the OLDEST when a fifth arrives', () => {
+      // Four is the declared ceiling. The oldest end is given up deliberately: a credential
+      // retained earlier is nearer its own absolute expiry, so its residual window is the
+      // shortest of the set and abandoning it costs least.
+      for (const credential of ['one', 'two', 'three', 'four', 'five']) {
+        service.retainForRevocation(credential);
+      }
+
+      expect(service.pendingRevocations()).toEqual(['two', 'three', 'four', 'five']);
+    });
+
+    it('keeps the ceiling under sustained pressure rather than growing without bound', () => {
+      for (let index = 0; index < 40; index += 1) {
+        service.retainForRevocation(`credential-${index}`);
+      }
+
+      const retained = service.pendingRevocations();
+
+      expect(retained.length).withContext('a live credential set must stay enumerable').toBe(4);
+      expect(retained).toEqual(['credential-36', 'credential-37', 'credential-38', 'credential-39']);
+    });
+
+    it('retires exactly the credential named and leaves every other one held', () => {
+      service.retainForRevocation('first-session');
+      service.retainForRevocation('second-session');
+
+      service.releasePendingRevocation('first-session');
+
+      expect(service.pendingRevocations())
+        .withContext('one withdrawal being confirmed does not retire another session\'s residue')
+        .toEqual(['second-session']);
+    });
+
+    it('reports nothing outstanding once the last credential is retired', () => {
+      service.retainForRevocation('fake-refresh-token');
+      service.releasePendingRevocation('fake-refresh-token');
+
+      expect(service.pendingRevocations()).toEqual([]);
+      expect(service.pendingRevocations())
+        .withContext('and returns to the shared empty instance')
+        .toBe(service.pendingRevocations());
+    });
+
+    it('is idempotent, so a withdrawal path that runs twice needs no guard', () => {
+      service.retainForRevocation('fake-refresh-token');
+
+      service.releasePendingRevocation('fake-refresh-token');
+      service.releasePendingRevocation('fake-refresh-token');
+
+      expect(service.pendingRevocations()).toEqual([]);
+    });
+
+    it('leaves the set untouched when asked to retire a credential it never held', () => {
+      service.retainForRevocation('fake-refresh-token');
+
+      const before = service.pendingRevocations();
+
+      service.releasePendingRevocation('a-credential-from-another-tab');
+
+      expect(service.pendingRevocations())
+        .withContext('not even replaced by an equal copy, so no reader is woken for nothing')
+        .toBe(before);
+    });
+
+    // ---------------------------------------------------------------------
+    // ⚠ THE INVARIANT THE WHOLE MECHANISM RESTS ON
+    // ---------------------------------------------------------------------
+
+    it('survives a clear, which is the entire reason it is not part of the session', () => {
+      service.store(aSession({ refreshToken: 'fake-refresh-token' }));
+      service.retainForRevocation('fake-refresh-token');
+
+      service.clear();
+
+      expect(service.refreshToken())
+        .withContext('the session is gone, as signing out requires')
+        .toBeNull();
+      expect(service.pendingRevocations())
+        .withContext('but the only credential that can end it on the server is not')
+        .toEqual(['fake-refresh-token']);
+    });
+
+    it('survives a later sign-in, so the previous session\'s residue is not lost to it', () => {
+      // The measured defect: the retained credential used to be overwritten by the NEXT
+      // sign-out, and nothing about a sign-in may quietly discard it either.
+      service.retainForRevocation('first-session');
+
+      service.store(aSession({ refreshToken: 'second-session' }));
+
+      expect(service.pendingRevocations()).toEqual(['first-session']);
+    });
+
+    it('retains the second session\'s credential ALONGSIDE the first, not instead of it', () => {
+      service.store(aSession({ refreshToken: 'first-session' }));
+      service.retainForRevocation('first-session');
+      service.clear();
+
+      service.store(aSession({ refreshToken: 'second-session' }));
+      service.retainForRevocation('second-session');
+      service.clear();
+
+      expect(service.pendingRevocations()).toEqual(['first-session', 'second-session']);
+    });
+
+    it('advances no generation, because retention is not a session transition', () => {
+      // The counter is what every late callback tests itself against, so moving it here would
+      // invalidate in-flight work for a reason that has nothing to do with the session.
+      const captured = service.generation();
+
+      service.retainForRevocation('fake-refresh-token');
+      service.releasePendingRevocation('fake-refresh-token');
+
+      expect(service.generation()).toBe(captured);
+      expect(service.isCurrentGeneration(captured)).toBeTrue();
+    });
+
+    it('exposes the set read-only, so nothing outside can retire a residue at will', () => {
+      const projection: unknown = service.pendingRevocations;
+
+      expect((projection as { set?: unknown }).set).toBeUndefined();
+      expect((projection as { update?: unknown }).update).toBeUndefined();
+    });
+
+    it('hands out a frozen array, so a consumer cannot retire a residue by mutating it', () => {
+      service.retainForRevocation('fake-refresh-token');
+
+      const retained = service.pendingRevocations();
+
+      expect(Object.isFrozen(retained)).toBeTrue();
+      expect(() => (retained as string[]).pop())
+        .withContext('a frozen array refuses mutation under the strict mode Angular compiles to')
+        .toThrowError(TypeError);
+      expect(service.pendingRevocations()).toEqual(['fake-refresh-token']);
+    });
+
+    it('writes no retained credential to any persistent tier', () => {
+      // The same posture as the session itself: a retained credential is a live refresh token,
+      // and persisting one would outlive the tab that obtained it.
+      service.retainForRevocation('fake-refresh-token');
+
+      const localValues = Object.keys(localStorage).map((key) => localStorage.getItem(key) ?? '');
+      const sessionValues = Object.keys(sessionStorage).map((key) => sessionStorage.getItem(key) ?? '');
+
+      expect(localValues.some((value) => value.includes('fake-refresh-token'))).toBeFalse();
+      expect(sessionValues.some((value) => value.includes('fake-refresh-token'))).toBeFalse();
+      expect(document.cookie.includes('fake-refresh-token')).toBeFalse();
+    });
+  });
 });

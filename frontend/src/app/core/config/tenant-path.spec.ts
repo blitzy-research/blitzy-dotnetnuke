@@ -1,6 +1,7 @@
 import { APP_ROUTES } from '../../app.routes';
 
 import {
+  RESERVED_PLATFORM_SEGMENTS,
   RESERVED_TOP_LEVEL_SEGMENTS,
   appBaseHref,
   detectTenantPathBase,
@@ -132,23 +133,95 @@ describe('the tenant path prefix', () => {
 
     it('reports no prefix for an address that names a document or an asset', () => {
       // ⚠ THE CASE THAT KEEPS EVERY OTHER SPECIFICATION HONEST. The test harness serves its
-      // page at /context.html, whose first segment is neither reserved nor a tenant; reading it
-      // as a tenant would silently prefix every URL every suite in this workspace asserts. The
-      // same is true of an asset opened directly, which the proxy answers from disk before the
-      // document fallback is ever reached.
+      // page at /context.html, whose first segment is not one of the application's own routes;
+      // reading it as a tenant would silently prefix every URL every suite in this workspace
+      // asserts. The same is true of an asset opened directly, which the proxy answers from disk
+      // before the document fallback is ever reached.
+      //
+      // It holds STRUCTURALLY now rather than by enumeration: every one of these carries a dot,
+      // the server's alias vocabulary has no dot in it, so none of them could ever have been
+      // stored as a tenant address. The closed list of nineteen extensions this module used to
+      // carry is gone with the ambiguity that required it.
       expect(detectTenantPathBase('/context.html')).toBe('');
       expect(detectTenantPathBase('/debug.html')).toBe('');
       expect(detectTenantPathBase('/main-ABCD1234.js')).toBe('');
       expect(detectTenantPathBase('/styles-ABCD1234.css')).toBe('');
       expect(detectTenantPathBase('/favicon.ico')).toBe('');
+
+      // And the extensions no closed list could have anticipated, which is the point of the
+      // change: each of these was read as a TENANT before, because the list did not name it.
+      expect(detectTenantPathBase('/robots.txt')).toBe('');
+      expect(detectTenantPathBase('/site.webmanifest')).toBe('');
+      expect(detectTenantPathBase('/legacy.aspx')).toBe('');
     });
 
-    it('admits a tenant segment that merely contains a dot', () => {
-      // The exclusion is a closed list of document extensions, not "anything with a dot":
-      // `host/acme.co` is a perfectly good child alias and refusing it would break a real
-      // tenant to solve a problem only served documents cause.
-      expect(detectTenantPathBase('/acme.co')).toBe('/acme.co');
-      expect(detectTenantPathBase('/acme.co/roles')).toBe('/acme.co');
+    it('refuses a segment carrying a dot, because the server cannot store one', () => {
+      // ⚠ THIS EXPECTATION IS THE INVERSE OF THE ONE IT REPLACES, and the inversion is the fix.
+      // The earlier specification asserted that `/acme.co` was a tenant prefix, on the reasoning
+      // that a dot is legal in an alias path. It no longer is: `PortalAliasTopology` admits only
+      // letters, digits, hyphens and underscores in a path segment, and both alias write paths
+      // enforce it, so `host/acme.co` cannot be stored and therefore cannot name a tenant.
+      // Reading it as one would prefix every request with a segment no alias can match, which
+      // under the API's fail-closed resolution resolves NO tenant at all.
+      expect(detectTenantPathBase('/acme.co')).toBe('');
+      expect(detectTenantPathBase('/acme.co/roles')).toBe('');
+    });
+
+    it("reports no prefix for one of the server's own roots", () => {
+      // The four platform segments. `api` is the one that matters most: every request this
+      // application makes is addressed beneath it, so reading it as a tenant would compose
+      // `/api/api/v1/...` and nothing would answer.
+      expect(detectTenantPathBase('/api/v1/portals')).toBe('');
+      expect(detectTenantPathBase('/health')).toBe('');
+      expect(detectTenantPathBase('/health/ready')).toBe('');
+      expect(detectTenantPathBase('/openapi/v1.json')).toBe('');
+      expect(detectTenantPathBase('/swagger/index.html')).toBe('');
+      expect(detectTenantPathBase('/API/v1/portals')).toBe('');
+    });
+
+    it('refuses a segment carrying a character the alias vocabulary excludes', () => {
+      // A segment the server could not have stored cannot name a tenant, so anything outside
+      // letters, digits, hyphen and underscore belongs to the application's own address space.
+      expect(detectTenantPathBase('/child%20portal')).toBe('');
+      expect(detectTenantPathBase('/~child')).toBe('');
+      expect(detectTenantPathBase('/child!')).toBe('');
+      expect(detectTenantPathBase('/.well-known/security.txt')).toBe('');
+    });
+
+    it('still admits the segments the server CAN store', () => {
+      // The other half of the tightening: nothing that was addressable stopped being so.
+      expect(detectTenantPathBase('/child')).toBe('/child');
+      expect(detectTenantPathBase('/acme-legal')).toBe('/acme-legal');
+      expect(detectTenantPathBase('/acme_legal')).toBe('/acme_legal');
+      expect(detectTenantPathBase('/tenant7')).toBe('/tenant7');
+    });
+  });
+
+  describe('the platform segment set', () => {
+    it('holds the roots the API answers, in lower case', () => {
+      // ⚠ HELD APART FROM THE ROUTE-DERIVED SET ON PURPOSE. The assertion above pins that set to
+      // be EXACTLY the route table's own top-level paths, which is what makes it trustworthy;
+      // folding these four into it would break that assertion. On the server the two are one
+      // union - `PortalAliasTopology.ReservedPathSegments` - and a backend test asserts that
+      // every prefix the request pipeline exempts from tenant resolution appears in it.
+      expect([...RESERVED_PLATFORM_SEGMENTS].sort()).toEqual([
+        'api',
+        'health',
+        'openapi',
+        'swagger',
+      ]);
+
+      for (const segment of RESERVED_PLATFORM_SEGMENTS) {
+        expect(segment).withContext(`platform segment ${segment}`).toBe(segment.toLowerCase());
+      }
+    });
+
+    it('shares no member with the route-derived set, so neither can mask the other', () => {
+      for (const segment of RESERVED_PLATFORM_SEGMENTS) {
+        expect(RESERVED_TOP_LEVEL_SEGMENTS)
+          .withContext(`platform segment ${segment} is not also a route`)
+          .not.toContain(segment);
+      }
     });
   });
 

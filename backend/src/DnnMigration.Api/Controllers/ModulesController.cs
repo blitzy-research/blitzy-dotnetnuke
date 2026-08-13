@@ -313,7 +313,25 @@ public sealed class ModulesController : ControllerBase
     //      The same method requires portal administration before honouring an all-pages placement - a
     //      restriction the legacy screen applied to that very control, and which until now only the UPDATE path
     //      enforced.
+    // INFO-04: THE REQUIREMENT IS NOW STATED AT THE ACTION, AND IT IS DELIBERATELY THE BARE ONE.
+    //
+    // Everything above explains why this action carries no named POLICY, and none of it changes: a policy
+    // would narrow the legacy entitlement, and the page the grant is claimed against arrives in the body
+    // where no route-reading policy can see it. What was missing was different - the action declared no
+    // authorization metadata AT ALL, so its requirement was supplied entirely by
+    // AuthorizationOptions.FallbackPolicy, which is configured in AuthenticationExtensions as
+    // RequireAuthenticatedUser. Eight of this controller's nine actions state their own requirement; this
+    // one inherited its from a global default declared in a different file.
+    //
+    // `[Authorize]` with no policy names exactly that same requirement - the authenticated-user check, no
+    // more - so the effective entitlement is unchanged and nothing the legacy gate admitted is refused. What
+    // it removes is a silent failure mode: were the fallback ever narrowed, widened or dropped, every other
+    // action here would keep its stated requirement and this one alone would follow the change, and an
+    // accidental removal would make module creation ANONYMOUS with no diff touching this file. The metadata
+    // is also what makes the requirement visible to the generated OpenAPI document and to any future audit
+    // that reads endpoint metadata rather than a global default.
     [HttpPost]
+    [Authorize]
     [ProducesResponseType(typeof(ApiResponse<ModuleDetailDto>), StatusCodes.Status201Created)]
     [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]

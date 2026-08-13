@@ -453,6 +453,221 @@ public class RefreshTokenStoreBehaviorTests
             .Which.Failures.Should().ContainMatch("*does not recognise*");
     }
 
+    // ---------------------------------------------------------------------
+    // PRIV-02 — ERASURE, AND RETENTION THAT DOES NOT DEPEND ON TRAFFIC
+    //
+    // ⚠ EVERY FACT BELOW WAS UNREACHABLE BEFORE THE MEMBERS IT EXERCISES EXISTED, AND THAT IS THE FINDING.
+    // The contract offered revocation and nothing else, so a record could be STAMPED and never REMOVED: an
+    // account or a tenant deleted from the application went on being described here - the account, the tenant
+    // and the token digest - until its family ceiling elapsed, and nothing on the contract could remove the
+    // description. Reclamation, meanwhile, ran only as a side effect of issuing or rotating, so an
+    // installation with no sign-in traffic reclaimed nothing at all.
+    //
+    // These are clock facts, which is why they live beside the lifecycle ones: a retention window cannot be
+    // observed without moving the clock past it.
+    // ---------------------------------------------------------------------
+
+    /// <summary>Erasing an account removes its records outright rather than stamping them.</summary>
+    /// <remarks>
+    /// The distinction between revocation and erasure, asserted where it is visible: after a REVOCATION the
+    /// store still recognises the token - it answers that the family is revoked - whereas after an ERASURE it
+    /// holds nothing and the same token is simply unknown.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ErasingAnAccountRemovesItsRecordsRatherThanStampingThem()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30);
+
+        string token = await IssueAsync(store, userId: 41);
+
+        (await store.RevokeAsync(token)).Should().Be(RefreshTokenOutcome.Succeeded);
+
+        // Still HELD, and deliberately: a stamped record is what makes a replay of this family recognisable.
+        RefreshTokenInspection stamped = await store.InspectAsync(token, ClientA);
+        stamped.Outcome.Should().Be(
+            RefreshTokenOutcome.Revoked,
+            "revocation retains the record so the family stays recognisable");
+        store.DescribeCapacity().TrackedGenerations.Should().Be(1);
+
+        RefreshTokenPurgeResult purged = await store.PurgeSubjectAsync(RefreshTokenPurgeScope.ForAccount(41));
+
+        purged.Outcome.Should().Be(RefreshTokenOutcome.Succeeded);
+        purged.RemovedRecords.Should().Be(1);
+
+        RefreshTokenInspection erased = await store.InspectAsync(token, ClientA);
+        erased.Outcome.Should().Be(
+            RefreshTokenOutcome.Unknown,
+            "erasure removes the record, so there is nothing left to recognise");
+        store.DescribeCapacity().TrackedGenerations.Should().Be(0);
+    }
+
+    /// <summary>An account-in-one-tenant erasure leaves that account's other tenants alone.</summary>
+    /// <remarks>
+    /// PRIV-02. THE SCOPE THAT MATTERS MOST. An account removed from one tenant may still be a member of
+    /// another, and its sessions there are legitimate: erasing across every tenant because one membership was
+    /// removed would sign it out of tenants it still belongs to. The tenant half of the scope is what prevents
+    /// that, and the only way to observe it is to hold records in two tenants at once.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ErasingAnAccountWithinOneTenantLeavesItsOtherTenantsAlone()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30);
+
+        RefreshTokenIssueResult here = await store.IssueAsync(new RefreshTokenSubject(41, 7));
+        RefreshTokenIssueResult elsewhere = await store.IssueAsync(new RefreshTokenSubject(41, 9));
+        RefreshTokenIssueResult somebodyElse = await store.IssueAsync(new RefreshTokenSubject(42, 7));
+
+        RefreshTokenPurgeResult purged = await store
+            .PurgeSubjectAsync(RefreshTokenPurgeScope.ForAccountInPortal(41, 7));
+
+        purged.RemovedRecords.Should().Be(1, "one account, one tenant, one record");
+
+        (await store.InspectAsync(here.RefreshToken!, ClientA)).Outcome.Should().Be(RefreshTokenOutcome.Unknown);
+        (await store.InspectAsync(elsewhere.RefreshToken!, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Succeeded,
+            "the account still belongs to that tenant, and its session there was never in question");
+        (await store.InspectAsync(somebodyElse.RefreshToken!, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Succeeded,
+            "another subject's record is not this subject's to erase");
+    }
+
+    /// <summary>Erasing a tenant removes every account's records within it, and only within it.</summary>
+    /// <remarks>
+    /// PRIV-02. A tenant's records outlive its members: an account RETAINED because it belongs to another
+    /// tenant still holds records scoped to the deleted one, and a per-account sweep over the accounts being
+    /// deleted would leave exactly those behind.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ErasingATenantRemovesEveryAccountsRecordsWithinIt()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30);
+
+        RefreshTokenIssueResult leaving = await store.IssueAsync(new RefreshTokenSubject(41, 7));
+        RefreshTokenIssueResult retained = await store.IssueAsync(new RefreshTokenSubject(42, 7));
+        RefreshTokenIssueResult otherTenant = await store.IssueAsync(new RefreshTokenSubject(42, 9));
+
+        RefreshTokenPurgeResult purged = await store.PurgeSubjectAsync(RefreshTokenPurgeScope.ForPortal(7));
+
+        purged.RemovedRecords.Should().Be(2);
+
+        (await store.InspectAsync(leaving.RefreshToken!, ClientA)).Outcome.Should().Be(RefreshTokenOutcome.Unknown);
+        (await store.InspectAsync(retained.RefreshToken!, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Unknown,
+            "the account survives the tenant, but its session IN that tenant does not");
+        (await store.InspectAsync(otherTenant.RefreshToken!, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Succeeded,
+            "the same account's session in a surviving tenant is untouched");
+    }
+
+    /// <summary>Erasing a subject the store never held is a completed erasure, not a failure.</summary>
+    /// <remarks>
+    /// Idempotence, and it is what lets a deletion path call this unconditionally. Most members of a tenant
+    /// have never signed in on any given instance, so "no such record" is the ordinary answer rather than an
+    /// exceptional one - and a store that holds nothing about a subject genuinely holds no personal data about
+    /// it, which is the whole claim the erasure makes.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ErasingASubjectTheStoreNeverHeldIsACompletedErasure()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30);
+
+        RefreshTokenPurgeResult purged = await store.PurgeSubjectAsync(RefreshTokenPurgeScope.ForAccount(999));
+
+        purged.Outcome.Should().Be(RefreshTokenOutcome.Unknown, "nothing matched");
+        purged.RemovedRecords.Should().Be(0);
+        purged.Answered.Should().BeTrue("the store answered, which is what a caller acts on");
+    }
+
+    /// <summary>A revoked record is reclaimed once its retention window has elapsed, and not before.</summary>
+    /// <remarks>
+    /// PRIV-02. THE DOCUMENTED MINIMUM PERIOD, MEASURED AT BOTH ENDS. Before this window existed the only
+    /// thing that reclaimed a revoked record was its family's absolute ceiling, so an ordinary sign-out left
+    /// the account, the tenant and the token digest in the store for the remainder of the refresh lifetime -
+    /// thirty days, in this fact's configuration. The window is what the record is kept FOR: inside it a replay
+    /// of the family is still recognisable, and outside it the record is only personal data.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ARevokedRecordSurvivesItsRetentionWindowAndNoLonger()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30, revokedRetentionHours: 6);
+
+        string token = await IssueAsync(store, userId: 41);
+        (await store.RevokeAsync(token)).Should().Be(RefreshTokenOutcome.Succeeded);
+
+        clock.Advance(TimeSpan.FromHours(6) - TimeSpan.FromSeconds(1));
+
+        (await store.PurgeRetiredAsync()).RemovedRecords.Should().Be(
+            0,
+            "one second inside the window, the replay signal is still worth keeping");
+        (await store.InspectAsync(token, ClientA)).Outcome.Should().Be(RefreshTokenOutcome.Revoked);
+
+        clock.Advance(TimeSpan.FromSeconds(1));
+
+        (await store.PurgeRetiredAsync()).RemovedRecords.Should().Be(
+            1,
+            "at the boundary the window has elapsed and the record is only personal data");
+        (await store.InspectAsync(token, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Unknown,
+            "and it is gone rather than merely unreadable");
+    }
+
+    /// <summary>Reclamation never removes a record that is still redeemable.</summary>
+    /// <remarks>
+    /// The other half of the retention rule, and the half a careless implementation breaks: the window bounds
+    /// REVOKED records only. A live session's record is retained until its family ceiling whatever the window
+    /// says, because erasing it would sign its holder out - turning a data-retention improvement into an
+    /// availability defect.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ReclamationLeavesALiveSessionAlone()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30, revokedRetentionHours: 1);
+
+        string live = await IssueAsync(store, userId: 41);
+
+        clock.Advance(TimeSpan.FromDays(2));
+
+        (await store.PurgeRetiredAsync()).RemovedRecords.Should().Be(0);
+        (await store.InspectAsync(live, ClientA)).Outcome.Should().Be(
+            RefreshTokenOutcome.Succeeded,
+            "a redeemable record is not retired state, whatever the revoked-record window says");
+    }
+
+    /// <summary>Reclamation still removes a family past its absolute ceiling.</summary>
+    /// <remarks>
+    /// The pre-existing ground for removal, asserted through the new entry point so that adding the second
+    /// ground cannot quietly have replaced the first. An expired family can never be redeemed and is no longer
+    /// a theft signal either.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ReclamationRemovesAFamilyPastItsCeilingWithoutWaitingForTraffic()
+    {
+        MutableClock clock = new(Origin);
+        RefreshTokenStore store = Store(clock, slidingDays: 7, familyDays: 30, revokedRetentionHours: 720);
+
+        string token = await IssueAsync(store, userId: 41);
+
+        clock.Advance(TimeSpan.FromDays(31));
+
+        (await store.PurgeRetiredAsync()).RemovedRecords.Should().Be(1);
+        store.DescribeCapacity().TrackedGenerations.Should().Be(
+            0,
+            "reclamation no longer waits for somebody to sign in");
+    }
+
     /// <summary>Constructs a store with a controllable clock and an explicit shape.</summary>
     /// <param name="clock">The clock the test advances.</param>
     /// <param name="slidingDays">Per-generation sliding lifetime, in days.</param>
@@ -463,6 +678,11 @@ public class RefreshTokenStoreBehaviorTests
     /// </param>
     /// <param name="concurrentUseGraceSeconds">
     /// Same-client grace, in seconds. Defaults to the shipped default for the same reason.
+    /// </param>
+    /// <param name="revokedRetentionHours">
+    /// How long a revoked record is retained before reclamation erases it, in hours. Defaults to the shipped
+    /// default so that every fact written before PRIV-02 introduced the window still exercises the shipped
+    /// behaviour; the retention facts set it explicitly because the window is what they measure.
     /// </param>
     /// <returns>The store.</returns>
     /// <remarks>
@@ -478,7 +698,8 @@ public class RefreshTokenStoreBehaviorTests
         int slidingDays,
         int familyDays,
         int maximumTrackedTokens = 100_000,
-        int concurrentUseGraceSeconds = 5) => new(
+        int concurrentUseGraceSeconds = 5,
+        int revokedRetentionHours = 24) => new(
         clock,
         Options.Create(new JwtOptions
         {
@@ -494,6 +715,7 @@ public class RefreshTokenStoreBehaviorTests
             Provider = RefreshTokenStoreOptions.InProcessProvider,
             MaximumTrackedTokens = maximumTrackedTokens,
             ConcurrentUseGraceSeconds = concurrentUseGraceSeconds,
+            RevokedRecordRetentionHours = revokedRetentionHours,
         }));
 
     private static async Task<string> IssueAsync(RefreshTokenStore store, int userId)

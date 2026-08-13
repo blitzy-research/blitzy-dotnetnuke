@@ -1490,28 +1490,62 @@ recorded with dated evidence so that it is neither re-litigated nor mistaken for
 guarantee.** Advisory data changes underneath a fixed lockfile, so a number written here without
 a date is worthless within weeks.
 
-**Reproduce it:** `cd frontend && npm audit`. Measured **12 August 2026**, npm 10.8.2, against
+**Reproduce it:** `cd frontend && npm audit`. Measured **13 August 2026**, npm 10.8.2, against
 the committed `frontend/package-lock.json` (SHA-256
-`27114fb800c984306764675ee197ede19ef894e5ba7fbf1eca8f9bcbaece9f23`), which resolves **1,047**
-dependencies — 11 production, 1,037 development, 144 optional:
+`d8f3a622ef01d97e8836e437c21d4cacfc8b2f89c373984f167ed35e8a1dfdf1`), which resolves **1,123**
+packages — 7 production, 1,115 development, 171 optional:
 
 | Severity | Count |
 | --- | --- |
 | Critical | 0 |
-| High | 19 |
-| Moderate | 7 |
-| Low | 1 |
-| **Total** | **27**, across 22 distinct root advisories |
+| High | 13 |
+| Moderate | 0 |
+| Low | 0 |
+| **Total** | **13**, across 8 distinct root advisories |
 
-**Sixteen of the 22 roots are development and build-toolchain packages** that never reach the
-browser bundle and are absent from the runtime image, which is `nginx:alpine` serving static
-files: `webpack-dev-server` (4 advisories), `http-proxy-middleware` (2),
-`serialize-javascript` (2), `image-size` (2), the `esbuild` development server, `nanoid`,
-`uuid`, `sigstore` and `@sigstore/core`.
+**Every advisory that has an available fix has been fixed.** The previous measurement of this
+graph — 27 records across 22 roots — was reduced to 13 across 8 by the remediation below, and
+what remains is exactly the set for which no released version clears the advisory.
 
-**Six are against packages that do ship in the bundle**, and each requires a feature this
-application does not use. All six are ranged `<= 19.2.25` — the whole of Angular 19.2.x — so
-none has a remedy inside the mandated major version:
+**What was fixed, and how.** Fourteen development-toolchain records were cleared with `overrides`
+in `frontend/package.json`. Two of them use npm's NESTED override form, and that is not a
+stylistic choice: each of those two packages appears TWICE in the graph, once affected and once
+not, and a blunt top-level override would have dragged the unaffected copy across a major version.
+
+| Package | Was | Now | Note |
+| --- | --- | --- | --- |
+| `webpack-dev-server` | 5.2.2 | 5.2.6 | Clears four advisories; two of them are ranged `<= 5.2.5`, so 5.2.6 is the first release that clears them at all |
+| `serialize-javascript` | 6.0.2 | 7.1.0 | Reached through `copy-webpack-plugin`, which runs during a production build, so this one was verified by building rather than by reasoning |
+| `nanoid` | 3.3.16 | 3.3.18 | Reached through `postcss`; stays on the 3.x line |
+| `uuid` | 8.3.2 | 11.1.1 | Reached only through `sockjs`, the development server's WebSocket transport |
+| `sigstore` | 3.1.0 | 4.1.1 | Reached only through `pacote`, npm's own package fetcher |
+| `@sigstore/core` | 2.0.0 | 3.2.1 | Same chain |
+| `esbuild` (nested under `@angular/build` and `@angular-devkit/build-angular`) | 0.28.0 | 0.28.2 | **`vite`'s own copy is deliberately left at 0.25.12**, which is outside the advisory's `>= 0.27.3 < 0.28.1` range. A top-level override would have moved it too, across three minor versions of the tool `vite` is pinned against |
+| `http-proxy-middleware` (nested under `@angular-devkit/build-angular`) | 3.0.5 | 3.0.7 | **`webpack-dev-server`'s own copy is deliberately left at 2.0.10**, which no advisory covers. A top-level override would have forced it from 2.x to 3.x — a major break for the package that depends on it |
+
+**Two production identities were removed from the production graph.** `@angular/compiler` and
+`@angular/platform-browser-dynamic` were declared as runtime `dependencies` while being needed only
+for just-in-time compilation, which this application never performs: the production build is
+ahead-of-time, and nothing under `frontend/src` imports either package. Both moved to
+`devDependencies`, where the Karma harness that genuinely needs JIT still resolves them. The
+production-only advisory count fell from 7 to 5 as a direct result, and the full test suite still
+reports 5,922 passing specs, which is what proves the harness was not broken by the move.
+
+**What remains, and why it cannot be fixed here.** Two roots, eight records:
+
+- **`image-size` (2 high, `<= 2.0.2`)** — genuinely unfixable today: the latest published release
+  IS 2.0.2, so every existing version is inside the affected range and no override can clear it.
+  It is doubly unreachable in this workspace: it arrives through `less`, and this workspace
+  contains **zero** `.less` files — `angular.json` declares `inlineStyleLanguage: scss` and a
+  single `src/styles.scss` entry — so the LESS compiler that would call it is never invoked, and
+  neither is present in the runtime image.
+- **The six Angular advisories below**, all ranged `<= 19.2.25`, which is the whole of the mandated
+  major. Two of the six (`@angular/compiler`) are now development-only as a result of the move
+  described above.
+
+**Four of the six are against packages that ship in the bundle**, and each of the six requires a
+feature this application does not use. All six are ranged `<= 19.2.25` — the whole of Angular
+19.2.x — so none has a remedy inside the mandated major version:
 
 | Advisory | Package | Requires | Measured in this workspace |
 | --- | --- | --- | --- |
@@ -1522,20 +1556,109 @@ none has a remedy inside the mandated major version:
 | GHSA-58w9-8g37-x9v5 | `@angular/compiler` | A sanitised property bound two-way | No security-sensitive DOM property is bound anywhere: zero `innerHTML`, zero `DomSanitizer`, zero `bypassSecurityTrust*` in production source (Section 4.16) |
 
 **Consequence: `npm audit` is not a build gate.** Gate 3 is install plus production build;
-Gate 4 is the test run. A threshold on the build would fail on 19 high-severity findings this
-application cannot execute, on the day it was added, with no upgrade available inside Angular
-19. The equivalent trap was checked and cleared on the .NET side in Section 8.
+Gate 4 is the test run. A threshold on the build would still fail on the 13 remaining
+high-severity findings — none of which this application can execute and none of which has an
+available fix — on the day it was added. The equivalent trap was checked and cleared on the .NET
+side in Section 8. **This is a decision about the GATE, not permission to leave fixable advisories
+alone:** everything with a released fix was fixed, which is why the remaining set is exactly the
+unfixable one.
 
-**When to revisit, rather than "never".** Re-run the command and update the table above
+**The upgrade that would clear the Angular six, and why it is a separate decision.** All six are
+remedied only by a major-version move off Angular 19, which AAP 0.6 freezes and AAP 0.6.4 records
+as checked and rejected for this delivery. That upgrade is a security-reviewed change of its own:
+it moves the framework, the build toolchain, the TypeScript line and the test harness together, and
+every one of the six advisories must be re-tested against the new graph rather than assumed cleared.
+It is not smuggled into a remediation pass, and the reachability evidence above is what makes
+deferring it defensible in the meantime.
+
+**When to revisit, rather than "never".** Re-run the command and update the tables above
 whenever `package-lock.json` changes, before a release, and when the Angular major version is
 raised — at which point each of the six runtime advisories should be re-tested for a remedy
-rather than re-inherited. The decision is scoped to this lockfile and this major version.
+rather than re-inherited, and `image-size` should be re-checked for a first fixed release. The
+decision is scoped to this lockfile and this major version.
 
 **Supersession note.** An earlier revision of this section reported 48 advisories — 1 critical,
 36 high, 9 moderate, 2 low — against a pristine scaffold and asserted that *exactly one* root
 advisory touched a runtime dependency. That was a true measurement of a different graph at a
 different date; it is stale on every figure and is superseded by the table above. It is recorded
 here so that a reader meeting the old numbers elsewhere knows which is current.
+
+### Deprecation is not vulnerability: the maintenance-debt inventory
+
+A **deprecated** package is one its publisher has marked superseded. That is a maintenance
+signal, not a security finding: none of the packages below carries an advisory, and both
+vulnerability scans are clean — `dotnet list package --vulnerable --include-transitive` reports
+nothing across all six projects, and none of the deprecated npm packages appears in any `npm audit`
+record above. The two lists are disjoint, and this subsection exists so that the debt is *counted
+and dated* rather than discovered again later as if it were new.
+
+Measured **13 August 2026** with `dotnet list package --deprecated --include-transitive`, roots
+attributed with `dotnet nuget why`, and `npm ci` (which prints the npm warnings and leaves
+`package-lock.json` untouched — verified by SHA-256 before and after).
+
+**NuGet — 24 occurrences, 10 distinct packages, in 4 of the 6 projects.** The occurrence count
+exceeds the package count because a transitive package is listed once per project that reaches it.
+
+| Package | Resolved | Reason | Reached through | Ships beside the API? |
+| --- | --- | --- | --- | --- |
+| `Azure.Identity` | 1.11.4 | Other | `Microsoft.Data.SqlClient` 5.2.3, by three routes: the direct pin, `Microsoft.EntityFrameworkCore.SqlServer` 8.0.29 and `AspNetCore.HealthChecks.SqlServer` 8.0.2 | **Yes** |
+| `Microsoft.Identity.Client` | 4.61.3 | Other | `Azure.Identity`, and directly from `Microsoft.Data.SqlClient` | **Yes** |
+| `Microsoft.Identity.Client.Extensions.Msal` | 4.61.3 | Other | `Azure.Identity` | **Yes** |
+| `System.Text.Json` | 4.7.2 | Legacy | `Azure.Identity` → `Azure.Core` 1.38.0 → `System.ClientModel` 1.0.0 and `System.Memory.Data` 1.0.2 | **No** |
+| `System.Collections.Immutable` | 6.0.0 | Legacy | `Microsoft.EntityFrameworkCore.Design` 8.0.29 → `Microsoft.CodeAnalysis.CSharp.Workspaces` 4.5.0 | **No** |
+| `xunit` (top-level) plus `xunit.assert`, `xunit.core`, `xunit.extensibility.core`, `xunit.extensibility.execution` | 2.9.3 | Legacy → `xunit.v3` | The pinned test framework itself | Test projects only |
+
+Three facts make this debt small in practice, and each was measured rather than argued:
+
+- **Two of the five non-test entries do not ship at all.** `System.Text.Json.dll` and
+  `System.Collections.Immutable.dll` are **absent** from
+  `src/DnnMigration.Api/bin/Release/net8.0/` — .NET 8's shared framework supplies both, so the
+  4.7.2 and 6.0.0 package entries are build-graph artefacts that no running process loads. The
+  `System.Collections.Immutable` route additionally passes through `EntityFrameworkCore.Design`,
+  which is a design-time tool reference.
+- **The three that do ship are never invoked.** `Azure.Identity` and the two MSAL assemblies are
+  the Azure Active Directory authentication modes of `Microsoft.Data.SqlClient`, which the client
+  loads only when a connection string requests one. No connection string anywhere in `backend/src`
+  or `docker/` names an `Authentication=` mode — every one uses SQL authentication — so the
+  deprecated code path is present but unreachable.
+- **The whole non-test group is downstream of one pinned package.** All five arrive through
+  `Microsoft.Data.SqlClient` 5.2.3 or `EntityFrameworkCore.Design` 8.0.29, both of which are fixed
+  by Section 9. Nothing in this repository chose them, and no override can clear them without
+  moving a pin the framework major fixes.
+
+**The `xunit` entry is a deliberate hold.** Its stated alternative is `xunit.v3`, a different major
+line of the test framework. AAP 0.6.1 pins `xunit` 2.9.3 and AAP 0.6.4 records the v3-line runner as
+checked and rejected for this delivery, so moving would contradict the plan and would rewrite the
+harness under both suites — 3,092 unit and 1,895 integration facts — during a security remediation.
+Like the Angular major above, it is a change of its own rather than something smuggled into this
+pass. It touches test code only and reaches no shipped artefact.
+
+**npm — 5 warnings, 4 distinct packages, every one development-only.**
+
+| Package | Version | Reached through | Publisher's note |
+| --- | --- | --- | --- |
+| `inflight` | 1.0.6 | `karma` 6.4.4 | Unsupported, and leaks memory |
+| `rimraf` | 3.0.2 | `karma` 6.4.4 | Versions before v4 unsupported |
+| `glob` | 7.2.3 | `karma` 6.4.4 | Old versions unsupported |
+| `glob` | 10.5.0 (twice) | `@angular/cli` 19.2.27, including `@npmcli/package-json` | Old versions unsupported |
+
+`npm ls --omit=dev --all` matches none of them: **zero reach the production dependency graph**, so
+none is in the bundle the browser downloads or the image `docker/frontend.Dockerfile` serves. Three
+of the four are rooted in `karma`, which AAP 0.9.2 selected over Jest precisely so that Gate 4's
+mandated command stays valid, and the fourth in the Angular CLI — the same two roots the advisory
+tables above resolve to. Both are frozen by the pinned Angular major.
+
+**The overrides in Section 9 reduced this debt as well as the advisory count, which is worth
+recording because it was not the goal.** `uuid` appeared in this list before that work and does
+not now: it resolves to 11.1.1, a release its publisher has not deprecated. The `sigstore`
+override likewise pulled in `glob` 13.0.6, which is current. Neither was chosen for its
+deprecation status — both were advisory fixes — but the effect is real and means the remaining four
+are exactly those with no compatible replacement inside the pinned majors.
+
+**When to revisit.** Re-run both commands whenever a lockfile changes and before a release. The
+NuGet group clears when `Microsoft.Data.SqlClient` and `EntityFrameworkCore.Design` are next
+raised; the npm group clears when `karma` and `@angular/cli` are, which is the Angular major move
+described above. Neither is a security action, and neither should be presented as one.
 
 ## 11. Validation gate outcomes
 
@@ -2121,15 +2244,44 @@ held in the **memory of a single process**. Therefore:
 - **Replica-local.** A refresh token can only be redeemed by the process that
   issued it. Running two or more API replicas without sticky routing produces
   refresh failures that look intermittent and are not.
-- **Retention is bounded by the configured lifetime, not by process lifetime.**
-  A family past its absolute ceiling is **removed in full**, every generation of
-  it, on the next issue or rotation. A consumed generation is kept until that
-  ceiling and not beyond, because until then its digest is the signal that
-  detects a replay. A second, absolute bound sits behind the first: the store
-  tracks at most 100,000 generations and, if that ceiling were ever reached,
-  evicts the families nearest their absolute expiry first. Nothing grows without
-  limit, and no request fails because of either bound - the only cost is that the
-  oldest refresh families stop refreshing.
+- **Retention is bounded by the configured lifetime, not by process lifetime, and
+  it no longer depends on traffic.** A family past its absolute ceiling is
+  **removed in full**, every generation of it. A record that has been **revoked**
+  is removed once it is `RefreshTokenStore:RevokedRecordRetentionHours` past its
+  revocation - default **24 hours**, bounded 1 to 720 - and not before, because
+  until then its digest is the signal that detects a replay of the token it
+  retired. Those are two independent grounds for removal, and the shorter one
+  usually fires first: a signed-out session's record used to be kept for the whole
+  remaining family ceiling, which could be days.
+
+  **Reclamation runs on a schedule as well as on use.** Removal happens on the
+  next issue or rotation, and also on a periodic sweep -
+  `RefreshTokenStore:RetentionSweepMinutes`, default **60**, bounded 1 to 1440 -
+  driven by a hosted `RefreshTokenRetentionService` that resolves the store per
+  sweep and never throws. This closes a real gap rather than adding a
+  nicety: reclamation used to be reachable **only from a store operation**, so a
+  deployment that stopped seeing sign-ins retained every revoked and expired
+  record for as long as it stayed quiet - which is precisely the state a deployment
+  is in after the event that makes retention matter.
+
+  **Deleting a subject or a tenant ERASES, it does not stamp.** Revocation is the
+  right treatment for a sign-out and the wrong one for a deletion: a stamped row
+  still names the account, the tenant and the token digest. Removing an account
+  therefore erases its records - narrowed to the departing tenant when the account
+  survives because it belongs to another - and removing a tenant erases every
+  record scoped to it, including those of members retained for the same reason.
+  Both erasures run **after** the relational commit and neither can fail the
+  operation: the subject is already gone, no retry can restore it, the records are
+  already revoked so nothing is exchangeable, and the outstanding erasure is
+  recorded as a property of the audit entry and swept up later.
+
+  A second, absolute bound sits behind all of this: the store tracks at most
+  `MaximumTrackedTokens` records - default 100,000, a setting rather than a
+  compiled constant - and, if that ceiling were reached, evicts **whole families**
+  nearest their absolute expiry first, never a partial family, because a
+  half-tracked family cannot detect the replay it exists to detect. Nothing grows
+  without limit, and no request fails because of any of these bounds - the only
+  cost is that the oldest refresh families stop refreshing.
 
 **Why it is built this way.** A durable store would need a table, and the
 governing constraint of this migration is that the existing SQL Server schema is
@@ -2139,6 +2291,24 @@ with no refresh-token table among them. There is therefore no sanctioned place t
 persist this state. The in-process store is the honest implementation of that
 constraint, and the deployment topology it requires is the one the repository
 already ships: `docker/docker-compose.yml` defines a **single** `api` service.
+
+> **⚠ The paragraph above is superseded in part, and the sentence "there is
+> therefore no sanctioned place to persist this state" is no longer true of the
+> delivered code.** A durable, replica-safe `SqlServer` provider now ships,
+> **opt-in and defaulted off**, holding one table in a **catalogue of its own**
+> that is provisioned out of band by `docker/sql/refresh-token-store.sql`. Rule
+> T4 is untouched by it: the objection above was to a table in the DotNetNuke
+> schema, and that schema still receives no `CREATE`, `ALTER` or `DROP` from this
+> work. Everything else the paragraph says still holds, and still holds *of the
+> default*: `InProcess` remains the default, so restart-lossy and replica-local
+> remain the delivered behaviour unless a deployment opts out. What changed as
+> well is that opting out is now **required** to run more than one instance -
+> Production refuses to start on the process-local store unless the deployment
+> explicitly acknowledges that it runs a single instance. The provider set, the
+> topology validation and the health reporting are recorded in full under
+> *Erratum, 12 August 2026: the refresh-token store has a shared provider as well
+> as a process-local one*; this pointer exists because that erratum names a later
+> entry than this one, so a reader who stopped here would have been misled.
 
 **Deployment requirement.** Run one API instance, or introduce a durable or
 shared store before running more than one. Treat a restart as a sign-out event.
@@ -13076,18 +13246,94 @@ moved to `tar` 7, two other consumers in this very dependency tree were already 
 range is the package-fetching client used by scaffolding commands, not by the production
 build or the test run. Both of those were then executed to confirm it.
 
-**Two further candidates were rejected, and the reason is worth recording because the
-temptation to take them is obvious.** `esbuild` 0.28.1 clears its advisory, but the bundler
-declares `^0.25.0`, which for a `0.x` version admits nothing at or above 0.26. Likewise
-`http-proxy-middleware` 3.0.7 clears its advisory, but the development server declares
-`^2.0.9`, and two majors of that package legitimately coexist in the tree today. A blanket
-override of either would force an incompatible major onto a second consumer's live range -
-trading a build-chain advisory for a broken build, which is a worse outcome than the advisory.
-They are left alone.
+**Two further candidates were rejected here as BLANKET overrides, and that judgement was
+correct - but they are now taken as NESTED overrides, which is the instrument the objection was
+actually asking for.** The original reasoning: `esbuild` 0.28.1 clears its advisory but a
+consumer declares `^0.25.0`, which for a `0.x` version admits nothing at or above 0.26;
+`http-proxy-middleware` 3.0.7 clears its advisory but a consumer declares `^2.0.9`, and two
+majors of that package legitimately coexist in the tree. A blanket override of either would
+force an incompatible major onto a second consumer's live range - trading a build-chain
+advisory for a broken build, which is a worse outcome than the advisory.
 
-**What remains, and the bound on accepting it.** The critical finding is gone and the total
-falls from 29 advisories to 24 - twelve high, eleven moderate, one low. Every one of the
-remainder is a build-time or scaffolding dependency that never reaches a browser bundle, and
+That cost is avoidable, and the rule stated three paragraphs above is what shows how: *an exact
+pin is precisely what an override exists to displace, but a range is a real constraint*. Reading
+the declared ranges rather than assuming them shows that each package is declared BOTH ways, by
+different consumers:
+
+| Package | Consumer declaring an EXACT pin (displaceable) | Consumer declaring a LIVE RANGE (must be respected) |
+| --- | --- | --- |
+| `esbuild` | `@angular/build` → `0.28.0`; `@angular-devkit/build-angular` → `0.28.0` | `vite` → `^0.25.0` |
+| `http-proxy-middleware` | `@angular-devkit/build-angular` → `3.0.5` | `webpack-dev-server` → `^2.0.9` |
+
+The affected copies are the exact-pinned ones; the ranges belong to copies that no advisory
+covers. npm's nested override form therefore clears both advisories without touching either
+range - the overrides are scoped under `@angular/build` and `@angular-devkit/build-angular`
+only. Verified in the resulting lock file rather than assumed: `esbuild` resolves 0.28.2 under
+both Angular packages and **0.25.12 under `vite`**, and `http-proxy-middleware` resolves 3.0.7
+under the build package and **2.0.10 under `webpack-dev-server`**. The production build and the
+full 5,922-spec test run were both executed afterwards.
+
+The lesson generalises, and it is the reason this paragraph was rewritten rather than deleted:
+"a second consumer's range forbids it" is an argument against a BLANKET override specifically,
+not against fixing the advisory. Check whether the affected copy is the pinned one before
+accepting an advisory on those grounds.
+
+**A third .NET advisory is now fixed the same way: SSH.NET.** GHSA-q939-rpr3-3284 (high) is an
+arbitrary file write performed by `ScpClient` when it recursively downloads server-named files.
+Its fixed boundary IS 2026.0.0, so *every* earlier release is affected, and the version in the
+graph arrives entirely transitively: `Testcontainers.MsSql` 3.10.0 → `Testcontainers` 3.10.0 →
+`SSH.NET` 2023.0.0. The integration test project therefore takes a direct
+`PackageReference` on 2026.0.0 - the same manoeuvre as the SQLite bundle above, for the same
+reason, and with the same "it looks unused because it IS unused" hazard attached to it.
+
+The advisory data's own suggestion - move `Testcontainers.MsSql` to 4.13.0 - is not available:
+AAP 0.6.4 lists that version among the ones checked and rejected for this delivery. Pinning the
+vulnerable leaf instead clears the identity without moving the container library at all.
+
+Three facts establish that the vulnerable code cannot execute here, and they were gathered rather
+than assumed: nothing in `backend/` calls into the package (the name appears only in the project
+comment and in the pin's own guard); `Testcontainers` 3.10.0's assembly references only the
+`Renci.SshNet` namespace and the `SshClient` type and does **not** reference `ScpClient` at all;
+and that library's SSH path exists to reach a REMOTE Docker endpoint, whereas this suite talks to
+a local daemon. So the pin removes a vulnerable identity from the restore graph rather than
+closing a reachable hole - which is exactly what a dependency-integrity review is entitled to
+require.
+
+The three-release-year jump was verified by execution, not by version arithmetic: after the pin,
+the container route was exercised end to end - a real SQL Server container and its reaper were
+provisioned, 138 persistence facts passed against it, and the container was torn down - and a
+solution-wide `dotnet list package --vulnerable --include-transitive` then reported **no
+vulnerable packages in any of the six projects**. The upgrade also swaps one transitive identity
+for another (`SshNet.Security.Cryptography` gives way to `BouncyCastle.Cryptography` 2.7.0); that
+new identity was included in the same clean scan, so the fix does not trade one advisory for a
+different one.
+
+**The lock file moved deliberately for this, and only for this.** Locked-mode restore is what
+makes these tests reproducible, so `packages.lock.json` is otherwise left strictly alone. Adding
+the reference necessarily rewrites the SSH.NET entries, so the file was regenerated once, on
+purpose - a 17-insertion, 15-deletion change confined to SSH.NET and its own dependencies - and
+locked-mode restore was then re-run to prove determinism survived. Any further churn in that file
+is accidental.
+
+**Both .NET pins now have a guard, because neither had one.** A direct reference that nothing
+calls is exactly what a later tidy-up deletes, and its deletion silently restores the vulnerable
+transitive version with no compilation error and no other test failure.
+`backend/tests/DnnMigration.IntegrationTests/Infrastructure/SecurityPinTests.cs` asserts the
+version of the assembly actually COPIED beside the tests - not the project file and not the lock
+file, because a pin can be present in the project and still lose to a nearer constraint. It reads
+the file's metadata without loading it or naming a type from it, which is what keeps the
+"nothing calls this package" statement true.
+
+**What remains, and the bound on accepting it.** ⚠ THE FIGURES IN THIS PARAGRAPH ARE THE ONES
+THAT WERE TRUE WHEN THE FIVE OVERRIDES ABOVE WERE ADDED, AND THEY HAVE SINCE IMPROVED. The npm
+graph now reports 13 records across 8 roots - nothing moderate, nothing low, nothing with an
+available fix left unfixed - and the .NET graph reports none at all. Section 10 carries the
+current measurement, its date, the lock-file hash it was taken against and the
+package-by-package account of what moved; read it rather than the sentence that follows, which is
+retained so that the reasoning of the time is not rewritten. At that time: the critical finding
+was gone and the total fell from 29 advisories to 24 - twelve high, eleven moderate, one low. Every
+one of the remainder was a build-time or scaffolding dependency that never reaches a browser
+bundle, and
 every one of them reports its only remedy as a framework major bump that the pinned Angular
 and Node versions forbid, or has no published remedy at all. The framework's own advisories
 keep the unreachability argument recorded in the earlier section: this workspace is built
@@ -13100,6 +13346,7 @@ ones the review asked for: build on isolated runners, and never let an untrusted
 untrusted input reach a build step.
 
 **Annotated in code at.** `backend/tests/DnnMigration.IntegrationTests/DnnMigration.IntegrationTests.csproj`,
+`backend/tests/DnnMigration.IntegrationTests/Infrastructure/SecurityPinTests.cs`,
 `frontend/package.json`.
 
 
@@ -21724,3 +21971,568 @@ identically so no two of them can disagree.
 `docker/api-proxy.conf`,
 `docker/nginx.conf`,
 `backend/tests/DnnMigration.IntegrationTests/Api/TenantResolutionTests.cs`.
+
+---
+
+## Security-remediation checkpoint: the divergences introduced while closing a dedicated security review
+
+The entries below were recorded while resolving a dedicated final security-gate review that
+returned **NOT APPROVED** with 27 grouped findings — one critical, five high, seven major, eight
+minor and six information notes. Every one is resolved. They are grouped here rather than scattered
+because they share a cause: each is a place where closing a security finding **changed observable
+behaviour**, and Rule T5 requires the difference to be recorded rather than absorbed.
+
+Where an entry reverses or narrows something an earlier entry in this register describes, it says
+so and names what it supersedes. Nothing here weakens a preserved legacy behaviour without saying
+what was traded for it.
+
+### The tenant alias vocabulary has ONE authority, and addresses outside it are now refused
+
+**Legacy behaviour.** `GetPortalSettings` resolved a tenant with
+`where PortalAlias like '%' + @PortalAlias + '%'` — a substring match with no vocabulary at all.
+Any string was a candidate alias.
+
+**What the review found.** The entry immediately above describes the child-portal segment being
+carried by browser, proxy and API. What it could not see is that the four components deciding what
+a *legal* alias is **did not agree**, and a fifth mirror existed that no finding named
+(`portal-alias-list.component.ts`). The disagreement was demonstrable rather than theoretical: with
+one row inserted as `PortalAlias(-1, 'localhost:8080/api')`, `POST /api/v1/auth/login` went from
+**200 with a token to 401**, and deleting the row restored it. A stored alias could therefore make
+the API's own routes unreachable, and the resolver's silent fall back to the bare host meant an
+address that named a tenant it could not resolve was served as though it had named none.
+
+**Target behaviour.** One server-side declaration,
+`backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs`, is the single authority, and the
+validator, the resolver, the SPA and the proxy matcher are all aligned to it:
+
+- **Exactly ONE optional path segment.** `PortalContextHolder.MaximumAliasPathSegments` was capped
+  from four to one. Four was never reachable — the legacy signup screen composed one — so the
+  extra three widened the matcher without widening the feature.
+- **The dot is excluded from the segment vocabulary.** This is the structural move and it is worth
+  stating plainly: with no dot permitted, "names a served file" and "names a tenant" become
+  disjoint **by construction**. An earlier draft carried a 19-entry list of document extensions to
+  refuse; excluding the dot let that list be **deleted** rather than maintained.
+- **Eleven reserved segments are refused**, including the console's own top-level route names and
+  `api`, `health` and `swagger`. `api` had to be RESERVED rather than exempted: the resolution
+  middleware deliberately does not exempt `/api`, which is exactly why an alias spelling `api`
+  could shadow it.
+- **Resolution fails closed.** A non-reserved first path segment now requires an exact alias match;
+  there is no bare-host fallback. This is safe because `PortalAliasResolutionMiddleware`
+  requires a resolved tenant only where an endpoint was matched, so an unresolvable address is
+  answered by routing rather than served against the wrong tenant.
+- **A child beneath a child is refused** at creation with `portal.parent_alias_too_deep`, because
+  composing a second segment onto a parent that already carries one would exceed the depth every
+  matcher now enforces.
+- **A startup conformance monitor** enumerates stored aliases that violate the contract, so an
+  installation that predates it learns which rows are unaddressable instead of discovering it as a
+  404.
+
+**Two deliberate non-changes.** A scheme-prefixed alias is still ACCEPTED by the creation contract,
+because refusing it would change a preserved legacy input; it is simply unaddressable, and the
+monitor now reports it. And the review's suggestion to have the server author a bootstrap tenant
+prefix was **not implemented** — the ambiguity it would have worked around was removed at source
+instead, which is the better fix and leaves nothing for a prefix to disambiguate.
+
+**Cost accepted.** Two tests asserted the looser contract and were inverted rather than preserved:
+a `PortalServiceTests` case that expected `parent.example/first` + `second` to compose
+`parent.example/first/second`, and the corresponding frontend expectation. A test that encodes a
+contract the system no longer honours is not evidence.
+
+**Annotated in code at.** `backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs`,
+`backend/src/DnnMigration.Application/Validation/PortalAliasRules.cs`,
+`backend/src/DnnMigration.Application/Validation/CreatePortalRequestValidator.cs`,
+`backend/src/DnnMigration.Infrastructure/Services/PortalContextHolder.cs`,
+`backend/src/DnnMigration.Api/Diagnostics/PortalAliasConformanceMonitor.cs`,
+`frontend/src/app/core/config/tenant-path.ts`,
+`frontend/src/app/features/portal/portal-alias-list/portal-alias-list.component.ts`,
+`docker/api-proxy.conf`.
+
+**Proved by.** `backend/tests/DnnMigration.UnitTests/Validation/PortalAliasContractTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Api/TenantResolutionTests.cs`,
+`frontend/src/app/core/config/tenant-path.spec.ts`.
+
+### Replacing a credential is a compare-and-swap, and a sign-in re-reads the credential three times
+
+**Legacy behaviour.** The ASP.NET membership provider read a credential and wrote a replacement as
+two independent statements. It had the same race and lost it the same way — this is not a
+regression being introduced, it is one being closed.
+
+**What the review found.** A credential reset or change racing an in-flight sign-in could mint a
+session from a credential that had already been retired. The window was real because the sign-in
+path read the stored credential, verified it, and then issued tokens without re-reading it.
+
+**Target behaviour.** Three things changed, and the third is a deliberate compromise rather than
+the obvious design:
+
+1. **The write is a compare-and-swap.** `SetPasswordHashAsync` now carries the hash the caller
+   expected to find and the SQL predicate tests it, so a write whose premise has expired is refused
+   rather than applied. `MembershipStore` borrows the unit of work's own connection and enlists in
+   the ambient transaction — confirmed against `IUserRepository`'s contract, which requires exactly
+   that — so the CAS is the point at which two replicas serialise.
+2. **The sign-in re-reads the credential immediately before issuing tokens** and refuses if it
+   changed, recording `SecurityDiagnosticEvent.CredentialChangedDuringSignIn`.
+3. **A credential write sweeps the account's refresh families TWICE**, before and after the write,
+   and a sign-in re-reads the credential AFTER issuance and revokes the family it just minted if
+   the credential moved underneath it. This was chosen **instead of binding a credential epoch into
+   the token record**, which would be the tighter design, because the token table is provisioned
+   out of band from `docker/sql/refresh-token-store.sql` and adding a column to it would either
+   require runtime DDL — the very thing SEC-05 below removes — or change a schema Rule T4 freezes.
+
+**Two costs accepted, both stated because they are asymmetries a reader would otherwise trip on.**
+A credential write that succeeds but whose SECOND session sweep fails is reported as a FAILURE over
+a credential that has already been replaced; the pre-write sweep behaves the opposite way and
+abandons. And `EndSessionsAsync` carried a remark about a residual race that was previously true
+only of approval and lock-out changes; it is now true of credential changes as well, so the remark
+finally describes what it claims to.
+
+**One implementation detail a reviewer must not tidy away.** The CAS comparison is forced to
+`COLLATE Latin1_General_BIN2`. The reference database collation was measured as
+`SQL_Latin1_General_CP1_CI_AS` — case-INsensitive — so without the qualifier two hashes differing
+only in case would compare equal and the CAS would admit a write it must refuse. An integration
+test guards the qualifier for exactly this reason.
+
+**New failure codes.** `user.password.superseded`, answered **409**, and — from the entry below —
+`auth.credential_migration_store_unavailable`, answered **503**. Both are pinned by a
+problem-details contract test so the status mapping cannot drift.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Infrastructure/Persistence/MembershipStore.cs`,
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IUserRepository.cs`,
+`backend/src/DnnMigration.Domain/Enums/CredentialWriteOutcome.cs`.
+
+**Proved by.** `backend/tests/DnnMigration.UnitTests/Services/AuthServiceTests.cs`,
+`backend/tests/DnnMigration.UnitTests/Services/UserServiceTests.cs`,
+`backend/tests/DnnMigration.IntegrationTests/Api/AuthApiTests.cs`.
+
+### A failed legacy credential replacement now REFUSES the sign-in — reversing a documented fail-open
+
+**This entry reverses a previously documented decision, and must be read alongside
+"A failed credential-cost upgrade is now reported", which it does NOT change.** The two paths look
+alike and behave oppositely on purpose:
+
+| Path | Stored credential is | On store failure |
+| --- | --- | --- |
+| Work-factor upgrade | already BCrypt, at an obsolete cost | sign-in **succeeds**; `PASSWORD_REHASH_FAILURE` recorded — unchanged |
+| Legacy migration | still the reversibly-encrypted legacy representation | sign-in is **REFUSED** — this entry |
+
+**Previous behaviour, and why it was defended.** A sign-in whose credential had just been proved
+correct completed even when replacing the legacy representation with a BCrypt hash failed to
+persist, on the reasoning that a transient store fault should not become a refusal the caller
+cannot influence. A test asserted it.
+
+**What that reasoning left out.** WHAT the stored credential still is when that branch runs: a
+reversibly-encrypted value, decryptable with a 3DES key the legacy installation committed to source
+control, and the one thing that retires it is the replacement that just failed. Completing the
+sign-in told the account holder it had succeeded while leaving that representation in place
+indefinitely — and every later sign-in took the same branch for as long as the store stayed
+unhappy, so the compatibility window could close with the account still legacy and no signal
+anywhere.
+
+**Target behaviour.** The sign-in is refused with `auth.credential_migration_store_unavailable`,
+answered 503, and a message stating that nothing was changed and to try again. The refusal is
+self-correcting: a retry either completes the migration or refuses again, and a store that stays
+broken produces an operator-visible refusal instead of a silent standing exposure. The credential
+itself is unharmed and administrative reset remains the fallback. The condition is recorded under
+its own closed diagnostic member, `SecurityDiagnosticEvent.LegacyCredentialMigrationFailed`.
+
+The shape is deliberately identical to the refusal this file already prescribes for a token store
+that cannot record a session — a distinct code whose reason token ends in `store_unavailable` — so
+the caller learns a dependency is unavailable rather than being told its credential was wrong.
+
+**Cost accepted.** An installation with an unhealthy credential store now refuses legacy sign-ins
+that previously succeeded. That is the intended trade: a refusal an operator can see, in place of
+an exposure nobody could.
+
+**Annotated in code at.** `backend/src/DnnMigration.Application/Services/AuthService.cs`.
+
+**Proved by.** `backend/tests/DnnMigration.UnitTests/Services/AuthServiceTests.cs` — the test that
+asserted the fail-open was **inverted** to assert the refusal and its code — and
+`backend/tests/DnnMigration.IntegrationTests/Api/ProblemDetailsContractTests.cs`.
+
+### The API no longer creates its own session table, and refuses to
+
+**Legacy behaviour.** None — the legacy platform held session state in ASP.NET forms
+authentication and had no token table.
+
+**What the review found.** `CreateTableIfMissing` let the running API issue DDL under its own
+identity to provision the refresh-token table. That contradicts Rule T4, which freezes the schema,
+and it required the application principal to hold rights it should never hold. The review recorded
+it as a **regression** of a previously fixed finding, which is the strongest possible argument for
+removing the capability rather than defaulting it off.
+
+**Target behaviour.** The DDL branch is deleted, the option is removed from
+`RefreshTokenStoreOptions` and from `appsettings.json`, and a configuration that still sets it is
+**actively refused at startup** rather than ignored — an ignored setting reads as though it were
+honoured. What remains is a non-secret readiness probe: the store asks whether the table is
+present and reports the answer, and it never attempts to change it. Provisioning is a deployment
+step, `docker/sql/refresh-token-store.sql`.
+
+**One divergence from the frozen plan, stated because it is one.** AAP §0.9.3 enumerates the docker
+artefacts supplied verbatim, and `docker/sql/refresh-token-store.sql` is **not** among them. It is a
+documented ADDITION, not a modification of any supplied artefact — none of the four was changed —
+and it exists because removing runtime DDL requires the provisioning to live somewhere an operator
+can run. The integration suite embeds that file **by link** rather than keeping a copy, so the shape
+the tests exercise and the shape a deployment gets cannot drift apart without a test failing.
+
+### The durable session store honours its configured bounds, evicts whole families, and reports itself accurately
+
+**What the review found.** Four defects in one file, and the reason they survived together is worth
+recording: the SQL store is reachable only through configuration, so **it had no behavioural
+coverage at all** before this checkpoint. Writing that coverage is what made each of the following
+visible.
+
+**Target behaviour, by finding.**
+
+- **Configured capacity is actually used, and bounds rotation as well as issuance (SEC-04).**
+  `ConcurrentUseGraceSeconds` and `MaximumTrackedTokens` were compiled constants that silently
+  ignored the validated options; they now govern the durable store. Capacity is enforced
+  transactionally on **rotation** as well as issuance, which is where the ceiling was previously
+  bypassed entirely.
+- **Eviction removes whole FAMILIES, and the ceiling counts all rows.** The previous ceiling
+  *refused every new sign-in* once reached, so a full table locked the whole deployment out.
+  Eviction is now the remedy instead of refusal — and it must be whole-family, because a
+  half-tracked family cannot detect the replay it exists to detect.
+- **Catalogue isolation is decided by NAME, not by textual equivalence (SEC-07).** The old guard
+  compared server and catalogue spellings, so `localhost`, `127.0.0.1` and `(local)` each read as a
+  different server. Worse, the most dangerous bypass was an OMITTED `Database` keyword: it read as
+  "no catalogue" and the guard returned false. The rules are now text-decidable and refuse unnamed
+  and system catalogues outright. **Accepted cost:** server spelling is deliberately no longer
+  compared, so the same catalogue name on a different server is refused. Refusing a legitimate
+  configuration is recoverable; admitting a shared one is not.
+- **The health report probes the durable store and describes it truthfully (SEC-09).** It
+  distinguishes two degraded states rather than reporting one. Note for anyone hunting the evidence:
+  a HEALTHY report is logged at `Debug`, which the container's Information minimum filters out.
+- **Store diagnostics carry no provider text (SEC-10).** Only the operation, the fault type, the SQL
+  error number and its class — a bounded vocabulary, so a provider message cannot leak schema,
+  principal or host detail into a log.
+- **Token and credential UTF-8 copies are zeroised (SEC-11)** through pooled buffers with
+  `CryptographicOperations.ZeroMemory`, and rotation now catches the same fault set as its siblings
+  rather than a narrower one.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/Security/SqlServerRefreshTokenStore.cs`,
+`backend/src/DnnMigration.Application/Options/RefreshTokenStoreOptions.cs`,
+`backend/src/DnnMigration.Infrastructure/HealthChecks/RefreshTokenStoreHealth.cs`,
+`backend/src/DnnMigration.Application/Services/AuthService.cs`,
+`docker/sql/refresh-token-store.sql`,
+`docker/.env.example`.
+
+**Proved by.**
+`backend/tests/DnnMigration.IntegrationTests/Security/SqlServerRefreshTokenStoreTests.cs` (new — the
+first behavioural coverage this store has had),
+`backend/tests/DnnMigration.UnitTests/Validation/RefreshTokenStoreCatalogueIsolationTests.cs`.
+
+**Also corrected here.** `docker/.env.example`'s refresh-token block previously implied a
+high-privilege principal and permissive transport. It now specifies a least-privilege principal,
+`Encrypt=True`, certificate validation, and labels the sample values local-only.
+
+### Production refuses to start on a replica-local session store unless single-instance operation is acknowledged
+
+**Legacy behaviour.** None — this is a new failure mode with no legacy counterpart, and it is stated
+as such because it can stop a host that previously started.
+
+**What the review found.** The process-local store was the production default with nothing
+asserting the invariant it depends on. Behind two or more replicas it silently produces sessions
+that only one replica can rotate — the failure is intermittent, looks like a client bug, and
+degrades security rather than availability.
+
+**Target behaviour.** In Production the host requires either a shared durable provider or an
+explicit `RefreshTokenStore:AcknowledgeSingleInstance`, and refuses to start otherwise. Non-production
+environments are exempt by design, because a developer running one process should not have to
+declare it. The compose file sets the acknowledgement because it starts exactly one instance.
+
+**Two deliberate configuration decisions.** `appsettings.Production.json` does **not** set the
+acknowledgement — a file committed to the repository must not pre-answer a question about a
+deployment's replica count on that deployment's behalf. And the integration fixture declares it in
+shared host configuration, because three suites host the API in Production and would otherwise fail
+for a reason unrelated to what they test.
+
+**A README claim was withdrawn rather than reworded.** The provider matrix asserted a reason for not
+offering a shared store that the shipped `SqlServer` provider contradicts. It was false, so it is
+gone, replaced by the matrix that now documents that provider and the settings that govern it,
+along with corrected restart and topology claims.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/DependencyInjection.cs`,
+`backend/src/DnnMigration.Api/appsettings.json`,
+`docker/docker-compose.yml`,
+`README.md`.
+
+**Proved by.** `backend/tests/DnnMigration.UnitTests/Validation/RefreshTokenStoreCatalogueIsolationTests.cs`
+and the integration hosts, plus a runtime check that observed the refusal **in both directions on the
+same image** — the host declining to start without the acknowledgement, and starting with it.
+
+### The failed-sign-out revocation retry now has a caller, and can hold more than one outstanding family
+
+**Legacy behaviour.** `FormsAuthentication.SignOut` had no server-side counterpart and no retry;
+there is nothing here being ported.
+
+**What the review found.** The retry ladder, the retention slot and the bounded backoff were all
+written, all reachable, and **never invoked once**. A sign-out whose server-side revocation failed
+retained the family for a later attempt that no code ever made.
+
+**Target behaviour.** Two changes, and the second is the one that made the first safe:
+
+- **`LoginComponent.ngOnInit` drives the drain**, as its first statement, before the
+  already-signed-in guard. The application bootstrap was deliberately **rejected** as the wiring
+  point even though the review suggested "bootstrap/sign-in": the retention set is memory-only, so
+  it is provably empty at every bootstrap by construction, and wiring it there would have added a
+  second piece of dead code to fix a finding about dead code.
+- **The single retention slot became a bounded, ordered, de-duplicated SET** — maximum four, oldest
+  evicted. With one slot, a second failed sign-out silently overwrote a family that was still
+  outstanding, so the retry could only ever rescue the most recent failure.
+
+**Public surface change.** `TokenStorageService.pendingRevocation` → `pendingRevocations`, and
+`clearPendingRevocation()` → `releasePendingRevocation(token)`. A caller that held the old shape
+must move; the plural is not a rename for its own sake, it is the defect.
+
+**Two deliberate asymmetries.** `logout()`'s success path derives `revocationOutstanding` from the
+retention set, while its failure path still reports only THIS withdrawal — driven by who reads each:
+the failure is answering "did the call I just made succeed". And the drain's residue report is
+epoch-gated, preserving the one-boundary report lifetime, while the withdrawals themselves are
+unconditional.
+
+**A stale doc paragraph was corrected rather than deleted.** A paragraph asserting that no retry and
+no cached credential existed had been orphaned above the retry method since an earlier checkpoint and
+was FALSE. It has been moved to the method it actually describes and corrected. The spec file's "no
+timer" header claim was likewise corrected, since the retry ladder is now exercised under virtual
+time.
+
+**Annotated in code at.** `frontend/src/app/core/state/auth.store.ts`,
+`frontend/src/app/core/services/token-storage.service.ts`,
+`frontend/src/app/features/auth/login/login.component.ts`.
+
+**Proved by.** `auth.store.spec.ts`, `token-storage.service.spec.ts` and `login.component.spec.ts`,
+including three pre-existing sign-in cases that now answer a withdrawal request the screen
+previously never issued.
+
+### Session records are ERASED rather than only revoked, and expiry cleanup no longer needs a caller
+
+**Legacy behaviour.** The legacy platform kept no token records, so there is no retention behaviour
+to preserve.
+
+**What the review found.** Revocation and deletion were treated as the same thing, and the contract
+only offered the first. A revoked record keeps the token digest and both subject identifiers, so an
+account or a whole tenant could be deleted while records linking to it remained. Separately, the SQL
+store's reclamation ran only from an issuance, so an installation that stopped issuing stopped
+cleaning up.
+
+**Target behaviour.**
+
+- `IRefreshTokenStore` gained `PurgeSubjectAsync` and `PurgeRetiredAsync`, with
+  `RefreshTokenPurgeScope` and `RefreshTokenPurgeResult`. **A deployment-supplied `External` store
+  must now implement both** — that is a breaking contract change and is stated as one.
+- **Removal now has two independent grounds**: the family ceiling, or being past retention after
+  revocation. `RevokedRecordRetentionHours` (default 24, bounds 1–720) keeps ordinary logout and
+  replay records long enough to investigate, and `RetentionSweepMinutes` (default 60, bounds 1–1440)
+  runs the sweep. Both are validated for **every** provider, including the process-local one.
+- **`RefreshTokenRetentionService`** is the second hosted service in the solution. It is registered
+  for every provider including `External`, resolves the store per sweep from a scope, and **never
+  throws** — an exception escaping `BackgroundService.ExecuteAsync` stops the host under .NET 8, so
+  a cleanup fault must never be able to take the API down.
+- **User and portal deletion erase after commit.** A user deletion purges that subject; a portal
+  deletion purges the tenant. The tenant-scoped purge is not tidiness: **a tenant's records outlive
+  its members**, because a member retained in another portal still holds records scoped to the
+  deleted one, and the portal revocation loop deliberately never touches those.
+- `ITokenService` grew from four operations to six.
+
+**One asymmetry, deliberate and load-bearing.** Erasure runs AFTER the commit and its failure does
+**not** fail the deletion — the audit entry records `SessionRecordsErased` either way. The pre-commit
+revocation behaves the opposite way and abandons the operation. The reason is which error is worse:
+refusing to delete an account because a cleanup failed leaves the account, whereas a failed erasure
+leaves records the sweep will collect anyway.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Domain/Abstractions/Repositories/IRefreshTokenStore.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/RefreshTokenStore.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/SqlServerRefreshTokenStore.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/RefreshTokenRetentionService.cs`,
+`backend/src/DnnMigration.Infrastructure/Security/JwtTokenService.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Application/Services/PortalService.cs`.
+
+**Proved by.** `RefreshTokenRetentionSettingTests.cs`, `RefreshTokenStoreBehaviorTests.cs`,
+`SqlServerRefreshTokenStoreTests.cs`, `Services/UserServiceTests.cs` and
+`Services/PortalServiceTests.cs` — the last including the case that matters most, a retained member
+whose records the revocation loop never touches and the tenant purge does.
+
+### An account holder's own data can be exported, and authorised responses are not cacheable
+
+**Legacy behaviour.** No export existed. The legacy admin screens rendered profile data but offered
+no portability.
+
+**Target behaviour.** `GET api/v1/users/{userId}/personal-data` returns a
+`UserPersonalDataExportDto` composing the account, profile and role-assignment projections the
+service already produced. It is gated by `AccountOwnerOrPortalAdministrator`, excludes every secret,
+never crosses a tenant boundary, and is audited as `USER_DATA_EXPORTED` recording the actor and
+**counts only, never values**.
+
+Separately, `Cache-Control: no-store, private, max-age=0` now applies to **every endpoint requiring
+authorisation**, not only credential endpoints. Credential endpoints keep their stronger
+three-header rule. `CredentialCacheControlMiddleware` therefore now carries two rules; the class name
+is kept deliberately, since renaming it would break the registration ordering argument recorded
+beside it.
+
+**Two measurement notes, both of which corrected a test rather than the code.**
+`AuthApiTests` contained an assertion requiring an authorised portal read NOT to be `no-store` — it
+had encoded the defect as intended behaviour — and was inverted. And `/health` was found to be
+`no-store` ALREADY, measured against a container image built before this change: that is ASP.NET
+Core's own `HealthCheckMiddleware` default (`AllowCachingResponses = false`), not this rule. The
+discriminator for this rule is **`private`**, which the health default never sets, so the negative
+control asserts `private == false` rather than the absence of `no-store`.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Application/Dtos/User/UserPersonalDataExportDto.cs`,
+`backend/src/DnnMigration.Application/Services/UserService.cs`,
+`backend/src/DnnMigration.Api/Controllers/UsersController.cs`,
+`backend/src/DnnMigration.Api/Middleware/CredentialCacheControlMiddleware.cs`.
+
+**Proved by.** `Services/UserServiceTests.cs`, `Api/UserApiTests.cs` and `Api/AuthApiTests.cs`;
+additionally observed at runtime on the hardened containers, where an authorised read and the new
+export both returned `no-store, private, max-age=0` while anonymous `/health` returned
+`no-store, no-cache` with no `private`.
+
+### Both containers drop every capability and run read-only, and the proxy runs unprivileged
+
+**Legacy behaviour.** The legacy platform ran under IIS and is not containerised.
+
+**Target behaviour.** Both services in **both** compose files carry `no-new-privileges`,
+`cap_drop: [ALL]` and a read-only root filesystem. The proxy additionally runs as uid 101 with two
+ephemeral tmpfs mounts. Every value was measured against the images rather than copied from a
+hardening guide, and the measurement sequence is recorded inline because each barrier looked like a
+reason to abandon the next:
+
+1. read-only root alone → `mkdir("/var/cache/nginx/client_temp") failed (30: Read-only file system)`
+2. plus tmpfs, still a root master → `chown(... , 101) failed (1: Operation not permitted)`
+3. plus `user: 101:101` with uid-owned tmpfs → **started clean with an empty capability set**
+
+So nginx needs **zero** capabilities when it runs AS uid 101. `CHOWN` and `SETUID` were only ever
+needed by the root master handing temp directories to its worker, and `NET_BIND_SERVICE` is not
+needed because Docker sets `net.ipv4.ip_unprivileged_port_start=0`. No base-image change was
+required, so the AAP §0.9.3 artefacts stay intact. Two further measurements: the mount is `/run`, not
+`/var/run` — `nginx.conf` declares no `pid` directive so the compiled default applies and `/var/run`
+is a symlink — and log paths need no tmpfs because the image symlinks them to stdout and stderr.
+
+**The API deliberately gets NO tmpfs.** Justified structurally: a search of `backend/src` for
+file-writing APIs returns exactly one hit, and it is a COMMENT describing what the legacy handler
+did. Data protection uses an in-memory key ring and module export returns its payload. **Documented
+cost:** `/tmp` is read-only, so the .NET diagnostics IPC socket is absent and `dotnet-counters` and
+`dotnet-dump` cannot attach to a running container.
+
+**The TLS overlay would have shipped BROKEN, and this is the finding worth remembering.** Under the
+base hardening its envsubst step reported `/etc/nginx/tls is not writable`, **then printed
+"Configuration complete; ready for start up" and started anyway** — serving plain HTTP with no TLS
+block, from a container that reported healthy. It needs its own `/etc/nginx/tls` tmpfs; the nested
+certificate bind inside that tmpfs is verified to work.
+
+**BREAKING FOR TLS DEPLOYMENTS.** An unprivileged proxy changes the certificate contract: the private
+key must be readable by uid 101. A root-owned `0600` key now refuses to start with
+`cannot load certificate key ... Permission denied`. `chown 101:101` plus `chmod 640` resolves it.
+World-readable is explicitly **not** the shortcut to take, and a Let's Encrypt archive and
+renewal-hook note is recorded with the instruction.
+
+**The SQL Server test image is pinned by digest — in the digest-ONLY form.** The review suggested
+`name:tag@sha256:...`; that form was measured to raise `ArgumentException: Cannot parse image` on the
+AAP-pinned Testcontainers 3.10.0, whose assembly contains no `Digest` member at all, and AAP §0.6.4
+forbids the 4.13.0 upgrade that would accept it. So the reference is `name@sha256:...` with a
+documentary tag constant beside it, and a regression test pins **both the digest and this reason** —
+including a fact that asserts the combined form throws, which exists specifically to stop a
+well-meaning reviewer restoring it. `TestDatabaseFactory.ContainerImage` and `.ContainerImageTag`
+were widened private→internal so the pin is assertable.
+
+**Annotated in code at.** `docker/docker-compose.yml`, `docker/docker-compose.tls.yml`,
+`docker/.env.example`,
+`backend/tests/DnnMigration.IntegrationTests/TestDatabaseFactory.cs`.
+
+**Proved by.** `backend/tests/DnnMigration.IntegrationTests/Infrastructure/ContainerImagePinTests.cs`,
+plus a runtime build-up-probe-down cycle on both compose files that confirmed
+`api: user=appuser ReadOnly=true CapDrop=[ALL]`, `frontend: user=101:101 ReadOnly=true CapDrop=[ALL]`,
+a healthy `/health`, a working sign-in, the SPA served and `/api/` proxied.
+
+### The administration console is excluded from search indexes by a response header, not by its document
+
+**Legacy behaviour.** The legacy portal's document declared
+`<meta name="ROBOTS" content="INDEX, FOLLOW">`, and that element is **carried forward verbatim and
+deliberately unchanged** — it is one of five legacy meta elements preserved under Rule T5, and it
+records what the legacy application declared.
+
+**Target behaviour.** `docker/security-headers.conf` now emits
+`X-Robots-Tag: noindex, nofollow` as its ninth header. Nothing this image serves is public content:
+the document is an operator console behind a sign-in and the JSON beneath `/api/v1` is tenant data.
+Indexing either would publish tenant-shaped URLs as a browsable map of the deployment.
+
+**So the two declarations disagree on their face, and the disagreement is intended.** The header
+governs, for two reasons a meta element cannot overcome: where a crawler sees both, the more
+restrictive directive applies; and a meta element is read only from an HTML body a parser reaches,
+saying nothing about JSON, a hashed asset, or a 401, 404 or 503. The note above the meta element in
+`frontend/src/index.html` predicted exactly this fix — that the policy "belongs as a robots response
+header on the proxy" — and now records that it was carried out rather than proposing it.
+
+**Why the shared snippet.** It has nine consumers, so one declaration reaches every served path;
+`add_header` is inherited by an inner block only while that block declares no `add_header` of its
+own, which is why `api-proxy.conf` and `spa-static.conf` include the snippet rather than relying on
+inheritance. Measured on all eight path classes, including a 404 and a 401 — which is what proves the
+`always` flag, without which nginx would omit the header from precisely the responses an anonymous
+crawler receives.
+
+**Annotated in code at.** `docker/security-headers.conf`, `frontend/src/index.html`.
+
+**Proved by.** `backend/tests/DnnMigration.IntegrationTests/Infrastructure/ResponseHeaderPolicyTests.cs`,
+which reads the snippet as a **linked** embedded resource so a header removed from the artefact an
+operator ships cannot leave a green test behind, and additionally asserts that every declared header
+carries `always`. Confirmed in a real browser with zero console messages and the other eight policy
+headers intact.
+
+### Four smaller hardening notes, each with the reasoning that decided it
+
+**The validation-expression cache evicts one entry instead of clearing itself.** A profile property's
+validation expression is TENANT DATA, and the compiled-expression cache holding it is process-wide.
+At its 1,024 ceiling it called `Clear()`, so one privileged writer introducing distinct expressions
+could discard every compiled expression belonging to other tenants, repeatedly, each of which then
+paid a recompilation. The total work was bounded — which is why this is a hardening note and not a
+defect — but the cost was a cliff payable by whoever did not cause it. Removing a single entry per
+admitted expression makes it proportionate: a writer can displace no more than the work it brought.
+The victim is arbitrary rather than least-recently-used, deliberately:
+`ConcurrentDictionary` offers no recency, and adding it would mean a second structure, a lock and a
+per-hit write to choose better between entries whose recompilation is already bounded by a
+512-character limit and a 50-millisecond timeout.
+*Annotated at* `backend/src/DnnMigration.Application/Services/UserService.cs`; *proved by*
+`backend/tests/DnnMigration.UnitTests/Services/ValidationExpressionCacheTests.cs`, whose two facts
+were confirmed to FAIL against the previous behaviour before being accepted.
+
+**Module creation states its authorization requirement at the action.** `ModulesController.CreateAsync`
+now carries a bare `[Authorize]`. This narrows nothing — it is exactly the requirement the global
+`FallbackPolicy` already supplied — and the deliberate absence of a NAMED policy is unchanged: a named
+policy would narrow the legacy gate, which admitted a portal administrator **or** a page
+administrator, and the target page arrives in the request BODY where no route-reading policy can see
+it. What was missing was stated metadata, so that a change to the global default cannot silently make
+module creation anonymous with no diff touching this file.
+*Annotated at* `backend/src/DnnMigration.Api/Controllers/ModulesController.cs`.
+
+**Two contradictory test comments were reconciled against the member that actually decides.**
+`PortalApiTests` carried helper comments disagreeing about whether a route naming a portal also binds
+the arrival host. Resolved against `PortalAdministrationEvaluator.IsPortalAdministratorAsync`: the
+route wins where it names a portal, the token claim must equal that target, and the arrival host is
+**not** bound for a named route. The stricter three-way reconciliation that does bind arrival — and
+treats an unresolved arrival as a refusal — is `IsTenantBoundAsync`, which this member does not call.
+The first comment was right and the second stated a requirement that does not exist; both now name the
+deciding member. What IS true is that addressing the tenant's own alias models the realistic caller
+and is genuinely required for routes naming no portal.
+*Annotated at* `backend/tests/DnnMigration.IntegrationTests/Api/PortalApiTests.cs`.
+
+**The secure-host-setting invariant is now stated and guarded.** Values marked secure in
+`HostSettings` are preserved rather than filtered — filtering would diverge from documented preserved
+behaviour — and they reach no DTO. But that safety is a property of the **consumer set**, not of the
+class: `IHostSettingsService` is injected by exactly two Application services, each reading named rows
+into typed internals, and the API layer's only mention of host settings is a comment. An invariant
+nothing checks is an invariant that expires quietly, so it is now stated in the service and guarded by
+a reflection test over the API assembly, with explicit instructions for anyone who later publishes
+host settings.
+*Annotated at* `backend/src/DnnMigration.Infrastructure/Services/HostSettingsService.cs`; *proved by*
+`backend/tests/DnnMigration.IntegrationTests/Services/HostSettingsServiceTests.cs`.
+
+**Dependency and deprecation posture** for this checkpoint — the SSH.NET security pin, the npm
+overrides, the two production identities removed, the advisories that remain with their reachability
+arguments, and the dated deprecation inventory — is recorded in Sections 8, 9 and 10 rather than
+duplicated here.

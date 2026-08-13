@@ -2705,6 +2705,121 @@ public class PortalServiceTests
     }
 
     /// <summary>
+    /// PRIV-02: a removed tenant's session records are ERASED, not merely stamped, and the erasure is
+    /// issued once for the tenant after the relational change has been committed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_ErasesTheTenantsSessionRecordsAfterTheCommit()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 2;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.PurgedSessionPortalIds.Should().Equal(PortalId);
+        harness.UnitOfWork.Verify(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        harness.OpenedTransactions.Should().ContainSingle().Which.Committed.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("PORTAL_DELETED");
+        record.Properties.Should().ContainKey("SessionRecordsErased")
+            .WhoseValue.Should().Be(bool.TrueString);
+    }
+
+    /// <summary>
+    /// PRIV-02, and the case that makes ONE TENANT-SCOPED erasure necessary rather than merely tidier: a
+    /// member retained because it belongs to another tenant is never in the revocation loop, so its records
+    /// naming the removed tenant survive that loop entirely. The tenant-scoped erasure is what reaches them.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_ErasesRecordsOfARetainedMemberTheRevocationLoopNeverTouched()
+    {
+        const int OtherPortalId = 77;
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 2;
+        User retained = PortalMember(46, isSuperUser: false, PortalId, OtherPortalId);
+        harness.PortalMembers.Add(retained);
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RemovedUsers.Should().BeEmpty("the account still belongs to another tenant");
+        harness.RevokedSessionUserIds.Should().BeEmpty(
+            "the revocation loop deliberately covers only the accounts being deleted");
+        harness.PurgedSessionPortalIds.Should().Equal(
+            new[] { PortalId },
+            "the retained account's records naming the removed tenant are reached by the tenant erasure");
+    }
+
+    /// <summary>
+    /// PRIV-02: the erasure runs after the commit, so its failure cannot fail the removal - the tenant is
+    /// already gone and no retry can restore it. The outstanding erasure is reported on the audit entry
+    /// instead, and the scheduled reclamation removes the records in any case.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_SucceedsAndReportsWhenTheSessionRecordErasureFails()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 2;
+        harness.SessionRecordErasureResult = Result.Failure(
+            "TOKEN_STORE_UNAVAILABLE",
+            "The token store is unavailable.");
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue("the tenant has already been removed");
+        harness.RemovedPortals.Should().ContainSingle();
+        harness.OpenedTransactions.Should().ContainSingle().Which.Committed.Should().BeTrue();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.Properties.Should().ContainKey("SessionRecordsErased")
+            .WhoseValue.Should().Be(bool.FalseString);
+    }
+
+    /// <summary>
+    /// PRIV-02: a refused removal erases nothing, because the tenant is still there and its members are
+    /// still entitled to the sessions they hold.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_ErasesNothingWhenTheRemovalIsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 1;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.PurgedSessionPortalIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// PRIV-02: a rolled-back removal erases nothing either. The erasure is placed after the commit for
+    /// exactly this reason - it must not be able to destroy records belonging to a tenant that survives.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeletePortal_ErasesNothingWhenTheTransactionIsRolledBack()
+    {
+        Harness harness = Harness.Ready();
+        harness.RemainingPortalCount = 2;
+        User account = PortalMember(47, isSuperUser: false, PortalId);
+        harness.PortalMembers.Add(account);
+        harness.CredentialDeleted = false;
+
+        Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        harness.OpenedTransactions.Should().ContainSingle().Which.RolledBack.Should().BeTrue();
+        harness.PurgedSessionPortalIds.Should().BeEmpty();
+    }
+
+
+    /// <summary>
     /// Removing a tenant discards its pages, its own cache and the installation-wide cache, because a
     /// released host name must stop resolving.
     /// </summary>
@@ -2934,14 +3049,20 @@ public class PortalServiceTests
     /// MIGRATION: this is <c>Signup.ascx.vb:L232-L233</c> - <c>GetDomainName(Request) &amp; "/" &amp;
     /// ChildPath</c>. Until this fix the flag was accepted and never read, so a caller could ask for a child
     /// portal, be told it had one, and find it unreachable: the bare segment was stored as if it were a host
-    /// name and no request could ever match it. The third case pins the nesting behaviour - a parent that is
-    /// itself addressed beneath a path yields a deeper address, which is what the legacy member did when it
-    /// returned <c>www.domain.com/directory</c> rather than the bare host.
+    /// name and no request could ever match it.
+    /// </remarks>
+    /// <remarks>
+    /// ⚠ THE NESTING CASE THAT USED TO LIVE HERE HAS MOVED, AND IT NOW ASSERTS A REFUSAL. This theory
+    /// previously carried <c>("parent.example/first", "second", "parent.example/first/second")</c>, pinning
+    /// the legacy member's behaviour of returning <c>www.domain.com/directory</c> and composing beneath it.
+    /// That address is one nothing in this deployment can route to -
+    /// <c>PortalAliasTopology.MaximumPathSegments</c> is one, the reverse proxy matches one optional segment
+    /// and the browser honours one - so composing it created a tenant that could never be reached. The case
+    /// is now <see cref="CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested"/>.
     /// </remarks>
     [Theory]
     [InlineData("parent.example", "child", "parent.example/child")]
     [InlineData("parent.example:8080", "child", "parent.example:8080/child")]
-    [InlineData("parent.example/first", "second", "parent.example/first/second")]
     [InlineData("parent.example/", "child", "parent.example/child")]
     public async Task CreatePortal_ComposesAChildAddressBeneathTheResolvedAuthority(
         string parentAlias,
@@ -3057,6 +3178,81 @@ public class PortalServiceTests
         harness.AddedAliases.Should().BeEmpty();
         harness.OpenedTransactions.Should().BeEmpty();
         harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A child portal asked for beneath a parent that is ITSELF addressed beneath a path segment is refused,
+    /// and nothing is written.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS CASE INVERTS A PREVIOUSLY PINNED BEHAVIOUR, and the inversion is the fix. The composition
+    /// theory above used to assert that a parent of <c>parent.example/first</c> plus a segment of
+    /// <c>second</c> stored <c>parent.example/first/second</c>, because that is what the legacy member did:
+    /// <c>Globals.GetDomainName</c> returned <c>www.domain.com/directory</c> when the request had arrived
+    /// beneath a sub-directory, and <c>Signup.ascx.vb:L232-L233</c> composed beneath whatever it returned.
+    /// </para>
+    /// <para>
+    /// Nothing in this deployment can deliver a request to a two-segment address.
+    /// <c>PortalAliasTopology.MaximumPathSegments</c> is one; the reverse-proxy location in
+    /// <c>docker/api-proxy.conf</c> matches one optional segment ahead of <c>/api/</c>; the browser's own
+    /// prefix detection honours one; and the request pipeline now considers one and FAILS CLOSED rather than
+    /// falling back to the bare host. Composing the deeper address would therefore have created a tenant
+    /// that no request could reach and whose administrator had no way to learn why - the worst of the
+    /// available outcomes, and strictly worse than being told at creation time.
+    /// </para>
+    /// <para>
+    /// Asserted to leave no transaction open and no audit record, because the refusal precedes every write,
+    /// and to carry its own reason code so the caller can tell it from an unresolved parent: the remedy
+    /// differs, being to submit the child's full host name instead of a bare segment.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested()
+    {
+        Harness harness = Harness.Ready();
+        harness.ResolvedContext = ResolvedTenant("parent.example/first");
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = "second";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("portal.parent_alias_too_deep");
+        harness.AddedPortals.Should().BeEmpty();
+        harness.AddedAliases.Should().BeEmpty();
+        harness.OpenedTransactions.Should().BeEmpty();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A child whose own submitted value is already qualified is stored even when the resolved parent is
+    /// nested, because no composition takes place.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The complement of <see cref="CreatePortal_RefusesAChildBeneathAParentThatIsItselfNested"/>, and the
+    /// documented remedy for it. The refusal is about COMPOSING a second level, not about the request having
+    /// arrived beneath a path: a caller who supplies a full host name is not asking for composition at all,
+    /// and the value they supplied has already been bounded to one path segment by the create validator.
+    /// </remarks>
+    [Fact]
+    public async Task CreatePortal_StoresAQualifiedChildEvenWhenTheResolvedParentIsNested()
+    {
+        Harness harness = Harness.Ready();
+        harness.ResolvedContext = ResolvedTenant("parent.example/first");
+        CreatePortalRequest request = ValidCreateRequest();
+        request.IsChildPortal = true;
+        request.PortalAlias = "other.example/child";
+
+        Result<PortalDetailDto> outcome = await harness.Service
+            .CreatePortalAsync(request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAliases.Should().ContainSingle().Which.HttpAlias.Should().Be("other.example/child");
     }
 
     /// <summary>
@@ -4463,6 +4659,20 @@ public class PortalServiceTests
 
         public Result SessionRevocationResult { get; set; }
 
+        /// <summary>
+        /// What the token store answers when asked to ERASE a tenant's session records.
+        /// </summary>
+        /// <remarks>
+        /// PRIV-02. Separate from <see cref="SessionRevocationResult"/> because the two operations differ in
+        /// kind and in consequence: revocation retains the record so a replay of its family stays
+        /// recognisable, and erasure removes it. A failed erasure must not fail the removal - the tenant is
+        /// already gone by then - which is a fact worth being able to set independently.
+        /// </remarks>
+        public Result SessionRecordErasureResult { get; set; } = Result.Success();
+
+        /// <summary>Tenants whose session records the service asked to have erased.</summary>
+        public List<int> PurgedSessionPortalIds { get; } = [];
+
         public Exception? CredentialFault { get; set; }
 
         public bool EchoCreatedPortal { get; set; }
@@ -4857,6 +5067,19 @@ public class PortalServiceTests
                 {
                     harness.RevokedSessionUserIds.Add(userId);
                     return Task.FromResult(harness.SessionRevocationResult);
+                });
+
+            // PRIV-02. Tenant-scoped erasure, recorded so a fact can assert that removing a portal erased its
+            // session records rather than leaving them revoked - including the records of members RETAINED
+            // because they belong to another tenant, which the revocation loop deliberately never touches.
+            harness.Tokens
+                .Setup(tokens => tokens.PurgePortalSessionRecordsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((int portalId, CancellationToken _) =>
+                {
+                    harness.PurgedSessionPortalIds.Add(portalId);
+                    return Task.FromResult(harness.SessionRecordErasureResult);
                 });
 
             harness.Roles

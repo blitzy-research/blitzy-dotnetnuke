@@ -5468,6 +5468,22 @@ public sealed class PortalApiTests
     /// route and the token rather than against the host the request arrived at. Keeping the addressed host
     /// unchanged is what leaves that binding measured rather than assumed.
     /// </para>
+    /// <para>
+    /// INFO-05: THIS PARAGRAPH IS THE CORRECT ONE, AND IT IS NAMED HERE BECAUSE THE HELPER BELOW USED TO
+    /// CONTRADICT IT. The deciding member is
+    /// <c>PortalAdministrationEvaluator.IsPortalAdministratorAsync</c>, and it resolves the tenant the request
+    /// is ABOUT through <c>ResolveTargetPortalIdAsync</c>, where **the route wins whenever it names a portal**
+    /// and the arrival tenant is consulted only as the fallback for a route that names none. It then requires
+    /// the TOKEN's portal claim to equal that target, plus a stored administrator-role assignment on it. The
+    /// arrival host is therefore not part of the comparison for a portal-named route — note that this member
+    /// does NOT call <c>IsTenantBoundAsync</c>, which is the stricter three-way reconciliation used by other
+    /// policies and which does bind arrival.
+    /// </para>
+    /// <para>
+    /// Measured, not reasoned: the facts built on this helper sign in at the created portal's own alias, then
+    /// address <c>localhost</c> — which resolves to the SEEDED portal — and still receive <c>200</c> from
+    /// <c>PUT /api/v1/portals/{createdId}</c>. If arrival were bound, every one of them would be <c>403</c>.
+    /// </para>
     /// </remarks>
     private Task<HttpClient> CreateAdministratorClientForAsync(
         CreatePortalRequest request,
@@ -5494,11 +5510,24 @@ public sealed class PortalApiTests
     /// <returns>An authenticated client addressed at the created tenant.</returns>
     /// <remarks>
     /// <para>
-    /// The portal-administrator policy binds a route's tenant to the tenant the request resolved to, and
-    /// resolution is by host name, so a tenant-scoped action against a created portal has to be addressed
-    /// through that portal's own alias. That is not a test workaround: it is how an operator reaches a
-    /// tenant, and it is the behaviour the legacy screens enforced by forcing a non-host caller onto the
-    /// ambient portal (<c>SiteSettings.ascx.vb:L235</c>).
+    /// INFO-05: THIS PARAGRAPH PREVIOUSLY STATED A REQUIREMENT THAT DOES NOT EXIST, AND IT CONTRADICTED THE
+    /// HELPER ABOVE. It claimed the portal-administrator policy binds a route's tenant to the tenant the
+    /// request RESOLVED to, that resolution is by host name, and therefore that a tenant-scoped action
+    /// against a created portal HAS TO be addressed through that portal's own alias. The deciding member,
+    /// <c>PortalAdministrationEvaluator.IsPortalAdministratorAsync</c>, does not work that way: the route wins
+    /// wherever it names a portal, the arrival tenant is only the fallback for a route that names none, and
+    /// what must agree with the target is the TOKEN's portal claim. Two facts settle it — the helper above
+    /// deliberately addresses a DIFFERENT host and its cases pass, and every route reached through this helper
+    /// names its portal too, so the addressed host is not what admits them.
+    /// </para>
+    /// <para>
+    /// What is true, and why this helper is still the right one to use: addressing the tenant's own alias is
+    /// how an operator actually reaches a tenant, which is the behaviour the legacy screens enforced by
+    /// forcing a non-host caller onto the ambient portal (<c>SiteSettings.ascx.vb:L235</c>). It is also
+    /// genuinely REQUIRED for any route that names no portal — a collection, or a resource addressed by its
+    /// own global identifier — because for those the arrival tenant IS the target. So the two helpers are not
+    /// alternatives to be chosen at random: this one models the realistic caller and is mandatory for unnamed
+    /// routes, and the one above exists precisely to prove that a NAMED route does not depend on the host.
     /// </para>
     /// <para>
     /// The caller no longer states an account identifier or an installation-wide flag. Both are read from the

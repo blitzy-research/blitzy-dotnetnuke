@@ -2904,6 +2904,84 @@ describe('LoginComponent', () => {
         .toBeTrue();
     }
 
+    /**
+     * Answers the withdrawal retry this screen drives the moment it is created.
+     *
+     * ⚠ SEC-03. EVERY CASE THAT ARRIVES HERE WITH A RETAINED CREDENTIAL MUST CALL THIS, and its
+     * existence is itself the proof that the retry is wired: before the fix the screen issued no
+     * request at all on arrival, so no case needed a helper like this and `verify()` in
+     * `afterEach` passed while the mechanism was dead.
+     *
+     * @param status The transport status to answer the attempt with.
+     */
+    function answerRetainedWithdrawal(status = 204): void {
+      httpMock
+        .expectOne((candidate) => candidate.method === 'POST' && candidate.url === LOGOUT_URL)
+        .flush(null, { status, statusText: status === 204 ? 'No Content' : 'Refused' });
+    }
+
+    it('drives the outstanding withdrawal the moment it is created', () => {
+      signOutWithAnUnconfirmedWithdrawal();
+
+      create();
+
+      /*
+       * ⚠ THE MEASURED DEFECT, AND THIS IS THE CASE THAT WOULD HAVE CAUGHT IT. The store retained
+       * the credential and published a bounded retry for it, and a security review found that
+       * NOTHING in the application ever called that retry: every refused withdrawal was retained
+       * and then left retained until the tab closed, so the session it named stayed renewable
+       * until its absolute expiry. This screen is where a sign-out lands the operator and where
+       * the residue notice is rendered, so it is the caller.
+       */
+      const attempt = httpMock.expectOne(
+        (candidate) => candidate.method === 'POST' && candidate.url === LOGOUT_URL,
+      );
+
+      expect(attempt.request.body)
+        .withContext('and it presents the credential the refused sign-out held aside')
+        .toEqual({ refreshToken: FAKE_RENEWAL_TOKEN });
+
+      attempt.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.revocationOutstanding())
+        .withContext('the server has now ended the session, so there is no residue to report')
+        .toBeFalse();
+
+      fixture.detectChanges();
+
+      expect(query('.login__notice'))
+        .withContext('and the notice goes with it rather than standing over a residue that is gone')
+        .toBeNull();
+    });
+
+    it('keeps the notice on screen while that retry is still unanswered', () => {
+      signOutWithAnUnconfirmedWithdrawal();
+
+      create();
+
+      // Starting a retry must not retract the report: the residue is unconfirmed until the
+      // server says otherwise, and an optimistic clear would tell the operator the session was
+      // ended by a request that has not been answered.
+      expect(query('.login__notice'))
+        .withContext('the report stands over an in-flight retry')
+        .not.toBeNull();
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      // What happens when the retry FAILS is the store's own specification to prove, under
+      // virtual time: a transient refusal climbs a real backoff ladder, and driving one here
+      // would leave a timer outliving this case.
+      answerRetainedWithdrawal();
+    });
+
+    it('drives nothing at all for a visitor with no outstanding withdrawal', () => {
+      // The other half of the wiring: the drive is unconditional, so it must cost nothing in the
+      // ordinary case. Every other case in this file relies on that - none of them answers a
+      // withdrawal, and `verify()` would fail them all if one were posted.
+      create();
+
+      httpMock.expectNone((candidate) => candidate.url === LOGOUT_URL);
+    });
+
     it('reports it calmly, in the same words the announcement channel used', () => {
       signOutWithAnUnconfirmedWithdrawal();
 
@@ -2920,6 +2998,11 @@ describe('LoginComponent', () => {
       expect(query('.login__message'))
         .withContext('and it is not dressed as a refused attempt')
         .toBeNull();
+
+      // SEC-03: the arrival also drives the outstanding withdrawal, asserted in its own case
+      // above. Answered here so the transport verification at the end of the case sees nothing
+      // unconsumed.
+      answerRetainedWithdrawal();
     });
 
     it('withdraws it the moment a new attempt begins, before its outcome is known', () => {
@@ -2928,6 +3011,9 @@ describe('LoginComponent', () => {
       create();
       expect(query('.login__notice')).withContext('the precondition is on screen').not.toBeNull();
 
+      // ⚠ SEC-03. THE RETRY IS DELIBERATELY LEFT UNANSWERED UNTIL THE END OF THIS CASE. Answering
+      // it here would retire the report by CONFIRMING the withdrawal, and this case is about the
+      // report being retired by the ATTEMPT beginning - the two would then be indistinguishable.
       fillCredentials();
       submit();
 
@@ -2949,6 +3035,17 @@ describe('LoginComponent', () => {
       fixture.detectChanges();
 
       expect(query('.login__notice')).toBeNull();
+
+      // SEC-03: answered last, and its outcome deliberately cannot restore the report - the
+      // session epoch moved when this attempt began, so the drain's report is withheld behind
+      // that boundary. See `core/state/auth.store.spec.ts` for the case that pins it.
+      answerRetainedWithdrawal();
+
+      fixture.detectChanges();
+
+      expect(query('.login__notice'))
+        .withContext('a withdrawal settled after the boundary says nothing to the new session')
+        .toBeNull();
     });
 
     it('paints NO required message after a SUCCESSFUL sign-in, though it has just emptied both boxes', () => {
@@ -3014,6 +3111,10 @@ describe('LoginComponent', () => {
       expect(query('.login__failure'))
         .withContext('the refused attempt is reported in its own region')
         .not.toBeNull();
+
+      // SEC-03: the arrival's withdrawal retry, answered last for the reason given in the case
+      // above - a confirmation must not be what retires the report this case is measuring.
+      answerRetainedWithdrawal();
     });
 
     it('is absent for a visitor who never signed out at all', () => {

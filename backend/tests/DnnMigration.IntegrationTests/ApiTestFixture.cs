@@ -737,6 +737,21 @@ public sealed class ApiTestFixture : WebApplicationFactory<Program>, IAsyncLifet
         ["Jwt__Audience"] = Audience,
         ["Jwt__ExpirationMinutes"] = "30",
         ["Jwt__RefreshTokenExpirationDays"] = "7",
+
+        // SEC-06: THE SINGLE-INSTANCE ACKNOWLEDGEMENT, AND IT IS TRUE OF THIS HOST. In Production the API
+        // refuses to start on a refresh-token store that is neither shared between replicas nor carried across
+        // a restart unless the deployment states that it runs one instance - because scaling out on the
+        // process-local store needed no code change, no configuration change and produced no warning, while a
+        // sign-out against one replica left the session exchangeable on every other.
+        //
+        // Every host this suite builds IS a single instance, so the claim is honest here rather than a
+        // convenience. It is stated in the shared configuration rather than per suite because three separate
+        // suites build PRODUCTION hosts - the forwarded-header perimeter facts, the HTTPS-redirection facts and
+        // the documentation-publication facts - and each one restating it is how three suites come to disagree.
+        // Non-production hosts are exempt by the invariant itself, so this entry changes nothing for the rest of
+        // the suite; it is set unconditionally because a value present only under one environment is a value
+        // that stops being set when a fact moves.
+        ["RefreshTokenStore__AcknowledgeSingleInstance"] = "true",
         ["LegacyCredentials__Enabled"] = "true",
 
         // The window's absolute deadline, which the enabled switch now requires. It is computed from the

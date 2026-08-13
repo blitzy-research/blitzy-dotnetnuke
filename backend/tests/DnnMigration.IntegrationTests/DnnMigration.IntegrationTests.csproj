@@ -38,7 +38,39 @@
     Only one provider may be applied to a single DbContextOptions, so a fixture must REMOVE the existing
     provider registration before adding its own rather than layering one on top.
 
-    The package list is closed: it is the set AAP 0.6.1 approves, plus one security pin.
+    The package list is closed: it is the set AAP 0.6.1 approves, plus TWO security pins.
+
+    SSH.NET is pinned to 2026.0.0 to clear GHSA-q939-rpr3-3284 (high), which covers EVERY earlier release -
+    the advisory's fixed-version boundary is 2026.0.0 itself, so no lower version clears it. The vulnerable
+    version arrives transitively and is selected by nothing this repository asks for:
+    Testcontainers.MsSql 3.10.0 -> Testcontainers 3.10.0 -> SSH.NET 2023.0.0.
+
+    Why pin a package this suite never calls. The advisory is an arbitrary file write performed by
+    ScpClient while recursively downloading server-named files, and three independent facts put it out of
+    reach here: no code in backend/ CALLS into SSH.NET - the name appears only in this note and in the pin's
+    own guard, Infrastructure/SecurityPinTests.cs, which reads the shipped file's metadata without
+    referencing a type from it; Testcontainers 3.10.0's own assembly references only the Renci.SshNet
+    namespace and the SshClient type, and does NOT reference ScpClient at all; and the SSH path exists in
+    that library to reach a REMOTE Docker endpoint, while this suite talks to a local daemon. The pin is
+    therefore not a fix for an exploitable hole - it removes a vulnerable IDENTITY from the restore graph,
+    which is what a dependency-integrity review is entitled to require, and it does so without waiting on a
+    library upgrade that AAP 0.6.4 forbids. Upgrading Testcontainers.MsSql to 4.13.0 is the alternative the
+    advisory data suggests and is explicitly among the versions that plan checked and rejected.
+
+    ⚠ DO NOT DELETE THE SSH.NET REFERENCE BECAUSE IT LOOKS UNUSED. It IS unused, and that is the point: it
+    exists solely to win version resolution over the transitive 2023.0.0. Removing it restores the vulnerable
+    version with no compilation error anywhere. SecurityPinTests fails if that happens, and guards the
+    SQLitePCLRaw pin above for the same reason.
+
+    Why the jump across three release years is safe. The only surface that has to survive it is SshClient,
+    for the reason above, and the container route was exercised end to end after the pin - a real SQL Server
+    container provisioned, migrated and served the suite - rather than the compatibility being argued from
+    version numbers. 2026.0.0 ships lib/net8.0, so no framework fallback is involved either.
+
+    THE LOCK FILE MOVED DELIBERATELY FOR THIS. packages.lock.json is otherwise left alone, and locked-mode
+    restore is what makes these tests reproducible; adding this reference necessarily rewrites the SSH.NET
+    entries, so the file was regenerated once, on purpose, and locked-mode restore was then re-run to prove
+    determinism survived. Treat any FURTHER lock-file churn as accidental.
 
     SQLitePCLRaw.bundle_e_sqlite3 is pinned to 2.1.12 to clear CVE-2025-6965 (GHSA-2m69-gcr7-jv3q, high),
     which covers SQLitePCLRaw.lib.e_sqlite3 through 2.1.11; Microsoft.EntityFrameworkCore.Sqlite 8.0.29
@@ -74,6 +106,12 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="Moq" Version="4.20.72" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <!--
+      Security pin only - nothing in this suite calls SSH.NET. See the note above for why the reference
+      exists, why the vulnerable code path is unreachable, and why upgrading Testcontainers is not the
+      instrument used here.
+    -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
     <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
@@ -102,6 +140,29 @@
       into "no manifest, no assertion" - TerminalSchema refuses to load without it.
     -->
     <EmbeddedResource Include="Schema\TerminalSchema.manifest" />
+    <!--
+      THE OPERATOR'S OWN SCRIPT, EMBEDDED FROM WHERE IT LIVES RATHER THAN COPIED. MIGRATION: SEC-05.
+      docker/sql/refresh-token-store.sql is the deployment step that provisions the shared refresh-token
+      table, which the running API used to create for itself and now only probes for. Linking the file
+      here - rather than keeping a second copy under Schema\ - is what makes the suite's evidence worth
+      anything: the table the SQL-store tests exercise is created by the exact bytes an operator runs, so
+      the shape the store expects and the shape a deployment gets cannot drift apart without a test
+      failing. A duplicated script would have made the tests pass while production stayed unprovisioned,
+      which is the class of defect the "THREE SCRIPTS, AND NO FOURTH" note in TestDatabaseFactory records.
+    -->
+    <EmbeddedResource Include="..\..\..\docker\sql\refresh-token-store.sql"
+                      LogicalName="DnnMigration.IntegrationTests.Schema.RefreshTokenStoreSchema.sql" />
+    <!--
+      THE PROXY'S RESPONSE-HEADER POLICY, LINKED FOR THE SAME REASON. MIGRATION: INFO-02.
+      docker/security-headers.conf is the single declaration of every response-level policy the proxy
+      states, and its value is that it has one copy with nine consumers - a header added to it reaches
+      every served path, and a header deleted from it disappears from all of them at once. That makes it
+      worth asserting, and worth asserting FROM WHERE IT LIVES: a copy under a test folder could keep a
+      fact green while the file an operator ships lost the line. Linked, not duplicated, exactly as the
+      refresh-token script above.
+    -->
+    <EmbeddedResource Include="..\..\..\docker\security-headers.conf"
+                      LogicalName="DnnMigration.IntegrationTests.Deployment.SecurityHeaders.conf" />
   </ItemGroup>
 
   <!--

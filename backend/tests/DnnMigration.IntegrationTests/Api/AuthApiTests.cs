@@ -2660,10 +2660,35 @@ public sealed class AuthApiTests
             new Uri($"/api/v1/portals/{Route(_fixture.Seed.PortalId)}", UriKind.Relative));
 
         ordinary.StatusCode.Should().Be(HttpStatusCode.OK);
-        ordinary.Headers.CacheControl?.NoStore.Should().NotBe(
-            true,
-            "the directive is applied to credential endpoints only; applying it to every response would make "
-            + "this assertion vacuous");
+
+        /*
+         * ⚠ THIS ASSERTION IS INVERTED FROM WHAT IT USED TO BE, AND THE INVERSION IS THE POINT. PRIV-03.
+         *
+         * It previously required an authenticated tenant read NOT to be marked no-store, arguing that marking
+         * every response "would make this assertion vacuous". That argument put the tidiness of a test above
+         * the property the test exists to protect. This is an administration API: an authorised read returns
+         * account names, e-mail addresses, profile values, role memberships and tenant configuration, every
+         * one of which could be written to a private browser cache and read off the disk afterwards, or
+         * re-displayed by pressing Back after a sign-out.
+         *
+         * The distinction the old assertion was protecting is kept, and asserted properly rather than by
+         * absence: a credential response carries the HTTP/1.0 and heuristic-freshness spellings as well, and
+         * an ordinary authorised response carries only the HTTP/1.1 directives plus `private`. So neither
+         * rule is vacuous, and the two remain distinguishable.
+         */
+        ordinary.Headers.CacheControl.Should().NotBeNull(
+            "an authorised read returns personal data, which no cache may store");
+        ordinary.Headers.CacheControl!.NoStore.Should().BeTrue(
+            "PRIV-03: a private browser cache must not write this response to disk");
+        ordinary.Headers.CacheControl.Private.Should().BeTrue(
+            "the shared proxy in front of this API serves every tenant, so it must hold nothing caller-specific");
+        ordinary.Headers.CacheControl.MaxAge.Should().Be(
+            TimeSpan.Zero,
+            "the belt-and-braces value for an intermediary that falls back to freshness arithmetic");
+
+        ordinary.Headers.Pragma.Should().BeEmpty(
+            "the HTTP/1.0 spelling is reserved for credential endpoints, which is what keeps the two rules "
+            + "distinguishable rather than one rule applied everywhere");
     }
 
     /// <summary>Asserts that one response forbids caching in all three of the vocabularies caches read.</summary>

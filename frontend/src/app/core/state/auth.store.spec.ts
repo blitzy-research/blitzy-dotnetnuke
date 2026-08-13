@@ -116,9 +116,12 @@
  *   and reads synchronously — so no effect-flushing primitive is called. Verified
  *   against the installed `@angular/core` 19.2.25, where the testing harness exposes
  *   `flushEffects` and no tick primitive at all.
- * - Deterministic throughout: no timer, no clock read, no randomness and no real
- *   network. No web-storage interface, no cookie jar and no client-side database is
- *   referenced, so this file cannot normalise a custody violation by accident.
+ * - Deterministic throughout: no clock read, no randomness and no real network. No
+ *   web-storage interface, no cookie jar and no client-side database is referenced, so
+ *   this file cannot normalise a custody violation by accident. The one mechanism that
+ *   genuinely waits — the bounded withdrawal-retry ladder — is driven under `fakeAsync`
+ *   with `tick`, so its delays are virtual and its cases assert an exact number of
+ *   attempts rather than racing a real interval.
  * - ZERO-BASED PAGE INDEXING IS DELIBERATELY NOT EXERCISED HERE. This store paginates
  *   nothing: authentication has no list, no page size and no total count. Its absence
  *   is a property of the subject, not an omission in this specification.
@@ -126,7 +129,7 @@
 
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { TestBed } from '@angular/core/testing';
+import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { firstValueFrom } from 'rxjs';
 
 import type { CurrentUser, LoginRequest, LoginResponse } from '../models/auth.model';
@@ -3802,6 +3805,440 @@ describe('AuthStore', () => {
   //   same-origin is not the same as in-process. The transport decodes now, and these cases
   //   prove the refusal reaches the composition point and leaves nothing half-established.
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // OUTSTANDING WITHDRAWALS, AND THE DRAIN THAT RETIRES THEM
+  //
+  // ⚠ SEC-03. EVERY CASE IN THIS SECTION EXISTS BECAUSE THE MECHANISM IT EXERCISES WAS DEAD.
+  // The store retained a credential after a refused sign-out and published a bounded retry for
+  // it, and a security review found that NOTHING in the application ever called that retry and
+  // that no specification ever exercised it — so every refused withdrawal was retained and then
+  // left retained, and the session it named stayed renewable until its absolute expiry. Worse,
+  // the retention was a single slot, so a second sign-out overwrote the first session's
+  // credential and abandoned it silently.
+  //
+  // Two properties are therefore under test here and neither was before: that the drain actually
+  // withdraws what is held, and that several sessions' credentials survive one another. That the
+  // APPLICATION drives the drain is proven where the caller lives, in
+  // `features/auth/login/login.component.spec.ts` — a case here could only ever prove the method
+  // works when called, which is exactly what was true while it was dead.
+  //
+  // ⚠ THE LADDER IS DRIVEN BY VIRTUAL TIME. The retry delays are real timers, so the cases that
+  // exhaust the ladder run under `fakeAsync` and advance the clock with `tick`. Nothing waits on
+  // a real interval and nothing reads the wall clock, so these remain as deterministic as the
+  // rest of the file.
+  // -------------------------------------------------------------------------
+
+  describe('outstanding withdrawal retries', () => {
+    /** The delays the ladder waits between attempts, in the order it waits them. */
+    const LADDER_DELAYS_MS = [1_000, 2_000, 4_000];
+
+    /**
+     * Signs in without awaiting, for the cases that run under virtual time.
+     *
+     * `fakeAsync` forbids an `async` body, so the promise-based {@link signIn} helper cannot be
+     * used inside one. Every step below is synchronous anyway: the testing backend delivers a
+     * flushed response immediately, so the identity read is issued by the same call that answers
+     * the credential exchange.
+     *
+     * @param payload The credential payload to answer the exchange with.
+     */
+    function signInSynchronously(
+      payload: SuccessEnvelope<LoginResponse> = credentialPayload(),
+    ): void {
+      store.login(credentials()).subscribe();
+      httpMock.expectOne(LOGIN_URL).flush(payload);
+      answerIdentityRead(payload.data.accessToken, payload.data.user);
+    }
+
+    /**
+     * Signs out with a withdrawal the server refuses, leaving the credential retained.
+     *
+     * @param status The transport status to refuse with.
+     */
+    function signOutRefused(status: number): void {
+      store.logout().subscribe();
+      httpMock
+        .expectOne(LOGOUT_URL)
+        .flush(codelessRefusal(status), { status, statusText: 'Refused' });
+    }
+
+    /**
+     * Answers one withdrawal attempt, asserting which credential it presented.
+     *
+     * @param expectedToken The credential the attempt is required to carry.
+     * @param status The transport status to answer with.
+     */
+    function answerWithdrawal(expectedToken: string, status: number): void {
+      const attempt = httpMock.expectOne(LOGOUT_URL);
+
+      expect(attempt.request.method).toBe('POST');
+      expect(attempt.request.body)
+        .withContext('a withdrawal presents the retained credential and nothing else')
+        .toEqual({ refreshToken: expectedToken });
+
+      attempt.flush(
+        status === 204 ? null : codelessRefusal(status),
+        { status, statusText: status === 204 ? 'No Content' : 'Refused' },
+      );
+    }
+
+    it('does nothing, and posts nothing, when no withdrawal is outstanding', async () => {
+      // The ordinary case on the sign-in screen: it is driven on every arrival and almost every
+      // arrival has nothing to drain.
+      await expectAsync(firstValueFrom(store.retryOutstandingRevocation())).toBeResolved();
+
+      expectNoCredentialTraffic();
+      expect(store.revocationOutstanding()).toBeFalse();
+    });
+
+    it('withdraws the retained credential and retires it when the server confirms', async () => {
+      await signIn();
+      signOutRefused(503);
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext('the precondition: a credential is held because the withdrawal was refused')
+        .toEqual([FAKE_RENEWAL_TOKEN]);
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      const drain = firstValueFrom(store.retryOutstandingRevocation());
+
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 204);
+      await expectAsync(drain).toBeResolved();
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext('the residue is gone because the server has now ended the session')
+        .toEqual([]);
+      expect(store.revocationOutstanding())
+        .withContext('and the notice the sign-in screen renders is retired with it')
+        .toBeFalse();
+    });
+
+    it('retires the credential on a terminal refusal WITHOUT retrying it', async () => {
+      // A 400, a 404 or a 422 is the server saying the value can never name a session. Retrying
+      // it would only delay the honest answer, and retaining it would leave a notice nothing
+      // could ever clear.
+      for (const status of [400, 404, 422]) {
+        await signIn();
+        signOutRefused(503);
+
+        const drain = firstValueFrom(store.retryOutstandingRevocation());
+
+        answerWithdrawal(FAKE_RENEWAL_TOKEN, status);
+        await expectAsync(drain).toBeResolved();
+
+        httpMock.expectNone(LOGOUT_URL);
+        expect(tokenStorage.pendingRevocations())
+          .withContext(`a ${status} is terminal, so the credential is retired`)
+          .toEqual([]);
+        expect(store.revocationOutstanding()).toBeFalse();
+
+        store.reset();
+      }
+    });
+
+    it('keeps the credential, and reports the residue, when every permitted attempt is refused', fakeAsync(() => {
+      signInSynchronously();
+      signOutRefused(503);
+
+      store.retryOutstandingRevocation().subscribe();
+
+      // The initial attempt, then one per rung of the ladder.
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+      }
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext('the session may still be live, so the credential is kept for a later drive')
+        .toEqual([FAKE_RENEWAL_TOKEN]);
+      expect(store.revocationOutstanding())
+        .withContext('and the residue is reported rather than absorbed')
+        .toBeTrue();
+
+      // The ladder is bounded: nothing further is scheduled once it is exhausted.
+      tick(60_000);
+      httpMock.expectNone(LOGOUT_URL);
+    }));
+
+    it('stops climbing the moment the server confirms, rather than spending the whole ladder', fakeAsync(() => {
+      signInSynchronously();
+      signOutRefused(503);
+
+      store.retryOutstandingRevocation().subscribe();
+
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+      tick(LADDER_DELAYS_MS[0]);
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 204);
+
+      tick(60_000);
+      httpMock.expectNone(LOGOUT_URL);
+      expect(tokenStorage.pendingRevocations()).toEqual([]);
+      expect(store.revocationOutstanding()).toBeFalse();
+    }));
+
+    // ---------------------------------------------------------------------
+    // ⚠ SEVERAL SESSIONS AT ONCE — THE HALF THE SINGLE SLOT LOST
+    // ---------------------------------------------------------------------
+
+    it('retains a second refused sign-out ALONGSIDE the first rather than overwriting it', async () => {
+      await signIn(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
+      signOutRefused(503);
+
+      await signIn(credentialPayload({ refreshToken: 'fake-second-session-credential' }));
+      signOutRefused(503);
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext(
+          'the measured defect: the second sign-out used to displace the first session\'s ' +
+            'credential, leaving that session renewable with nothing able to withdraw it',
+        )
+        .toEqual(['fake-first-session-credential', 'fake-second-session-credential']);
+    });
+
+    it('withdraws every retained credential, oldest first, one at a time', async () => {
+      await signIn(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
+      signOutRefused(503);
+
+      await signIn(credentialPayload({ refreshToken: 'fake-second-session-credential' }));
+      signOutRefused(429);
+
+      const drain = firstValueFrom(store.retryOutstandingRevocation());
+
+      // SEQUENTIAL, and asserted as such: the second attempt cannot have been issued while the
+      // first is unanswered, because the failure being recovered from is usually a rate limit
+      // and firing the whole set at once is the surest way to be refused again.
+      answerWithdrawal('fake-first-session-credential', 204);
+      answerWithdrawal('fake-second-session-credential', 204);
+
+      await expectAsync(drain).toBeResolved();
+
+      expect(tokenStorage.pendingRevocations()).toEqual([]);
+      expect(store.revocationOutstanding()).toBeFalse();
+    });
+
+    it('keeps reporting a residue when one credential is withdrawn and another is not', fakeAsync(() => {
+      signInSynchronously(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
+      signOutRefused(503);
+
+      signInSynchronously(credentialPayload({ refreshToken: 'fake-second-session-credential' }));
+      signOutRefused(503);
+
+      store.retryOutstandingRevocation().subscribe();
+
+      answerWithdrawal('fake-first-session-credential', 204);
+
+      // The second exhausts its ladder.
+      answerWithdrawal('fake-second-session-credential', 503);
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        answerWithdrawal('fake-second-session-credential', 503);
+      }
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext('one confirmed withdrawal does not retire another session\'s residue')
+        .toEqual(['fake-second-session-credential']);
+      expect(store.revocationOutstanding())
+        .withContext('and the report describes what is STILL held, not the last outcome seen')
+        .toBeTrue();
+    }));
+
+    it('reports a confirmed sign-out as confirmed only when nothing else is still held', async () => {
+      // ⚠ THE ASYMMETRY THAT USED TO HIDE A RESIDUE. `logout()` set the report to false on any
+      // confirmed withdrawal, so a clean sign-out of the CURRENT session silently retired the
+      // report belonging to an earlier one whose credential was still outstanding.
+      await signIn(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
+      signOutRefused(503);
+
+      await signIn(credentialPayload({ refreshToken: 'fake-second-session-credential' }));
+
+      const signOut = firstValueFrom(store.logout());
+      httpMock.expectOne(LOGOUT_URL).flush(null, { status: 204, statusText: 'No Content' });
+      await expectAsync(signOut).toBeResolved();
+
+      expect(tokenStorage.pendingRevocations())
+        .withContext('this session was withdrawn cleanly, so only its credential is retired')
+        .toEqual(['fake-first-session-credential']);
+      expect(store.revocationOutstanding())
+        .withContext('the earlier session is still live on the server, and that is still reported')
+        .toBeTrue();
+    });
+
+    // ---------------------------------------------------------------------
+    // ⚠ COALESCING AND THE REPORT'S LIFETIME
+    // ---------------------------------------------------------------------
+
+    it('coalesces concurrent drives onto one set of withdrawals', async () => {
+      await signIn();
+      signOutRefused(503);
+
+      const first = firstValueFrom(store.retryOutstandingRevocation());
+      const second = firstValueFrom(store.retryOutstandingRevocation());
+
+      // ONE request, not two. A screen can be initialised twice in quick succession — a
+      // re-entrant navigation, two outlets resolving the same route — and posting the same
+      // withdrawal twice would spend a rate-limit budget proving it.
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 204);
+
+      await expectAsync(first).toBeResolved();
+      await expectAsync(second).toBeResolved();
+
+      expect(tokenStorage.pendingRevocations()).toEqual([]);
+    });
+
+    it('starts a fresh drive once the previous one has finished', fakeAsync(() => {
+      signInSynchronously();
+      signOutRefused(503);
+
+      // A first drive that spends its whole ladder and gives up.
+      store.retryOutstandingRevocation().subscribe();
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+      }
+
+      expect(tokenStorage.pendingRevocations()).toEqual([FAKE_RENEWAL_TOKEN]);
+
+      // The coalescing slot must be surrendered on completion, or the sign-in screen's next
+      // arrival would replay a settled drain forever and never post anything again.
+      store.retryOutstandingRevocation().subscribe();
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 204);
+
+      expect(tokenStorage.pendingRevocations()).toEqual([]);
+      expect(store.revocationOutstanding()).toBeFalse();
+    }));
+
+    it('does not raise the previous session\'s report behind a sign-in that has already begun', fakeAsync(() => {
+      /*
+       * The report has a documented lifetime of exactly one session boundary: it is retired the
+       * moment a new attempt BEGINS, so one operator is never shown a sentence about another's
+       * session. A drain outlives that boundary — its ladder can still be climbing when somebody
+       * signs in — so the write is withheld once the epoch has moved. The WITHDRAWALS are not
+       * withheld: the credential names a session that has already ended, and ending it on the
+       * server is correct whoever is signed in by the time the answer arrives.
+       */
+      signInSynchronously();
+      signOutRefused(503);
+      expect(store.revocationOutstanding()).toBeTrue();
+
+      store.retryOutstandingRevocation().subscribe();
+      const firstAttempt = httpMock.expectOne(LOGOUT_URL);
+
+      // A new sign-in begins while the drain is still climbing, which retires the report.
+      store.login(credentials()).subscribe();
+      const exchange = httpMock.expectOne(LOGIN_URL);
+
+      expect(store.revocationOutstanding())
+        .withContext('retired by the attempt starting, as it has always been')
+        .toBeFalse();
+
+      firstAttempt.flush(codelessRefusal(503), { status: 503, statusText: 'Refused' });
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+      }
+
+      expect(store.revocationOutstanding())
+        .withContext('the drain must not put the previous session\'s sentence in front of this one')
+        .toBeFalse();
+      expect(tokenStorage.pendingRevocations())
+        .withContext('though the residue itself is still held, for the next drive to try')
+        .toEqual([FAKE_RENEWAL_TOKEN]);
+
+      exchange.flush(credentialPayload());
+      answerIdentityRead(FAKE_ACCESS_TOKEN);
+    }));
+
+    it('withdraws a retained credential even though a different account is signed in now', async () => {
+      // The credential names a session that has ended. Withholding the withdrawal because
+      // somebody else is signed in would leave that session renewable for its full lifetime.
+      await signIn(credentialPayload({ refreshToken: 'fake-first-session-credential' }));
+      signOutRefused(503);
+
+      await signIn(
+        credentialPayload({
+          refreshToken: 'fake-second-session-credential',
+          user: currentUser({ username: OTHER_ACCOUNT_NAME }),
+        }),
+      );
+
+      const drain = firstValueFrom(store.retryOutstandingRevocation());
+
+      answerWithdrawal('fake-first-session-credential', 204);
+      await expectAsync(drain).toBeResolved();
+
+      expect(tokenStorage.pendingRevocations()).toEqual([]);
+      expect(store.isAuthenticated())
+        .withContext('and withdrawing it does not disturb the session now held')
+        .toBeTrue();
+      expect(store.currentUser()?.username).toBe(OTHER_ACCOUNT_NAME);
+    });
+
+    it('announces nothing itself, leaving the wording to the lifecycle owner', fakeAsync(() => {
+      const notify = spyOn(notifications, 'notify').and.callThrough();
+
+      signInSynchronously();
+      signOutRefused(503);
+      notify.calls.reset();
+
+      store.retryOutstandingRevocation().subscribe();
+      answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        answerWithdrawal(FAKE_RENEWAL_TOKEN, 503);
+      }
+
+      expect(notify)
+        .withContext(
+          'the drain records the residue in a signal the sign-in screen renders; a transient ' +
+            'message raised here would describe a session two boundaries ago',
+        )
+        .not.toHaveBeenCalled();
+    }));
+
+    it('never errors, whatever the server answers, so a caller needs no failure handler', fakeAsync(() => {
+      // An unreachable server is the failure this mechanism exists for, and it must arrive as
+      // COMPLETION: the caller is a screen's initialisation, which has nowhere to put an error.
+      signInSynchronously();
+      signOutRefused(503);
+
+      let completed = false;
+      let errored: unknown = null;
+
+      store.retryOutstandingRevocation().subscribe({
+        error: (cause: unknown) => {
+          errored = cause;
+        },
+        complete: () => {
+          completed = true;
+        },
+      });
+
+      const unreachable = (): void => {
+        httpMock
+          .expectOne(LOGOUT_URL)
+          .error(new ProgressEvent('error'), { status: 0, statusText: 'Unknown Error' });
+      };
+
+      unreachable();
+
+      for (const delay of LADDER_DELAYS_MS) {
+        tick(delay);
+        unreachable();
+      }
+
+      expect(errored).toBeNull();
+      expect(completed).toBeTrue();
+      expect(store.revocationOutstanding()).toBeTrue();
+    }));
+  });
+
   describe('refuses a payload that does not match its contract', () => {
     it('refuses a credential exchange whose access token is blank', async () => {
       const inFlight = firstValueFrom(store.login(credentials()));

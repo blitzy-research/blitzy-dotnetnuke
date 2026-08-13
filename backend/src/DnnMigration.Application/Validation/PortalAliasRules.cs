@@ -1,5 +1,7 @@
 using System.Globalization;
 
+using DnnMigration.Domain.Common;
+
 namespace DnnMigration.Application.Validation;
 
 /// <summary>
@@ -87,24 +89,9 @@ internal static class PortalAliasRules
         + "a port and a path, and must not include a protocol prefix.";
 
     /// <summary>
-    /// The separator that introduces a path segment.
-    /// </summary>
-    private const char PathSeparator = '/';
-
-    /// <summary>
     /// The separator that introduces a port.
     /// </summary>
     private const char PortSeparator = ':';
-
-    /// <summary>
-    /// The single-segment reference to the current directory, rejected inside a path.
-    /// </summary>
-    private const string CurrentSegment = ".";
-
-    /// <summary>
-    /// The single-segment reference to the parent directory, rejected inside a path.
-    /// </summary>
-    private const string ParentSegment = "..";
 
     /// <summary>
     /// Message reported when an alias exceeds what the column can hold, composed from the bound so
@@ -112,6 +99,40 @@ internal static class PortalAliasRules
     /// </summary>
     internal static readonly string TooLongMessage = FormattableString.Invariant(
         $"An HTTP alias may not exceed {MaximumLength} characters.");
+
+    /// <summary>
+    /// Message reported when an alias names a path this deployment cannot address, composed from
+    /// <see cref="PortalAliasTopology"/> so the bound and the reserved words are stated in exactly
+    /// one place.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Reported ALONGSIDE <see cref="InvalidMessage"/> rather than instead of it. A value that
+    /// breaches the topology also fails <see cref="IsAcceptable"/>, which is deliberate - the shape
+    /// predicate enforces the whole contract so that no caller can reach the store through a rule
+    /// that omits part of it - and the general message alone would leave an operator who submitted
+    /// <c>host/api</c> or <c>host/a/b</c> unable to tell which part of the value was refused. The
+    /// field therefore carries two messages for a topology failure: one saying the alias is not a
+    /// storable form, and this one saying exactly why.
+    /// </para>
+    /// <para>
+    /// The reserved words are enumerated rather than summarised because knowing which word was
+    /// refused is the whole of the actionable content, and they are ordered so the message is
+    /// identical from one process to the next.
+    /// </para>
+    /// </remarks>
+    internal static readonly string UnsupportedPathMessage =
+        "An HTTP alias may carry at most "
+        + PortalAliasTopology.MaximumPathSegments.ToString(CultureInfo.InvariantCulture)
+        + " path segment beneath its host name; that segment may contain only letters, digits, "
+        + "hyphens and underscores, and may not be one of the addresses this application reserves "
+        + "for itself ("
+        + string.Join(
+            ", ",
+            PortalAliasTopology.ReservedPathSegments.OrderBy(
+                segment => segment,
+                StringComparer.Ordinal))
+        + ").";
 
     /// <summary>
     /// Reports whether a submitted alias is a form this application can store.
@@ -133,9 +154,20 @@ internal static class PortalAliasRules
     /// query and fragment markers, which address a request rather than name a host.
     /// </para>
     /// <para>
-    /// Rejected in the path: a leading or trailing separator, an empty segment, and any segment
-    /// that is a current-directory or parent-directory reference. The last of those is what keeps a
-    /// traversal sequence out of a value that is later composed into a URL.
+    /// Rejected in the path, by <see cref="PortalAliasTopology.IsAcceptablePath"/>: a leading or
+    /// trailing separator, an empty segment, more than one segment, any character outside letters,
+    /// digits, hyphen and underscore, and any segment that names one of this deployment's own
+    /// addresses. Refusing the dot is what keeps a traversal sequence out of a value that is later
+    /// composed into a URL - <c>.</c> and <c>..</c> cannot be spelled without it - and it is also
+    /// what makes a stored alias segment impossible to confuse with a served file.
+    /// </para>
+    /// <para>
+    /// THE PATH RULE IS NOT DECLARED HERE, and that is the point of it. Four other components decide
+    /// the same question - the request pipeline that resolves an arriving address, the browser that
+    /// detects the prefix its document was served under, the screen that mirrors this rule for a
+    /// field message, and the reverse proxy that matches the API location - and they disagreed. The
+    /// rule now lives in <see cref="PortalAliasTopology"/>, in the one layer every server-side
+    /// component already references.
     /// </para>
     /// </remarks>
     internal static bool IsAcceptable(string? alias)
@@ -150,7 +182,7 @@ internal static class PortalAliasRules
             return false;
         }
 
-        int pathStart = alias.IndexOf(PathSeparator, StringComparison.Ordinal);
+        int pathStart = alias.IndexOf(PortalAliasTopology.PathSeparator, StringComparison.Ordinal);
         string authority = pathStart < 0 ? alias : alias[..pathStart];
 
         if (!IsAcceptableAuthority(authority))
@@ -158,8 +190,27 @@ internal static class PortalAliasRules
             return false;
         }
 
-        return pathStart < 0 || IsAcceptablePath(alias[(pathStart + 1)..]);
+        return pathStart < 0 || PortalAliasTopology.IsAcceptablePath(alias[(pathStart + 1)..]);
     }
+
+    /// <summary>
+    /// Reports whether an alias names a path this deployment can actually deliver a request to.
+    /// </summary>
+    /// <param name="alias">The alias exactly as the caller submitted it.</param>
+    /// <returns>
+    /// <see langword="true"/> when the alias carries no path, or carries a path within
+    /// <see cref="PortalAliasTopology"/>. An absent or blank value returns <see langword="true"/>,
+    /// leaving that condition to the required-value rule.
+    /// </returns>
+    /// <remarks>
+    /// A thin delegation, and it exists for one reason: both alias validators are documented to read
+    /// every rule they apply from this type, so a rule they had to reach into another layer for
+    /// would be a rule a reader of those validators could miss. The rule itself belongs to the
+    /// Domain layer because the request pipeline and the browser enforce the same bound and neither
+    /// of them can see this one.
+    /// </remarks>
+    internal static bool IsWithinSupportedTopology(string? alias) =>
+        PortalAliasTopology.IsSupportedAddress(alias);
 
     /// <summary>
     /// Reports whether every character of an alias is one an alias may contain at all, before any
@@ -288,46 +339,5 @@ internal static class PortalAliasRules
         }
 
         return labelLength > 0 && host[^1] != '-';
-    }
-
-    /// <summary>
-    /// Reports whether the path part of an alias is acceptable.
-    /// </summary>
-    /// <param name="path">The text after the first path separator, which may be empty.</param>
-    /// <returns><see langword="true"/> when every segment is acceptable.</returns>
-    /// <remarks>
-    /// An empty path means the alias ended with a separator, which is refused: the stored value is
-    /// composed into an address, and a trailing separator would produce a doubled one. The segment
-    /// vocabulary is deliberately narrow - letters, digits, hyphen, underscore and dot - because a
-    /// child-portal path is a name rather than a request.
-    /// </remarks>
-    private static bool IsAcceptablePath(string path)
-    {
-        if (path.Length == 0)
-        {
-            return false;
-        }
-
-        foreach (string segment in path.Split(PathSeparator))
-        {
-            if (segment.Length == 0
-                || string.Equals(segment, CurrentSegment, StringComparison.Ordinal)
-                || string.Equals(segment, ParentSegment, StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            for (int index = 0; index < segment.Length; index++)
-            {
-                char character = segment[index];
-
-                if (!char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_' or '.'))
-                {
-                    return false;
-                }
-            }
-        }
-
-        return true;
     }
 }

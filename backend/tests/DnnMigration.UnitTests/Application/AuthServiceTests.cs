@@ -1384,6 +1384,7 @@ public class AuthServiceApplicationTests
             users => users.SetPasswordHashAsync(
                 UserId,
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 Now,
                 It.IsAny<CancellationToken>()),
             Times.Once,
@@ -1427,6 +1428,7 @@ public class AuthServiceApplicationTests
             users => users.SetPasswordHashAsync(
                 UserId,
                 SignInHarness.ReplacementRepresentation,
+                It.IsAny<string?>(),
                 Now,
                 It.IsAny<CancellationToken>()),
             Times.Once,
@@ -1461,6 +1463,7 @@ public class AuthServiceApplicationTests
             users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
@@ -1494,6 +1497,7 @@ public class AuthServiceApplicationTests
             users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Never);
@@ -1517,7 +1521,7 @@ public class AuthServiceApplicationTests
     {
         SignInHarness harness = SignInHarness.Ready();
         harness.StoredRepresentationIsSuperseded = true;
-        harness.ReplacementAccepted = false;
+        harness.ReplacementAccepted = CredentialWriteOutcome.NoRecord;
 
         Result<LoginResponse> outcome = await harness.LoginAsync();
 
@@ -2134,7 +2138,7 @@ public class AuthServiceApplicationTests
         public bool StoredRepresentationIsSuperseded { get; set; }
 
         /// <summary>Whether the store accepts a replacement representation.</summary>
-        public bool ReplacementAccepted { get; set; } = true;
+        public CredentialWriteOutcome ReplacementAccepted { get; set; } = CredentialWriteOutcome.Replaced;
 
         /// <summary>Whether the store accepts an approval.</summary>
         public bool ApprovalAccepted { get; set; } = true;
@@ -2302,6 +2306,7 @@ public class AuthServiceApplicationTests
                 .Setup(users => users.SetPasswordHashAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
+                    It.IsAny<string?>(),
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ReplacementAccepted);

@@ -105,8 +105,24 @@ services:
       # DotNetNuke database, which the API refuses at start-up, because that schema
       # is immutable. `External` declares a store the deployment registers itself,
       # and against THIS image it correctly stops the container, because none is.
+      #
+      # THE ACKNOWLEDGEMENT IS REQUIRED IN PRODUCTION, AND THIS FILE EARNS IT. The API
+      # refuses to start in Production on a replica-local session store unless the
+      # deployment states that it runs one instance - because scaling out on the
+      # process-local store needs no code or configuration change and produces no
+      # warning, while a sign-out on one replica leaves the session exchangeable on
+      # every other. This compose file starts EXACTLY ONE api service, so the claim
+      # is true of it and is made here on the record. It changes no behaviour.
+      #
+      # ⚠ IF YOU ADD A REPLICA - `deploy.replicas`, `docker compose up --scale api=N`,
+      # or this service behind a load balancer with siblings - this default becomes a
+      # FALSE claim. Set REFRESH_TOKEN_STORE_PROVIDER=SqlServer with a session
+      # catalogue instead, and provision it with docker/sql/refresh-token-store.sql.
+      # Selecting SqlServer makes the acknowledgement irrelevant: a shared store
+      # satisfies the invariant on its own merits.
       - RefreshTokenStore__Provider=${REFRESH_TOKEN_STORE_PROVIDER:-InProcess}
       - RefreshTokenStore__ConnectionString=${REFRESH_TOKEN_STORE_CONNECTION:-}
+      - RefreshTokenStore__AcknowledgeSingleInstance=${REFRESH_TOKEN_STORE_SINGLE_INSTANCE:-true}
       - Jwt__Secret=${JWT_SECRET}
       - Jwt__Issuer=${JWT_ISSUER:-DnnMigration}
       - Jwt__Audience=${JWT_AUDIENCE:-DnnMigration}
@@ -187,6 +203,40 @@ services:
       timeout: 5s
       start_period: 20s
       retries: 3
+    # SEC-12. RUNTIME PRIVILEGE AND FILESYSTEM POSTURE, AND EVERY LINE OF IT WAS MEASURED
+    # AGAINST THIS IMAGE RATHER THAN COPIED FROM A HARDENING GUIDE.
+    #
+    # The image already runs as a non-root account - api.Dockerfile creates uid 1000
+    # and declares `USER appuser` - so what was missing was everything that stops that
+    # account from GAINING privilege or writing anything down.
+    security_opt:
+      # Refuses setuid/setgid escalation for this container and every process it
+      # spawns. The image contains no setuid binary today; this is what keeps a future
+      # base-image change from silently introducing an escalation path.
+      - no-new-privileges:true
+    # ALL capabilities, not a subset. Measured: the API needs none. It binds 8080,
+    # which is above the privileged range, so not even NET_BIND_SERVICE is required -
+    # verified by running this image with `--cap-drop ALL`, which answered /health and
+    # /health/ready with 200 and completed a real sign-in returning an access token.
+    cap_drop:
+      - ALL
+    # NO TMPFS, AND THAT IS THE STRONGER POSTURE RATHER THAN AN OVERSIGHT.
+    #
+    # There is not a single filesystem write anywhere in backend/src - no File.Create,
+    # no FileStream, no Directory.CreateDirectory - so a writable path would be surface
+    # with no consumer. The two candidates were checked individually rather than
+    # assumed: data protection is registered with an IN-MEMORY key-ring repository, so
+    # no key file is written (see AddEphemeralDataProtection), and module export returns
+    # its payload in the response instead of writing a file the way the legacy handler
+    # did.
+    #
+    # WHAT IT COSTS, stated because it is a real trade: /tmp is read-only, so the .NET
+    # diagnostics IPC socket is not created and dotnet-counters or dotnet-dump cannot
+    # attach to a running container. Measured - /tmp is empty and the application does
+    # not care. An operator who needs live diagnostics can add `tmpfs: [/tmp]` here,
+    # which weakens nothing else; it is absent because nothing in the delivered code
+    # needs it.
+    read_only: true
     restart: unless-stopped
     networks:
       - dnnmigration
@@ -244,6 +294,49 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # SEC-12. THE PROXY RUNS UNPRIVILEGED, WITH NO CAPABILITIES AND NOTHING WRITABLE
+    # EXCEPT TWO EPHEMERAL DIRECTORIES. Every value below was established by running
+    # this image, not by reading a guide - the order the barriers appeared in is
+    # recorded because each one looks like a reason to give up on the next.
+    #
+    # nginx as shipped runs a ROOT master that spawns workers as an unprivileged
+    # account. That master is what this addresses: it is not needed here.
+    user: "101:101"
+    security_opt:
+      - no-new-privileges:true
+    # ALL capabilities. Measured, and the two that looked mandatory are not:
+    #
+    #  - NET_BIND_SERVICE for port 80. Not required: Docker sets
+    #    net.ipv4.ip_unprivileged_port_start=0 inside the container, so uid 101 binds 80
+    #    directly. Verified - the container served /nginx-health, the SPA root and a
+    #    deep link, all 200, with `--cap-drop ALL`.
+    #  - CHOWN and SETUID/SETGID. Only the ROOT master needs those, to create the temp
+    #    directories and hand them to the worker account. Running AS that account
+    #    removes the step rather than permitting it. Measured in this exact order:
+    #    dropping all capabilities while still running as root failed with
+    #    `chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not
+    #    permitted)`; running as 101:101 with the same empty capability set started
+    #    cleanly with no [emerg] at all.
+    cap_drop:
+      - ALL
+    read_only: true
+    # THE ONLY TWO WRITABLE PATHS, both ephemeral and both owned by the account that
+    # writes them. Discovered by measurement rather than listed defensively: with a
+    # read-only root and no tmpfs, nginx refused to start with
+    # `mkdir("/var/cache/nginx/client_temp") failed (30: Read-only file system)`.
+    #
+    #  - /var/cache/nginx holds the proxy and client body temp directories nginx creates
+    #    at start-up.
+    #  - /run holds nginx.pid. nginx.conf declares no `pid` directive, so the compiled
+    #    default applies; /var/run is a symlink to /run on Alpine, so this is the real
+    #    location and mounting the symlink path would not cover it.
+    #
+    # The log paths need nothing: the image symlinks /var/log/nginx/*.log to the
+    # container's stdout and stderr, so the writes nginx.conf makes there leave the
+    # filesystem entirely. noexec and nosuid because these hold data, never code.
+    tmpfs:
+      - /var/cache/nginx:uid=101,gid=101,mode=0770,noexec,nosuid
+      - /run:uid=101,gid=101,mode=0770,noexec,nosuid
     restart: unless-stopped
     networks:
       dnnmigration:

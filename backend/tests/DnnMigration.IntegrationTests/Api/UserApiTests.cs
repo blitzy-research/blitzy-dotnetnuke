@@ -1858,6 +1858,264 @@ public sealed class UserApiTests
         profile.Properties.Should().NotBeNull();
     }
 
+    /// <summary>
+    /// PRIV-01: the account holder may obtain everything the installation holds about them within the tenant
+    /// they are addressing, in one document, without an administrator's help.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Driven as the ACCOUNT ITSELF rather than as an administrator, because self-service is the property the
+    /// finding is about: an export only an administrator can take is not a subject-access facility. The
+    /// administrative case is asserted separately below, since both are legitimate and they are different
+    /// events.
+    /// </remarks>
+    [Fact]
+    public async Task ExportPersonalData_AsTheAccountHolder_ReturnsOk()
+    {
+        using HttpClient owner = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage response = await owner.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserPersonalDataExportDto? export = await response.Content
+            .ReadEnvelopeAsync<UserPersonalDataExportDto>();
+
+        export.Should().NotBeNull();
+        export!.UserId.Should().Be(_fixture.Seed.MemberUserId);
+        export.PortalId.Should().Be(_fixture.Seed.PortalId);
+        export.GeneratedAtUtc.Should().NotBe(default);
+        export.Account.Username.Should().Be(IntegrationSeed.MemberUserName);
+        export.Profile.Should().NotBeNull("the profile is part of what is held about the subject");
+        export.RoleAssignments.Should().NotBeNull();
+        export.RoleAssignments.Should().OnlyContain(
+            assignment => assignment.UserId == _fixture.Seed.MemberUserId,
+            "the document describes one subject");
+    }
+
+    /// <summary>
+    /// PRIV-01: a tenant administrator may take the export on a member's behalf, which is what makes the
+    /// facility usable when the subject cannot sign in.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportPersonalData_AsThePortalAdministrator_ReturnsOk()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await administrator.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserPersonalDataExportDto export =
+            (await response.Content.ReadEnvelopeAsync<UserPersonalDataExportDto>())!;
+
+        export.UserId.Should().Be(_fixture.Seed.MemberUserId);
+    }
+
+    /// <summary>
+    /// PRIV-01: the exported document carries NO SECRET, asserted against the wire rather than against the
+    /// type. A serialiser setting or a future member could put one there without changing the class.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportPersonalData_CarriesNoSecretOnTheWire()
+    {
+        using HttpClient owner = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage response = await owner.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        string body = await response.Content.ReadAsStringAsync();
+
+        // The stored credential itself, read from the membership store, must not appear anywhere in the
+        // document. This is the strongest available form of the assertion: it compares against the real value.
+        string? storedHash = await ReadStoredHashAsync(IntegrationSeed.MemberUserName);
+        storedHash.Should().NotBeNullOrEmpty("the seeded member holds a credential, or this proves nothing");
+        body.Should().NotContain(storedHash!, "the credential hash must never be exported");
+
+        foreach (string forbidden in new[] { "\"password", "\"passwordHash", "\"passwordSalt", "\"hash", "\"salt", "\"refreshToken", "\"accessToken" })
+        {
+            body.Should().NotContainEquivalentOf(
+                forbidden,
+                "an exported document must carry no secret-bearing member");
+        }
+    }
+
+    /// <summary>
+    /// PRIV-01: an unauthenticated caller cannot obtain a subject's data, and an account arriving on another
+    /// tenant's host cannot obtain it either even when the identifier matches.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportPersonalData_IsRefusedWithoutOwnershipOfTheAddressedTenant()
+    {
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage unauthenticated = await anonymous.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
+
+        unauthenticated.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal otherPortal = await CreateIsolatedPortalAsync(host);
+
+        using HttpClient owner = _fixture.CreateClientFor(
+            _fixture.Seed.MemberUserId,
+            IntegrationSeed.MemberUserName,
+            _fixture.Seed.PortalId,
+            isSuperUser: false,
+            roles: [IntegrationSeed.RegisteredUsersRoleName]);
+
+        owner.BaseAddress = new Uri($"http://{otherPortal.Alias}", UriKind.Absolute);
+
+        using HttpResponseMessage crossTenant = await owner.GetAsync(
+            PersonalDataRoute(otherPortal.PortalId, _fixture.Seed.MemberUserId));
+
+        crossTenant.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "owning the identifier in one tenant authorises nothing in another");
+    }
+
+    /// <summary>
+    /// PRIV-01: one account may not export another's data, even inside the same tenant and even though both
+    /// are authenticated members of it.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportPersonalData_ByAnAccountOtherThanTheHolder_ReturnsForbidden()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        using HttpClient other = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage response = await other.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, created.UserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    /// <summary>PRIV-01: an unknown account answers <c>404 Not Found</c> rather than an empty document.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ExportPersonalData_WhenUnknown_ReturnsNotFound()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            PersonalDataRoute(_fixture.Seed.PortalId, UnknownUserId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// PRIV-03: every response from an endpoint that requires authorisation forbids caching, and an anonymous
+    /// endpoint does not, so the rule is proven to be keyed on authorisation rather than applied everywhere.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The four authorised reads below are the ones that actually carry personal data: an account projection,
+    /// a profile, a listing of a tenant's accounts, and the export itself. A private browser cache that wrote
+    /// any of them to disk would leave them readable after a sign-out, and pressing Back would re-display
+    /// them.
+    /// </para>
+    /// <para>
+    /// THE REFUSALS ARE ASSERTED TOO. A cached <c>401</c> or <c>403</c> is a cached security decision, and a
+    /// rule that marked only successful responses would make the presence of the directive itself a signal
+    /// about whether a caller is entitled to a resource.
+    /// </para>
+    /// <para>
+    /// The negative control is the health endpoint, which is anonymous by design and carries no personal data;
+    /// it must NOT be marked, or this fact would pass equally against a change that made the whole API
+    /// uncacheable and would stop testing the rule it names.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AuthorizedResponses_ForbidResponseCaching()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        foreach (Uri route in new[]
+        {
+            UserRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId),
+            ProfileRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId),
+            PersonalDataRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId),
+            UsersRoute(_fixture.Seed.PortalId),
+        })
+        {
+            using HttpResponseMessage response = await administrator.GetAsync(route);
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK, "route {0} must answer", route);
+            AssertPrivateAndUnstorable(response, $"{route} returns personal data");
+        }
+
+        using HttpClient anonymous = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage unauthenticated = await anonymous.GetAsync(
+            UserRoute(_fixture.Seed.PortalId, _fixture.Seed.MemberUserId));
+
+        unauthenticated.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        AssertPrivateAndUnstorable(unauthenticated, "a cached refusal is a cached security decision");
+
+        using HttpClient member = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage forbidden = await member.GetAsync(UsersRoute(_fixture.Seed.PortalId));
+
+        forbidden.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        AssertPrivateAndUnstorable(forbidden, "an entitlement refusal must not be retained either");
+
+        /*
+         * THE NEGATIVE CONTROL, and it is asserted on `private` rather than on `no-store` for a MEASURED
+         * reason that a later reader would otherwise reverse.
+         *
+         * `/health` is anonymous and carries no personal data, so this rule does not reach it - but the
+         * response IS already `no-store`, because ASP.NET Core's own health middleware defaults
+         * `HealthCheckOptions.AllowCachingResponses` to false and writes `no-store, no-cache` plus the
+         * HTTP/1.0 spellings itself. Measured against the container image built BEFORE this rule existed:
+         * `Cache-Control: no-store, no-cache`, `Pragma: no-cache`, `Expires: Thu, 01 Jan 1970`.
+         *
+         * So asserting the absence of `no-store` here would assert something untrue of the framework and
+         * would fail whatever this rule did. `private` is the discriminator: the health default does not set
+         * it and never has, and this rule always does. Its absence therefore proves the rule is keyed on
+         * authorisation rather than applied to every response, which is the property the control exists for.
+         */
+        using HttpResponseMessage health = await anonymous.GetAsync(
+            new Uri("/health", UriKind.Relative));
+
+        health.StatusCode.Should().Be(HttpStatusCode.OK);
+        (health.Headers.CacheControl?.Private ?? false).Should().BeFalse(
+            "the rule is keyed on authorisation, not applied to every response");
+        (health.Headers.CacheControl?.MaxAge).Should().BeNull(
+            "the freshness bound belongs to the authorisation rule, which does not reach an anonymous probe");
+    }
+
+    /// <summary>
+    /// Asserts that one response may not be retained by a private or shared cache.
+    /// </summary>
+    /// <param name="response">The response to inspect.</param>
+    /// <param name="because">Why this response must not be retained.</param>
+    /// <remarks>
+    /// Deliberately does NOT assert the HTTP/1.0 <c>Pragma</c> spelling or an <c>Expires</c> bound. Those
+    /// belong to the stronger credential rule, and asserting them here would collapse the two rules into one
+    /// and stop either from being distinguishable. <c>AuthApiTests</c> owns the credential form.
+    /// </remarks>
+    private static void AssertPrivateAndUnstorable(HttpResponseMessage response, string because)
+    {
+        response.Headers.CacheControl.Should().NotBeNull(because);
+        response.Headers.CacheControl!.NoStore.Should().BeTrue(because);
+        response.Headers.CacheControl.Private.Should().BeTrue(
+            "the proxy in front of this API serves every tenant, so it must hold nothing caller-specific");
+        response.Headers.CacheControl.MaxAge.Should().Be(
+            TimeSpan.Zero,
+            "the fallback for an intermediary that computes freshness heuristically");
+    }
+
+
     /// <summary>The profile projection answers <c>404 Not Found</c> for an account that does not exist.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -4341,6 +4599,18 @@ public sealed class UserApiTests
     /// <returns>A relative route.</returns>
     private static Uri ProfileRoute(int _, int userId) =>
         new($"/api/v1/users/{Route(userId)}/profile", UriKind.Relative);
+
+    /// <summary>Builds the subject-data export route for one account.</summary>
+    /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>
+    /// <param name="userId">The account identifier.</param>
+    /// <returns>A relative route.</returns>
+    /// <remarks>
+    /// PRIV-01. A sub-resource of the account rather than a separate collection, because the subject it
+    /// describes is the account: the same route parameter therefore reaches the same authorisation policy,
+    /// and an export cannot become addressable to a caller the account itself is not.
+    /// </remarks>
+    private static Uri PersonalDataRoute(int _, int userId) =>
+        new($"/api/v1/users/{Route(userId)}/personal-data", UriKind.Relative);
 
     /// <summary>Builds the item route for one profile property definition.</summary>
     /// <param name="_">Ignored legacy call-site value; the request host resolves the tenant.</param>

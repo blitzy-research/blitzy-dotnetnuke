@@ -120,12 +120,25 @@ export class TokenStorageService {
   private readonly _generation = signal(0);
 
   /**
-   * A refresh token whose revocation the server has not yet acknowledged.
+   * The refresh tokens whose revocation the server has not yet acknowledged.
    *
    * Separate from {@link _session} so that discarding the session — which signing out does
    * at once — cannot take the only credential capable of ending it on the server with it.
+   *
+   * ⚠ SEC-03. A SET RATHER THAN A SINGLE SLOT, AND THE PLURALITY IS THE FIX. One slot held
+   * one credential, so a second sign-out overwrote whatever the first had left behind: after
+   * `sign out (refused) → sign in → sign out`, the first session's renewal credential was
+   * silently discarded and stayed usable on the server until its absolute expiry, with
+   * nothing left anywhere that could withdraw it. Every failed withdrawal now retains its
+   * own credential and each is withdrawn independently.
+   *
+   * Bounded at {@link MAXIMUM_PENDING_REVOCATIONS}, because these are live credentials and an
+   * unbounded list of them is both a growing exposure and an unbounded amount of retry work.
+   * When the bound is reached the OLDEST is dropped — deliberately that end, because a
+   * credential retained earlier is nearer its own absolute expiry and therefore has the
+   * shortest residual window of the set, so it is the one whose loss costs least.
    */
-  private readonly _pendingRevocation = signal<string | null>(null);
+  private readonly _pendingRevocations = signal<readonly string[]>(EMPTY_PENDING_REVOCATIONS);
 
   /**
    * The current session, or null when nobody is signed in.
@@ -192,9 +205,15 @@ export class TokenStorageService {
   readonly generation: Signal<number> = this._generation.asReadonly();
 
   /**
-   * The credential held for an unacknowledged sign-out, or `null` when none is outstanding.
+   * The credentials held for unacknowledged sign-outs, oldest first, empty when none is
+   * outstanding.
+   *
+   * Ordered by retention so a reader draining the set retires the nearest-to-expiry residue
+   * first, and read-only so nothing outside this service can retire a credential without
+   * going through {@link releasePendingRevocation} — the single place that decides a residue
+   * has been dealt with.
    */
-  readonly pendingRevocation: Signal<string | null> = this._pendingRevocation.asReadonly();
+  readonly pendingRevocations: Signal<readonly string[]> = this._pendingRevocations.asReadonly();
 
   /**
    * The bearer token to present, or null when there is none.
@@ -322,16 +341,21 @@ export class TokenStorageService {
    * Holds one refresh token aside so a sign-out whose server call has not been
    * acknowledged can still be retried.
    *
-   * ⚠ THIS SLOT IS DELIBERATELY NOT CLEARED BY {@link clear}, AND THAT IS THE WHOLE POINT.
-   * Signing out discards the session immediately — it has to, because the operator asked
+   * ⚠ THE RETENTION SET IS DELIBERATELY NOT CLEARED BY {@link clear}, AND THAT IS THE WHOLE
+   * POINT. Signing out discards the session immediately — it has to, because the operator asked
    * to be signed out and the local state must not survive the request — but the refresh
    * token is also the ONLY credential that can end the session on the server. Discarding
    * it with the session left a live server-side session with nothing left to revoke it
    * with: every 429, 503 and network failure became an unrecoverable residue.
    *
+   * ⚠ SEC-03. IT ADDS TO THE SET RATHER THAN REPLACING IT. The predecessor held one credential,
+   * so this method was where a second refused sign-out destroyed the first one's only means of
+   * being withdrawn. Each retention is now independent, bounded and de-duplicated — see
+   * {@link _pendingRevocations} for the bound and which end of the set gives way.
+   *
    * It stays in memory, like the session itself. Writing it to `localStorage` would make
    * a long-lived credential survive the tab that created it, which is a larger risk than
-   * the one this slot removes.
+   * the one this retention removes.
    *
    * @param refreshToken The credential awaiting acknowledged revocation.
    */
@@ -340,18 +364,62 @@ export class TokenStorageService {
       return;
     }
 
-    this._pendingRevocation.set(refreshToken);
+    const retained: readonly string[] = this._pendingRevocations();
+
+    // Already held, so nothing to do. Re-adding would post the same withdrawal twice, and
+    // moving it to the back would reorder the set for no gain — it is the same credential
+    // and it has been outstanding since the first time it was retained.
+    if (retained.includes(refreshToken)) {
+      return;
+    }
+
+    // Room is made from the FRONT, which is the oldest end. See the note on
+    // {@link _pendingRevocations} for why that is the right end to give up.
+    const kept: readonly string[] =
+      retained.length < MAXIMUM_PENDING_REVOCATIONS
+        ? retained
+        : retained.slice(retained.length - MAXIMUM_PENDING_REVOCATIONS + 1);
+
+    this._pendingRevocations.set(Object.freeze([...kept, refreshToken]));
   }
 
   /**
-   * Forgets the retained credential.
+   * Forgets one retained credential.
    *
-   * Called when the server has acknowledged the revocation, and when it has answered that
-   * the value can never name a session — a malformed or unknown credential is terminal, so
-   * retaining it would only produce a notice nothing can clear.
+   * Called when the server has acknowledged that credential's revocation, and when it has
+   * answered that the value can never name a session — a malformed or unknown credential is
+   * terminal, so retaining it would only produce a notice nothing can clear.
+   *
+   * ⚠ SEC-03. RETIRES EXACTLY THE CREDENTIAL NAMED AND NOTHING ELSE. The predecessor emptied
+   * the whole slot, which was indistinguishable from retiring one value while only one could
+   * ever be held; with several outstanding it would have discarded the residue of every other
+   * session because ONE of them had been withdrawn.
+   *
+   * Idempotent, and deliberately silent about a value it does not hold: the withdrawal paths
+   * that call it may each run more than once for the same credential, and a caller should not
+   * have to test first.
+   *
+   * @param refreshToken The credential the server has finished with.
    */
-  clearPendingRevocation(): void {
-    this._pendingRevocation.set(null);
+  releasePendingRevocation(refreshToken: string): void {
+    const retained: readonly string[] = this._pendingRevocations();
+
+    if (retained.length === 0) {
+      return;
+    }
+
+    const kept: readonly string[] = retained.filter((held) => held !== refreshToken);
+
+    // Nothing was held under that value, so the array identity is left alone rather than
+    // replaced by an equal copy — a reader deriving from this signal must not be woken by a
+    // release that changed nothing.
+    if (kept.length === retained.length) {
+      return;
+    }
+
+    this._pendingRevocations.set(
+      kept.length === 0 ? EMPTY_PENDING_REVOCATIONS : Object.freeze(kept),
+    );
   }
 
   /**
@@ -430,3 +498,29 @@ export class TokenStorageService {
  * returns a stable reference and does not appear to change on every evaluation.
  */
 const EMPTY_PERMISSIONS: readonly string[] = Object.freeze([]);
+
+/**
+ * The retention set handed out when no withdrawal is outstanding.
+ *
+ * Frozen and shared for the same reason as {@link EMPTY_PERMISSIONS}: the signal must report
+ * the same reference every time nothing is outstanding, so a consumer comparing references
+ * does not see a change where none occurred.
+ */
+const EMPTY_PENDING_REVOCATIONS: readonly string[] = Object.freeze([]);
+
+/**
+ * How many unacknowledged withdrawals are retained at once.
+ *
+ * SEC-03. Four, and the number is a judgement between two costs that pull in opposite
+ * directions. Each retained value is a LIVE refresh token held in memory, so the set is a
+ * standing exposure and must be small; but each value that is NOT retained is a session that
+ * stays renewable on the server for its full lifetime with nothing left to end it, which is
+ * strictly worse. Four covers the realistic case — a handful of withdrawals refused while the
+ * server is briefly unreachable, within one page's lifetime — while keeping a full drain to a
+ * few seconds of bounded work and the held set to something a reader can enumerate.
+ *
+ * Not configurable. A deployment-tunable ceiling on how many credentials the browser holds
+ * would be a security parameter set by whoever edits a configuration file, and there is no
+ * value in it that this file cannot state outright.
+ */
+const MAXIMUM_PENDING_REVOCATIONS = 4;

@@ -638,6 +638,15 @@ public class UserServiceApplicationTests
                 .ReturnsAsync(Result.Success())
                 .Callback(() => subject.CallLog.Add("sessions.end"));
 
+            // PRIV-02. Logged like every other step, because the ORDER is what these facts measure: the
+            // erasure must follow the commit, never precede it.
+            subject.Tokens.Setup(tokens => tokens.PurgeAccountSessionRecordsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success())
+                .Callback(() => subject.CallLog.Add("sessions.erase"));
+
             subject.Profiles.Setup(profiles => profiles.GetDefinitionsByPortalIdAsync(
                     It.IsAny<int?>(),
                     It.IsAny<CancellationToken>()))

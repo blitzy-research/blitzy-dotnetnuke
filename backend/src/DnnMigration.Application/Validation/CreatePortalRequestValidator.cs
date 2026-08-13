@@ -491,11 +491,26 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
         // DuplicatePortalAlias), is absent here on purpose: it needs a
         // repository, so the service layer owns it and reports it as a failed
         // outcome.
+        //
+        // MIGRATION: the topology rule below is net-new, and it closes a hole the legacy character
+        // check could not see. That check measures a CHILD alias from the last separator onwards -
+        // `normalisedAlias[(normalisedAlias.LastIndexOf('/') + 1)..]` in
+        // HasOnlyPermittedAliasCharacters - which reproduces `Signup.ascx.vb:L191`, and it is kept
+        // verbatim because Minimal Change Clause item 4 requires the legacy rule and the legacy
+        // message. But measuring only the final segment means everything BEFORE the last separator
+        // is unexamined, so `foo/bar/baz` passed; and the widened parent vocabulary at
+        // ParentPortalAliasCharacters admits both the separator and the dot, so a parent alias of
+        // any depth passed too. Either value would be stored and neither could ever be delivered:
+        // the shipped reverse proxy matches exactly one optional segment ahead of `/api/`, and the
+        // request pipeline considers exactly one. The bound is enforced here rather than left to the
+        // reader, because an alias that cannot be addressed is a tenant that cannot be reached.
         RuleFor(request => request.PortalAlias)
             .NotEmpty().WithMessage(PortalAliasRequiredMessage)
             .MaximumLength(PortalAliasMaximumLength)
             .Must((request, alias) => HasOnlyPermittedAliasCharacters(alias, request.IsChildPortal))
-                .WithMessage(InvalidAliasCharacterMessage);
+                .WithMessage(InvalidAliasCharacterMessage)
+            .Must(alias => IsWithinAddressableTopology(alias))
+                .WithMessage(PortalAliasRules.UnsupportedPathMessage);
 
         // The description and keywords fields carried no validator; only the
         // markup and column width constrain them, and the two agree.
@@ -833,9 +848,7 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
             return true;
         }
 
-        string normalisedAlias = submittedAlias
-            .ToLowerInvariant()
-            .Replace(LegacySchemePrefix, string.Empty, StringComparison.Ordinal);
+        string normalisedAlias = NormaliseSubmittedAlias(submittedAlias);
 
         string measuredAlias = isChildPortal
             ? normalisedAlias[(normalisedAlias.LastIndexOf('/') + 1)..]
@@ -855,6 +868,48 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
 
         return true;
     }
+
+    /// <summary>
+    /// Applies the two normalisations the legacy signup screen applied before it measured anything.
+    /// </summary>
+    /// <param name="submittedAlias">The alias exactly as submitted.</param>
+    /// <returns>The value lower-cased and stripped of a leading scheme prefix.</returns>
+    /// <remarks>
+    /// Extracted so that the character rule and the topology rule judge the SAME string. Judging the
+    /// raw value for depth would count a scheme separator's own slashes as path segments, so
+    /// <c>http://localhost/dnn</c> - a value the legacy screen accepted, lowered at
+    /// <c>Signup.ascx.vb:L183</c> and stripped at <c>L184</c> - would be reported as three segments
+    /// deep and refused. The topology bound is about the ADDRESS, and the address is what remains once
+    /// these two normalisations have been applied.
+    /// </remarks>
+    private static string NormaliseSubmittedAlias(string submittedAlias) =>
+        submittedAlias
+            .ToLowerInvariant()
+            .Replace(LegacySchemePrefix, string.Empty, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Reports whether a submitted alias names a path this deployment can deliver a request to.
+    /// </summary>
+    /// <param name="submittedAlias">The alias exactly as submitted.</param>
+    /// <returns>
+    /// <see langword="true"/> when the normalised value carries no path, or carries a path within
+    /// <c>PortalAliasTopology</c>.
+    /// </returns>
+    /// <remarks>
+    /// ⚠ A SCHEME-PREFIXED VALUE REMAINS ACCEPTED HERE, AND THAT IS A PRESERVED LEGACY BEHAVIOUR
+    /// RATHER THAN AN OVERSIGHT. The legacy signup screen stripped the prefix before measuring, and a
+    /// pinned parity case requires <c>http://localhost/dnn</c> to be accepted; refusing it would make
+    /// this contract reject a request the legacy system accepted, which Minimal Change Clause item 4
+    /// forbids. The alias administration contract makes the opposite choice for its own field and
+    /// records that divergence, because that screen showed the operator a value it had silently
+    /// rewritten. The consequence here - that such a value is stored verbatim and so cannot be matched
+    /// by an arriving address - is now REPORTED at start-up by
+    /// <c>PortalAliasConformanceMonitor</c> rather than left silent, and it is recorded in
+    /// <c>MIGRATION_NOTES.md</c>.
+    /// </remarks>
+    private static bool IsWithinAddressableTopology(string? submittedAlias) =>
+        string.IsNullOrEmpty(submittedAlias)
+        || PortalAliasRules.IsWithinSupportedTopology(NormaliseSubmittedAlias(submittedAlias));
 
     /// <summary>
     /// Reports whether a submitted template selection names a file without

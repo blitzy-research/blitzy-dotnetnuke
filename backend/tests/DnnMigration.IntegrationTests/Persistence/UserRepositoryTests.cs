@@ -523,8 +523,20 @@ public sealed class UserRepositoryTests
             approved.Should().BeTrue();
             locked.Should().BeFalse();
 
-            bool replaced = await users.SetPasswordHashAsync(userId, ReplacementHash, DateTime.UtcNow);
-            replaced.Should().BeTrue();
+            // The replacement is a COMPARE-AND-SWAP, so it carries the representation the read above returned.
+            CredentialWriteOutcome replaced = await users.SetPasswordHashAsync(
+                userId, ReplacementHash, StoredHash, DateTime.UtcNow);
+            replaced.Should().Be(CredentialWriteOutcome.Replaced);
+
+            // And a second write carrying the SUPERSEDED expectation is refused rather than applied, which is
+            // the property the outcome type exists for: the stored value is now ReplacementHash, so a caller
+            // still holding StoredHash has decided against a credential that is no longer in force.
+            CredentialWriteOutcome stale = await users.SetPasswordHashAsync(
+                userId, StoredHash, StoredHash, DateTime.UtcNow);
+            stale.Should().Be(
+                CredentialWriteOutcome.Superseded,
+                "an expectation that no longer holds must refuse the write rather than overwrite the newer "
+                    + "credential");
 
             (_, hash, format, salt, _, _) = await users.GetCredentialStateAsync(userId);
             hash.Should().Be(ReplacementHash);
@@ -539,6 +551,68 @@ public sealed class UserRepositoryTests
             hash.Should().BeNull();
             format.Should().BeNull();
             salt.Should().BeNull();
+        }
+        finally
+        {
+            await RemoveAccountAsync(userId);
+        }
+    }
+
+    /// <summary>
+    /// The credential compare-and-swap compares BYTES, so an expectation that differs from the stored value
+    /// only in letter case is refused even though the database itself is case-insensitive.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-02. THIS IS THE ONE PROPERTY OF THE COMPARE-AND-SWAP THAT ONLY A REAL SERVER CAN SHOW,
+    /// and it is not theoretical: this fixture's server collation is <c>SQL_Latin1_General_CP1_CI_AS</c> - the
+    /// SQL Server installation default, and the collation a DotNetNuke database is overwhelmingly likely to
+    /// carry. Under it, an ordinary equality predicate holds <c>$2a$12$abc…</c> and <c>$2A$12$ABC…</c> to be the
+    /// same string.
+    /// </para>
+    /// <para>
+    /// They are not the same credential. BCrypt's digest alphabet is case-sensitive, so those two values verify
+    /// different secrets, and a swap that accepted the wrong one would do precisely what the expectation exists
+    /// to prevent: overwrite a credential the caller never read. The statement therefore forces
+    /// <c>Latin1_General_BIN2</c> on the comparison, and this test is what stops that qualifier from being
+    /// removed as noise - delete it and every other credential test in this suite still passes.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task CredentialReplacement_ComparesTheExpectationByBytesRatherThanByCollation()
+    {
+        int userId = await CreateAccountAsync(
+            portalId: null,
+            FormattableString.Invariant($"credcase_{Suffix()}"),
+            withCredential: false);
+
+        try
+        {
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+
+            (await users.CreateCredentialAsync(userId, StoredHash, isApproved: true, DateTime.UtcNow))
+                .Should().BeTrue();
+
+            string caseFlipped = StoredHash.ToUpperInvariant();
+            caseFlipped.Should().NotBe(StoredHash, "the fixture value must actually contain lower-case letters");
+
+            CredentialWriteOutcome refused = await users.SetPasswordHashAsync(
+                userId, ReplacementHash, caseFlipped, DateTime.UtcNow);
+
+            refused.Should().Be(
+                CredentialWriteOutcome.Superseded,
+                "an expectation that differs by case is a different BCrypt digest, so it names a credential "
+                    + "this caller never read and the write must be refused");
+
+            (_, string? unchanged, _, _, _, _) = await users.GetCredentialStateAsync(userId);
+            unchanged.Should().Be(StoredHash, "the refused write must have changed nothing");
+
+            // And the exact representation still succeeds, so the refusal above is evidence of a byte
+            // comparison rather than of a predicate that refuses everything.
+            (await users.SetPasswordHashAsync(userId, ReplacementHash, StoredHash, DateTime.UtcNow))
+                .Should().Be(CredentialWriteOutcome.Replaced);
         }
         finally
         {
@@ -620,7 +694,11 @@ public sealed class UserRepositoryTests
         IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
 
         (await users.CreateCredentialAsync(UnknownUserId, StoredHash, isApproved: true, DateTime.UtcNow)).Should().BeFalse();
-        (await users.SetPasswordHashAsync(UnknownUserId, StoredHash, DateTime.UtcNow)).Should().BeFalse();
+        (await users.SetPasswordHashAsync(UnknownUserId, StoredHash, StoredHash, DateTime.UtcNow))
+            .Should().Be(
+                CredentialWriteOutcome.NoRecord,
+                "an account that cannot be resolved to a membership user name has no record to refuse "
+                    + "against, which is emphatically not the same answer as a refused expectation");
         (await users.SetApprovalAsync(UnknownUserId, isApproved: true)).Should().BeFalse();
         (await users.UnlockAsync(UnknownUserId)).Should().BeFalse();
         (await users.DeleteCredentialAsync(UnknownUserId)).Should().BeFalse();

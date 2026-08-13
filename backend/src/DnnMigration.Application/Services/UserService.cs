@@ -283,6 +283,19 @@ public sealed class UserService : IUserService
     private const string PasswordResetFailedCode = "user.password.reset-failed";
 
     /// <summary>
+    /// Reported when the credential changed between this request reading it and replacing it, so the
+    /// replacement was refused rather than applied over the newer value.
+    /// </summary>
+    /// <remarks>
+    /// Its reason token ends in <c>superseded</c>, which the Api edge classifies as a conflict and answers
+    /// <c>409</c>. That is the honest reading: the request is well formed and the STATE of the resource
+    /// declines it, and repeating the identical request against the current state either succeeds or refuses
+    /// for a reason the caller can then act on. A 400 would tell the caller to correct a request that had
+    /// nothing wrong with it, and a 500 would describe a fault where the store worked exactly as intended.
+    /// </remarks>
+    private const string PasswordSupersededCode = "user.password.superseded";
+
+    /// <summary>
     /// Reported when an operation that must end an account's sessions could not have them revoked, so the
     /// operation itself was abandoned rather than completed with the sessions left alive.
     /// </summary>
@@ -571,6 +584,13 @@ public sealed class UserService : IUserService
     private const int ValidationExpressionMaximumLength = 512;
 
     /// <summary>Maximum number of compiled tenant expressions retained process-wide.</summary>
+    /// <remarks>
+    /// INFO-01: the cache holds at most this many entries and, once full, evicts exactly ONE entry per newly
+    /// admitted expression rather than clearing itself. The reasoning sits beside the eviction in
+    /// <c>GetValidationExpression</c>: these expressions are tenant data and the cache is shared across
+    /// tenants, so the cost of reaching the ceiling must be proportionate to what the writer introduced
+    /// instead of falling on every other tenant at once.
+    /// </remarks>
     private const int ValidationExpressionCacheMaximum = 1024;
 
     /// <summary>
@@ -1940,6 +1960,37 @@ public sealed class UserService : IUserService
         // Both facts the record needs - the account's key and whether the row itself was removed - are
         // already in memory, so nothing about emitting them here weakens the record. The evictions follow,
         // and may now fail without erasing the history of a deletion that has already happened.
+        // PRIV-02. THE SESSION RECORDS ARE ERASED, NOT MERELY REVOKED, AND THIS IS WHERE THAT HAPPENS.
+        //
+        // EndSessionsAsync above STAMPED every family so it can no longer be redeemed, which is the right
+        // treatment for a sign-out precisely because the stamped record is what makes a later replay of that
+        // family recognisable. It is the wrong treatment for a deletion: each record keeps the token digest and
+        // the subject identifiers, so an account removed from the application went on being described in the
+        // session store until its family ceiling elapsed - personal data about a subject that no longer exists,
+        // retained for a signal nobody can act on because there is no account left to protect.
+        //
+        // AFTER THE COMMIT, and the order is a choice between asymmetric failures rather than a preference.
+        // Erasing before the commit would mean a rolled-back deletion had destroyed the record of a live
+        // account's sessions, leaving an administrator unable to see or end them. Erasing afterwards means the
+        // worst case is revoked records naming a subject that is gone, and the scheduled reclamation removes
+        // those on its own.
+        //
+        // THE SCOPE FOLLOWS WHAT WAS ACTUALLY REMOVED. An account that still belongs to another tenant keeps
+        // its row and its sessions there, so only the records scoped to THIS tenant may be erased; an account
+        // removed outright has no legitimate session anywhere.
+        //
+        // A FAILURE HERE DOES NOT FAIL THE DELETION, and reporting one would be dishonest: the account is
+        // already gone and no retry can un-delete it. The records are still revoked, so nothing is
+        // exchangeable; what remains is a retention concern with a scheduled remedy, recorded as a property of
+        // the audit entry so an operator can see that the erasure is still owed.
+        Result purged = holdsAnotherMembership
+            ? await _tokens
+                .PurgeAccountSessionRecordsAsync(account.UserId, portalId, cancellationToken)
+                .ConfigureAwait(false)
+            : await _tokens
+                .PurgeAccountSessionRecordsAsync(account.UserId, null, cancellationToken)
+                .ConfigureAwait(false);
+
         RecordAudit(
             AuditEventNames.UserDeleted,
             portalId,
@@ -1947,6 +1998,7 @@ public sealed class UserService : IUserService
             new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["AccountRemoved"] = (!holdsAnotherMembership).ToString(CultureInfo.InvariantCulture),
+                ["SessionRecordsErased"] = purged.IsSuccess.ToString(CultureInfo.InvariantCulture),
             });
 
         _cache.InvalidatePortal(portalId);
@@ -2218,13 +2270,61 @@ public sealed class UserService : IUserService
         }
 
         DateTime now = _clock.UtcNow;
-        bool written = await _users
-            .SetPasswordHashAsync(userId, _passwordHasher.Hash(request.NewPassword), now, cancellationToken)
+
+        // ⚠ THE WRITE CARRIES THE REPRESENTATION THIS METHOD READ, AND THAT CLOSES A RACE THAT USED TO BE
+        // SILENT. Everything above decided from `storedHash`: a self-service change verified the current
+        // credential against it, and a reset established that the caller may replace it. The replacement used
+        // to be unconditional, so anything that changed the credential in between - an administrator resetting
+        // a compromised account while its holder was mid-change, another replica serving the same account, a
+        // sign-in migrating a legacy representation - was discarded without trace. The worst shape of it is an
+        // administrative reset being rolled back by a request that had verified the very credential the reset
+        // existed to retire. The expectation makes the database refuse that write instead, which is the only
+        // serialisation point two replicas share.
+        CredentialWriteOutcome written = await _users
+            .SetPasswordHashAsync(
+                userId,
+                _passwordHasher.Hash(request.NewPassword),
+                storedHash,
+                now,
+                cancellationToken)
             .ConfigureAwait(false);
 
-        if (!written)
+        if (written == CredentialWriteOutcome.Superseded)
+        {
+            // NOT retried here, and not reported as a store failure. The caller's own decision was made
+            // against a credential that is no longer in force, so the only correct answers are to refuse and
+            // to say why: a repeat of the identical request re-reads and either succeeds or refuses again on
+            // the current state. Reported as a conflict by the edge, which is what a well-formed request that
+            // the resource's state declines means.
+            return Result.Failure(
+                PasswordSupersededCode,
+                "The credential changed while this request was being processed, so it was not replaced. "
+                + "Read the current state and submit the change again.");
+        }
+
+        if (written != CredentialWriteOutcome.Replaced)
         {
             return Result.Failure(PasswordResetFailedCode, "The credential store refused the change.");
+        }
+
+        // ⚠ THE SECOND REVOCATION, AND IT IS NOT REDUNDANT. The one above runs BEFORE the write, which is
+        // the ordering the helper exists to enforce - a credential replaced with sessions left exchangeable
+        // would not end the session the change was performed to end. But a sign-in already in flight can mint
+        // a family in the interval between that revocation and this write committing, and such a family would
+        // have escaped the first sweep entirely. Repeating the revocation once the write has landed catches
+        // it, and the sign-in path closes the mirror-image case: a family minted AFTER this point can only
+        // come from a request whose own post-issuance credential read observes this change and revokes what it
+        // just minted. One of the two always applies, so no family issued against the superseded credential
+        // survives.
+        //
+        // A failure here is escalated rather than absorbed, for the same reason as the first sweep: the
+        // credential HAS changed by this point, so reporting success while sessions may remain exchangeable
+        // would be the exact falsehood the ordering rules were written to prevent. The caller is told to
+        // retry, and a retry is harmless - the swap now refuses as superseded, and the revocation is
+        // idempotent. MIGRATION: recorded in MIGRATION_NOTES.md.
+        if (await EndSessionsAsync(userId, cancellationToken).ConfigureAwait(false) is ResultReason lingering)
+        {
+            return Result.Failure(lingering);
         }
 
         if (account.UpdatePassword)
@@ -2893,6 +2993,131 @@ public sealed class UserService : IUserService
                 values,
                 defaultVisibility,
                 displayVisibilityEnabled));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// PRIV-01. COMPOSED FROM THE THREE PROJECTIONS THAT ALREADY EXIST, NOT ASSEMBLED FROM THE REPOSITORIES
+    /// AGAIN. The account record, the profile and the role assignments each have one definition in this
+    /// service, and reaching past them to build a fourth reading of the same rows is how an export starts
+    /// disagreeing with the screens it is meant to reproduce - a subject comparing the two would be shown two
+    /// different answers about themselves, and neither could be called wrong. The cost is three reads instead
+    /// of one; the export is not a hot path.
+    /// </para>
+    /// <para>
+    /// THE ABSENCE TEST IS THE ACCOUNT READ, once. Every member below is scoped to the same tenant and the
+    /// same account, so if the account is not a member of the tenant there is nothing to describe and the
+    /// document is null - the same convention <see cref="GetUserAsync"/> uses. The profile read applies the
+    /// same test internally and would answer null too; it is not relied on for the decision, because a
+    /// profile that is absent for its own reason (a tenant defining no properties) must not read as an
+    /// absent account.
+    /// </para>
+    /// <para>
+    /// THE ROLE ASSIGNMENTS ARE PROJECTED HERE RATHER THAN THROUGH THE ROLE SERVICE. Its own membership
+    /// listing is addressed BY ROLE - "who holds this role" - and answering "which roles does this account
+    /// hold" through it would mean enumerating every role of the tenant and filtering, which is both
+    /// wasteful and a read of other subjects' memberships to answer a question about one. The assignment
+    /// rows for one account are a repository read, and the role names are resolved from the roles those
+    /// assignments name.
+    /// </para>
+    /// <para>
+    /// NOTHING IS WRITTEN AND NO CACHE IS EVICTED. The audit record is the only side effect, and it carries
+    /// counts rather than values for the reason set out on <see cref="AuditEventNames.UserDataExported"/>.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<UserPersonalDataExportDto?>> ExportPersonalDataAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<UserDetailDto?> account = await GetUserAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (account.IsFailure)
+        {
+            return Result<UserPersonalDataExportDto?>.Failure(account.Reason!);
+        }
+
+        if (account.Value is null)
+        {
+            // The contract declares absence as a null value on a non-nullable type parameter, matching the
+            // account read this decision is taken from.
+            return Result<UserPersonalDataExportDto?>.Success(null);
+        }
+
+        Result<UserProfileDto?> profile = await GetProfileAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (profile.IsFailure)
+        {
+            return Result<UserPersonalDataExportDto?>.Failure(profile.Reason!);
+        }
+
+        IReadOnlyList<UserRole> assignments = await _roles
+            .GetUserRolesAsync(portalId, userId, cancellationToken)
+            .ConfigureAwait(false);
+
+        List<RoleMembershipDto> memberships = new(assignments.Count);
+
+        foreach (UserRole assignment in assignments)
+        {
+            // Tenant-scoped, so a role identifier that belongs to another tenant resolves to nothing rather
+            // than naming a role from a portal this document is not about.
+            Role? role = await _roles
+                .GetByIdAsync(assignment.RoleId, portalId, cancellationToken)
+                .ConfigureAwait(false);
+
+            memberships.Add(new RoleMembershipDto
+            {
+                UserRoleId = assignment.UserRoleId,
+                UserId = assignment.UserId,
+
+                // The subject's own identifying fields, taken from the account projection above rather than
+                // re-read: this document describes one account, so these are the same two values on every row
+                // and they must not be able to disagree with the account record beside them.
+                Username = account.Value.Username,
+                DisplayName = account.Value.DisplayName,
+                RoleId = assignment.RoleId,
+
+                // An assignment whose role has been removed under it keeps the assignment's own facts and
+                // reports no name, rather than being dropped from the document. Dropping it would understate
+                // what is held; inventing a name would state something the store does not say.
+                RoleName = role?.RoleName ?? string.Empty,
+                EffectiveDate = assignment.EffectiveDate,
+                ExpiryDate = assignment.ExpiryDate,
+            });
+        }
+
+        UserPersonalDataExportDto export = new()
+        {
+            GeneratedAtUtc = _clock.UtcNow,
+            PortalId = portalId,
+            UserId = userId,
+            Account = account.Value,
+            Profile = profile.Value,
+            RoleAssignments = memberships,
+        };
+
+        // COUNTS, NEVER VALUES. The sink is retained independently of, and for longer than, the data it
+        // describes, so copying the exported e-mail address, profile values or role names into it would
+        // duplicate the subject's personal data into a second store every time the endpoint that exists to
+        // serve that subject was used. The actor is what makes the record worth keeping: an export taken by an
+        // administrator and one taken by the account holder are different events, and nothing else
+        // distinguishes them afterwards.
+        RecordAudit(
+            AuditEventNames.UserDataExported,
+            portalId,
+            userId,
+            new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["ProfileValues"] = (export.Profile?.Properties.Count ?? 0)
+                    .ToString(CultureInfo.InvariantCulture),
+                ["RoleAssignments"] = memberships.Count.ToString(CultureInfo.InvariantCulture),
+                ["SelfService"] = (_currentUser.UserId == userId).ToString(CultureInfo.InvariantCulture),
+            });
+
+        return Result<UserPersonalDataExportDto?>.Success(export);
     }
 
     /// <inheritdoc />
@@ -4415,9 +4640,33 @@ public sealed class UserService : IUserService
                 "The validation expression is not a valid regular expression.");
         }
 
+        // INFO-01: AT CAPACITY THIS EVICTS ONE ENTRY, NOT ALL OF THEM.
+        //
+        // It used to call Clear(). The ceiling still held, so nothing grew without bound - but the COST of
+        // reaching it fell on the wrong party. Expressions are tenant data, authored by any account entitled
+        // to write a profile-property definition or the membership e-mail rule, and this cache is
+        // process-wide and shared by every tenant the instance serves. So one privileged writer introducing
+        // distinct expressions could discard up to 1,024 compiled expressions belonging to OTHER tenants,
+        // repeatedly, and each of those tenants then paid a recompilation on its next validation. The total
+        // work was bounded, which is why this is a hardening note rather than a defect, but the effect was a
+        // cliff and it was payable by whoever did not cause it.
+        //
+        // Removing a single entry per admitted expression makes the cost PROPORTIONATE: introducing one new
+        // expression can displace at most one other, so a writer can no longer do more damage than the work
+        // it brought. The cache stays exactly at its ceiling rather than emptying and refilling.
+        //
+        // The victim is whichever entry the enumerator yields first, which is not the least recently used -
+        // ConcurrentDictionary offers no recency and adding one would mean a second structure, a lock and a
+        // per-hit write, all to choose better between entries whose recompilation is already bounded by the
+        // 512-character limit and the short timeout. An arbitrary single victim is the right trade here; a
+        // wholesale clear was not.
         if (ValidationExpressionCache.Count >= ValidationExpressionCacheMaximum)
         {
-            ValidationExpressionCache.Clear();
+            foreach (string victim in ValidationExpressionCache.Keys)
+            {
+                ValidationExpressionCache.TryRemove(victim, out _);
+                break;
+            }
         }
 
         ValidationExpressionCache.TryAdd(expression, created);

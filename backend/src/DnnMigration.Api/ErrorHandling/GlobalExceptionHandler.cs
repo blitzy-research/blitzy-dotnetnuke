@@ -1010,11 +1010,19 @@ public static class ApiResults
     /// undeclared - one defect with two visible halves. Adding the token makes the published contract true
     /// rather than editing the description to match a classification that contradicted the reasoning above.
     /// </para>
+    /// <para>
+    /// <c>superseded</c> is here for the same reason the two above it are. A credential replacement refused
+    /// because the credential changed between the request reading it and writing it is a well-formed request
+    /// that the resource's current STATE declines: the store worked exactly as intended, nothing about the
+    /// submission needs correcting, and repeating the identical request against the state as it now stands
+    /// either succeeds or refuses for a reason the caller can act on. A 400 would tell the caller to edit a
+    /// correct request and a 500 would report a fault where the compare-and-swap did precisely its job.
+    /// </para>
     /// </remarks>
     private static readonly string[] ConflictTokens =
     {
         "duplicate", "already_exists", "already_registered", "already_required", "unchanged",
-        "not_different", "conflict", "in_use", "last_remaining",
+        "not_different", "conflict", "in_use", "last_remaining", "superseded",
     };
 
     /// <summary>The reason tokens that mean the caller is not permitted to do this.</summary>

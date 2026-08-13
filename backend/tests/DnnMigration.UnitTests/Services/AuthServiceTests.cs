@@ -93,6 +93,18 @@ public class AuthServiceTests
     /// </summary>
     private const string ApprovalStoreUnavailableCode = "auth.approval_store_unavailable";
 
+    /// <summary>
+    /// Reported when a correct credential was still in its legacy reversible representation and the
+    /// replacement that would have retired it could not be written, so the sign-in is refused.
+    /// </summary>
+    /// <remarks>
+    /// Shaped like <see cref="ApprovalStoreUnavailableCode"/> rather than like a credential refusal, and for
+    /// the same reason: nothing the caller submitted was wrong. Its reason token ends in
+    /// <c>store_unavailable</c>, which the Api edge answers <c>503</c>.
+    /// </remarks>
+    private const string CredentialMigrationStoreUnavailableCode =
+        "auth.credential_migration_store_unavailable";
+
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     /// <summary>
@@ -724,6 +736,7 @@ public class AuthServiceTests
             users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
@@ -820,6 +833,7 @@ public class AuthServiceTests
             users => users.SetPasswordHashAsync(
                 UserId,
                 replacement,
+                It.IsAny<string?>(),
                 Now,
                 It.IsAny<CancellationToken>()),
             Times.Once());
@@ -862,6 +876,7 @@ public class AuthServiceTests
             users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
@@ -870,11 +885,31 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A proven legacy credential still signs in if its immediate replacement store refuses the write, while
-    /// the distinct deadline-sensitive anomaly is recorded.
+    /// A proven legacy credential whose immediate replacement the store refuses is refused a session, and the
+    /// distinct deadline-sensitive anomaly is recorded.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS TEST WAS INVERTED, AND THE INVERSION IS THE FINDING. It previously asserted that the sign-in
+    /// still succeeded, on the reasoning that a transient store fault must not turn a credential already
+    /// proved correct into a refusal. That reasoning left out WHAT the stored credential still is when this
+    /// branch runs: a reversibly-encrypted legacy representation, decryptable with a key the legacy
+    /// installation committed to source control, and the one thing that retires it is the replacement that
+    /// just failed. Completing the sign-in told the account holder it had succeeded while leaving that
+    /// representation in place indefinitely - and because every later sign-in takes the same branch for as
+    /// long as the store stays unhappy, the compatibility window could close with the account still legacy.
+    /// </para>
+    /// <para>
+    /// So the refusal is asserted here instead, and it is asserted to be a NAMED DEPENDENCY FAILURE rather
+    /// than the uniform credential denial: nothing the caller submitted was wrong, and reporting a credential
+    /// refusal would send an account holder hunting for a mistake it did not make. That is the same ruling
+    /// this suite already pins for an approval that cannot be written and for a token store that cannot record
+    /// a session. The credential itself is unharmed, a retry either completes the migration or refuses again,
+    /// and administrative reset remains the fallback. Recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task SignIn_WhenLegacyReplacementFails_RecordsTheMigrationFailureAndStillSucceeds()
+    public async Task SignIn_WhenLegacyReplacementFails_RefusesTheSignIn()
     {
         Harness harness = Harness.Ready();
         harness.StoredCredential = "legacy-encrypted-value";
@@ -882,13 +917,19 @@ public class AuthServiceTests
         harness.CredentialSalt = "legacy-salt";
         harness.CredentialMatches = false;
         harness.LegacyCredentialMatches = true;
-        harness.CredentialUpgradeAccepted = false;
+        harness.CredentialUpgradeAccepted = CredentialWriteOutcome.NoRecord;
         harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns("$2a$12$replacement-value");
 
         Result<LoginResponse> result = await harness.LoginAsync();
 
-        result.IsSuccess.Should().BeTrue(
-            "a transient replacement failure must not turn a credential already proved correct into a refusal");
+        result.IsFailure.Should().BeTrue(
+            "a credential that is still in its legacy reversible form must not mint a session when the "
+            + "replacement that would have retired it could not be written");
+        result.Reason!.Code.Should().Be(CredentialMigrationStoreUnavailableCode);
+        result.Reason!.Message.Should().NotBe(
+            GenericDenial,
+            "nothing the caller submitted was wrong, so this must not be reported as a credential refusal");
+
         harness.Diagnostics.Verify(
             diagnostics => diagnostics.Record(
                 SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
@@ -897,6 +938,313 @@ public class AuthServiceTests
                 It.IsAny<string?>()),
             Times.Once());
         harness.AuditRecords.Should().NotContain(
+            record => record.EventName == AuditEventNames.LegacyCredentialMigrated);
+
+        // No session is minted, which is the whole point of the refusal: the earlier behaviour issued one.
+        harness.Tokens.Verify(
+            tokens => tokens.IssueTokensAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A credential replaced by somebody else after this sign-in verified it, and before a session is minted
+    /// from it, is refused with the uniform denial.
+    /// </summary>
+    /// <param name="credentialEmptiedOutright">
+    /// Whether the later read reports no credential at all rather than a different one.
+    /// </param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE RACE THE SIGN-IN PATH EXISTS TO LOSE SAFELY, and it is not hypothetical. Everything a
+    /// sign-in decides comes from ONE credential read taken before the comparison, and that comparison is the
+    /// one deliberately expensive step on the path - so the interval between reading the credential and issuing
+    /// a session is wide enough to matter. The change most likely to land inside it is an administrator
+    /// resetting the credential of an account they believe is compromised, which is to say: the one change
+    /// whose entire purpose is to stop exactly the session this request is about to mint. Without the second
+    /// look the sign-in completed anyway and the reset silently failed to end the session it existed to
+    /// prevent.
+    /// </para>
+    /// <para>
+    /// The refusal is the UNIFORM denial an incorrect credential receives, deliberately: the condition is
+    /// attacker-influenceable, so a distinct code would answer "that credential was right until a moment ago".
+    /// The distinction is recorded on the security diagnostics channel instead, which no response carries.
+    /// Both shapes of change are exercised - a different value, and an emptied record - because a check that
+    /// only compared non-null values would pass the first and admit the second.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SignIn_RefusesASessionWhenTheCredentialChangedAfterItWasVerified(
+        bool credentialEmptiedOutright)
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialChangesAfterVerification = true;
+        harness.CredentialValueAfterVerification = credentialEmptiedOutright
+            ? null
+            : "$2a$12$reset-by-an-administrator";
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsFailure.Should().BeTrue(
+            "the representation this sign-in verified is not the account's credential any more");
+        result.Reason!.Code.Should().Be(InvalidCredentialsCode);
+        result.Reason!.Message.Should().Be(
+            GenericDenial,
+            "the condition is attacker-influenceable, so it must be indistinguishable from a wrong credential");
+
+        harness.CredentialStateReads.Should().BeGreaterThanOrEqualTo(
+            2,
+            "the refusal must come from a second look at the credential, not from the read that preceded the "
+            + "comparison");
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                PortalId,
+                UserId,
+                It.IsAny<string?>()),
+            Times.Once());
+
+        harness.Tokens.Verify(
+            tokens => tokens.IssueTokensAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A credential replaced after the session was minted has that session revoked and the sign-in refused.
+    /// </summary>
+    /// <param name="revocationStoreRefuses">Whether the token store can record the revocation.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE BACKSTOP, AND WITHOUT IT THE WINDOW IS NARROW RATHER THAN CLOSED. The look taken before
+    /// issuance refuses the common case, but between that look and the family actually being minted the sign-in
+    /// performs the profile-remediation read, the role read and the permission read - so a change can still
+    /// land inside that interval, and a family minted there is younger than the sweep the credential mutation
+    /// performed before its write. The mutation therefore sweeps again AFTER its write, and the two mechanisms
+    /// interlock: a family minted before that second sweep is ended by it, and a family minted after it can
+    /// only come from a request whose own post-issuance read - this one - observes the change.
+    /// </para>
+    /// <para>
+    /// REVOKING IS THE OPERATIVE HALF, not the refusal. The family exists in the store by the time this runs;
+    /// returning a failure alone would leave the caller holding exchangeable material, which is precisely what
+    /// an administrator's reset is performed to end. A revocation that cannot be PERSISTED is escalated as a
+    /// dependency failure rather than reported as a credential refusal, matching the ruling the rotation path
+    /// already makes - telling the caller its credential was wrong while its family stays exchangeable would be
+    /// the worst of both answers.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SignIn_RefusesAndRevokesWhenTheCredentialChangedAfterTheSessionWasMinted(
+        bool revocationStoreRefuses)
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialChangesAfterVerification = true;
+        harness.CredentialChangesFromRead = 3;
+        harness.SessionsRevoked = !revocationStoreRefuses;
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsFailure.Should().BeTrue(
+            "a session minted from a credential that has since been replaced must not be handed to its caller");
+
+        harness.CredentialStateReads.Should().Be(
+            3,
+            "the sign-in reads the credential once before the comparison, once before issuance and once after "
+            + "it, and this refusal must come from the third");
+
+        // The family WAS minted - that is the situation this closes - and it is ended rather than orphaned.
+        harness.Tokens.Verify(
+            tokens => tokens.IssueTokensAsync(UserId, PortalId, It.IsAny<CancellationToken>()),
+            Times.Once());
+        harness.RevokedSessionUserIds.Should().Equal(new[] { UserId });
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                PortalId,
+                UserId,
+                It.IsAny<string?>()),
+            Times.Once());
+
+        if (revocationStoreRefuses)
+        {
+            result.Reason!.Code.Should().Be(
+                TokenStoreUnavailableCode,
+                "a revocation that could not be persisted is a dependency failure, and reporting it as a "
+                + "credential refusal would leave the family exchangeable while blaming the caller");
+        }
+        else
+        {
+            result.Reason!.Code.Should().Be(InvalidCredentialsCode);
+            result.Reason!.Message.Should().Be(GenericDenial);
+        }
+    }
+
+    /// <summary>
+    /// The second look accepts the representation this sign-in itself wrote, so a work-factor upgrade does not
+    /// refuse its own session.
+    /// </summary>
+    /// <remarks>
+    /// The negative half of the test above, and it is what makes that one evidence of anything rather than a
+    /// check that refuses whenever the credential moved. A sign-in that upgrades the stored cost legitimately
+    /// changes the credential mid-request, so the second look admits two values: the representation it
+    /// verified, and the representation it wrote. A guard that only admitted the former would have broken every
+    /// work-factor upgrade and every legacy migration - the two paths this application relies on to retire old
+    /// representations at all.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_AcceptsTheCredentialThisRequestItselfWrote()
+    {
+        const string Replacement = "$2a$12$replacement-value";
+
+        Harness harness = Harness.Ready();
+        harness.PasswordHasher.Setup(hasher => hasher.NeedsRehash(It.IsAny<string>())).Returns(true);
+        harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns(Replacement);
+        harness.CredentialChangesAfterVerification = true;
+        harness.CredentialValueAfterVerification = Replacement;
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        harness.RehashExpectation.Should().Be(
+            StoredHash,
+            "the replacement must be conditional on the representation this sign-in verified, or it would "
+            + "overwrite a reset performed while this request was in flight");
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A replacement the store refuses because the credential changed under it denies the sign-in rather than
+    /// treating the refusal as a transient store fault.
+    /// </summary>
+    /// <param name="legacyCredential">Whether the replacement is a legacy migration rather than a cost upgrade.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE STORE REFUSED THIS WRITE ON PURPOSE, and telling that apart from a store that could not accept it is
+    /// the whole reason the write reports a closed outcome rather than a boolean. "Nothing was written" has
+    /// three unrelated causes - the record is absent, the store is unreachable, and the credential changed
+    /// under us - and only the third means the representation this sign-in verified has been retired. A sign-in
+    /// that treated it as the second would mint a session from a credential an administrator had just replaced,
+    /// which is precisely the outcome the reset existed to prevent.
+    /// </para>
+    /// <para>
+    /// Both replacement kinds are exercised because they report DIFFERENT outcomes when the store is merely
+    /// unhappy - a cost upgrade proceeds, a legacy migration refuses with a named dependency failure - and a
+    /// supersession must collapse both onto the uniform denial regardless.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SignIn_RefusesASessionWhenTheStoreRefusesAReplacementBecauseTheCredentialChanged(
+        bool legacyCredential)
+    {
+        Harness harness = Harness.Ready();
+        harness.CredentialUpgradeAccepted = CredentialWriteOutcome.Superseded;
+        harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns("$2a$12$replacement-value");
+
+        if (legacyCredential)
+        {
+            harness.StoredCredential = "legacy-encrypted-value";
+            harness.CredentialFormat = PasswordFormat.Encrypted;
+            harness.CredentialSalt = "legacy-salt";
+            harness.CredentialMatches = false;
+            harness.LegacyCredentialMatches = true;
+        }
+        else
+        {
+            harness.PasswordHasher.Setup(hasher => hasher.NeedsRehash(It.IsAny<string>())).Returns(true);
+        }
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsFailure.Should().BeTrue(
+            "the store refused the replacement because the credential is no longer the one that was verified");
+        result.Reason!.Code.Should().Be(InvalidCredentialsCode);
+        result.Reason!.Message.Should().Be(GenericDenial);
+
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                PortalId,
+                UserId,
+                It.IsAny<string?>()),
+            Times.Once());
+
+        // NOT reported as a store fault, which is the distinction the closed outcome buys.
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialWorkFactorUpgradeFailed,
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>()),
+            Times.Never());
+        harness.Diagnostics.Verify(
+            diagnostics => diagnostics.Record(
+                SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
+                It.IsAny<int?>(),
+                It.IsAny<int?>(),
+                It.IsAny<string?>()),
+            Times.Never());
+
+        harness.Tokens.Verify(
+            tokens => tokens.IssueTokensAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never());
+        harness.AuditRecords.Should().NotContain(
+            record => record.EventName == AuditEventNames.LegacyCredentialMigrated);
+    }
+
+    /// <summary>
+    /// A legacy migration carries the legacy representation it verified as the write's expectation.
+    /// </summary>
+    /// <remarks>
+    /// The companion of the cost-upgrade expectation asserted above, and the more consequential of the two: a
+    /// legacy sign-in replaces a representation the deployment can decrypt with a key committed to source
+    /// control, so an unconditional write here would roll back an administrative reset with the very value the
+    /// reset was performed to retire.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_MigratingALegacyCredential_CarriesTheVerifiedRepresentationAsTheExpectation()
+    {
+        const string LegacyValue = "legacy-encrypted-value";
+
+        Harness harness = Harness.Ready();
+        harness.StoredCredential = LegacyValue;
+        harness.CredentialFormat = PasswordFormat.Encrypted;
+        harness.CredentialSalt = "legacy-salt";
+        harness.CredentialMatches = false;
+        harness.LegacyCredentialMatches = true;
+        harness.PasswordHasher.Setup(hasher => hasher.Hash(RawPassword)).Returns("$2a$12$replacement-value");
+        harness.CredentialChangesAfterVerification = true;
+        harness.CredentialValueAfterVerification = "$2a$12$replacement-value";
+
+        Result<LoginResponse> result = await harness.LoginAsync();
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        harness.RehashExpectation.Should().Be(LegacyValue);
+        harness.AuditRecords.Should().Contain(
             record => record.EventName == AuditEventNames.LegacyCredentialMigrated);
     }
 
@@ -942,6 +1290,7 @@ public class AuthServiceTests
             users => users.SetPasswordHashAsync(
                 UserId,
                 regenerated,
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Once());
@@ -971,6 +1320,7 @@ public class AuthServiceTests
             users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
@@ -1040,6 +1390,7 @@ public class AuthServiceTests
             .Setup(users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new TimeoutException("the store did not answer"));
@@ -1087,6 +1438,7 @@ public class AuthServiceTests
             .Setup(users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new OperationCanceledException());
@@ -1694,6 +2046,7 @@ public class AuthServiceTests
             .Setup(users => users.SetPasswordHashAsync(
                 It.IsAny<int>(),
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<DateTime>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(failure);
@@ -2758,13 +3111,14 @@ public class AuthServiceTests
                 .Setup(users => users.SetPasswordHashAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
+                    It.IsAny<string?>(),
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
                 .ThrowsAsync(new InvalidOperationException("the provider refused the write"));
         }
         else
         {
-            harness.CredentialUpgradeAccepted = false;
+            harness.CredentialUpgradeAccepted = CredentialWriteOutcome.NoRecord;
         }
 
         Result<LoginResponse> result = await harness.LoginAsync();
@@ -3037,13 +3391,51 @@ public class AuthServiceTests
         /// <summary>
         /// Whether the store accepts a replacement credential representation during the work-factor upgrade.
         /// </summary>
-        public bool CredentialUpgradeAccepted { get; set; } = true;
+        public CredentialWriteOutcome CredentialUpgradeAccepted { get; set; } = CredentialWriteOutcome.Replaced;
 
         /// <summary>
         /// What the hashing abstraction reports for the one comparison the sign-in path performs. Defaults to a
         /// match, because most tests here are about the workflow around a correct credential.
         /// </summary>
         public bool CredentialMatches { get; set; } = true;
+
+        /// <summary>
+        /// Whether the stored credential is replaced by somebody else once this sign-in has read it, modelling
+        /// an administrative reset that lands while the deliberately expensive comparison is running.
+        /// </summary>
+        /// <remarks>
+        /// When set, the first credential read reports <see cref="StoredCredential"/> - so the comparison this
+        /// sign-in performs is against the representation it legitimately found - and every later read reports
+        /// <see cref="CredentialValueAfterVerification"/>. That is the exact shape of the race: nothing about
+        /// the first read is wrong, and the credential simply is not the account's credential any more by the
+        /// time a session would be minted from it.
+        /// </remarks>
+        public bool CredentialChangesAfterVerification { get; set; }
+
+        /// <summary>
+        /// The credential-state read from which the staged change becomes visible. Defaults to the second,
+        /// which is the read the sign-in path takes immediately before it mints a session.
+        /// </summary>
+        /// <remarks>
+        /// A sign-in reads the credential three times - once before the comparison, once before issuance and
+        /// once after it - and the three reads defend against different things, so a test has to be able to
+        /// name which one first observes the change. Setting this to the third read isolates the post-issuance
+        /// backstop, whose whole purpose is to catch a change that landed too late for the read before it.
+        /// </remarks>
+        public int CredentialChangesFromRead { get; set; } = 2;
+
+        /// <summary>
+        /// The representation later reads report when <see cref="CredentialChangesAfterVerification"/> is set.
+        /// A null value models the credential record being emptied outright, which is refused for the same
+        /// reason a different value is.
+        /// </summary>
+        public string? CredentialValueAfterVerification { get; set; } = "$2a$12$reset-by-an-administrator";
+
+        /// <summary>
+        /// How many times the credential state has been read, so a test can pin that the sign-in path takes
+        /// the second look at all rather than passing for the wrong reason.
+        /// </summary>
+        public int CredentialStateReads { get; private set; }
 
         /// <summary>
         /// Accounts whose sessions the service asked to have ended, in the order it asked.
@@ -3063,6 +3455,9 @@ public class AuthServiceTests
         public DateTime? RecordedLoginInstant { get; private set; }
 
         public DateTime? RehashInstant { get; private set; }
+
+        /// <summary>The expectation the credential replacement carried, when one was attempted.</summary>
+        public string? RehashExpectation { get; private set; }
 
         public PasswordPolicyOptions Policy { get; }
 
@@ -3141,13 +3536,7 @@ public class AuthServiceTests
                 .Setup(users => users.GetCredentialStateAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => (
-                    harness.CredentialOnFile,
-                    harness.CredentialOnFile ? harness.StoredCredential : null,
-                    harness.CredentialOnFile ? harness.CredentialFormat : null,
-                    harness.CredentialOnFile ? harness.CredentialSalt : null,
-                    harness.IsApproved,
-                    harness.IsLockedOut));
+                .ReturnsAsync(() => harness.ReadCredentialState());
 
             harness.Users
                 .Setup(users => users.SetApprovalAsync(
@@ -3178,10 +3567,15 @@ public class AuthServiceTests
                 .Setup(users => users.SetPasswordHashAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
+                    It.IsAny<string?>(),
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
-                .Callback<int, string, DateTime, CancellationToken>(
-                    (_, _, instant, _) => harness.RehashInstant = instant)
+                .Callback<int, string, string?, DateTime, CancellationToken>(
+                    (_, _, expected, instant, _) =>
+                    {
+                        harness.RehashInstant = instant;
+                        harness.RehashExpectation = expected;
+                    })
                 .ReturnsAsync(() => harness.CredentialUpgradeAccepted);
 
             harness.Users
@@ -3308,6 +3702,34 @@ public class AuthServiceTests
                 }));
 
             return harness;
+        }
+
+        /// <summary>
+        /// Answers a credential-state read, counting it and honouring a credential change staged to land after
+        /// the first read.
+        /// </summary>
+        /// <returns>The state the store reports for this read.</returns>
+        /// <remarks>
+        /// The read is answered from a method rather than an inline tuple so that the ORDER of reads is
+        /// expressible. Nothing about the sign-in path is knowable from a stub that cannot tell its first read
+        /// from its second, and the race this exists to pin is defined by that difference.
+        /// </remarks>
+        internal (bool Exists, string? Value, PasswordFormat? Format, string? Salt, bool IsApproved, bool IsLockedOut) ReadCredentialState()
+        {
+            CredentialStateReads++;
+
+            string? value = CredentialChangesAfterVerification
+                && CredentialStateReads >= CredentialChangesFromRead
+                ? CredentialValueAfterVerification
+                : StoredCredential;
+
+            return (
+                CredentialOnFile,
+                CredentialOnFile ? value : null,
+                CredentialOnFile ? CredentialFormat : null,
+                CredentialOnFile ? CredentialSalt : null,
+                IsApproved,
+                IsLockedOut);
         }
 
         /// <summary>

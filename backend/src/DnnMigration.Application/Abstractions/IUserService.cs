@@ -1182,6 +1182,66 @@ public interface IUserService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Assembles everything this application holds about one account within one tenant into a single
+    /// portability document.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant the export is scoped to.</param>
+    /// <param name="userId">Identifier of the account being described.</param>
+    /// <param name="cancellationToken">Token observed while the document is assembled.</param>
+    /// <returns>
+    /// A successful result carrying the document, or carrying <see langword="null"/> when the account is
+    /// not a member of that tenant - the same absence convention as
+    /// <see cref="GetUserAsync"/>, and for the same reason: an account that is not there is not an error.
+    /// This member documents no failure code.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// PRIV-01. <b>It exists because nothing did.</b> A module's content could be exported and a subject's
+    /// own personal data could not: the account record and the profile were readable through two separate
+    /// endpoints, the role assignments through a third that is addressed by role rather than by account, and
+    /// there was no single answer to "what do you hold about me". A security review recorded that as a
+    /// portability gap.
+    /// </para>
+    /// <para>
+    /// <b>It reveals nothing a caller could not already read, and that is a deliberate constraint on the
+    /// design.</b> The endpoint is reachable by the account holder and by an administrator of the addressed
+    /// tenant, and every member of the document is drawn from a projection one of those two is already
+    /// entitled to. Portability is a matter of assembling what is held into one document a subject can take
+    /// away - not of creating a route to something that was previously withheld, which would be a privacy
+    /// regression wearing a privacy feature's name.
+    /// </para>
+    /// <para>
+    /// <b>No secret is carried, including the one-way ones.</b> No password hash, format, salt, question or
+    /// answer, and no session or token material. The document is handed to a caller who may save it to a
+    /// disk, mail it or paste it into a support ticket, so a credential inside it is a credential in all of
+    /// those places; a hash is still the material an offline guessing attack works against and a subject can
+    /// do nothing with it. The credential FACTS a subject can act on - when it last changed, whether a change
+    /// is required, whether the account is locked out - are carried, because those are account state.
+    /// </para>
+    /// <para>
+    /// <b>One tenant only.</b> An account may belong to several tenants, administered by different people, so
+    /// a document naming them all would disclose one tenant's membership to another tenant's administrator.
+    /// An account holder belonging to several tenants exports from each.
+    /// </para>
+    /// <para>
+    /// <b>It is audited.</b> Reading a subject's whole record out of the system is worth a record of its own,
+    /// and the actor is the fact worth recording: an export taken by an administrator and one taken by the
+    /// subject are different events, and only the audit trail distinguishes them afterwards. An
+    /// implementation records the event whether the caller is the subject or an administrator.
+    /// </para>
+    /// <para>
+    /// <b>Read-only.</b> It changes nothing, writes nothing and evicts no cache entry.
+    /// </para>
+    /// </remarks>
+    // MIGRATION: NET-NEW, with no legacy antecedent. The legacy administration had no data-portability
+    // affordance of any kind: Website/admin/Users/ViewProfile.ascx rendered a profile to a screen and no
+    // legacy page, procedure or provider member assembled a subject's record for export.
+    Task<Result<UserPersonalDataExportDto?>> ExportPersonalDataAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Replaces an account's profile values with the supplied set.
     /// </summary>
     /// <param name="portalId">Identifier of the tenant that owns the account.</param>

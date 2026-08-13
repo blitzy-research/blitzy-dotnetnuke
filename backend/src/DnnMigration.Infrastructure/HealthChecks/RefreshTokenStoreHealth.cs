@@ -78,11 +78,24 @@ internal sealed class RefreshTokenStoreHealth : IHealthCheck
     }
 
     /// <inheritdoc />
-    public Task<HealthCheckResult> CheckHealthAsync(
+    public async Task<HealthCheckResult> CheckHealthAsync(
         HealthCheckContext context,
         CancellationToken cancellationToken = default)
     {
         RefreshTokenStoreOptions settings = _options.Value;
+
+        // ⚠ THE SHARED STORE IS ASKED ABOUT ITSELF, WHICH IT USED NOT TO BE. MIGRATION: SEC-09. This method
+        // tested the active store against the process-local implementation and reported ANYTHING else as "held
+        // by a deployment-supplied store", healthy, with no check performed. For the durable store this
+        // solution itself ships that published three false facts at once - that the store is not this
+        // solution's, and by omission that nothing can be said about its locality or capacity when in truth it
+        // is replica-safe and restart-surviving - and it reported a deployment whose session catalogue was
+        // unreachable or unprovisioned as perfectly healthy right up to the moment every sign-in failed. A
+        // probe whose answer cannot distinguish a working store from a missing one is not a probe.
+        if (_activeStore is SqlServerRefreshTokenStore shared)
+        {
+            return await CheckSharedStoreAsync(shared, cancellationToken).ConfigureAwait(false);
+        }
 
         if (_activeStore is not RefreshTokenStore inProcess)
         {
@@ -93,7 +106,7 @@ internal sealed class RefreshTokenStoreHealth : IHealthCheck
                     ["storeIsThisSolutions"] = false,
                 };
 
-            return Task.FromResult(HealthCheckResult.Healthy(ExternalStoreDescription, externalData));
+            return HealthCheckResult.Healthy(ExternalStoreDescription, externalData);
         }
 
         RefreshTokenStore.CapacitySnapshot capacity = inProcess.DescribeCapacity();
@@ -118,7 +131,7 @@ internal sealed class RefreshTokenStoreHealth : IHealthCheck
         // store an operator has to act on, and it is the only one reported as degraded.
         if (capacity.TrackedGenerations >= capacity.Ceiling)
         {
-            return Task.FromResult(HealthCheckResult.Degraded(
+            return HealthCheckResult.Degraded(
                 "The process-local refresh-token store is at its tracked-generation ceiling, so the oldest "
                 + "refresh families are being retired early and their holders must sign in again. "
                 + usage
@@ -126,16 +139,115 @@ internal sealed class RefreshTokenStoreHealth : IHealthCheck
                 + "IRefreshTokenStore and declare RefreshTokenStore:Provider as "
                 + RefreshTokenStoreOptions.ExternalProvider
                 + ".",
-                data: data));
+                data: data);
         }
 
-        return Task.FromResult(HealthCheckResult.Healthy(
+        return HealthCheckResult.Healthy(
             "Refresh-token state is process-local: it is not shared between replicas and does not survive a "
             + "restart, so this deployment must run a single API instance unless a shared store is registered "
             + "behind IRefreshTokenStore. "
             + usage,
-            data));
+            data);
     }
+
+    /// <summary>Probes the shared, durable store and reports what it established.</summary>
+    /// <param name="shared">The active shared store.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>The report for this probe.</returns>
+    /// <remarks>
+    /// <para>
+    /// THE TWO FAILURES ARE REPORTED APART because their remedies are opposite: an unreachable catalogue is a
+    /// connectivity or credentials problem, and a reachable catalogue with no session table is an unrun
+    /// provisioning step. Collapsing them into one "unhealthy" would send an operator to the wrong half of the
+    /// system, and the second failure is the one a first deployment actually hits, now that the table is
+    /// provisioned out of band rather than created by the running API.
+    /// </para>
+    /// <para>
+    /// DEGRADED RATHER THAN UNHEALTHY, for the reason this whole probe is a liveness check: an instance whose
+    /// session catalogue is unavailable still serves every data endpoint and still verifies every access token
+    /// already issued. What it cannot do is start or renew a session, which is a named degradation an operator
+    /// must act on rather than grounds for removing the instance from rotation - and removing it would not help,
+    /// because the catalogue is shared by every replica.
+    /// </para>
+    /// <para>
+    /// Nothing here can throw: the probe reports outcomes rather than raising them, and the arithmetic is the
+    /// same guarded division the process-local branch uses.
+    /// </para>
+    /// </remarks>
+    private static async Task<HealthCheckResult> CheckSharedStoreAsync(
+        SqlServerRefreshTokenStore shared,
+        CancellationToken cancellationToken)
+    {
+        SqlServerRefreshTokenStore.SharedStoreReadiness readiness = await shared
+            .ProbeAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        int utilisationPercent = Utilisation(readiness.TrackedGenerations, readiness.Ceiling);
+
+        // Every value is a count, a configured number or a closed enumeration member - never an account, a
+        // tenant, a token, a digest, a catalogue name or a connection string - so the whole dictionary is safe
+        // by construction, which is the standard the process-local branch is held to as well.
+        IReadOnlyDictionary<string, object> data = new Dictionary<string, object>(StringComparer.Ordinal)
+        {
+            ["provider"] = RefreshTokenStoreOptions.SqlServerProvider,
+            ["storeIsThisSolutions"] = true,
+            ["replicaSafe"] = true,
+            ["survivesRestart"] = true,
+            ["catalogueReachable"] = readiness.Outcome != SharedStoreReadinessOutcome.Unreachable,
+            ["tablePresent"] = readiness.Outcome == SharedStoreReadinessOutcome.Ready,
+            ["trackedGenerations"] = readiness.TrackedGenerations,
+            ["trackedGenerationCeiling"] = readiness.Ceiling,
+            ["utilisationPercent"] = utilisationPercent,
+        };
+
+        switch (readiness.Outcome)
+        {
+            case SharedStoreReadinessOutcome.Unreachable:
+                return HealthCheckResult.Degraded(
+                    "The shared refresh-token catalogue could not be reached, so no session can be started or "
+                    + "renewed while it stays unavailable. Requests carrying an access token already issued "
+                    + "are unaffected. Check RefreshTokenStore:ConnectionString, the catalogue's availability "
+                    + "and the principal's rights; the provider fault is recorded against the store rather "
+                    + "than here, because its message names the catalogue and the login.",
+                    data: data);
+
+            case SharedStoreReadinessOutcome.TableMissing:
+                return HealthCheckResult.Degraded(
+                    "The shared refresh-token catalogue is reachable and holds no session table, so no session "
+                    + "can be started or renewed. The table is provisioned by a deployment step rather than by "
+                    + "this application, which neither creates nor alters it: run "
+                    + "docker/sql/refresh-token-store.sql against the configured catalogue.",
+                    data: data);
+
+            case SharedStoreReadinessOutcome.Ready when readiness.TrackedGenerations >= readiness.Ceiling:
+                return HealthCheckResult.Degraded(
+                    "The shared refresh-token store is at its tracked-generation ceiling, so the refresh "
+                    + "families nearest their absolute expiry are being retired early and their holders must "
+                    + "sign in again. "
+                    + Usage(readiness, utilisationPercent)
+                    + " Raise RefreshTokenStore:MaximumTrackedTokens.",
+                    data: data);
+
+            case SharedStoreReadinessOutcome.Ready:
+            default:
+                return HealthCheckResult.Healthy(
+                    "Refresh-token state is held in a shared SQL Server catalogue: every replica observes the "
+                    + "same families and they survive a restart, so this deployment may run more than one API "
+                    + "instance. "
+                    + Usage(readiness, utilisationPercent),
+                    data);
+        }
+    }
+
+    /// <summary>Describes a shared-store probe's capacity position.</summary>
+    /// <param name="readiness">What the probe established.</param>
+    /// <param name="utilisationPercent">The utilisation already computed for it.</param>
+    /// <returns>The sentence appended to the probe's description.</returns>
+    private static string Usage(
+        SqlServerRefreshTokenStore.SharedStoreReadiness readiness,
+        int utilisationPercent) =>
+        FormattableString.Invariant(
+            $"Tracking {readiness.TrackedGenerations} of {readiness.Ceiling} generations ({utilisationPercent} per cent of capacity).");
 
     /// <summary>Expresses tracked generations as a whole percentage of the ceiling.</summary>
     /// <param name="capacity">The snapshot to describe.</param>
@@ -146,14 +258,25 @@ internal sealed class RefreshTokenStoreHealth : IHealthCheck
     /// probe that could throw, and a health check that throws reports the application unhealthy for a reason
     /// that has nothing to do with the application.
     /// </remarks>
-    private static int DescribeUtilisation(RefreshTokenStore.CapacitySnapshot capacity)
+    private static int DescribeUtilisation(RefreshTokenStore.CapacitySnapshot capacity) =>
+        Utilisation(capacity.TrackedGenerations, capacity.Ceiling);
+
+    /// <summary>Expresses a tracked count as a whole percentage of a ceiling.</summary>
+    /// <param name="tracked">How many generations are tracked.</param>
+    /// <param name="ceiling">The ceiling they are bounded by.</param>
+    /// <returns>The utilisation, rounded to a whole percent and never negative.</returns>
+    /// <remarks>
+    /// Shared by both store branches so the two cannot come to express the same ratio differently, and taking
+    /// the count as a 64-bit value because the shared store counts rows rather than dictionary entries.
+    /// </remarks>
+    private static int Utilisation(long tracked, int ceiling)
     {
-        if (capacity.Ceiling <= 0)
+        if (ceiling <= 0)
         {
             return 100;
         }
 
-        double ratio = (double)capacity.TrackedGenerations / capacity.Ceiling * 100d;
+        double ratio = (double)tracked / ceiling * 100d;
 
         return (int)Math.Clamp(Math.Round(ratio, MidpointRounding.AwayFromZero), 0d, 100d);
     }

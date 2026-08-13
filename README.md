@@ -267,7 +267,12 @@ appear in a build log. **Production** states what a production deployment must d
 | `Jwt:ExpirationMinutes` | `Jwt__ExpirationMinutes` | int | `60` | 1–60 inclusive | No | `${JWT_EXPIRATION_MINUTES:-60}` | Optional. 60 preserves the legacy ticket timeout exactly |
 | `Jwt:RefreshTokenExpirationDays` | `Jwt__RefreshTokenExpirationDays` | int | `7` | 1–30, and never above the absolute ceiling below | No | — | Optional |
 | `Jwt:RefreshTokenAbsoluteExpirationDays` | `Jwt__RefreshTokenAbsoluteExpirationDays` | int | `30` | 1–30 inclusive | No | — | Optional. The family ceiling no rotation can extend |
-| `RefreshTokenStore:Provider` | `RefreshTokenStore__Provider` | string | `InProcess` | `InProcess` or `External` only; **refuses to start** on any other value, and on a declaration the registered store contradicts | No | `${REFRESH_TOKEN_STORE_PROVIDER:-InProcess}` | Leave at `InProcess` unless you build your own host — see [Operating the topology](#operating-the-topology) |
+| `RefreshTokenStore:Provider` | `RefreshTokenStore__Provider` | string | `InProcess` | `InProcess` (alias `InMemory`), `SqlServer` or `External` only; **refuses to start** on any other value, and on a declaration the registered store contradicts | No | `${REFRESH_TOKEN_STORE_PROVIDER:-InProcess}` | `SqlServer` selects the shared durable store this repository also ships — see [Operating the topology](#operating-the-topology) |
+| `RefreshTokenStore:AcknowledgeSingleInstance` | `RefreshTokenStore__AcknowledgeSingleInstance` | bool | `false` | In **Production** on a store that is not replica-safe, `true` is **required** or the host refuses to start | No | `${REFRESH_TOKEN_STORE_SINGLE_INSTANCE:-true}` | Changes no behaviour. Records that exactly one instance runs. Compose sets it because it starts one `api` service |
+| `RefreshTokenStore:ConnectionString` | `RefreshTokenStore__ConnectionString` | string | — | Required by `SqlServer`. Must name its catalogue explicitly, must not be a system catalogue, and its catalogue **name** must differ from `ConnectionStrings:Default`'s | Only for `SqlServer` | `${REFRESH_TOKEN_STORE_CONNECTION:-}` | The table is provisioned out of band by [`docker/sql/refresh-token-store.sql`](./docker/sql/refresh-token-store.sql) |
+| `RefreshTokenStore:Schema` | `RefreshTokenStore__Schema` | string | `dbo` | A plain SQL identifier | No | — | Must match what the provisioning script creates |
+| `RefreshTokenStore:TableName` | `RefreshTokenStore__TableName` | string | `DnnMigrationRefreshTokens` | A plain SQL identifier | No | — | Must match what the provisioning script creates |
+| `RefreshTokenStore:CommandTimeoutSeconds` | `RefreshTokenStore__CommandTimeoutSeconds` | int | `15` | 1–600 inclusive | No | — | Optional; applies to the `SqlServer` store only |
 | `RefreshTokenStore:MaximumTrackedTokens` | `RefreshTokenStore__MaximumTrackedTokens` | int | `100000` | 1,000–1,000,000 inclusive | No | `${REFRESH_TOKEN_MAX_TRACKED:-100000}` | Optional. Raise it only if the `refresh-token-store` probe reports `Degraded` |
 | `RefreshTokenStore:ConcurrentUseGraceSeconds` | `RefreshTokenStore__ConcurrentUseGraceSeconds` | int | `5` | 0–60 inclusive; `0` disables the grace | No | `${REFRESH_TOKEN_GRACE_SECONDS:-5}` | Optional |
 | `PasswordPolicy:MinRequiredPasswordLength` | `PasswordPolicy__MinRequiredPasswordLength` | int | `7` | At least 7 — **the measured legacy minimum, and lowering it is refused** — and at most the 256-byte credential ceiling | No | — | Optional |
@@ -555,7 +560,8 @@ deleting the key would be a deviation with nothing to gain.
 | Build stage | `mcr.microsoft.com/dotnet/sdk:8.0-alpine` | `node:20-alpine`, running `npm ci` then `npm run build -- --configuration production` |
 | Runtime stage | `mcr.microsoft.com/dotnet/aspnet:8.0-alpine` | `nginx:alpine` |
 | Base images | **All four `FROM` lines pin a digest as well as the readable tag**, so one commit builds one image rather than whatever the moving tag points at that week. What was verified inside each pinned digest, and how a digest is refreshed, is in [§10](#10-security) | |
-| Runs as | a **non-root** user created with `adduser -D -u 1000 appuser` | nginx |
+| Runs as | a **non-root** user created with `adduser -D -u 1000 appuser` | **uid 101 (`nginx`), set by `user: "101:101"` in the Compose file** — there is no root master process at all, which is why the container needs no capabilities whatsoever. See [runtime hardening](#runtime-hardening) |
+| Runtime hardening | `no-new-privileges`, `cap_drop: [ALL]`, `read_only` root filesystem, and **no `tmpfs`** — the API writes no files | `no-new-privileges`, `cap_drop: [ALL]`, `read_only` root filesystem, plus two ephemeral `tmpfs` mounts (`/run`, `/var/cache/nginx`) owned by uid 101 |
 | Listens on | `ASPNETCORE_URLS=http://+:8080`, `EXPOSE 8080` | `listen 80`, `EXPOSE 80` |
 | Published as | **`127.0.0.1:8080:8080`** — loopback only, so the cleartext listener that carries credentials and bearer tokens is reachable from this host and the Compose network and nowhere else | **`127.0.0.1:4200:80`** — loopback only for the same reason and more sharply, since this port proxies `/api/`; the TLS overlay is the only topology that publishes a routable port |
 | Entry point | `ENTRYPOINT ["dotnet", "DnnMigration.Api.dll"]` | `CMD ["nginx", "-g", "daemon off;"]` |
@@ -688,51 +694,104 @@ browsers never matched, a certificate that matched no server name, and an API th
   matched whole-segment and case-insensitively — a substring is not a match, so `/acmeish/…`
   resolves nothing. And a child portal must be created through `POST /api/v1/portals`, not by
   inserting a `Portals` row: resolution refuses a portal that designates no administrator
-  account, no administrator role or no registered-user role. **One** segment of prefix is
-  honoured, which is what the legacy signup screen could compose; the browser and the proxy are
-  bounded identically on purpose. A tenant segment that spells one of the console's own
-  top-level route names — `users`, `roles`, `settings`, `portals`, `modules`, `role-groups`,
-  `login` — cannot be told apart from the console's own screen by a browser that has not yet
-  spoken to the API; that limit is recorded in
-  [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
-- **Treat an API restart as a sign-out.** Refresh-token state is held in the API process,
-  because the DotNetNuke schema this API maps onto is immutable and owns no table for it. A
-  restart or a redeploy therefore invalidates every refresh token: access tokens already
-  issued stay valid until they expire, and after that each signed-in user authenticates
+  account, no administrator role or no registered-user role.
+
+  **The addressable alias contract, in one place.**
+  [`backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs`](./backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs)
+  is the single definition, and five components mirror it: the alias write paths, the request
+  pipeline that resolves an arriving address, the browser's prefix detection, the alias
+  administration screen and the proxy location above. It says three things.
+
+  | Clause | Rule |
+  |---|---|
+  | Depth | **One** path segment beneath the authority — what the legacy signup screen composed and what the proxy can deliver |
+  | Vocabulary | ASCII letters, digits, hyphen and underscore. **No dot**, so a stored segment can never look like a served file (`/favicon.ico`, `/robots.txt`, `/main-ABCD.js` are never tenants) and `.`/`..` cannot be spelled |
+  | Reserved | `login`, `modules`, `portals`, `role-groups`, `roles`, `settings`, `users` (the console's own routes) and `api`, `health`, `openapi`, `swagger` (the roots the API answers) |
+
+  Both alias write paths and the portal creation contract **refuse** anything outside that
+  contract, and the resolver **fails closed**: when the first path segment could name a tenant
+  and matches no stored alias exactly, the request resolves *no* tenant rather than falling back
+  to the bare host. That fallback was a tenant-isolation defect — a request for
+  `/child/api/v1/…` whose `child` alias did not exist was answered with the **parent's** data
+  under a child-looking address — and reserving `api` closes a denial-of-service besides: one
+  stored alias of `host/api` used to match on every API request to the bare host and take the
+  whole API surface away from it.
+
+  An alias stored **before** this contract was enforced — one carrying two segments, a dot, or a
+  reserved word — is no longer reachable. That is reported rather than left silent:
+  `PortalAliasConformanceMonitor` scans the stored aliases shortly after start-up and logs a
+  warning naming each offending row by its surrogate key (never its value, which is tenant
+  data). Retire such an alias, or replace it with one inside the contract. Every divergence from
+  the legacy behaviour here is recorded in [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
+- **On the default store, treat an API restart as a sign-out.** Refresh-token state is held in
+  the API process, because the DotNetNuke schema this API maps onto is immutable and owns no
+  table for it. A restart or a redeploy therefore invalidates every refresh token: access tokens
+  already issued stay valid until they expire, and after that each signed-in user authenticates
   again. The front end handles this cleanly — a rejected refresh returns the user to the
   sign-in screen — but the effect is visible, so a redeploy is best scheduled accordingly.
-- **Run exactly one API instance, unless you supply a shared store.** A second replica
-  without sticky routing would reject refresh tokens issued by the first, and its in-memory
-  cache would keep serving its own projection of a row the other replica had just changed
-  until that entry expired. Both are properties of the *shipped implementations*, not of the
-  contracts: `IRefreshTokenStore` and `ICacheService` are public contracts, the container
-  resolves the **last** registration of a service, and both consumers of the token store
-  depend on the contract rather than the class. A deployment that needs cross-process
-  continuity therefore calls `AddInfrastructure(...)`, registers its own implementation
-  after it, and sets `RefreshTokenStore:Provider` to `External` — no file in this repository
-  changes. The seam is covered by
-  [`RefreshTokenStoreTopologyTests`](./backend/tests/DnnMigration.UnitTests/Infrastructure/RefreshTokenStoreTopologyTests.cs)
+  **Selecting `RefreshTokenStore:Provider=SqlServer` removes this entirely**: families then live
+  in a catalogue of their own, survive any restart and are observed identically by every
+  replica.
+- **On the default store, run exactly one API instance — and in Production you must say so.** A
+  second replica without sticky routing would reject refresh tokens issued by the first, and its
+  in-memory cache would keep serving its own projection of a row the other replica had just
+  changed until that entry expired. **In `Production`, a store that is not replica-safe now
+  refuses to start unless `RefreshTokenStore:AcknowledgeSingleInstance` is `true`.** The
+  acknowledgement changes no behaviour and grants no capability; its only function is to make the
+  claim explicit, because scaling out on the process-local store previously needed no code change
+  and no configuration change and produced no warning at all. Set it only where a single instance
+  is genuinely enforced by the topology — `docker/docker-compose.yml` sets it because it starts
+  exactly one `api` service. Non-production environments are exempt, deliberately: an
+  acknowledgement demanded everywhere is one that gets set reflexively and records nothing.
+
+  Two answers satisfy the requirement, and the second is better for any deployment that really
+  has replicas: select `SqlServer`, or supply your own store. Both the token store and the cache
+  are properties of the *shipped implementations* rather than of the contracts —
+  `IRefreshTokenStore` and `ICacheService` are public contracts, the container resolves the
+  **last** registration of a service, and both consumers of the token store depend on the
+  contract rather than the class — so a deployment that needs cross-process continuity calls
+  `AddInfrastructure(...)`, registers its own implementation after it, and sets
+  `RefreshTokenStore:Provider` to `External`; no file in this repository changes. The invariant
+  keys on the contract's own `IsAuthoritativeAcrossReplicas`, so a replacement that is genuinely
+  shared satisfies it without an acknowledgement and one that is replica-local is held to the
+  same standard as the shipped default. The seam is covered by
+  [`RefreshTokenStoreTopologyTests`](./backend/tests/DnnMigration.IntegrationTests/Infrastructure/RefreshTokenStoreTopologyTests.cs)
   rather than merely asserted here.
 - **The store you are running is declared, enforced and reported.** Three mechanisms exist so
   that the limitation above can never be one a deployment *believes* it has escaped:
 
   | Mechanism | What it does |
   | --- | --- |
-  | `RefreshTokenStore:Provider` (`InProcess` \| `External`) | Makes the choice of store an explicit, validated setting instead of a default nobody chose. An unrecognised name is refused rather than treated as `InProcess` |
-  | Start-up topology check | Compares the declaration against the store the container actually resolves and **refuses to start** in either direction — declaring `External` with nothing registered, or overriding the store while still declaring `InProcess`. Wired in `Program.cs` immediately after the host is built, and covered by [`RefreshTokenStoreTopologyContractTests`](./backend/tests/DnnMigration.IntegrationTests/Api/RefreshTokenStoreTopologyContractTests.cs) |
-  | `refresh-token-store` health probe | Reports the active store, whether it is replica-safe, whether it survives a restart, and how full it is. It is on the **liveness** view with a `Degraded` failure status, so it never holds a starting container back and never withdraws a serving instance; its finding reaches an operator through the structured health-report log entry, never through the anonymous response body |
+  | `RefreshTokenStore:Provider` (`InProcess` \| `SqlServer` \| `External`) | Makes the choice of store an explicit, validated setting instead of a default nobody chose. An unrecognised name is refused rather than treated as `InProcess` |
+  | Start-up topology check | Compares the declaration against the store the container actually resolves and **refuses to start** in either direction — declaring `External` or `SqlServer` with the process-local store resolved, or overriding the store while still declaring `InProcess`. It also enforces the **Production single-instance invariant** described above. Wired in `Program.cs` immediately after the host is built, and covered by [`RefreshTokenStoreTopologyContractTests`](./backend/tests/DnnMigration.IntegrationTests/Api/RefreshTokenStoreTopologyContractTests.cs) |
+  | `RefreshTokenStore:AcknowledgeSingleInstance` | Turns "this deployment runs one instance" from an assumption into a recorded claim, required in `Production` whenever the active store is not replica-safe |
+  | `refresh-token-store` health probe | Reports the active store, whether it is replica-safe, whether it survives a restart, and how full it is. For the `SqlServer` store it **probes the catalogue**, distinguishing "unreachable" from "reachable but not provisioned" and naming the provisioning script for the latter. It is on the **liveness** view with a `Degraded` failure status, so it never holds a starting container back and never withdraws a serving instance; its finding reaches an operator through the structured health-report log entry, never through the anonymous response body |
 
   Reaching the tracked-generation ceiling is the one condition to act on: the store then
-  retires the **oldest** refresh families first, so their holders sign in again while every
-  request continues to be served. The probe reports `Degraded` with the usage and the two
-  remedies — raise `RefreshTokenStore:MaximumTrackedTokens`, or register a shared store.
-- **Why not a shared store in this repository.** Every route to one is closed by the plan
-  this delivery implements, and the constraint is recorded rather than worked around: a
-  target-owned SQL table is forbidden by AAP rule T4 (the existing schema is immutable), a
-  distributed-cache client is absent from the frozen dependency inventory in AAP 0.6, and a
-  third service to host one would break the two-service Compose topology AAP 0.9.3
-  reproduces verbatim. [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md) records the divergence
-  with those citations.
+  retires the **oldest** refresh families first — whole families, never part of one, because a
+  half-tracked family can no longer detect the replay it exists to detect — so their holders sign
+  in again while every request continues to be served. Both shipped stores behave this way, on
+  issue **and** on rotation. The probe reports `Degraded` with the usage and the two remedies —
+  raise `RefreshTokenStore:MaximumTrackedTokens`, or move to a shared store.
+- **The shared store this repository ships, and why it is opt-in.** Selecting
+  `RefreshTokenStore:Provider=SqlServer` holds refresh families in **one table in a catalogue of
+  its own**, so they survive a restart and every replica observes the same revocations. It is
+  defaulted off because the default configuration must constitute a working deployment on its own,
+  and this one needs a catalogue an operator provisions. Three things follow, and each is enforced
+  rather than advised:
+
+  | Requirement | Why, and what happens otherwise |
+  | --- | --- |
+  | The catalogue is **not** the DotNetNuke database | AAP rule T4 makes that schema immutable. The host refuses to start unless the session connection string names its catalogue explicitly, names no system catalogue (`master`, `model`, `msdb`, `tempdb`), and names a catalogue whose **name** differs from `ConnectionStrings:Default`'s. The comparison is by catalogue name rather than by whole connection string on purpose: a host is spellable as `localhost`, `127.0.0.1`, `(local)`, a machine name or a named instance, so a rule that compared hosts could be bypassed by writing one differently |
+  | The table is provisioned **out of band** | Run [`docker/sql/refresh-token-store.sql`](./docker/sql/refresh-token-store.sql) against the catalogue before starting the API. The running application never creates or alters it — it probes for the table and reports session operations as unavailable, and says so on its health probe, while it is absent. Schema authorship is a deployment step, and the API's principal needs only `SELECT`, `INSERT`, `UPDATE` and `DELETE` on that one table |
+  | The API's principal is **not** the provisioning principal | The script documents the least-privilege grant. Do not reuse `sa`, and do not reuse the login that ran the script |
+
+  A deployment that wants neither the shipped shared store nor the process-local one supplies its
+  own behind `IRefreshTokenStore` and declares `External`. The plan's constraints that shaped this
+  arrangement — no object in the DotNetNuke schema (AAP rule T4), no distributed-cache client in
+  the frozen dependency inventory (AAP 0.6), and a two-service Compose topology reproduced
+  verbatim (AAP 0.9.3) — are recorded with their citations in
+  [`MIGRATION_NOTES.md`](./MIGRATION_NOTES.md).
 - **A database outage is reported as a dependency failure, not a server fault.** Data
   endpoints answer `503` with `Retry-After` while `/health` and `/health/live` stay `200` and
   `/health/ready` reports `503`. The API is not restarted by the outage and recovers on its
@@ -745,6 +804,34 @@ browsers never matched, a certificate that matched no server name, and an API th
   inherent to the Compose file the plan preserves; for a hardened deployment
   [`docker/.env.example`](./docker/.env.example) describes how to deliver the same values
   from a secret store instead.
+
+### Runtime hardening
+
+<a id="runtime-hardening"></a>Both services, in **both** Compose files, drop every Linux
+capability, refuse privilege escalation, and run with a read-only root filesystem. Every value
+was measured against the images rather than copied from a checklist, and two consequences are
+operator-visible rather than internal — read these before deploying.
+
+| Setting | API | Frontend | Why this value |
+| --- | --- | --- | --- |
+| `security_opt: [no-new-privileges:true]` | yes | yes | a `setuid` binary in either image cannot raise privilege |
+| `cap_drop: [ALL]` | yes | yes | the API needs none, and nginx needs none **once it runs as uid 101**. `CHOWN` and `SETUID` were only ever required by a root master handing its temp directories to a worker, and `NET_BIND_SERVICE` is not required because Docker sets `net.ipv4.ip_unprivileged_port_start=0` |
+| `read_only: true` | yes | yes | neither service writes to its image |
+| `tmpfs` | **none** | `/run`, `/var/cache/nginx` | nginx needs writable temp and PID paths; the API writes no files at all. The mount is `/run`, not `/var/run` — `nginx.conf` declares no `pid` directive so the compiled default applies, and `/var/run` is a symlink. Log paths need no mount because the image symlinks them to stdout and stderr |
+
+- **⚠ TLS deployments: the private key must be readable by uid 101.** This is a breaking change
+  for an existing TLS deployment. A root-owned `0600` key now stops the container with
+  `cannot load certificate key … Permission denied`. Fix it with `chown 101:101` and
+  `chmod 640` on the key — **not** by making it world-readable. If the key is managed by
+  Let's Encrypt, apply the ownership to the file in the `archive` directory that the `live`
+  symlink points at, and reapply it from a renewal hook, because renewal writes a new file.
+  The TLS overlay also mounts its own `tmpfs` at `/etc/nginx/tls`: without it the image's
+  template step fails to render, and — this is the part worth knowing — **the container then
+  starts anyway, serving plain HTTP with no TLS block while reporting healthy.**
+- **The API has no writable `/tmp`, so the .NET diagnostics socket is absent.** `dotnet-counters`
+  and `dotnet-dump` cannot attach to a running API container. This is the accepted cost of
+  `read_only` with no `tmpfs`; add a `/tmp` `tmpfs` temporarily if you need to attach, and
+  remove it afterwards.
 
 
 ---
@@ -879,27 +966,39 @@ This is a decision about the *build*, not a claim that the dependency graph is c
 recorded with the evidence it rests on, and that evidence has a date on it because advisory
 data changes underneath a fixed lockfile.
 
-**Reproduce it:** `cd frontend && npm audit`. Measured on **12 August 2026** with npm 10.8.2
-against the committed `package-lock.json` (SHA-256 `27114fb8…`), which resolves 1,047
-dependencies — 11 production, 1,037 development, 144 optional:
+**Everything with a released fix has been fixed**, so the set below is the *unfixable* one
+rather than an accepted backlog. Eight `overrides` in
+[`frontend/package.json`](./frontend/package.json) — two of them nested under a specific parent —
+resolve the development-toolchain advisories that had a compatible release: `nanoid`,
+`webpack-dev-server`, `serialize-javascript`, `uuid`, `sigstore`, `@sigstore/core`, and `esbuild`
+and `http-proxy-middleware` where the *affected* copy was an exact pin rather than a live range.
+Two packages were also moved out of production dependencies, since nothing under `frontend/src`
+imports them.
 
-| Severity | Count |
-| --- | --- |
-| Critical | 0 |
-| High | 19 |
-| Moderate | 7 |
-| Low | 1 |
-| **Total** | **27** across 22 distinct root advisories |
+**Reproduce it:** `cd frontend && npm audit`. Measured on **13 August 2026** with npm 10.8.2
+against the committed `package-lock.json` (SHA-256 `d8f3a622…`), which resolves 1,123
+dependencies — 9 production, 1,115 development, 171 optional:
 
-Sixteen of the 22 are development and build-toolchain packages that never ship in the browser
-bundle and are absent from the runtime image, which serves static files from nginx:
-`webpack-dev-server` (4), `http-proxy-middleware` (2), `serialize-javascript` (2),
-`image-size` (2), the `esbuild` development server, `nanoid`, `uuid`, `sigstore` and
-`@sigstore/core`.
+| Severity | Count | Was, before remediation |
+| --- | --- | --- |
+| Critical | 0 | 0 |
+| High | 13 | 19 |
+| Moderate | 0 | 7 |
+| Low | 0 | 1 |
+| **Total** | **13** across 13 root advisory records | **27** across 22 |
 
-Six are against packages that *do* ship in the bundle, and each names a feature this
-application does not use. All six are ranged `<= 19.2.25`, i.e. the whole of Angular 19.2.x,
-so none has a remedy inside the mandated major version:
+Production-only (`npm audit --omit=dev`) reports **5 high**, down from 7.
+
+Two of the 13 are `image-size`, reached through `less`, and are **genuinely unfixable**: the
+latest published release is itself inside the affected range. They are also unreachable — the
+workspace contains **zero `.less` files**, `inlineStyleLanguage` is `scss`, and the runtime image
+serves static files from nginx with no build toolchain present at all.
+
+The remaining eleven records resolve to six advisories against Angular packages, each naming a
+feature this application does not use. All six are ranged `<= 19.2.25`, i.e. the whole of Angular
+19.2.x, so none has a remedy inside the mandated major version. Note that `@angular/compiler` is
+now a **development** dependency, so the two advisories against it no longer touch anything the
+browser downloads:
 
 | Advisory | Package | Requires | Measured in this workspace |
 | --- | --- | --- | --- |
@@ -909,11 +1008,27 @@ so none has a remedy inside the mandated major version:
 | GHSA-jj27-h5hq-8x99 | `@angular/compiler` | Angular i18n | No `i18n` template attributes and `@angular/localize` is not installed |
 | GHSA-58w9-8g37-x9v5 | `@angular/compiler` | A sanitised property bound two-way | No security-sensitive DOM property is bound anywhere: zero `innerHTML`, zero `DomSanitizer`, zero `bypassSecurityTrust` in production source |
 
-So an audit threshold on the build would fail on 19 high-severity findings that this
+So an audit threshold on the build would fail on 13 high-severity findings that this
 application cannot execute, on the day it was added, with no upgrade available inside Angular
 19 — which is why the gate list stops at install-plus-build (gate 3) and the test run (gate
 4). The same reasoning is applied to the NuGet graph, where auditing is left at the SDK default
 rather than promoted to an error under `TreatWarningsAsErrors`.
+
+**The NuGet graph reports no vulnerable package at all.**
+`dotnet list package --vulnerable --include-transitive` is clean across all six projects.
+Keeping it that way needs **two direct
+security pins** in
+[`backend/tests/DnnMigration.IntegrationTests/DnnMigration.IntegrationTests.csproj`](./backend/tests/DnnMigration.IntegrationTests/DnnMigration.IntegrationTests.csproj)
+— packages the project does not otherwise reference, pinned only to displace a vulnerable
+transitive resolution: **`SSH.NET` 2026.0.0**, which `Testcontainers` would otherwise resolve at
+2023.0.0 (`GHSA-q939-rpr3-3284`), and `SQLitePCLRaw.bundle_e_sqlite3`. Both are guarded by
+`Infrastructure/SecurityPinTests.cs`, which inspects the assemblies actually copied beside the
+tests rather than the manifest, because a pin can be present in a project file and still lose to a
+nearer constraint. **Do not remove either reference as unused.**
+
+Separately, deprecation is tracked but is *not* a security finding: the two lists are disjoint, and
+`MIGRATION_NOTES.md` §10 carries a dated inventory of the deprecated packages with the pin each one
+is downstream of.
 
 **Re-check the table above** whenever `package-lock.json` changes, before a release, and when
 the Angular major version is raised — at which point the six runtime advisories should be
@@ -1125,7 +1240,7 @@ Three consequences follow, and all three are deliberate:
   needed no code change while no such source was registered, so a `/run/secrets` mount was not
   read at all.
 - **Package restore is repository-controlled, in the container as well as on a workstation.**
-  [`NuGet.Config`](./NuGet.Config) clears every inherited source, declares the single public
+  [`backend/NuGet.Config`](./backend/NuGet.Config) clears every inherited source, declares the single public
   source the dependency inventory was pinned against, and maps each package identity to it
   with no bare `*` pattern, so an unreviewed identity fails restore rather than resolving from
   an unexpected feed. [`docker/api.Dockerfile`](./docker/api.Dockerfile) copies that file into

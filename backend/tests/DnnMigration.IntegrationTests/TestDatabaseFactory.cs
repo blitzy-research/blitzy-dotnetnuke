@@ -203,8 +203,55 @@ public sealed class TestDatabaseFactory : IAsyncDisposable
     /// 2022 RTM-CU26 build, on Ubuntu 22.04. Pinning therefore pulls nothing new and changes nothing about what
     /// the suite runs against today; it only stops that from changing silently tomorrow.
     /// </para>
+    /// <para>
+    /// DEP-04: THE DIGEST IS NOW PART OF THE REFERENCE, NOT JUST OF THIS REMARK. The paragraph above recorded
+    /// the digest while the reference below named only the tag, so nothing enforced the match - and a
+    /// cumulative-update tag is only immutable BY CONVENTION. A registry is free to move it, and a
+    /// compromised or merely re-pushed tag would be pulled and trusted without a single line of this
+    /// repository changing, which is the supply-chain exposure the reference form closes rather than
+    /// documents.
+    /// </para>
+    /// <para>
+    /// ⚠ THE DIGEST-ONLY FORM IS USED, NOT <c>name:tag@sha256:...</c>, AND THAT IS FORCED RATHER THAN
+    /// PREFERRED. The combined form is the conventional way to write a pin and was tried first; the pinned
+    /// <c>Testcontainers 3.10.0</c> REFUSES it. Its <c>DockerImage</c> parser has no digest concept at all -
+    /// the type exposes only a repository and a tag - and it raises
+    /// <c>ArgumentException: Cannot parse image</c> on the combined reference, so writing the pin that way
+    /// would break the container route outright rather than harden it. Measured, all three forms, against
+    /// the pinned assembly: the tag alone parses, <c>name@sha256:...</c> parses and round-trips its
+    /// <c>FullName</c> byte-for-byte, and the combined form throws. Upgrading the library to gain the
+    /// combined form is not available either - AAP 0.6.4 rejects <c>Testcontainers.MsSql 4.13.0</c>
+    /// explicitly.
+    /// </para>
+    /// <para>
+    /// The digest-only form loses nothing that matters: the digest is what Docker resolves, so the pull is
+    /// exactly as immutable, and <see cref="ContainerImageTag"/> below carries the human-readable version
+    /// beside it so the readability the combined form buys is kept without the exception it causes.
+    /// </para>
+    /// <para>
+    /// UPDATING IT IS A DELIBERATE, THREE-PART EDIT. The digest here, the tag below and the paragraph above
+    /// must move together - resolve the new tag's manifest digest with
+    /// <c>docker inspect &lt;ref&gt; --format '{{json .RepoDigests}}'</c> or a registry manifest query, and
+    /// change all three in one edit. <c>Infrastructure/ContainerImagePinTests.cs</c> fails if the digest is
+    /// ever dropped, if the two halves name different repositories, or if somebody restores the combined
+    /// form the library cannot read - so neither the pin nor the reason for its shape can be silently
+    /// regressed.
+    /// </para>
     /// </remarks>
-    private const string ContainerImage = "mcr.microsoft.com/mssql/server:2022-CU26-ubuntu-22.04";
+    internal const string ContainerImage =
+        "mcr.microsoft.com/mssql/server@sha256:ba4c8329f48fb8f02e1416be6a930ebfd71268caee78aa985f3af4315e457c89";
+
+    /// <summary>
+    /// The human-readable version the digest in <see cref="ContainerImage"/> resolves to.
+    /// </summary>
+    /// <remarks>
+    /// DOCUMENTARY, AND DELIBERATELY NOT USED TO PULL ANYTHING. A tag is mutable and this one is therefore
+    /// not trusted to select an image; it exists so that a reader, a log line or a failure message can say
+    /// WHICH server the suite runs against without decoding a digest, and so that the next version change
+    /// has something to compare against. <c>ContainerImage</c> explains at length why the two cannot be
+    /// combined into one reference on the pinned Testcontainers line.
+    /// </remarks>
+    internal const string ContainerImageTag = "2022-CU26-ubuntu-22.04";
 
     /// <summary>Key under which a cleanup failure is attached to a primary provisioning failure.</summary>
     private const string CleanupFailureDataKey = "TestDatabaseCleanupFailure";

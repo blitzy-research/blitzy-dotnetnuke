@@ -1140,6 +1140,10 @@ export class LoginComponent implements OnInit {
    * all. A signed-in visitor can therefore still arrive, and the legacy screen sent them
    * on rather than asking them to sign in again.
    *
+   * SEC-03: it also drives any outstanding sign-out withdrawal, which happens BEFORE the guard
+   * below rather than after it. See {@link LoginComponent.driveOutstandingWithdrawals} for why
+   * this screen owns that and why the ordering is load-bearing.
+   *
    * ⚠ THE REDIRECT IS GATED ON THE STORE'S OWN VIEW OF THE SESSION, never on the mere
    * presence of a token, and that was verified rather than assumed before being written.
    * The interceptor's terminal path clears the token custodian and then navigates here; the
@@ -1149,6 +1153,8 @@ export class LoginComponent implements OnInit {
    * the screen they were just sent to.
    */
   ngOnInit(): void {
+    this.driveOutstandingWithdrawals();
+
     this.requestedReturnUrl = this.readQueryParameter(RETURN_URL_QUERY_KEY);
 
     if (this.store.isAuthenticated()) {
@@ -1165,6 +1171,45 @@ export class LoginComponent implements OnInit {
     // for the pointer. It waits for the render because the controls do not exist in the
     // document while this hook runs.
     afterNextRender(() => this.focusFirstCredentialField(), { injector: this.injector });
+  }
+
+  /**
+   * Drives any sign-out withdrawal the server never acknowledged.
+   *
+   * ⚠ SEC-03. THIS SCREEN IS THE PRODUCTION CALLER OF A MECHANISM THAT HAD NONE. Signing out
+   * discards the session immediately, so a withdrawal refused by a rate limit, an outage or a
+   * dropped connection leaves the renewal credential live on the server; the store retains that
+   * credential precisely so a later attempt is possible, and a security review found that no
+   * part of the application ever made one. Every refused withdrawal was retained and then left
+   * retained until the tab closed, and the session stayed renewable until its absolute expiry.
+   *
+   * ⚠ HERE RATHER THAN AT APPLICATION START-UP, and the distinction is not stylistic. The
+   * retention set is held in memory, so it is empty at every bootstrap by construction — only a
+   * sign-out fills it, and a sign-out cannot precede the bootstrap of the page it happens on. An
+   * initialiser would have been unreachable code standing in for reachable code. This screen is
+   * where sign-out sends the operator, and it is the screen that renders the residue notice, so
+   * it is the one place where a retry both can run and is worth reporting.
+   *
+   * ⚠ AND IT IS REACHED UNCONDITIONALLY, which is what makes one caller sufficient. No route
+   * guard is attached to this screen — guarding the sign-in screen would deadlock the
+   * application — so the navigation that follows a sign-out cannot be refused, and the bearer
+   * token interceptor sends a caller here as well when a session cannot be renewed. Both of the
+   * paths that end a session therefore arrive at this hook.
+   *
+   * ⚠ BEFORE THE ALREADY-SIGNED-IN GUARD IN {@link LoginComponent.ngOnInit}, deliberately. A
+   * retained credential belongs to a session that has already ended, so it must be withdrawn
+   * whoever is signed in now — and a visitor who arrives here with a live session is redirected
+   * away, which would skip the drain entirely if it sat after the guard.
+   *
+   * ⚠ NOT BOUND TO THIS COMPONENT'S LIFETIME, which every other subscription here is. The
+   * withdrawal is the only thing standing between a refused sign-out and a session that stays
+   * renewable for its full lifetime, so tearing it down because the operator navigated away
+   * would abandon the work at exactly the moment it matters. There is no leak to trade for that:
+   * the store's drain bounds its own retries and converts every refusal into completion, so this
+   * subscription always ends on its own.
+   */
+  private driveOutstandingWithdrawals(): void {
+    this.store.retryOutstandingRevocation().subscribe();
   }
 
   // -------------------------------------------------------------------------

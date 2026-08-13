@@ -132,6 +132,19 @@
       it is deployment policy rather than migration, so it belongs as a robots response header
       on the proxy alongside the other response-level policies, where it would cover every
       served path instead of this one document - not as a silent edit here.
+
+      THAT HEADER NOW EXISTS, and this element is deliberately still the legacy value. The
+      paragraph above predicted the right home for the policy and docker/security-headers.conf
+      now states it there: `X-Robots-Tag: noindex, nofollow`, on every location that includes
+      the snippet, which is every location this image serves. So the two declarations disagree
+      on their face and the disagreement is intended - the meta element records what the LEGACY
+      APPLICATION declared, the response header states what THIS DEPLOYMENT does. The header is
+      the one that governs: where a crawler sees both, the more restrictive directive applies,
+      and the header additionally reaches the JSON, the hashed assets and the 401, 404 and 503
+      responses that no meta element in this document can describe. Editing the element to
+      NOINDEX would gain nothing a crawler acts on and would cost the verbatim legacy record
+      that the whole block above exists to preserve. Read the two together, and read the
+      argument for the header itself in docker/security-headers.conf.
     -->
     <meta name="RESOURCE-TYPE" content="DOCUMENT">
     <meta name="DISTRIBUTION" content="GLOBAL">

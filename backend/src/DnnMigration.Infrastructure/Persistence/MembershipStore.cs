@@ -418,19 +418,59 @@ SELECT @created;";
             && Convert.ToInt32(created, System.Globalization.CultureInfo.InvariantCulture) == 1;
     }
 
-    /// <summary>Replaces the stored password hash of an account.</summary>
+    /// <summary>Replaces the stored password hash of an account, only while it is still the one the caller read.</summary>
     /// <param name="userName">The DotNetNuke user name.</param>
     /// <param name="passwordHash">The new one-way hash.</param>
+    /// <param name="expectedPasswordValue">
+    /// The stored representation the caller read and decided against, or <see langword="null"/> when it read
+    /// no stored value at all.
+    /// </param>
     /// <param name="utcNow">The change instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a credential record was updated.</returns>
+    /// <returns>
+    /// <see cref="CredentialWriteOutcome.Replaced"/> when the credential was replaced,
+    /// <see cref="CredentialWriteOutcome.Superseded"/> when it had already changed,
+    /// <see cref="CredentialWriteOutcome.NoRecord"/> when the account holds no credential record, and
+    /// <see cref="CredentialWriteOutcome.StoreUnavailable"/> when the store could not be reached.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// The format discriminator is rewritten alongside the hash, so a row migrated from the legacy
     /// reversible store stops claiming to be encrypted the moment its credential becomes one-way.
+    /// </para>
+    /// <para>
+    /// ⚠ THE EXPECTATION IS PART OF THE STATEMENT, WHICH IS WHAT MAKES THIS SAFE ACROSS REPLICAS. The
+    /// predicate is evaluated by the database in the same statement that performs the update, so two callers
+    /// that read the same representation cannot both write: the second finds the row no longer matching and
+    /// affects nothing. No application lock could give that guarantee, because two API instances share no
+    /// lock - they share one row. <see cref="CredentialWriteOutcome"/> records the races this closes.
+    /// </para>
+    /// <para>
+    /// THE COMPARISON IS FORCED TO A BINARY COLLATION. A database whose collation is case- or
+    /// accent-insensitive would otherwise judge two different stored representations equal, and the whole
+    /// value of the expectation is that it is exact. <c>Latin1_General_BIN2</c> is present on every SQL Server
+    /// instance and is applied to the column side of the comparison, which is enough to fix the comparison's
+    /// collation. It is not a sargability concern: the row has already been located by the two joins and the
+    /// application and user predicates, so this clause filters one row.
+    /// </para>
+    /// <para>
+    /// A NULL EXPECTATION IS COMPARED AS ABSENCE, not skipped. An account whose stored value is null is a
+    /// real state - the membership row exists and holds no credential - so a caller that read null is
+    /// entitled to write only while that is still true. Expressing it as an <c>IS NULL</c> pair rather than
+    /// with equality is required because SQL equality against null is unknown, and an unknown predicate
+    /// would silently affect nothing and be reported as a supersession.
+    /// </para>
+    /// <para>
+    /// THE FAILURE PATH COSTS ONE EXTRA READ, and it buys the only answer worth giving. Zero affected rows
+    /// means either that the expectation no longer held or that there was no row at all, and those demand
+    /// opposite handling from every caller - a conflict to report versus an account to repair. The read
+    /// happens only when the write did not, so the successful path is a single statement.
+    /// </para>
     /// </remarks>
-    public async Task<bool> SetPasswordHashAsync(
+    public async Task<CredentialWriteOutcome> SetPasswordHashAsync(
         string userName,
         string passwordHash,
+        string? expectedPasswordValue,
         DateTime utcNow,
         CancellationToken cancellationToken = default)
     {
@@ -439,7 +479,7 @@ SELECT @created;";
 
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return false;
+            return CredentialWriteOutcome.StoreUnavailable;
         }
 
         const string Sql = @"
@@ -451,14 +491,58 @@ SET am.[Password] = @hash,
 FROM [dbo].[aspnet_Membership] am
 INNER JOIN [dbo].[aspnet_Users] au ON au.[UserId] = am.[UserId]
 INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
-WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
+WHERE aa.[LoweredApplicationName] = @app
+  AND au.[LoweredUserName] = @user
+  AND (
+        (@expected IS NOT NULL AND am.[Password] COLLATE Latin1_General_BIN2 = @expected)
+     OR (@expected IS NULL AND am.[Password] IS NULL)
+      );";
 
         List<KeyValuePair<string, object?>> parameters = Parameters(userName);
         parameters.Add(new KeyValuePair<string, object?>("@hash", passwordHash));
         parameters.Add(new KeyValuePair<string, object?>("@format", HashedPasswordFormat));
         parameters.Add(new KeyValuePair<string, object?>("@now", utcNow));
+        parameters.Add(new KeyValuePair<string, object?>("@expected", expectedPasswordValue));
 
-        return await AffectedAsync(Sql, parameters, cancellationToken).ConfigureAwait(false);
+        if (await AffectedAsync(Sql, parameters, cancellationToken).ConfigureAwait(false))
+        {
+            return CredentialWriteOutcome.Replaced;
+        }
+
+        return await CredentialRecordExistsAsync(userName, cancellationToken).ConfigureAwait(false)
+            ? CredentialWriteOutcome.Superseded
+            : CredentialWriteOutcome.NoRecord;
+    }
+
+    /// <summary>Reports whether an account holds a credential record at all.</summary>
+    /// <param name="userName">The DotNetNuke user name.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns><see langword="true"/> when a membership credential row exists for the account.</returns>
+    /// <remarks>
+    /// Reads NOTHING about the credential - not the representation, not the format, not the salt - because
+    /// the only question it answers is whether a row is there. Its one caller is the replacement above, which
+    /// needs to tell a refused expectation from an absent record without widening the surface through which
+    /// credential material can be read.
+    /// </remarks>
+    private async Task<bool> CredentialRecordExistsAsync(
+        string userName,
+        CancellationToken cancellationToken)
+    {
+        const string Sql = @"
+SELECT CAST(1 AS int)
+FROM [dbo].[aspnet_Users] au
+INNER JOIN [dbo].[aspnet_Applications] aa ON aa.[ApplicationId] = au.[ApplicationId]
+INNER JOIN [dbo].[aspnet_Membership] am ON am.[UserId] = au.[UserId]
+WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
+
+        object? present = await ExecuteAsync(
+                Sql,
+                Parameters(userName),
+                static (command, token) => command.ExecuteScalarAsync(token),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return present is not null and not DBNull;
     }
 
     /// <summary>Clears the failure counters and stamps a successful sign-in.</summary>

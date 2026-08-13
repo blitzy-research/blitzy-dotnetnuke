@@ -108,8 +108,10 @@ public sealed class RefreshTokenStoreOptions
     /// <para>
     /// OPT-IN AND DEFAULTED OFF, and it is the only accepted value under which refresh state survives a
     /// restart and is observed identically by every replica. It selects <c>SqlServerRefreshTokenStore</c>,
-    /// which holds one table of its own in a catalogue of its own, created on first use unless
-    /// <see cref="CreateTableIfMissing"/> is cleared.
+    /// which holds one table of its own in a catalogue of its own. That table is PROVISIONED OUT OF BAND,
+    /// from <c>docker/sql/refresh-token-store.sql</c>, and the store never creates it: the running API probes
+    /// for the table and refuses to serve session operations when it is absent. See
+    /// <see cref="RemovedCreateTableSetting"/> for what that replaced and why.
     /// </para>
     /// <para>
     /// ⚠ THE CATALOGUE MUST NOT BE THE DOTNETNUKE DATABASE, and <see cref="Validate"/> refuses the
@@ -176,6 +178,53 @@ public sealed class RefreshTokenStoreOptions
     /// deliberately far below any token lifetime. Enforced by the Api layer's start-up validator.
     /// </remarks>
     public const int MaximumConcurrentUseGraceSeconds = 60;
+
+    /// <summary>
+    /// Shortest retention a deployment may configure for a revoked refresh record, in hours: <c>1</c>.
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. A revoked record keeps its token digest so that a later presentation of that family is
+    /// recognisable as a replay rather than as an unknown value; erasing it the instant a sign-out completes
+    /// would discard the one signal that makes credential theft visible after the fact. One hour is the floor
+    /// because a replay following a stolen sign-out arrives in minutes, not days. Zero is deliberately NOT
+    /// permitted: it would make the record's removal simultaneous with its revocation, which is the same as
+    /// having no signal at all. Enforced by <see cref="Validate"/>.
+    /// </remarks>
+    public const int MinimumRevokedRetentionHours = 1;
+
+    /// <summary>
+    /// Longest retention a deployment may configure for a revoked refresh record, in hours: <c>720</c>
+    /// (thirty days).
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. The upper bound is a data-minimisation limit rather than a technical one. A revoked record is
+    /// personal data about a subject who has already signed out, and its usefulness decays to nothing long
+    /// before a month elapses; a deployment that wants a longer forensic trail should keep it in the audit
+    /// sink, which is designed to be retained, rather than in a live credential table. Enforced by
+    /// <see cref="Validate"/>.
+    /// </remarks>
+    public const int MaximumRevokedRetentionHours = 720;
+
+    /// <summary>
+    /// Shortest interval between reclamation sweeps a deployment may configure, in minutes: <c>1</c>.
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. The sweep is a single set-based statement, so a short interval is cheap; the floor exists only
+    /// to stop a mistyped zero turning the sweep into a busy loop against the store. Enforced by
+    /// <see cref="Validate"/>.
+    /// </remarks>
+    public const int MinimumRetentionSweepMinutes = 1;
+
+    /// <summary>
+    /// Longest interval between reclamation sweeps a deployment may configure, in minutes: <c>1440</c> (one
+    /// day).
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. A sweep that runs less often than daily cannot honour an hour-granular retention setting, so
+    /// the two bounds are related rather than independent: past this point the configured retention would be
+    /// a statement about intent rather than about behaviour. Enforced by <see cref="Validate"/>.
+    /// </remarks>
+    public const int MaximumRetentionSweepMinutes = 1_440;
 
     /// <summary>
     /// Longest description of a configured provider that a validation failure will quote: <c>64</c>
@@ -245,6 +294,49 @@ public sealed class RefreshTokenStoreOptions
     public int ConcurrentUseGraceSeconds { get; set; } = 5;
 
     /// <summary>
+    /// Gets or sets how long a REVOKED refresh record is retained before it is erased, in hours.
+    /// </summary>
+    /// <value>
+    /// <see cref="MinimumRevokedRetentionHours"/> to <see cref="MaximumRevokedRetentionHours"/> inclusive.
+    /// Defaults to <c>24</c>.
+    /// </value>
+    /// <remarks>
+    /// <para>
+    /// PRIV-02. THIS IS THE DOCUMENTED MINIMUM PERIOD, AND IT REPLACES AN UNBOUNDED ONE. A revoked record used
+    /// to live until its family's absolute ceiling elapsed - up to the whole refresh lifetime - because the only
+    /// reclamation either store performed was expiry-based. So an ordinary sign-out left a row naming the
+    /// account, the tenant and the token digest for days after the session it described had ended, and a
+    /// deployment nobody signed in to again kept it for good.
+    /// </para>
+    /// <para>
+    /// Twenty-four hours is the default because the record's only remaining purpose is the replay signal: a
+    /// stolen credential presented after a sign-out is what a retained digest makes recognisable, and that
+    /// attempt arrives within minutes or hours of the theft rather than days. Keeping it longer retains
+    /// personal data for a signal nobody will read.
+    /// </para>
+    /// <para>
+    /// It bounds REVOKED records only. A record that is still redeemable is retained until its family ceiling
+    /// whatever this value says, because erasing a live session's record would sign its holder out.
+    /// </para>
+    /// </remarks>
+    public int RevokedRecordRetentionHours { get; set; } = 24;
+
+    /// <summary>
+    /// Gets or sets how often the operation-independent reclamation sweep runs, in minutes.
+    /// </summary>
+    /// <value>
+    /// <see cref="MinimumRetentionSweepMinutes"/> to <see cref="MaximumRetentionSweepMinutes"/> inclusive.
+    /// Defaults to <c>60</c>.
+    /// </value>
+    /// <remarks>
+    /// PRIV-02. Reclamation used to happen only as a side effect of issuing or rotating a token, which means an
+    /// installation with no sign-in traffic never reclaimed anything - and that is precisely the installation
+    /// where nobody is watching. The sweep is driven by a hosted service on this interval instead, so the
+    /// retention above is a statement about behaviour rather than about intent.
+    /// </remarks>
+    public int RetentionSweepMinutes { get; set; } = 60;
+
+    /// <summary>
     /// Gets or sets the connection string of the catalogue holding the shared store's table.
     /// </summary>
     /// <remarks>
@@ -261,17 +353,65 @@ public sealed class RefreshTokenStoreOptions
     public string TableName { get; set; } = DefaultTableName;
 
     /// <summary>
-    /// Gets or sets a value indicating whether the shared store creates its table when it is absent.
+    /// Name of the setting this class no longer carries, retained so the host can refuse a configuration
+    /// that still sets it rather than binding it to nothing: <c>CreateTableIfMissing</c>.
     /// </summary>
     /// <remarks>
-    /// Applies only to the store's OWN catalogue, never to the DotNetNuke database, which
-    /// <see cref="Validate"/> refuses outright. Clear it where schema changes are applied by a separate
-    /// deployment step, and provision the table by hand.
+    /// <para>
+    /// MIGRATION: SEC-05. The setting used to exist, defaulted to <see langword="true"/>, and let the store
+    /// issue <c>CREATE TABLE</c> and <c>CREATE INDEX</c> under the API's own identity on first use. That is
+    /// schema authorship at runtime by the process that serves requests, which AAP rule T4 forbids, and it
+    /// meant the API's principal had to hold rights it needs for nothing else - the classic case for
+    /// separating the identity that changes a schema from the one that reads and writes rows. The table is
+    /// now provisioned OUT OF BAND from <c>docker/sql/refresh-token-store.sql</c> and the store only ever
+    /// probes for it.
+    /// </para>
+    /// <para>
+    /// The name survives as a constant because binding IGNORES unknown keys: a deployment that had set it
+    /// would otherwise have its setting silently disregarded, and would discover the change only when the
+    /// store refused to start against an unprovisioned catalogue. The Api layer's validator looks the key up
+    /// and refuses to start with a message naming the script instead.
+    /// </para>
     /// </remarks>
-    public bool CreateTableIfMissing { get; set; } = true;
+    public const string RemovedCreateTableSetting = "CreateTableIfMissing";
 
     /// <summary>Gets or sets the command timeout, in seconds, the shared store issues its statements with.</summary>
     public int CommandTimeoutSeconds { get; set; } = 15;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the deployment states, on the record, that it runs exactly ONE
+    /// API instance and therefore accepts a refresh-token store that is neither shared between replicas nor
+    /// carried across a restart.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-06. The process-local store is the shipped default, and in <c>Production</c> that default
+    /// is only correct for a single-instance deployment - which the container topology this solution ships
+    /// happens to be. What was missing is any way for the deployment to be WRONG about it and be told. Scaling
+    /// the API to two replicas required no code change, no configuration change and produced no warning: a
+    /// sign-out performed against replica A left the family exchangeable on replica B, a restart forgot every
+    /// family it had issued, and both failures present as intermittent session behaviour that no log explains.
+    /// The limitation was documented in prose, which a deployment does not read at scale-out time.
+    /// </para>
+    /// <para>
+    /// <strong>SO IN PRODUCTION THE HOST NOW REFUSES TO START unless one of two things is true:</strong> the
+    /// active store is authoritative across replicas - <see cref="SqlServerProvider"/>, or a deployment-supplied
+    /// store that reports itself so - or this acknowledgement is set. Either is a deliberate, recorded decision;
+    /// what is no longer possible is arriving at a replica-local store by default and not knowing.
+    /// </para>
+    /// <para>
+    /// It is deliberately NOT a switch that changes behaviour. Setting it stores nothing differently, and it
+    /// grants no capability: its whole function is to make the operator's own claim explicit, so that a later
+    /// scale-out is a decision to revisit rather than a silent regression. Set it only where a single instance
+    /// is genuinely enforced by the topology.
+    /// </para>
+    /// <para>
+    /// Non-production environments are unaffected, because the failure it guards against is a production
+    /// scale-out and requiring the ceremony of a developer machine would train operators to set it reflexively -
+    /// which is exactly how an acknowledgement stops meaning anything.
+    /// </para>
+    /// </remarks>
+    public bool AcknowledgeSingleInstance { get; set; }
 
     /// <summary>
     /// Gets a value indicating whether <see cref="Provider"/> names the process-local store this solution
@@ -369,6 +509,37 @@ public sealed class RefreshTokenStoreOptions
                 + "every reuse of a spent token as a replay.");
         }
 
+        // PRIV-02. Both retention settings govern EVERY store, so they are validated above the shared-store
+        // early return rather than below it: the process-local store reclaims on the same schedule and honours
+        // the same revoked-record window.
+        if (RevokedRecordRetentionHours is < MinimumRevokedRetentionHours or > MaximumRevokedRetentionHours)
+        {
+            string configured = FormattableString.Invariant($"{RevokedRecordRetentionHours}");
+            string floor = FormattableString.Invariant($"{MinimumRevokedRetentionHours}");
+            string ceiling = FormattableString.Invariant($"{MaximumRevokedRetentionHours}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(RevokedRecordRetentionHours)} is {configured}, which is outside "
+                + $"{floor} to {ceiling}. Below the floor a revoked record would be erased before a replay of "
+                + "its family could be recognised, which discards the one signal that makes a stolen "
+                + "credential visible after a sign-out; above the ceiling the record is personal data kept "
+                + "for a signal nobody will read, and a longer forensic trail belongs in the audit sink.");
+        }
+
+        if (RetentionSweepMinutes is < MinimumRetentionSweepMinutes or > MaximumRetentionSweepMinutes)
+        {
+            string configured = FormattableString.Invariant($"{RetentionSweepMinutes}");
+            string floor = FormattableString.Invariant($"{MinimumRetentionSweepMinutes}");
+            string ceiling = FormattableString.Invariant($"{MaximumRetentionSweepMinutes}");
+
+            failures.Add(
+                $"{SectionName}:{nameof(RetentionSweepMinutes)} is {configured}, which is outside {floor} to "
+                + $"{ceiling}. Zero or less would turn the reclamation sweep into a busy loop against the "
+                + "store; above the ceiling the sweep runs less often than the retention it is meant to "
+                + $"enforce, so {nameof(RevokedRecordRetentionHours)} would describe an intention rather than "
+                + "a behaviour.");
+        }
+
         if (!UsesSharedStore)
         {
             // Nothing below describes the process-local store, and a deployment running it must not be
@@ -400,21 +571,103 @@ public sealed class RefreshTokenStoreOptions
                 $"{SectionName}:{nameof(CommandTimeoutSeconds)} must be between 1 and 600."));
         }
 
-        // ⚠ THE ONE CHECK THAT KEEPS THE DURABLE OPTION INSIDE RULE T4. Nothing is created in the
-        // DotNetNuke catalogue, so a shared store pointed at it is refused before the host starts rather
-        // than discovered when the first sign-in tries to create a table there.
-        if (!string.IsNullOrWhiteSpace(ConnectionString)
-            && !string.IsNullOrWhiteSpace(applicationConnectionString)
-            && SharesCatalogue(ConnectionString!, applicationConnectionString!))
+        // ⚠ THE CHECKS THAT KEEP THE DURABLE OPTION INSIDE RULE T4, AND THEY ARE DELIBERATELY NOT A
+        // STRING-EQUALITY TEST ANY MORE.
+        //
+        // MIGRATION: SEC-07. The previous rule refused the configuration only when the two connection strings
+        // named the same server AND the same catalogue, compared as raw text. Both halves leaked. A host is
+        // spellable as `localhost`, `127.0.0.1`, `(local)`, `.`, `tcp:localhost,1433`, the machine name or a
+        // named instance, and every one of those pairs is the same server while comparing unequal - so the
+        // guard was bypassed by writing the host differently on one side. Worse, a connection string that
+        // omitted `Database` altogether read as "no catalogue" and returned false, which meant the ONE
+        // configuration most likely to land in the DotNetNuke database - the default catalogue of a login
+        // created for it - was the one the guard waved through.
+        //
+        // The fix inverts the question. Proving two connection strings address DIFFERENT databases means
+        // canonicalising host spellings, instance names, ports, aliases and DNS - a problem with no end and no
+        // way to be sure it is finished. Proving they name different CATALOGUES is a single ordinal comparison,
+        // and it is sufficient: the session catalogue must be a catalogue provisioned for this purpose, and
+        // such a catalogue does not share the DotNetNuke catalogue's NAME wherever it is hosted. So the rule
+        // is: name the catalogue explicitly, do not name the application's, and do not name a system one. Each
+        // is decidable from the text alone, which is why it holds where the previous rule did not.
+        //
+        // The cost is one refusal a permissive rule would have allowed: the same catalogue name on a genuinely
+        // different server. That deployment is asked to give its session catalogue a distinct name, which is
+        // what an operator would do anyway, and the direction of the error is the safe one.
+        if (!string.IsNullOrWhiteSpace(ConnectionString))
         {
-            failures.Add(
-                FormattableString.Invariant(
-                    $"{SectionName}:{nameof(ConnectionString)} must name a catalogue other than the DotNetNuke database.")
-                + " The existing schema is immutable, so session state is held outside it.");
+            string sessionCatalogue = ReadCatalogue(ConnectionString!);
+
+            if (sessionCatalogue.Length == 0)
+            {
+                failures.Add(
+                    FormattableString.Invariant(
+                        $"{SectionName}:{nameof(ConnectionString)} must name the session catalogue explicitly, through a 'Database' or 'Initial Catalog' keyword.")
+                    + " A connection string that names none resolves to whatever the login's default"
+                    + " catalogue happens to be, which is routinely the DotNetNuke database itself - so"
+                    + " the isolation this setting exists to guarantee could not be established at all.");
+            }
+            else if (IsSystemCatalogue(sessionCatalogue))
+            {
+                failures.Add(
+                    FormattableString.Invariant(
+                        $"{SectionName}:{nameof(ConnectionString)} names the system catalogue '{Redact(sessionCatalogue)}'.")
+                    + " Session state is held in a catalogue provisioned for it, never in a server's own"
+                    + " administrative databases.");
+            }
+            else if (!string.IsNullOrWhiteSpace(applicationConnectionString)
+                && string.Equals(
+                    sessionCatalogue,
+                    ReadCatalogue(applicationConnectionString!),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                failures.Add(
+                    FormattableString.Invariant(
+                        $"{SectionName}:{nameof(ConnectionString)} must name a catalogue other than the DotNetNuke database.")
+                    + " The existing schema is immutable, so session state is held outside it. The catalogue"
+                    + " NAME is compared rather than the whole connection string, because a host is spellable"
+                    + " many ways and a rule that compared hosts could be bypassed by spelling one"
+                    + " differently.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(applicationConnectionString)
+                && ReadCatalogue(applicationConnectionString!).Length == 0)
+            {
+                failures.Add(
+                    FormattableString.Invariant(
+                        $"ConnectionStrings:Default must name its catalogue explicitly for {SectionName}:{nameof(ConnectionString)} to be accepted.")
+                    + " The session catalogue is required to differ from the application's, and a connection"
+                    + " string that names no catalogue makes that impossible to establish.");
+            }
         }
 
         return failures;
     }
+
+    /// <summary>Reports whether a catalogue name is one of SQL Server's own administrative databases.</summary>
+    /// <param name="catalogue">The catalogue name read from a connection string.</param>
+    /// <returns><see langword="true"/> when session state must not be held there.</returns>
+    /// <remarks>
+    /// The four are fixed by the product rather than by this application, so the set is closed. <c>tempdb</c>
+    /// earns its place twice over: a table created there does not survive a restart, so a deployment naming it
+    /// would believe it had durable sessions and have process-local ones under a durable provider's name.
+    /// </remarks>
+    private static bool IsSystemCatalogue(string catalogue) =>
+        string.Equals(catalogue, "master", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(catalogue, "model", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(catalogue, "msdb", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(catalogue, "tempdb", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Bounds a value read from configuration before it is quoted into a start-up message.</summary>
+    /// <param name="value">The value to render.</param>
+    /// <returns>The value, truncated when it is longer than a plausible identifier.</returns>
+    /// <remarks>
+    /// A catalogue name is not a secret, but it is operator-supplied text that ends up in a start-up log, so
+    /// it is length-bounded for the same reason <see cref="QuoteProvider"/> bounds the provider name.
+    /// </remarks>
+    private static string Redact(string value) => value.Length <= MaximumQuotedProviderLength
+        ? value
+        : value[..MaximumQuotedProviderLength];
 
     /// <summary>Compares the configured provider with one of the accepted names.</summary>
     /// <param name="candidate">The accepted name to compare against.</param>
@@ -440,30 +693,31 @@ public sealed class RefreshTokenStoreOptions
             : $"'{configured[..MaximumQuotedProviderLength]}' (truncated)";
     }
 
-    /// <summary>Reports whether two connection strings name the same server and catalogue.</summary>
-    /// <param name="first">One connection string.</param>
-    /// <param name="second">The other connection string.</param>
-    /// <returns><see langword="true"/> when both name the same catalogue on the same server.</returns>
-    private static bool SharesCatalogue(string first, string second)
-    {
-        (string firstServer, string firstCatalogue) = ReadTarget(first);
-        (string secondServer, string secondCatalogue) = ReadTarget(second);
-
-        if (firstCatalogue.Length == 0 || secondCatalogue.Length == 0)
-        {
-            return false;
-        }
-
-        return string.Equals(firstCatalogue, secondCatalogue, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(firstServer, secondServer, StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Reads the server and catalogue keywords out of a connection string.</summary>
+    /// <summary>Reads the catalogue a connection string names.</summary>
     /// <param name="connectionString">The connection string to read.</param>
-    /// <returns>The server and catalogue it names, each empty when it names none.</returns>
-    private static (string Server, string Catalogue) ReadTarget(string connectionString)
+    /// <returns>The catalogue it names, or the empty string when it names none.</returns>
+    /// <remarks>
+    /// <para>
+    /// Both spellings the provider accepts are read, because a rule that recognised only one of them could be
+    /// bypassed by writing the other. The keywords are matched case-insensitively and the value is trimmed,
+    /// which is what the provider itself does.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-07. This used to read the SERVER as well, and the isolation rule compared both. The
+    /// server is deliberately no longer read: a host has too many equivalent spellings for a textual
+    /// comparison to be sound, and including one in the rule made the rule weaker rather than stronger,
+    /// because two spellings of one host read as two different servers and the refusal never fired. The rule
+    /// that replaced it needs the catalogue alone.
+    /// </para>
+    /// <para>
+    /// Written by hand rather than with a connection-string builder because this type is dependency-free by
+    /// design: the Application project references the Domain project and nothing else, so the provider's own
+    /// parser - which lives in the client library the Infrastructure project owns - is not reachable from
+    /// here.
+    /// </para>
+    /// </remarks>
+    private static string ReadCatalogue(string connectionString)
     {
-        string server = string.Empty;
         string catalogue = string.Empty;
 
         foreach (string pair in connectionString.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -475,24 +729,15 @@ public sealed class RefreshTokenStoreOptions
             }
 
             string keyword = pair[..separator].Trim();
-            string value = pair[(separator + 1)..].Trim();
 
-            if (keyword.Equals("Server", StringComparison.OrdinalIgnoreCase)
-                || keyword.Equals("Data Source", StringComparison.OrdinalIgnoreCase)
-                || keyword.Equals("Address", StringComparison.OrdinalIgnoreCase)
-                || keyword.Equals("Addr", StringComparison.OrdinalIgnoreCase)
-                || keyword.Equals("Network Address", StringComparison.OrdinalIgnoreCase))
-            {
-                server = value;
-            }
-            else if (keyword.Equals("Database", StringComparison.OrdinalIgnoreCase)
+            if (keyword.Equals("Database", StringComparison.OrdinalIgnoreCase)
                 || keyword.Equals("Initial Catalog", StringComparison.OrdinalIgnoreCase))
             {
-                catalogue = value;
+                catalogue = pair[(separator + 1)..].Trim();
             }
         }
 
-        return (server, catalogue);
+        return catalogue;
     }
 
     /// <summary>Reports whether a value is a plain, unquoted SQL identifier.</summary>

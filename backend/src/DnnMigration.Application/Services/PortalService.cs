@@ -134,6 +134,32 @@ public sealed class PortalService : IPortalService
     /// </remarks>
     private const string ParentAliasUnresolvedCode = "portal.parent_alias_unresolved";
 
+    /// <summary>
+    /// Reason code reported when a child portal was requested beneath a parent that is ITSELF
+    /// addressed beneath a path segment, so the composed address would be deeper than this
+    /// deployment can deliver.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this refusal is net-new, and it replaces a legacy behaviour rather than preserving
+    /// it. The legacy composition was <c>GetDomainName(Request) &amp; "/" &amp; ChildPath</c>, and
+    /// <c>Globals.GetDomainName</c> returned <c>www.domain.com/directory</c> when the request had
+    /// arrived beneath a sub-directory, so creating a child from within a child produced
+    /// <c>host/first/second</c> and the legacy product stored it. Nothing could route to it here:
+    /// <see cref="PortalAliasTopology.MaximumPathSegments"/> is one, the shipped reverse proxy
+    /// matches exactly one optional segment ahead of <c>/api/</c>, and the browser honours one
+    /// segment of prefix. Composing such an address would create a tenant that cannot be reached and
+    /// whose administrator has no way to discover why, so the request is refused at the point the
+    /// depth becomes knowable. Recorded in <c>MIGRATION_NOTES.md</c>.
+    /// </para>
+    /// <para>
+    /// Distinct from <see cref="ParentAliasUnresolvedCode"/> because the parent WAS resolved and the
+    /// remedy is different: submit the child's own full host name instead of a bare segment, or
+    /// create the child from a request addressed to a parent that is not itself nested.
+    /// </para>
+    /// </remarks>
+    private const string ParentAliasTooDeepCode = "portal.parent_alias_too_deep";
+
     private const string PortalResourceType = "Portal";
 
     /// <summary>
@@ -1263,6 +1289,28 @@ public sealed class PortalService : IPortalService
         {
             _cache.InvalidateUser(portalId, account.Username);
         }
+        // PRIV-02. THE TENANT'S SESSION RECORDS ARE ERASED, NOT MERELY REVOKED.
+        //
+        // The loop above STAMPED the families of the accounts being removed, which is what keeps a replay of
+        // one of them recognisable and is the right treatment for a sign-out. It is the wrong treatment once
+        // the tenant is gone: every stamped record still names the tenant, the account and the token digest,
+        // and it would go on doing so until its family ceiling elapsed.
+        //
+        // ONE TENANT-SCOPED ERASURE RATHER THAN ONE PER ACCOUNT, and the difference is not efficiency. A
+        // tenant's records outlive its members: an account RETAINED because it belongs to another tenant still
+        // holds records scoped to this one, and those were never in the revocation loop above - that loop
+        // deliberately covers only the accounts being deleted. A per-account sweep would therefore leave
+        // exactly the records that name a tenant which no longer exists.
+        //
+        // AFTER THE COMMIT, for the reason set out at the revocation loop: the two stores cannot roll back
+        // together, so the order is chosen so that the worse of the two residues is the one that cannot occur.
+        // A failure does NOT fail the removal - the tenant is already gone and no retry can restore it - and
+        // the records are still revoked, so nothing is exchangeable. The outstanding erasure is recorded as a
+        // property of the audit entry, and the scheduled reclamation removes the records in any case.
+        Result purgedSessions = await _tokens
+            .PurgePortalSessionRecordsAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
         // Recorded after the commit, so no event can describe a removal that was rolled back. The stable
         // identifier remains in the envelope; the deleted tenant's name is deliberately not copied into the
         // independently retained logging store.
@@ -1274,6 +1322,7 @@ public sealed class PortalService : IPortalService
             Properties = new Dictionary<string, string?>(StringComparer.Ordinal)
             {
                 ["AliasesReleased"] = releasedAliasCount.ToString(CultureInfo.InvariantCulture),
+                ["SessionRecordsErased"] = purgedSessions.IsSuccess.ToString(CultureInfo.InvariantCulture),
             },
         });
 
@@ -1981,9 +2030,10 @@ public sealed class PortalService : IPortalService
     /// <param name="request">The submitted creation request, read for <c>IsChildPortal</c>.</param>
     /// <param name="submittedAlias">The trimmed value the caller submitted.</param>
     /// <returns>
-    /// A success carrying the alias to store, or a failure carrying
+    /// A success carrying the alias to store; a failure carrying
     /// <see cref="ParentAliasUnresolvedCode"/> when a child portal was asked for from a request
-    /// that resolved to no tenant.
+    /// that resolved to no tenant; or a failure carrying <see cref="ParentAliasTooDeepCode"/> when
+    /// the resolved parent is itself addressed beneath a path segment.
     /// </returns>
     /// <remarks>
     /// <para>
@@ -1993,10 +2043,16 @@ public sealed class PortalService : IPortalService
     /// The parent authority is the resolved tenant's OWN alias, which is this target's equivalent
     /// of <c>Globals.GetDomainName(Request)</c> (<c>Library/Components/Shared/Globals.vb</c>,
     /// implemented). And it already carries any path portion the request was addressed under,
-    /// because resolution prefers the longest matching prefix — which reproduces the legacy
-    /// member's own behaviour of returning <c>www.domain.com/directory</c> rather than the bare
-    /// host when the request arrived beneath a sub-directory, and so nests exactly as the legacy
-    /// screen nested.
+    /// because resolution matches the longest addressable prefix — which is what the legacy member
+    /// did too, returning <c>www.domain.com/directory</c> rather than the bare host when the request
+    /// arrived beneath a sub-directory.
+    /// </para>
+    /// <para>
+    /// ⚠ WHERE THIS DIVERGES FROM THE LEGACY SCREEN. The legacy code composed beneath that value
+    /// unconditionally, so creating a child from within a child stored <c>host/first/second</c>. This
+    /// deployment cannot deliver a request to such an address — see
+    /// <see cref="ParentAliasTooDeepCode"/> — so the composition is refused rather than performed and
+    /// left unreachable.
     /// </para>
     /// </remarks>
     private Result<string> ComposeAlias(CreatePortalRequest request, string submittedAlias)
@@ -2011,7 +2067,9 @@ public sealed class PortalService : IPortalService
         if (submittedAlias.Contains(AliasPathSeparator, StringComparison.Ordinal))
         {
             // The legacy HOST branch: the operator qualified the address themselves, so it is stored
-            // verbatim. The validator has already character-checked its final segment.
+            // verbatim. The validator has already character-checked its final segment AND bounded its
+            // depth against PortalAliasTopology, so a self-qualified value that arrives here carries at
+            // most one addressable path segment and needs no second composition.
             return Result<string>.Success(submittedAlias);
         }
 
@@ -2035,6 +2093,20 @@ public sealed class PortalService : IPortalService
                 ParentAliasUnresolvedCode,
                 "The parent portal this request resolved to carries no host name, so a child portal's "
                 + "address cannot be composed beneath it.");
+        }
+
+        // ⚠ THE PARENT MUST NOT ITSELF BE NESTED. The resolved authority already carries any path portion
+        // the request arrived under, because resolution matches the longest addressable prefix, so composing
+        // unconditionally would yield host/first/second - an address of a depth nothing in this deployment
+        // can deliver. See ParentAliasTooDeepCode for the legacy behaviour this replaces.
+        if (parentAuthority.Contains(AliasPathSeparator, StringComparison.Ordinal))
+        {
+            return Result<string>.Failure(
+                ParentAliasTooDeepCode,
+                "This request resolved to a portal that is itself addressed beneath a path segment, and "
+                + "a child portal cannot be nested a second level deep. Submit the new portal's full "
+                + "host name, or create it from a request addressed to a portal that is not itself a "
+                + "child.");
         }
 
         return Result<string>.Success(

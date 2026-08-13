@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Common;
@@ -143,6 +144,13 @@ public class UserServiceTests
     private const string PasswordResetFailedCode = "user.password.reset-failed";
 
     /// <summary>
+    /// Reported when the credential changed between this request reading it and writing it, so the store
+    /// refused the write on purpose. Its reason token ends in <c>superseded</c>, so the Api edge answers
+    /// <c>409</c> - a well-formed request the resource's current state declines.
+    /// </summary>
+    private const string PasswordSupersededCode = "user.password.superseded";
+
+    /// <summary>
     /// Reported when an operation that must end an account's sessions could not, so the operation itself was
     /// abandoned. Its reason token ends in <c>store_unavailable</c>, so the Api edge answers <c>503</c>.
     /// </summary>
@@ -261,9 +269,18 @@ public class UserServiceTests
     /// screen, which may enumerate a tenant of up to a thousand accounts. Two projections, two members, and
     /// no flag on one member deciding which of them a caller gets.
     /// </para>
+    /// <para>
+    /// PRIV-01. The twenty-eighth is <c>ExportPersonalDataAsync</c>, and it is a member of its own rather than
+    /// a shape of the account read for the reason the finding that produced it names: portability is one
+    /// document assembled from three projections, and an argument on the detail read would have made the
+    /// account contract answer two different questions. It reveals nothing a caller of the three could not
+    /// already read, which is a constraint on it rather than a consequence - and it is the only read on this
+    /// contract that writes an audit record, because reading a subject's whole record out of the system is an
+    /// event whose actor is worth keeping.
+    /// </para>
     /// </remarks>
     [Fact]
-    public void UserContract_OffersExactlyTwentySevenNamedTenantScopedOperations()
+    public void UserContract_OffersExactlyTwentyEightNamedTenantScopedOperations()
     {
         MethodInfo[] members = typeof(IUserService).GetMethods();
 
@@ -285,6 +302,7 @@ public class UserServiceTests
             "IsEmailValidAsync",
             "RequiresProfileCompletionAsync",
             "GetProfileAsync",
+            "ExportPersonalDataAsync",
             "UpdateProfileAsync",
             "ListProfilePropertyDefinitionsAsync",
             "GetProfilePropertyDefinitionAsync",
@@ -2962,7 +2980,7 @@ public class UserServiceTests
     {
         Harness harness = Harness.Ready();
         harness.ActAsTheAccountOwner();
-        harness.PasswordWritten = false;
+        harness.PasswordWritten = CredentialWriteOutcome.NoRecord;
 
         Result outcome = await harness.Service
             .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
@@ -2970,6 +2988,55 @@ public class UserServiceTests
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(PasswordResetFailedCode);
         outcome.Reason!.Message.Should().Be("The credential store refused the change.");
+    }
+
+    /// <summary>
+    /// A store that refuses the write BECAUSE the credential changed under this request reports its own
+    /// outcome, distinct from a store that could not accept the write at all.
+    /// </summary>
+    /// <param name="operation">The operation to submit.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-02. The write is a compare-and-swap over the representation this request read, so
+    /// "nothing was written" has a cause the boolean it replaced could not express. Both causes previously
+    /// arrived here as <c>false</c> and were reported identically as a store refusal, which was wrong in two
+    /// directions at once: an operator investigating a store fault was sent after a healthy store, and a caller
+    /// whose decision had been made against a credential that is no longer in force was told to retry an
+    /// operation that would keep failing for as long as it kept re-submitting the same stale premise.
+    /// </para>
+    /// <para>
+    /// The distinct code is deliberate and it is not an oracle: reaching this path already requires having
+    /// proved the current credential, or the authority to reset it. Both operations are asserted because the
+    /// reset path does not present a current credential at all, so it is the one where a lost race is most
+    /// likely - an administrator resetting an account while its owner changes its own credential.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(ChangePasswordRequest.OperationChange)]
+    [InlineData(ChangePasswordRequest.OperationReset)]
+    public async Task CredentialWrite_ReportsACredentialThatChangedUnderTheRequest(string operation)
+    {
+        Harness harness = Harness.Ready();
+        ActAccordingToTheOperation(harness, operation);
+        harness.PasswordWritten = CredentialWriteOutcome.Superseded;
+        ChangePasswordRequest request = ValidChangeRequest();
+        request.Operation = operation;
+
+        Result outcome = operation == ChangePasswordRequest.OperationReset
+            ? await harness.Service.ResetPasswordAsync(PortalId, UserId, request, CancellationToken.None)
+            : await harness.Service.ChangePasswordAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(PasswordSupersededCode);
+        outcome.Reason!.Message.Should().Contain(
+            "submit the change again",
+            "the caller resolves a lost race by re-reading and deciding again, so the refusal says so");
+
+        harness.SetPasswordExpectations.Should().Equal(
+            new[] { StoredHashFor(CurrentPassword) },
+            "the write must be conditional on the representation this request read, or it would overwrite "
+            + "whatever replaced it");
     }
 
     /// <summary>
@@ -3370,12 +3437,23 @@ public class UserServiceTests
     /// <param name="operation">The operation named on the request.</param>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
+    /// <para>
     /// The obligation is stated on the contract in terms rather than left to judgement: a credential changed
     /// because it may have been compromised, or reset because its holder lost it, is of no use to whoever had
     /// it - but a refresh token issued under the old credential keeps yielding fresh access tokens
     /// indefinitely, so a change that left one exchangeable would not end the session it was performed to
     /// end. The reset case matters most: it ends the sessions of the account being reset, not the
     /// administrator's own.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-02. IT SWEEPS TWICE, AND THE COUNT IS THE ASSERTION. It previously swept once, before
+    /// the write, which is the ordering that keeps a failed revocation from leaving a replaced credential with
+    /// live sessions. What one sweep cannot reach is a sign-in already in flight: such a request can mint its
+    /// family in the interval between the sweep and the write committing, and that family is then younger than
+    /// the only sweep that ever ran. Repeating the sweep after the write catches exactly that family, and the
+    /// sign-in path closes the mirror-image case by re-reading the credential after it issues. Asserting the
+    /// order and the count together is what stops either sweep from being deleted as a duplicate of the other.
+    /// </para>
     /// </remarks>
     [Theory]
     [InlineData(ChangePasswordRequest.OperationChange)]
@@ -3391,7 +3469,51 @@ public class UserServiceTests
         Result outcome = await PerformCredentialWriteAsync(harness, operation, request);
 
         outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
-        harness.RevokedSessionUserIds.Should().Equal(new[] { UserId });
+        harness.RevokedSessionUserIds.Should().Equal(
+            new[] { UserId, UserId },
+            "the sessions are ended once before the credential is written and once after it, and both "
+            + "sweeps address the account being changed rather than the caller performing the change");
+    }
+
+    /// <summary>
+    /// A credential written successfully whose lingering sessions cannot then be ended is reported as a
+    /// failure rather than as a success.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-02. The companion of the pre-write ordering test below, and it answers the question that
+    /// test does not: what happens when the FIRST sweep succeeds, the write lands, and the second sweep cannot
+    /// be persisted. Reporting success there would be the precise falsehood the ordering rules exist to
+    /// prevent - the credential has been replaced, and sessions minted against the old one may still be
+    /// exchangeable - so the operation is reported as failed even though the write itself happened.
+    /// </para>
+    /// <para>
+    /// The residual is stated plainly rather than hidden: the credential HAS changed when this failure is
+    /// reported, so the caller's retry finds the swap refusing as superseded rather than replacing anything a
+    /// second time. That is the correct outcome for a caller that must not be told the sessions are gone when
+    /// they may not be, and it is why the refusal names a dependency outage rather than a bad request.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ChangePassword_WhenLingeringSessionsCannotBeEnded_ReportsTheFailure()
+    {
+        Harness harness = Harness.Ready();
+        harness.ActAsTheAccountOwner();
+        harness.SessionRevocationsBeforeFailure = 1;
+
+        Result outcome = await harness.Service
+            .ChangePasswordAsync(PortalId, UserId, ValidChangeRequest(), CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue(
+            "a credential replaced with sessions that may still be exchangeable must not be reported as a "
+            + "completed change");
+        outcome.Reason!.Code.Should().Be(SessionRevocationFailedCode);
+
+        harness.SetPasswordHashes.Should().Equal(
+            new[] { StoredHashFor(NewPassword) },
+            "the write did happen - this failure is about what could not be done afterwards, which is why "
+            + "the refusal names an outage rather than a rejected request");
     }
 
     /// <summary>
@@ -3500,6 +3622,115 @@ public class UserServiceTests
 
         outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
         harness.RevokedSessionUserIds.Should().Equal(new[] { UserId });
+    }
+
+    /// <summary>
+    /// A deletion ERASES the account's session records, across every tenant when the account row itself goes.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// PRIV-02. REVOCATION IS NOT DELETION, AND ONLY THE FIRST USED TO HAPPEN. Ending the sessions STAMPS each
+    /// record so it can no longer be redeemed, which is right for a sign-out because the stamped record is what
+    /// makes a later replay of that family recognisable. It is wrong once the account is gone: each record keeps
+    /// the token digest and the subject identifiers, so a deleted account went on being described in the session
+    /// store until its family ceiling elapsed. The erasure is the second step, and the account here belongs
+    /// nowhere else, so the scope names no tenant.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_ErasesTheSessionRecordsOfAnAccountItRemovedOutright()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RevokedSessionUserIds.Should().Equal(
+            new[] { UserId },
+            "the sessions are ended before anything is removed, exactly as they were");
+        harness.PurgedSessionScopes.Should().Equal(
+            new[] { (UserId, (int?)null) },
+            "and the records are then ERASED across every tenant, because the account row itself has gone");
+    }
+
+    /// <summary>
+    /// A deletion that only removes a MEMBERSHIP erases the session records of that tenant alone.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// PRIV-02. THE SCOPE IS THE WHOLE POINT OF THIS FACT. The account survives because it still belongs to
+    /// another tenant, and the sessions it holds there are legitimate - so an erasure that reached every tenant
+    /// would sign it out of a tenant it is still a member of, turning a data-retention fix into an availability
+    /// defect. The revocation above is deliberately unchanged: it has always been account-wide, because an
+    /// account whose membership of a tenant is withdrawn must not keep exchanging tokens minted under it.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_ErasesOnlyTheDepartedTenantsRecordsForAnAccountItKeeps()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 2, UserId = UserId, PortalId = PortalId + 5 });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(outcome.Reason?.ToString());
+        harness.RemovedUsers.Should().BeEmpty("the account belongs to another tenant and is retained");
+        harness.PurgedSessionScopes.Should().Equal(
+            new[] { (UserId, (int?)PortalId) },
+            "so only the records scoped to the tenant it left may be erased");
+    }
+
+    /// <summary>
+    /// A deletion whose session records cannot be erased still succeeds, and records that the erasure is owed.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// PRIV-02. THE ASYMMETRY WITH THE REVOCATION ABOVE IS DELIBERATE, AND BOTH DIRECTIONS ARE ASSERTED IN THIS
+    /// SUITE. A revocation that fails abandons the deletion, because nothing has been removed yet and the
+    /// account can be left whole. An erasure that fails cannot do that: it runs AFTER the commit, so the account
+    /// is already gone and reporting failure would tell a caller to retry an operation that has irreversibly
+    /// happened. What is honest is to succeed and record that the records were not erased - they are still
+    /// revoked, so nothing is exchangeable, and the scheduled reclamation removes them in any case.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenTheSessionRecordsCannotBeErased_StillSucceedsAndRecordsTheOmission()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.SessionRecordsErased = false;
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the account has already been deleted, and no retry can un-delete it");
+        harness.RemovedUsers.Should().ContainSingle();
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_DELETED");
+        record.Properties["SessionRecordsErased"].Should().Be(
+            "False",
+            "an operator has to be able to see that the erasure is still owed");
+    }
+
+    /// <summary>
+    /// A deletion whose session records ARE erased says so on its audit record.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeleteUser_RecordsThatTheSessionRecordsWereErased()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+
+        await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_DELETED");
+        record.Properties["SessionRecordsErased"].Should().Be("True");
     }
 
     /// <summary>
@@ -4941,6 +5172,246 @@ public class UserServiceTests
             property => property.Visibility == 1,
             "the default visibility is still applied even though the holder may not change it");
     }
+    /// <summary>
+    /// PRIV-01: the export composes the three things the installation holds about one account within one
+    /// tenant - the account row, its profile and its role assignments - and stamps the instant it was taken.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_ComposesTheAccountTheProfileAndTheRoleAssignments()
+    {
+        Harness harness = Harness.Ready();
+        harness.CallerUserId = UserId;
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "Fleet Street")];
+        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users" });
+        harness.UserAssignments.Add(new UserRole
+        {
+            UserRoleId = 7,
+            UserId = UserId,
+            RoleId = 5,
+            EffectiveDate = Now.AddDays(-30),
+            ExpiryDate = Now.AddDays(30),
+        });
+
+        Result<UserPersonalDataExportDto?> outcome = await harness.Service
+            .ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        UserPersonalDataExportDto export = outcome.Value!;
+
+        export.GeneratedAtUtc.Should().Be(Now, "the instant is taken from the injected clock");
+        export.PortalId.Should().Be(PortalId);
+        export.UserId.Should().Be(UserId);
+        export.Account.UserId.Should().Be(UserId);
+        export.Account.Email.Should().Be(Email);
+        export.Profile.Should().NotBeNull();
+        export.Profile!.Properties
+            .Single(property => property.PropertyDefinitionId == StreetPropertyId)
+            .PropertyValue.Should().Be("Fleet Street");
+
+        RoleMembershipDto assignment = export.RoleAssignments.Should().ContainSingle().Subject;
+        assignment.UserRoleId.Should().Be(7);
+        assignment.RoleId.Should().Be(5);
+        assignment.RoleName.Should().Be("Registered Users");
+        assignment.EffectiveDate.Should().Be(Now.AddDays(-30));
+        assignment.ExpiryDate.Should().Be(Now.AddDays(30));
+        assignment.Username.Should().Be(Username, "the subject's own account fields, taken from the account");
+    }
+
+    /// <summary>
+    /// PRIV-01: an account the addressed tenant does not hold reports absence rather than an empty document,
+    /// and nothing is recorded, because nothing was exported.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_ReportsAbsenceAndRecordsNothingForAnUnknownAccount()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser = null;
+
+        Result<UserPersonalDataExportDto?> outcome = await harness.Service
+            .ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeNull();
+        harness.AuditRecords.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// PRIV-01: an assignment whose role belongs to another tenant, or has been removed under it, keeps the
+    /// assignment's own facts and reports no name. Dropping the row would understate what is held; naming
+    /// the other tenant's role would disclose it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_KeepsAnAssignmentWhoseRoleThisTenantCannotName()
+    {
+        Harness harness = Harness.Ready();
+        harness.UserAssignments.Add(new UserRole { UserRoleId = 9, UserId = UserId, RoleId = 4_242 });
+
+        Result<UserPersonalDataExportDto?> outcome = await harness.Service
+            .ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        RoleMembershipDto assignment = outcome.Value!.RoleAssignments.Should().ContainSingle().Subject;
+        assignment.UserRoleId.Should().Be(9);
+        assignment.RoleId.Should().Be(4_242);
+        assignment.RoleName.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// PRIV-01: the exported document carries a CLOSED set of members, and none of them is a secret.
+    /// </summary>
+    /// <returns>Nothing; this is a static shape assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// An allowlist rather than a substring search, because the account projection legitimately carries
+    /// <c>MustChangePassword</c> and <c>LastPasswordChangeDate</c> - facts ABOUT a credential that disclose
+    /// nothing OF it - so a rule keyed on the word would reject the correct shape and would have to be
+    /// weakened until it caught nothing.
+    /// </para>
+    /// <para>
+    /// The forbidden set below is therefore exact names that would carry a secret VALUE. It is asserted
+    /// against every type in the exported graph, so a member added to any of them later fails here rather
+    /// than shipping a secret to whoever asks for their own data.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ExportPersonalData_CarriesAClosedSetOfMembersAndNoSecret()
+    {
+        typeof(UserPersonalDataExportDto)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Select(property => property.Name)
+            .Should().BeEquivalentTo(
+                "GeneratedAtUtc",
+                "PortalId",
+                "UserId",
+                "Account",
+                "Profile",
+                "RoleAssignments");
+
+        string[] forbidden =
+        [
+            "Password",
+            "PasswordHash",
+            "PasswordSalt",
+            "PasswordAnswer",
+            "PasswordQuestion",
+            "Hash",
+            "Salt",
+            "Secret",
+            "Token",
+            "RefreshToken",
+            "AccessToken",
+        ];
+
+        Type[] exported =
+        [
+            typeof(UserPersonalDataExportDto),
+            typeof(UserDetailDto),
+            typeof(UserProfileDto),
+            typeof(UserProfileValueDto),
+            typeof(RoleMembershipDto),
+        ];
+
+        foreach (Type type in exported)
+        {
+            type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Select(property => property.Name)
+                .Should().NotIntersectWith(
+                    forbidden,
+                    "{0} is exported to the subject and must carry no secret",
+                    type.Name);
+        }
+    }
+
+    /// <summary>
+    /// PRIV-01: the export is recorded as COUNTS AND AN ACTOR, never as values. The audit sink is retained
+    /// independently of the data it describes, so copying the exported values into it would duplicate the
+    /// subject's personal data into a second store every time the subject asked for their own.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_RecordsCountsAndTheActorButNoExportedValue()
+    {
+        Harness harness = Harness.Ready();
+        harness.CallerUserId = UserId;
+        harness.ValuesByUserId[UserId] = [Value(1, UserId, StreetPropertyId, "Fleet Street")];
+        harness.AutoAssigned.Add(new Role { RoleId = 5, RoleName = "Registered Users" });
+        harness.UserAssignments.Add(new UserRole { UserRoleId = 7, UserId = UserId, RoleId = 5 });
+
+        Result<UserPersonalDataExportDto?> outcome = await harness.Service
+            .ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be("USER_DATA_EXPORTED");
+        record.PortalId.Should().Be(PortalId);
+        record.SubjectUserId.Should().Be(UserId);
+        record.ActorUserId.Should().Be(UserId);
+
+        record.Properties.Should().ContainKey("ProfileValues")
+            .WhoseValue.Should().Be(outcome.Value!.Profile!.Properties.Count.ToString(CultureInfo.InvariantCulture));
+        record.Properties.Should().ContainKey("RoleAssignments").WhoseValue.Should().Be("1");
+        record.Properties.Should().ContainKey("SelfService").WhoseValue.Should().Be(bool.TrueString);
+
+        // No exported VALUE reached the sink. Each of these is present in the document above.
+        record.Properties.Values.Should().NotContain(Email);
+        record.Properties.Values.Should().NotContain(Username);
+        record.Properties.Values.Should().NotContain("Fleet Street");
+        record.Properties.Values.Should().NotContain("Registered Users");
+    }
+
+    /// <summary>
+    /// PRIV-01: an export an administrator takes over somebody else's account and one the account holder
+    /// takes over their own are different events, and after the fact nothing but this property distinguishes
+    /// them.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_DistinguishesASelfServiceExportFromAnAdministrativeOne()
+    {
+        Harness administrative = Harness.Ready();
+        administrative.CallerUserId = OtherUserId;
+
+        await administrative.Service.ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        AuditEvent byAdministrator = administrative.AuditRecords.Should().ContainSingle().Subject;
+        byAdministrator.Properties["SelfService"].Should().Be(bool.FalseString);
+        byAdministrator.ActorUserId.Should().Be(OtherUserId);
+        byAdministrator.SubjectUserId.Should().Be(UserId);
+
+        Harness selfService = Harness.Ready();
+        selfService.CallerUserId = UserId;
+
+        await selfService.Service.ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        selfService.AuditRecords.Should().ContainSingle().Subject
+            .Properties["SelfService"].Should().Be(bool.TrueString);
+    }
+
+    /// <summary>
+    /// PRIV-01: the export is tenant-scoped in every read it makes, so it cannot answer with another
+    /// tenant's view of the same account.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ExportPersonalData_ReadsOnlyTheAddressedTenant()
+    {
+        Harness harness = Harness.Ready();
+
+        await harness.Service.ExportPersonalDataAsync(PortalId, UserId, CancellationToken.None);
+
+        harness.Roles.Verify(
+            roles => roles.GetUserRolesAsync(PortalId, UserId, It.IsAny<CancellationToken>()),
+            Times.Once);
+        harness.Roles.Verify(
+            roles => roles.GetUserRolesAsync(
+                It.Is<int>(portalId => portalId != PortalId),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+
 
     /// <summary>
     /// Writing a profile requires a payload, and an unknown account is refused.
@@ -7184,7 +7655,7 @@ public class UserServiceTests
             CredentialApproved = true;
             CredentialLockedOut = false;
             CredentialCreated = true;
-            PasswordWritten = true;
+            PasswordWritten = CredentialWriteOutcome.Replaced;
             UnlockSucceeded = true;
             ApprovalSucceeded = true;
             UserCount = 3;
@@ -7206,6 +7677,7 @@ public class UserServiceTests
             DeletedCredentialUserIds = [];
             RevokedSessionUserIds = [];
             SetPasswordHashes = [];
+            SetPasswordExpectations = [];
             ApprovalWrites = [];
             CascadedUserPermissions = [];
             EvictedGrantCaches = [];
@@ -7395,6 +7867,36 @@ public class UserServiceTests
         public bool SessionsRevoked { get; set; } = true;
 
         /// <summary>
+        /// The scopes the service asked the token store to ERASE, in the order it asked.
+        /// </summary>
+        /// <remarks>
+        /// PRIV-02. Distinct from <see cref="RevokedSessionUserIds"/> because revocation and erasure are
+        /// different operations with different consequences: a revoked record is retained so that a replay of
+        /// its family stays recognisable, and an erased one is gone. The tenant half of the tuple is what
+        /// distinguishes an account removed outright - which erases across every tenant - from one retained
+        /// because it belongs to another, which may only erase within the tenant it left.
+        /// </remarks>
+        public List<(int UserId, int? PortalId)> PurgedSessionScopes { get; } = [];
+
+        /// <summary>
+        /// Whether the token store can erase an account's session records. Defaults to true.
+        /// </summary>
+        public bool SessionRecordsErased { get; set; } = true;
+
+        /// <summary>
+        /// How many revocations succeed before the store starts refusing, or <see langword="null"/> for a
+        /// store whose behaviour is governed solely by <see cref="SessionsRevoked"/>.
+        /// </summary>
+        /// <remarks>
+        /// Needed because a credential write now sweeps the account's sessions TWICE - once before the write
+        /// and once after it - so "the store refuses" is no longer one situation. A test that has to
+        /// distinguish the first sweep failing from the second failing sets this rather than the flag, and the
+        /// two failures have deliberately different consequences: the first abandons the operation with the
+        /// credential untouched, the second reports a failure over a credential that has already been replaced.
+        /// </remarks>
+        public int? SessionRevocationsBeforeFailure { get; set; }
+
+        /// <summary>
         /// Whether the credential store can remove an account's credential. Defaults to true.
         /// </summary>
         public bool CredentialRemoved { get; set; } = true;
@@ -7481,7 +7983,7 @@ public class UserServiceTests
 
         public Exception? CredentialFault { get; set; }
 
-        public bool PasswordWritten { get; set; }
+        public CredentialWriteOutcome PasswordWritten { get; set; }
 
         public bool UnlockSucceeded { get; set; }
 
@@ -7551,6 +8053,9 @@ public class UserServiceTests
         public List<int> DeletedCredentialUserIds { get; }
 
         public List<string> SetPasswordHashes { get; }
+
+        /// <summary>The expectation each credential replacement carried, in order.</summary>
+        public List<string?> SetPasswordExpectations { get; }
 
         public List<(int UserId, bool IsApproved)> ApprovalWrites { get; }
 
@@ -7937,11 +8442,16 @@ public class UserServiceTests
                 .Setup(u => u.SetPasswordHashAsync(
                     It.IsAny<int>(),
                     It.IsAny<string>(),
+                    It.IsAny<string?>(),
                     It.IsAny<DateTime>(),
                     It.IsAny<CancellationToken>()))
-                .Returns((int _, string hash, DateTime __, CancellationToken ___) =>
+                .Returns((int _, string hash, string? expected, DateTime __, CancellationToken ___) =>
                 {
+                    // The EXPECTATION is recorded as well as the hash, because the compare-and-swap is the
+                    // whole of what the credential write now guarantees: a test that only observed the hash
+                    // could not tell a conditional replacement from the unconditional overwrite this replaced.
                     harness.SetPasswordHashes.Add(hash);
+                    harness.SetPasswordExpectations.Add(expected);
                     return Task.FromResult(harness.PasswordWritten);
                 });
             harness.Users
@@ -7972,8 +8482,32 @@ public class UserServiceTests
                 .Returns((int userId, CancellationToken _) =>
                 {
                     harness.RevokedSessionUserIds.Add(userId);
+
+                    bool refuse = harness.SessionRevocationsBeforeFailure is int allowed
+                        ? harness.RevokedSessionUserIds.Count > allowed
+                        : !harness.SessionsRevoked;
+
                     return Task.FromResult(
-                        harness.SessionsRevoked
+                        refuse
+                            ? Result.Failure("TOKEN_STORE_UNAVAILABLE", "The token store could not be written.")
+                            : Result.Success());
+                });
+
+            // PRIV-02. Erasure succeeds by default and records its scope, so a fact can assert that the
+            // deletion path erased the session records rather than merely revoking them - and can assert WHICH
+            // scope it used, which is the part that distinguishes an account removed outright from one that
+            // still belongs to another tenant.
+            harness.Tokens
+                .Setup(t => t.PurgeAccountSessionRecordsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns((int userId, int? portalId, CancellationToken _) =>
+                {
+                    harness.PurgedSessionScopes.Add((userId, portalId));
+
+                    return Task.FromResult(
+                        harness.SessionRecordsErased
                             ? Result.Success()
                             : Result.Failure("TOKEN_STORE_UNAVAILABLE", "The token store could not be written."));
                 });

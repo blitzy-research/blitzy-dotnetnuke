@@ -442,6 +442,85 @@ public interface ITokenService
     Task<Result> RevokeAllRefreshTokensAsync(
         int userId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// ERASES the session records held for one account, or for one account within one tenant.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// PRIV-02. <b>Revocation is not deletion, and only the first existed on this contract.</b>
+    /// <see cref="RevokeAllRefreshTokensAsync"/> stamps every family so that it can no longer be
+    /// redeemed while leaving the record in place - which is exactly right for a sign-out, because a
+    /// stamped record is what makes a later replay of that family recognisable. It is exactly wrong for
+    /// a deletion: the record keeps the token digest and the subject identifiers, so an account that had
+    /// been deleted from the application went on being described in the session store until its family
+    /// ceiling elapsed, and nothing on this contract could remove the description.
+    /// </para>
+    /// <para>
+    /// <b>Its callers are the deletion paths, and they call it AFTER their own removal is committed.</b>
+    /// That order is a choice between asymmetric failures rather than a preference. Revoking first and
+    /// erasing afterwards leaves, at worst, revoked records naming a subject that no longer exists -
+    /// which the scheduled reclamation removes in any case. Erasing first and then failing to remove the
+    /// account would leave a live account whose sessions were no longer even recorded, so an
+    /// administrator could neither see nor end them.
+    /// </para>
+    /// <para>
+    /// <b>A failure here does not undo a deletion, and callers must not report it as one.</b> The
+    /// removal has already been committed by the time this runs, so the honest report is that the
+    /// subject was deleted and its session records were not yet erased. They are still revoked - the
+    /// deletion paths revoke before they commit - and reclamation removes them on its own schedule.
+    /// </para>
+    /// <para>
+    /// <b>Tenant scope matters.</b> An account removed outright is erased across every tenant; an
+    /// account retained because it still belongs to another tenant must be erased only within the tenant
+    /// it left, or the sessions it legitimately holds elsewhere would be destroyed with it.
+    /// </para>
+    /// </remarks>
+    /// <param name="userId">
+    /// Identifier of the account whose session records are erased. Not sentinel-checked and never
+    /// coalesced: both 0 and -1 are legitimate identifiers in this schema.
+    /// </param>
+    /// <param name="portalId">
+    /// Tenant to confine the erasure to, or <see langword="null"/> to erase the account's records in
+    /// every tenant. Supply the tenant whenever the account row itself survives.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// Token used to abandon the store write if the caller's request is abandoned first.
+    /// </param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/> once no session record for that scope remains -
+    /// including when there was none to begin with, because erasure is idempotent. The single expected
+    /// failure is code <c>TOKEN_STORE_UNAVAILABLE</c>, reported when the store could not be reached.
+    /// </returns>
+    Task<Result> PurgeAccountSessionRecordsAsync(
+        int userId,
+        int? portalId = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// ERASES every session record held for one tenant, whichever account holds it.
+    /// </summary>
+    /// <remarks>
+    /// PRIV-02. The tenant counterpart of <see cref="PurgeAccountSessionRecordsAsync"/>, and it is not
+    /// redundant with it: a tenant's records outlive its members. An account retained because it belongs
+    /// to another tenant still holds records scoped to the deleted one, and each of those names a tenant
+    /// that no longer exists. Called by portal deletion after its own removal is committed, under the
+    /// same reasoning about failure asymmetry set out on the account member.
+    /// </remarks>
+    /// <param name="portalId">
+    /// Identifier of the tenant whose session records are erased. Not sentinel-checked: <c>-1</c> and
+    /// <c>0</c> are legitimate tenant identifiers in this schema.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// Token used to abandon the store write if the caller's request is abandoned first.
+    /// </param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/> once no session record for that tenant
+    /// remains. The single expected failure is code <c>TOKEN_STORE_UNAVAILABLE</c>.
+    /// </returns>
+    Task<Result> PurgePortalSessionRecordsAsync(
+        int portalId,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

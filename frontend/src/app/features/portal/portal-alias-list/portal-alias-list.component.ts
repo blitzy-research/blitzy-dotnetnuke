@@ -773,6 +773,20 @@ const ALIAS_INVALID_MESSAGE =
   'An HTTP alias must be a host name, an IP address or a server name, optionally followed by ' +
   'a port and a path, and must not include a protocol prefix.';
 
+/**
+ * Mirrors the server's topology refusal, character for character.
+ *
+ * ⚠ THE SERVER COMPOSES THIS SENTENCE FROM `PortalAliasTopology`, so it cannot be edited on one side
+ * alone. `PortalAliasContractTests` asserts that the server's composed value equals this literal, so
+ * adding a reserved word or widening the depth on the server fails a backend test until this line
+ * follows. The reserved words are listed in the server's own ordinal order for the same reason.
+ */
+const ALIAS_UNSUPPORTED_PATH_MESSAGE =
+  'An HTTP alias may carry at most 1 path segment beneath its host name; that segment may ' +
+  'contain only letters, digits, hyphens and underscores, and may not be one of the addresses ' +
+  'this application reserves for itself (api, health, login, modules, openapi, portals, ' +
+  'role-groups, roles, settings, swagger, users).';
+
 // -----------------------------------------------------------------------------
 //  MEASURED LIMITS
 // -----------------------------------------------------------------------------
@@ -915,8 +929,11 @@ function aliasText(alias: PortalAlias): string {
 //  SHAPE RULE
 // -----------------------------------------------------------------------------
 //
-// A faithful port of `PortalAliasRules.IsAcceptable` and its three private helpers
-// in `Application/Validation/PortalAliasRules.cs`. It is
+// A faithful port of `PortalAliasRules.IsAcceptable` and its private helpers in
+// `Application/Validation/PortalAliasRules.cs`, together with the path rules that
+// type now delegates to `PortalAliasTopology` in
+// `backend/src/DnnMigration.Domain/Common/PortalAliasTopology.cs` - the one
+// definition five components mirror, this screen among them. It is
 // reproduced rather than approximated with a pattern because an approximation that
 // admits something the server refuses moves the refusal from a field message to a
 // failed request, and one that refuses something the server admits breaks parity
@@ -949,20 +966,49 @@ const PATH_SEPARATOR = '/';
 /** Separates the host from the optional port. */
 const PORT_SEPARATOR = ':';
 
-/** A path segment naming the current directory, which the server refuses. */
-const CURRENT_SEGMENT = '.';
-
-/** A path segment naming the parent directory, which the server refuses. */
-const PARENT_SEGMENT = '..';
-
 /** Separates host labels. */
 const LABEL_SEPARATOR = '.';
 
 /** The hyphen, permitted inside a host label but never at its edges. */
 const HYPHEN = '-';
 
-/** Characters permitted in a path segment in addition to letters and digits. */
-const PATH_SEGMENT_EXTRAS: readonly string[] = Object.freeze([HYPHEN, '_', '.']);
+/**
+ * Characters permitted in a path segment in addition to letters and digits.
+ *
+ * ⚠ THE DOT IS ABSENT, mirroring `PortalAliasTopology.SegmentExtraCharacters`. That is what makes
+ * the current-directory and parent-directory segments - `.` and `..` - unspellable rather than
+ * separately refused, which is why the two constants this file used to carry for them are gone.
+ */
+const PATH_SEGMENT_EXTRAS: readonly string[] = Object.freeze([HYPHEN, '_']);
+
+/**
+ * The greatest number of path segments an alias may carry beneath its authority.
+ *
+ * Mirrors `PortalAliasTopology.MaximumPathSegments`. One, because one is what the legacy signup
+ * screen composed and one is what the reverse proxy in `docker/api-proxy.conf` can deliver.
+ */
+const MAXIMUM_PATH_SEGMENTS = 1;
+
+/**
+ * Path segments the deployment owns, which no alias may use.
+ *
+ * Mirrors `PortalAliasTopology.ReservedPathSegments`: the console's own seven top-level routes and
+ * the four roots the API answers. A stored alias spelling one of them would be unreachable, and
+ * would make the console unreachable for the tenant that owned it. Compared without regard to case.
+ */
+const RESERVED_PATH_SEGMENTS: readonly string[] = Object.freeze([
+  'api',
+  'health',
+  'login',
+  'modules',
+  'openapi',
+  'portals',
+  'role-groups',
+  'roles',
+  'settings',
+  'swagger',
+  'users',
+]);
 
 /** The highest port number the server accepts. */
 const MAX_PORT_NUMBER = 65535;
@@ -1121,12 +1167,37 @@ function isAcceptableAuthority(authority: string): boolean {
 }
 
 /**
+ * Whether one path segment could name a tenant.
+ *
+ * Ports `PortalAliasTopology.IsAddressableSegment`: non-empty, ASCII letters, digits, hyphens and
+ * underscores only, and not one of {@link RESERVED_PATH_SEGMENTS}.
+ *
+ * @param segment One path segment, without separators.
+ * @returns True when the segment is one the server could store.
+ */
+function isAddressableSegment(segment: string): boolean {
+  if (segment.length === 0) {
+    return false;
+  }
+
+  for (const character of segment) {
+    if (
+      isAsciiAlphanumeric(character) === false &&
+      PATH_SEGMENT_EXTRAS.includes(character) === false
+    ) {
+      return false;
+    }
+  }
+
+  return RESERVED_PATH_SEGMENTS.includes(segment.toLowerCase()) === false;
+}
+
+/**
  * Whether the child path is well formed.
  *
- * Ports `IsAcceptablePath` (`PortalAliasRules.cs:L304-L332`): the path may not be
- * empty, no segment may be empty, and no segment may be the current or parent
- * directory. A trailing separator therefore refuses the whole value, which is the
- * server's behaviour.
+ * Ports `PortalAliasTopology.IsAcceptablePath`: the path may not be empty, may carry no more than
+ * {@link MAXIMUM_PATH_SEGMENTS} segments, and every segment must be addressable. A trailing
+ * separator therefore refuses the whole value, which is the server's behaviour.
  *
  * @param path The value after the first path separator.
  * @returns True when the path is acceptable.
@@ -1136,26 +1207,36 @@ function isAcceptablePath(path: string): boolean {
     return false;
   }
 
-  for (const segment of path.split(PATH_SEPARATOR)) {
-    if (
-      segment.length === 0 ||
-      segment === CURRENT_SEGMENT ||
-      segment === PARENT_SEGMENT
-    ) {
-      return false;
-    }
+  const segments = path.split(PATH_SEPARATOR);
 
-    for (const character of segment) {
-      if (
-        isAsciiAlphanumeric(character) === false &&
-        PATH_SEGMENT_EXTRAS.includes(character) === false
-      ) {
-        return false;
-      }
-    }
+  if (segments.length > MAXIMUM_PATH_SEGMENTS) {
+    return false;
   }
 
-  return true;
+  return segments.every((segment) => isAddressableSegment(segment));
+}
+
+/**
+ * Whether an alias names a path this deployment can deliver a request to.
+ *
+ * Ports `PortalAliasTopology.IsSupportedAddress`: it judges DEPTH and path segments only, and says
+ * nothing about the grammar of the authority. Separated from {@link isAcceptableHttpAlias} so the
+ * screen can report the server's precise topology sentence rather than only its general one - the
+ * server attaches both rules to the same field and so does this screen.
+ *
+ * @param alias The entry exactly as typed.
+ * @returns True when the alias carries no path, or carries one this deployment can address.
+ */
+function isWithinSupportedTopology(alias: string): boolean {
+  if (alias.trim().length === 0) {
+    return true;
+  }
+
+  const pathStart = alias.indexOf(PATH_SEPARATOR);
+
+  return (
+    pathStart === -1 || isAcceptablePath(alias.slice(pathStart + PATH_SEPARATOR.length))
+  );
 }
 
 /**
@@ -1278,6 +1359,15 @@ const ALIAS_TOO_LONG_ERROR = 'httpAliasTooLong';
 const ALIAS_INVALID_ERROR = 'httpAliasInvalid';
 
 /**
+ * Error key: the value names a path deeper than this deployment can route, or a segment it
+ * reserves for itself.
+ *
+ * Held apart from {@link ALIAS_INVALID_ERROR} because the two carry different sentences and the
+ * server reports them as two rules on the same field.
+ */
+const ALIAS_UNSUPPORTED_PATH_ERROR = 'httpAliasUnsupportedPath';
+
+/**
  * The shape of the inline create and edit form.
  *
  * ONE control, because the legacy screen collected exactly one value
@@ -1348,11 +1438,23 @@ export function httpAliasValidator(control: AbstractControl<string, string>): Va
     return { [ALIAS_TOO_LONG_ERROR]: true };
   }
 
+  // BOTH RULES ARE REPORTED, mirroring the server, which attaches the shape rule and the topology
+  // rule to the same field and answers with every message that applies. A value that breaches the
+  // topology also fails the shape rule, because the shape rule folds the topology in so that no
+  // caller can reach the store through a predicate that omits part of the contract; reporting only
+  // the general sentence would leave an operator who typed `host/a/b` or `host/api` unable to tell
+  // which part of their entry was refused.
+  const failures: ValidationErrors = {};
+
   if (isAcceptableHttpAlias(entry) === false) {
-    return { [ALIAS_INVALID_ERROR]: true };
+    failures[ALIAS_INVALID_ERROR] = true;
   }
 
-  return null;
+  if (isWithinSupportedTopology(entry) === false) {
+    failures[ALIAS_UNSUPPORTED_PATH_ERROR] = true;
+  }
+
+  return Object.keys(failures).length === 0 ? null : failures;
 }
 
 // -----------------------------------------------------------------------------
@@ -2808,8 +2910,20 @@ export class PortalAliasListComponent implements OnInit {
       return;
     }
 
+    // Both sentences when both rules refused the entry, in the order the server declares them, so
+    // the operator reads the general refusal and then the specific reason for it.
+    const shapeMessages: string[] = [];
+
     if (control.hasError(ALIAS_INVALID_ERROR)) {
-      this.clientAliasMessages.set([ALIAS_INVALID_MESSAGE]);
+      shapeMessages.push(ALIAS_INVALID_MESSAGE);
+    }
+
+    if (control.hasError(ALIAS_UNSUPPORTED_PATH_ERROR)) {
+      shapeMessages.push(ALIAS_UNSUPPORTED_PATH_MESSAGE);
+    }
+
+    if (shapeMessages.length > 0) {
+      this.clientAliasMessages.set(shapeMessages);
 
       return;
     }

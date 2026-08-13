@@ -146,6 +146,7 @@
 // coercion whose result could differ is annotated where it occurs. No Microsoft.VisualBasic helper
 // survives: none of IIf, DateAdd, InStr or Mid appears here, and the two date arithmetic sites use
 // DateTime.AddDays.
+using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -355,6 +356,21 @@ public sealed class AuthService : IAuthService
     private const string CredentialReplacementStoreFailureCode = "credential_replacement_store_failure";
 
     /// <summary>
+    /// Reported when a sign-in proved a stored credential that must be replaced on use, and the replacement
+    /// could not be written - so the sign-in is refused rather than completed over a credential that is still
+    /// in its legacy reversible form.
+    /// </summary>
+    /// <remarks>
+    /// Its reason token ends in <c>store_unavailable</c>, which the Api edge classifies as a dependency
+    /// failure and answers <c>503</c>. Shaped deliberately like <see cref="ApprovalStoreUnavailableCode"/>:
+    /// the request was valid, the credential was correct, and what failed was a dependency - so the caller is
+    /// told that rather than being told its credential was wrong, which is the same ruling this file already
+    /// makes for a token store that cannot record a session.
+    /// </remarks>
+    private const string CredentialMigrationStoreUnavailableCode =
+        "auth.credential_migration_store_unavailable";
+
+    /// <summary>
     /// Account name of the shipped tenant administrator, matched by the shipped-default advisory
     /// (<c>UserController.vb</c> L1145).
     /// </summary>
@@ -457,6 +473,16 @@ public sealed class AuthService : IAuthService
         LegacyCredentialMigrated,
         WorkFactorUpgradeFailed,
         LegacyMigrationFailed,
+
+        /// <summary>
+        /// The credential changed between this sign-in reading it and replacing it, so nothing was written.
+        /// </summary>
+        /// <remarks>
+        /// Distinct from the two failure members because nothing failed: the store refused the write on
+        /// purpose, and the representation this sign-in verified is no longer the account's credential. It is
+        /// therefore not a condition to record and continue past - it is a reason to refuse the sign-in.
+        /// </remarks>
+        CredentialSuperseded,
     }
 
     /// <summary>
@@ -483,9 +509,15 @@ public sealed class AuthService : IAuthService
     /// to remove.
     /// </para>
     /// </remarks>
+    /// <param name="WrittenValue">
+    /// The representation this replacement stored, or <see langword="null"/> when nothing was written. Held so
+    /// the caller can tell "the credential is what this request left" from "the credential is what somebody
+    /// else left" when it re-reads the row immediately before issuing a session.
+    /// </param>
     private readonly record struct CredentialReplacement(
         CredentialReplacementOutcome Outcome,
-        string? StoreFailureType);
+        string? StoreFailureType,
+        string? WrittenValue);
 
     private readonly IUserRepository _users;
     private readonly IPortalRepository _portals;
@@ -1085,16 +1117,58 @@ public sealed class AuthService : IAuthService
         }
         else if (replacement.Outcome == CredentialReplacementOutcome.LegacyMigrationFailed)
         {
-            // The legacy credential was proven while the window was open, so refusing the sign-in because
-            // the replacement store was temporarily unavailable would add a new failure mode and strand the
-            // account for an infrastructure fault it did not cause. Proceed, but record the condition under
-            // its own closed diagnostic member: once the absolute deadline passes this account will require
-            // administrative reset unless a later successful login completes the migration.
+            // ⚠ THIS NOW FAILS CLOSED, AND THE REVERSAL IS THE POINT. An earlier revision proceeded here on
+            // the reasoning that a credential already proved correct should not be turned into a refusal by a
+            // transient store fault - and a test asserted that behaviour. What that reasoning left out is WHAT
+            // the stored credential still is when this branch runs: a reversibly-encrypted legacy
+            // representation, decryptable with a key the legacy installation committed to source control. The
+            // one thing that retires it is the replacement that just failed. Issuing the session anyway told
+            // the account holder their sign-in had succeeded while leaving that representation in place
+            // indefinitely, and every later sign-in would take this same branch for as long as the store
+            // stayed unhappy - so the compatibility window could close with the account still legacy and
+            // nobody the wiser.
+            //
+            // Refusing instead makes the outcome self-correcting: a retry either completes the migration or
+            // refuses again, and a store that stays broken produces an operator-visible refusal rather than a
+            // silent standing exposure. The condition is still recorded under its own closed diagnostic
+            // member, and the credential itself is unharmed - administrative reset remains the fallback.
+            //
+            // The refusal is shaped exactly like the registration-verification store outage above: a distinct
+            // code whose reason token ends in store_unavailable, which the Api edge answers 503, and a message
+            // that says nothing was changed and to try again. That is the same ruling this file already makes
+            // for a token store that cannot record a session - "the caller learns that a dependency is
+            // unavailable rather than being told its credential was wrong". Recorded in MIGRATION_NOTES.md.
             _diagnostics.Record(
                 SecurityDiagnosticEvent.LegacyCredentialMigrationFailed,
                 portalId,
                 account.UserId,
                 replacement.StoreFailureType);
+
+            RecordSignInOutcome(UserLoginStatus.Failure, portalId, account.UserId);
+
+            return Result<LoginResponse>.Failure(
+                CredentialMigrationStoreUnavailableCode,
+                "The sign-in could not be completed because the credential store did not accept the "
+                + "replacement of a stored credential that must be replaced on use. Nothing was changed; try "
+                + "again, or ask an administrator to reset the credential.");
+        }
+        else if (replacement.Outcome == CredentialReplacementOutcome.CredentialSuperseded)
+        {
+            // The credential changed between this request reading it and replacing it, so the store refused
+            // the write ON PURPOSE and the representation this sign-in verified is not the account's
+            // credential any more. Completing the sign-in would mint a session from a credential that has been
+            // retired - which is precisely what an administrator resetting a compromised account is trying to
+            // prevent - so it is refused with the SAME uniform denial an incorrect credential receives. No new
+            // oracle is added: a caller cannot tell this from a wrong password, and the trail separates them.
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                portalId,
+                account.UserId,
+                replacement.StoreFailureType);
+
+            RecordSignInOutcome(UserLoginStatus.Failure, portalId, account.UserId);
+
+            return Denied();
         }
         else if (replacement.Outcome == CredentialReplacementOutcome.LegacyCredentialMigrated)
         {
@@ -1130,6 +1204,43 @@ public sealed class AuthService : IAuthService
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         }
 
+        // ⚠ THE LAST LOOK AT THE CREDENTIAL, IMMEDIATELY BEFORE A SESSION IS MINTED FROM IT. Everything above
+        // decided from one read taken before the comparison, and that comparison is the one deliberately
+        // expensive step on this path - so the interval between reading the credential and issuing a session
+        // is long enough to matter, and the change most likely to land inside it is an administrator resetting
+        // the credential of an account they believe is compromised. Without this check the sign-in completed
+        // regardless, and the administrator's reset silently failed to end the session it existed to prevent.
+        //
+        // WHAT COUNTS AS UNCHANGED IS EITHER OF TWO VALUES, and both are legitimate. Ordinarily the credential
+        // must still be the representation this request verified. Where this request itself replaced it - a
+        // work-factor upgrade, or a legacy migration - the credential must be the value THIS request wrote,
+        // which is why the replacement reports what it stored. Anything else was written by somebody else.
+        //
+        // THE REPLACEMENT PATHS ARE ALREADY COVERED BY THEIR OWN COMPARE-AND-SWAP and would have reported a
+        // supersession above, so this read exists for the ordinary sign-in that writes nothing at all. It is a
+        // single indexed read against a row already in the page cache, next to a BCrypt comparison that costs
+        // orders of magnitude more; the honest description of its cost is "unmeasurable on this path".
+        //
+        // The refusal is the SAME uniform denial an incorrect credential receives, so no oracle is added: a
+        // caller cannot distinguish this from a wrong password. The distinction is written to the security
+        // diagnostics channel, which no response carries.
+        (bool stillExists, string? currentValue, _, _, _, _) = await _users
+            .GetCredentialStateAsync(account.UserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!CredentialIsStill(stillExists, currentValue, storedValue, replacement.WrittenValue))
+        {
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                portalId,
+                account.UserId,
+                null);
+
+            RecordSignInOutcome(UserLoginStatus.Failure, portalId, account.UserId);
+
+            return Denied();
+        }
+
         Result<bool> profileRemediation = await EvaluateProfileRemediationAsync(
             portal.PortalId,
             account,
@@ -1161,6 +1272,49 @@ public sealed class AuthService : IAuthService
             // unchanged, exactly as IAuthService documents, so the caller learns that a dependency is
             // unavailable rather than being told its credential was wrong.
             return issued;
+        }
+
+        // ⚠ THE BACKSTOP, AND IT IS WHAT MAKES THE WINDOW ACTUALLY CLOSED RATHER THAN NARROW. The look
+        // taken before issuance above refuses the common case cheaply, but it cannot be the whole answer:
+        // between that read and the family actually being minted this method performs the profile
+        // remediation read, the role read and the permission read, so a credential change can still land
+        // INSIDE that interval. A mutation revokes the account's families both before and after it writes,
+        // and the pairing is what leaves no gap:
+        //
+        //   - if this family was minted before the mutation's post-write revocation, that revocation ends it;
+        //   - if it was minted after it, then the credential had already changed by the time this read runs,
+        //     because the write committed before that revocation - so this read sees the change and ends it
+        //     here.
+        //
+        // One of the two always holds, so no family minted from a superseded credential survives. The
+        // family is revoked rather than merely refused a response: the caller must not be left holding
+        // exchangeable material, and the whole point of an administrator's reset is that the sessions stop.
+        // MIGRATION: recorded in MIGRATION_NOTES.md as the mechanism chosen in place of binding an epoch
+        // into the token record, which would have required a column the token schema is provisioned without.
+        (bool presentAfterIssue, string? valueAfterIssue, _, _, _, _) = await _users
+            .GetCredentialStateAsync(account.UserId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!CredentialIsStill(presentAfterIssue, valueAfterIssue, storedValue, replacement.WrittenValue))
+        {
+            _diagnostics.Record(
+                SecurityDiagnosticEvent.CredentialChangedDuringSignIn,
+                portalId,
+                account.UserId,
+                null);
+
+            // A revocation that cannot be persisted is escalated rather than absorbed, exactly as the
+            // rotation path does: reporting a store outage as a credential refusal would leave the family
+            // exchangeable while telling the caller its credential was the problem.
+            Result revoked = await _tokens
+                .RevokeAllRefreshTokensAsync(account.UserId, cancellationToken)
+                .ConfigureAwait(false);
+
+            RecordSignInOutcome(UserLoginStatus.Failure, portalId, account.UserId);
+
+            return revoked.IsFailure && IsTokenStoreFailure(revoked.Reason)
+                ? Result<LoginResponse>.Failure(revoked.Reason!)
+                : Denied();
         }
 
         LoginResponse response = issued.Value;
@@ -1786,13 +1940,39 @@ public sealed class AuthService : IAuthService
     /// Neither the submitted credential nor any digest of it is retained, logged or returned. The only thing
     /// that leaves this method is a boolean.
     /// </para>
+    /// <para>
+    /// MIGRATION: SEC-11. The encoded copy of the credential is now CLEARED before this method returns. It used
+    /// to be <c>SHA256.HashData(Encoding.UTF8.GetBytes(password))</c>, which allocates a mutable byte copy of
+    /// the submitted password, hands it to the hash and abandons it to the collector still holding the
+    /// plaintext - where it survives for an unbounded period, is copied again by a compacting collection, and is
+    /// captured verbatim by any process dump. This method runs on the SIGN-IN path, so the value in that buffer
+    /// is a credential that was just proved correct. The password itself is a <see cref="string"/>, because that
+    /// is what the wire delivers and what the contract accepts, so it cannot be cleared at its source; the copy
+    /// made here is the one part of the exposure this method controls, and it is now the shortest-lived thing on
+    /// the path rather than the longest.
+    /// </para>
     /// </remarks>
     private static bool IsShippedCredential(string password, string[] fingerprints)
     {
-        byte[] digest = SHA256.HashData(Encoding.UTF8.GetBytes(password));
-        string fingerprint = Convert.ToHexString(digest).ToLowerInvariant();
+        int maximum = Encoding.UTF8.GetMaxByteCount(password.Length);
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(maximum);
 
-        return fingerprints.Contains(fingerprint, StringComparer.Ordinal);
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(password, buffer);
+            byte[] digest = SHA256.HashData(buffer.AsSpan(0, written));
+            string fingerprint = Convert.ToHexString(digest).ToLowerInvariant();
+
+            return fingerprints.Contains(fingerprint, StringComparer.Ordinal);
+        }
+        finally
+        {
+            // Cleared before the buffer returns to the pool, so no later renter can observe the credential.
+            // The whole rented length is cleared rather than only the written span, because a pooled buffer can
+            // be longer than this value and may still hold a previous renter's bytes.
+            CryptographicOperations.ZeroMemory(buffer);
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     /// <summary>
@@ -2485,7 +2665,7 @@ public sealed class AuthService : IAuthService
     {
         if (!verifiedByLegacy && !_passwordHasher.NeedsRehash(storedCredential))
         {
-            return new CredentialReplacement(CredentialReplacementOutcome.NotRequired, null);
+            return new CredentialReplacement(CredentialReplacementOutcome.NotRequired, null, null);
         }
 
         CredentialReplacementOutcome succeeded = verifiedByLegacy
@@ -2497,14 +2677,31 @@ public sealed class AuthService : IAuthService
 
         try
         {
-            // The store's own answer is part of the outcome. It reports false when no credential record was
-            // updated, which is a silent no-op rather than an exception - so a method that only guarded against
-            // exceptions would have called that a successful upgrade.
-            bool stored = await _users
-                .SetPasswordHashAsync(userId, _passwordHasher.Hash(password), asOfUtc, cancellationToken)
+            // The store's own answer is part of the outcome. It reports a closed outcome rather than a boolean
+            // because "nothing was written" has three unrelated causes - the record is absent, the store is
+            // unreachable, and the credential changed under us - so a method that only guarded against
+            // exceptions would have called all three a successful upgrade.
+            //
+            // ⚠ THE EXPECTATION IS THE REPRESENTATION THIS SIGN-IN VERIFIED. Without it the write was
+            // unconditional, so a sign-in that proved a LEGACY credential would overwrite whatever was stored
+            // - including a fresh administrative reset performed while this request was in flight, which is a
+            // rollback of the exact remedy an administrator had just applied to a compromised account. The
+            // store now refuses that write and says so.
+            string replacementHash = _passwordHasher.Hash(password);
+
+            CredentialWriteOutcome stored = await _users
+                .SetPasswordHashAsync(userId, replacementHash, storedCredential, asOfUtc, cancellationToken)
                 .ConfigureAwait(false);
 
-            return new CredentialReplacement(stored ? succeeded : failed, null);
+            return stored switch
+            {
+                CredentialWriteOutcome.Replaced => new CredentialReplacement(succeeded, null, replacementHash),
+                CredentialWriteOutcome.Superseded => new CredentialReplacement(
+                    CredentialReplacementOutcome.CredentialSuperseded,
+                    null,
+                    null),
+                _ => new CredentialReplacement(failed, null, null),
+            };
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -2540,7 +2737,7 @@ public sealed class AuthService : IAuthService
             // the once-per-condition contract the diagnostics facts assert. ISecurityDiagnostics documents its
             // reasonCode as accepting "a failure code from a Result, or the NAME of an exception type", and it
             // accepts no message, no exception and no object, so nothing a message could carry can travel it.
-            return new CredentialReplacement(failed, exception.GetType().Name);
+            return new CredentialReplacement(failed, exception.GetType().Name, null);
         }
     }
 
@@ -2603,6 +2800,42 @@ public sealed class AuthService : IAuthService
     }
 
     /// <summary>
+    /// Reports whether a credential read taken later in a sign-in still names the credential that sign-in is
+    /// entitled to act on.
+    /// </summary>
+    /// <param name="present">Whether the later read found a credential record at all.</param>
+    /// <param name="current">The representation the later read returned.</param>
+    /// <param name="verified">The representation this sign-in compared the submitted credential against.</param>
+    /// <param name="written">The representation this sign-in itself stored, when it replaced one.</param>
+    /// <returns><see langword="true"/> when the credential is unchanged for this sign-in's purposes.</returns>
+    /// <remarks>
+    /// <para>
+    /// TWO VALUES ARE LEGITIMATE, WHICH IS THE WHOLE SUBTLETY. Ordinarily the credential must still be the
+    /// representation this sign-in verified. Where this sign-in itself replaced it - a work-factor upgrade, or
+    /// a legacy migration - the credential must be the value THIS request wrote, which is why the replacement
+    /// reports what it stored. A guard admitting only the first would refuse the two paths this application
+    /// relies on to retire old representations at all; one admitting anything non-null would refuse nothing.
+    /// </para>
+    /// <para>
+    /// An absent record is a change like any other: an account whose credential was deleted mid-sign-in must
+    /// not be admitted on the strength of the representation it held a moment ago.
+    /// </para>
+    /// <para>
+    /// The comparison is ordinal because these are stored representations rather than text a person reads, and
+    /// the same exactness the database is asked for in the compare-and-swap has to hold here.
+    /// </para>
+    /// </remarks>
+    private static bool CredentialIsStill(
+        bool present,
+        string? current,
+        string verified,
+        string? written)
+        => present
+            && current is not null
+            && (string.Equals(current, verified, StringComparison.Ordinal)
+                || (written is not null && string.Equals(current, written, StringComparison.Ordinal)));
+
+    /// <summary>
     /// Refuses a rotation and ends the whole refresh family behind it.
     /// </summary>
     /// <param name="userId">The account the presented token belonged to.</param>
@@ -2634,6 +2867,7 @@ public sealed class AuthService : IAuthService
     /// fault as a rejected token would be a lie about which of the two went wrong.
     /// </para>
     /// </remarks>
+
     private async Task<Result<LoginResponse>> RefuseRotationAsync(
         int userId,
         int portalId,

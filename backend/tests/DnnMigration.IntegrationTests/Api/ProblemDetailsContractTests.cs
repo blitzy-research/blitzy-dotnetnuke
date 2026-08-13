@@ -486,6 +486,41 @@ public sealed class ProblemDetailsContractTests
     }
 
     /// <summary>
+    /// The two codes the credential compare-and-swap introduced are classified by the properties they have,
+    /// not by where they were raised.
+    /// </summary>
+    /// <param name="failureCode">A code emitted by the credential write or the sign-in migration path.</param>
+    /// <param name="expectedStatus">The status the caller must receive.</param>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-02 and SEC-08. Credential replacement became a compare-and-swap over the representation
+    /// the caller last read, so "the write did not happen" now has a cause the boolean it replaced could not
+    /// express, and each cause gets the status its own properties earn.
+    /// </para>
+    /// <para>
+    /// <c>user.password.superseded</c> is a 409 because somebody else changed the credential between this
+    /// caller reading it and writing it: the request was well formed and authorised, existing state moved
+    /// under it, and the caller resolves it by re-reading and deciding again - which is exactly the
+    /// vocabulary the uniqueness races above already use. <c>auth.credential_migration_store_unavailable</c>
+    /// is a 503 because the credential was CORRECT and what failed was a dependency; reporting it as a
+    /// credential refusal would send an account holder hunting for a mistake it did not make.
+    /// </para>
+    /// <para>
+    /// Both are pinned here because the classification is by TOKEN rather than by code: a rename that dropped
+    /// <c>superseded</c> or <c>store_unavailable</c> from the last dotted segment would silently answer 400
+    /// and nothing else in the suite would notice.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("user.password.superseded", StatusCodes.Status409Conflict)]
+    [InlineData("auth.credential_migration_store_unavailable", StatusCodes.Status503ServiceUnavailable)]
+    public void ACredentialCompareAndSwapOutcome_KeepsItsOwnStatus(string failureCode, int expectedStatus)
+    {
+        ApiResults.MapStatusCode(failureCode).Should().Be(expectedStatus);
+    }
+
+    /// <summary>
     /// The two module portability refusals sit on opposite sides of the caller-fault boundary, and the split
     /// is asserted together so neither can drift onto the other's status.
     /// </summary>

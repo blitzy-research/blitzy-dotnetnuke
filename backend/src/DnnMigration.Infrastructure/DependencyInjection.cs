@@ -59,6 +59,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Infrastructure;
@@ -654,10 +655,18 @@ public static class DependencyInjection
     /// </para>
     /// <para>
     /// The shared store's catalogue MUST NOT be the DotNetNuke catalogue, and that is enforced rather than
-    /// advised: <see cref="RefreshTokenStoreOptions.Validate"/> compares the two connection strings and
-    /// refuses a configuration that points them at one database, so AAP rule T4 - the existing schema is
-    /// immutable - cannot be breached by a configuration mistake. Session state is held BESIDE the frozen
-    /// schema, never inside it.
+    /// advised: <see cref="RefreshTokenStoreOptions.Validate"/> requires the session connection string to
+    /// name its catalogue explicitly, refuses a system catalogue, and refuses a catalogue whose NAME matches
+    /// the application's - so AAP rule T4, the existing schema is immutable, cannot be breached by a
+    /// configuration mistake. Session state is held BESIDE the frozen schema, never inside it. The rule
+    /// compares catalogue names rather than whole connection strings on purpose; see that method for why
+    /// comparing hosts made the previous rule bypassable rather than stronger.
+    /// </para>
+    /// <para>
+    /// The session TABLE is provisioned out of band, from <c>docker/sql/refresh-token-store.sql</c>. The
+    /// running API probes for it and refuses session operations when it is absent; it neither creates nor
+    /// alters it, which is why a configuration still carrying the removed
+    /// <c>RefreshTokenStore:CreateTableIfMissing</c> setting is refused here rather than silently ignored.
     /// </para>
     /// <para>
     /// A misconfigured shared store is a START-UP failure, not a silent downgrade to the process-local
@@ -670,10 +679,29 @@ public static class DependencyInjection
         IConfiguration configuration)
     {
         RefreshTokenStoreOptions options = new();
-        configuration.GetSection(RefreshTokenStoreOptions.SectionName).Bind(options);
+        IConfigurationSection section = configuration.GetSection(RefreshTokenStoreOptions.SectionName);
+        section.Bind(options);
 
-        IReadOnlyList<string> failures = options.Validate(
-            configuration.GetConnectionString("Default"));
+        List<string> failures = [.. options.Validate(configuration.GetConnectionString("Default"))];
+
+        // ⚠ A SETTING THAT NO LONGER EXISTS IS REFUSED RATHER THAN IGNORED. MIGRATION: SEC-05.
+        // RefreshTokenStore:CreateTableIfMissing used to let the store issue CREATE TABLE under the API's own
+        // identity; the table is now provisioned by a deployment step and the store only probes for it. Options
+        // binding says nothing about keys a class does not carry, so a deployment that still set this would have
+        // had its setting silently disregarded and would have learned of the change from a failed sign-in
+        // against an unprovisioned catalogue. Naming it here turns that into a start-up message that says what
+        // to run instead.
+        if (section[RefreshTokenStoreOptions.RemovedCreateTableSetting] is not null)
+        {
+            failures.Add(
+                FormattableString.Invariant(
+                    $"'{RefreshTokenStoreOptions.SectionName}:{RefreshTokenStoreOptions.RemovedCreateTableSetting}' is set, and this build no longer has that setting.")
+                + " The refresh-token table is provisioned by a deployment step rather than by the running"
+                + " application, which never creates or alters it: run docker/sql/refresh-token-store.sql"
+                + " against the configured session catalogue and remove the setting. It is refused rather than"
+                + " ignored so that a deployment relying on runtime table creation is told, instead of"
+                + " discovering it at the first sign-in.");
+        }
 
         if (failures.Count != 0)
         {
@@ -684,6 +712,15 @@ public static class DependencyInjection
         }
 
         services.AddSingleton<IOptions<RefreshTokenStoreOptions>>(Options.Create(options));
+
+        // PRIV-02. THE RECLAMATION SWEEP IS REGISTERED FOR EVERY PROVIDER, INCLUDING External. Reclamation
+        // used to happen only as a side effect of issuing or rotating a token, so an installation with no
+        // sign-in traffic retained every expired family and every revoked record it had ever written - and a
+        // durable store keeps them across a restart as well. The sweep is a contract member, so a
+        // deployment-supplied store implements it too and there is no provider for which the schedule is
+        // meaningless. Registered before the store itself so the ordering reads as "the policy, then the thing
+        // it applies to"; the container resolves by type rather than by order, so this is presentation only.
+        services.AddHostedService<RefreshTokenRetentionService>();
 
         if (options.UsesSharedStore)
         {
@@ -1049,8 +1086,8 @@ public static class DependencyInjection
         // this is the instance the token service and the authentication service will use. Comparing against the
         // concrete type - rather than against the instance registered here - is what makes the check survive a
         // host that resolves the store before this runs.
-        bool thisSolutionsStore =
-            services.GetRequiredService<IRefreshTokenStore>() is RefreshTokenStore;
+        IRefreshTokenStore activeStore = services.GetRequiredService<IRefreshTokenStore>();
+        bool thisSolutionsStore = activeStore is RefreshTokenStore;
 
         if (settings.UsesExternalStore && thisSolutionsStore)
         {
@@ -1085,5 +1122,84 @@ public static class DependencyInjection
                 + $"'{RefreshTokenStoreOptions.ExternalProvider}' so that the deployment's configuration, its "
                 + "health report and its operators all describe the store it is actually running.");
         }
+
+        RequireSingleInstanceAcknowledgementInProduction(services, settings, activeStore);
+    }
+
+    /// <summary>
+    /// Refuses to let a PRODUCTION host finish starting on a replica-local refresh-token store that the
+    /// deployment has not acknowledged running.
+    /// </summary>
+    /// <param name="services">The built service provider, read for the hosting environment.</param>
+    /// <param name="settings">The validated store settings.</param>
+    /// <param name="activeStore">The store the container resolves.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The environment is production, the active store is not authoritative across replicas, and the
+    /// single-instance acknowledgement is absent.
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: SEC-06. The three checks above catch a deployment whose DECLARATION and whose CONTAINER
+    /// disagree. None of them catches the case where they agree perfectly and the answer is still wrong: a
+    /// production deployment running the shipped default on more than one replica. That required no code change,
+    /// no configuration change and produced no warning - a sign-out on replica A left the family exchangeable on
+    /// replica B, a restart forgot every family it had issued, and both present as intermittent session
+    /// behaviour that no log explains. The limitation was recorded in prose, which nobody reads at the moment
+    /// they add a replica.
+    /// </para>
+    /// <para>
+    /// <strong>THE PREDICATE IS THE CONTRACT'S OWN, NOT A TYPE TEST.</strong>
+    /// <see cref="IRefreshTokenStore.IsAuthoritativeAcrossReplicas"/> is what decides this, so a
+    /// deployment-supplied store that reports itself shared satisfies the invariant without this method knowing
+    /// anything about it - and one that honestly reports itself replica-local is held to the same standard as
+    /// this solution's own. A type test would have exempted every replacement, including the replacements this
+    /// check exists to protect.
+    /// </para>
+    /// <para>
+    /// <strong>WHY PRODUCTION ONLY.</strong> The failure guarded against is a production scale-out. Requiring
+    /// the acknowledgement on a developer machine or in the test suite would make it a ceremony performed
+    /// reflexively in every environment, and an acknowledgement that is always set is an acknowledgement that
+    /// means nothing. The environment is resolved OPTIONALLY: a container composed without hosting - which is
+    /// how this method is unit-tested against a bare service collection - has no environment to read, and is
+    /// treated as non-production. Every real host registers one.
+    /// </para>
+    /// <para>
+    /// The refusal offers both remedies and states the cost of each, because a deployment that reaches it has to
+    /// choose rather than be told it is wrong.
+    /// </para>
+    /// </remarks>
+    private static void RequireSingleInstanceAcknowledgementInProduction(
+        IServiceProvider services,
+        RefreshTokenStoreOptions settings,
+        IRefreshTokenStore activeStore)
+    {
+        if (activeStore.IsAuthoritativeAcrossReplicas || settings.AcknowledgeSingleInstance)
+        {
+            return;
+        }
+
+        IHostEnvironment? environment = services.GetService<IHostEnvironment>();
+
+        if (environment is null || !environment.IsProduction())
+        {
+            return;
+        }
+
+        throw new InvalidOperationException(
+            "This deployment is running in Production on a refresh-token store that is NOT shared between "
+            + "replicas and does not survive a restart, and it has not stated that it runs a single API "
+            + "instance. Refresh-token families are the only server-side session record this API keeps, so a "
+            + "sign-out performed against one instance leaves the session exchangeable on every other, and a "
+            + "restart forgets every family it issued. Choose one of two: set "
+            + $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.Provider)}' to "
+            + $"'{RefreshTokenStoreOptions.SqlServerProvider}' with a "
+            + $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.ConnectionString)}' "
+            + "naming a session catalogue of its own, which makes sessions durable and shared - the table is "
+            + "provisioned by running docker/sql/refresh-token-store.sql against that catalogue; or set "
+            + $"'{RefreshTokenStoreOptions.SectionName}:{nameof(RefreshTokenStoreOptions.AcknowledgeSingleInstance)}' "
+            + "to true, which changes no behaviour and records that exactly one instance is running. Set the "
+            + "acknowledgement only where a single instance is genuinely enforced: it is refused as a default "
+            + "precisely so that adding a replica later is a decision to revisit rather than a silent "
+            + "regression.");
     }
 }

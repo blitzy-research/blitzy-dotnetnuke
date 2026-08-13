@@ -117,4 +117,27 @@ public enum SecurityDiagnosticEvent
     /// </para>
     /// </remarks>
     CredentialStoreWriteFailed = 5,
+
+    /// <summary>
+    /// An account's credential changed between a sign-in reading it and that sign-in completing, so the
+    /// sign-in was refused rather than completed against a credential that had been retired.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS IS A SECURITY OCCURRENCE AND NOT A CURIOSITY. The window between reading a credential and
+    /// issuing a session is not short - it contains one deliberately expensive comparison - and the change
+    /// that lands inside it is very often the remedy for a compromise: an administrator resetting the
+    /// credential of an account they believe is in the wrong hands. A sign-in that completed anyway would mint
+    /// a session from the credential the reset existed to retire, and the administrator would have no way to
+    /// tell that their reset had not taken effect. Refusing is the correct outcome; recording it is what makes
+    /// a pattern of them visible, because a burst against one account is what an attacker racing a reset looks
+    /// like.
+    /// </para>
+    /// <para>
+    /// The refusal a caller receives is the same uniform denial an incorrect credential receives, so this
+    /// occurrence is the ONLY place the distinction is written down. That asymmetry is deliberate: an
+    /// operator needs to tell the two apart and an unauthenticated caller must not be able to.
+    /// </para>
+    /// </remarks>
+    CredentialChangedDuringSignIn = 6,
 }

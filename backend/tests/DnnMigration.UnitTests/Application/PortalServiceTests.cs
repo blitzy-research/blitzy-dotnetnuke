@@ -468,6 +468,13 @@ public class PortalServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(Result.Success());
 
+            // PRIV-02. Tenant-scoped erasure, which portal removal performs after its commit.
+            subject.Tokens
+                .Setup(tokens => tokens.PurgePortalSessionRecordsAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Result.Success());
+
             // MIGRATION: SEC-F1. The home page's grants are resolved by SCOPE CODE, so that is the read the
             // harness answers. The page-scoped-by-TAB read stays stubbed to nothing, which is what production
             // answers while the page is still uncommitted and therefore has no identifier of its own - and

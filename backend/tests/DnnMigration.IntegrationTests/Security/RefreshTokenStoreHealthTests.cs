@@ -255,5 +255,22 @@ public class RefreshTokenStoreHealthTests
             int userId,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("The substitute store is registered, not exercised.");
+
+        /// <inheritdoc />
+        public Task<RefreshTokenPurgeResult> PurgeSubjectAsync(
+            RefreshTokenPurgeScope scope,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("The substitute store is registered, not exercised.");
+
+        /// <inheritdoc />
+        /// <remarks>
+        /// PRIV-02. Answers with an empty reclamation rather than refusing, and it is the ONE member that does.
+        /// The reclamation sweep is a hosted service that runs on a schedule in every host these facts build,
+        /// so a substitute that threw here would raise out of a background timer during an unrelated
+        /// assertion - a failure attributed to whichever fact happened to be running. Reporting "nothing to
+        /// reclaim" is also true of a store that holds nothing.
+        /// </remarks>
+        public Task<RefreshTokenPurgeResult> PurgeRetiredAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(RefreshTokenPurgeResult.NothingHeld());
     }
 }

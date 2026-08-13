@@ -172,3 +172,44 @@ services:
       # error rather than through the missing setting that caused it. The
       # certificate must be valid for DNN_PUBLIC_HOST above.
       - ${TLS_CERTIFICATE_DIRECTORY:?TLS_CERTIFICATE_DIRECTORY must be a host directory holding fullchain.pem and privkey.pem valid for DNN_PUBLIC_HOST}:/etc/nginx/tls/certificates:ro
+    # SEC-12. ONE ADDITION THE BASE FILE'S HARDENING MAKES NECESSARY HERE, and without it
+    # this overlay FAILS SILENTLY rather than loudly - which is why it is measured and not
+    # reasoned about.
+    #
+    # The base file makes the container's root filesystem read-only. This overlay asks the
+    # image's entrypoint to RENDER a template into /etc/nginx/tls, so that directory has to
+    # be writable. Measured with the base hardening and no tmpfs here:
+    #
+    #     20-envsubst-on-templates.sh: ERROR: /etc/nginx/templates exists, but
+    #     /etc/nginx/tls is not writable
+    #
+    # and then - this is the dangerous part - the entrypoint printed "Configuration complete;
+    # ready for start up" and nginx STARTED, with no TLS server block rendered and no error
+    # after that line. A deployment would have been serving plain HTTP on port 80 and nothing
+    # at all on 443, with a healthy-looking container.
+    #
+    # The tmpfs below is therefore load-bearing, and the certificate bind above nests INSIDE
+    # it. That combination was verified rather than assumed: Docker mounts the shorter
+    # destination first, so /etc/nginx/tls/certificates lands on top of the tmpfs and both
+    # survive - measured, the directory then held `certificates` AND the rendered
+    # `nginx.tls.conf`, and an HTTPS request on 443 returned the application document.
+    # noexec and nosuid: it holds a rendered configuration file, never code.
+    tmpfs:
+      - /etc/nginx/tls:uid=101,gid=101,mode=0770,noexec,nosuid
+    #
+    # ⚠ OPERATOR-VISIBLE CONSEQUENCE OF THE UNPRIVILEGED PROXY - READ THIS BEFORE DEPLOYING.
+    # The base file runs this container as uid 101 instead of as a root master, so the PRIVATE
+    # KEY IS NOW READ BY UID 101 rather than by root. A key file that is root-owned and mode
+    # 0600 - the shape a certificate tool produces by default, and the shape that worked
+    # before - makes nginx refuse to start:
+    #
+    #     [emerg] cannot load certificate key "/etc/nginx/tls/certificates/privkey.pem":
+    #     BIO_new_file() failed (SSL: ... Permission denied ...)
+    #
+    # Measured, both ways: root-owned 0600 failed exactly as above, and the same container
+    # started and served HTTPS once the pair was readable by uid 101. So the directory named
+    # by TLS_CERTIFICATE_DIRECTORY must grant read access to uid 101 - `chown 101:101` on the
+    # pair, or a group the file grants read to and 101 belongs to. This is the standard
+    # requirement of every unprivileged nginx image and is documented in docker/.env.example
+    # beside the setting itself; it is stated here as well because this is the file that
+    # introduces it.

@@ -69,6 +69,29 @@ namespace DnnMigration.Infrastructure.Services;
 // returned only the NON-secure rows and additionally dropped any name containing "password", and
 // under the minimal-change directive that naming defect is recorded rather than repaired.
 //
+// INFO-03 - THE INVARIANT THAT MAKES NOT FILTERING SAFE, STATED RATHER THAN LEFT INCIDENTAL.
+// Returning secure-marked rows is only safe because NO SECURE VALUE CAN REACH A CALLER: this
+// service is consumed by exactly two Application services and neither echoes a value outward.
+// AuthService reads ONE named row and parses it to an int; PortalService reads the whole table and
+// projects seven named rows into a private record of typed defaults. Nothing in the API layer
+// depends on this abstraction at all - no controller injects it, no DTO carries a setting, and no
+// endpoint publishes the table - so there is no route by which a row, secure or not, becomes a
+// response.
+//
+// That is a property of the CONSUMER SET, not of this class, which is precisely why it is written
+// down and guarded rather than trusted: the closed set is what the review found acceptable, and it
+// stops being true the moment something publishes these values. The guard is
+// `HostSettingsServiceTests.SecureValuesCannotEscapeThroughTheApiLayer`, which fails if any type in
+// the API assembly takes a dependency on IHostSettingsService.
+//
+// SO: ANYTHING THAT PUBLISHES HOST SETTINGS MUST FILTER OR AUTHORISE AT THAT POINT. A host-settings
+// endpoint, a diagnostics view or a support export must either withhold rows whose SettingIsSecure
+// bit is set or gate itself on host administration - and whichever it chooses, this comment and that
+// test are where the decision was last taken, so both must be revisited with it. Adding the filter
+// HERE instead would be the wrong place twice over: it would change a preserved legacy behaviour
+// (Rule T5) for callers that have no need of the change, and it would still not authorise the
+// publisher.
+//
 // MIGRATION: 8 - DIVERGENCE, STORED PROCEDURES BECOME PARAMETERISED STATEMENTS. The legacy
 // read members reached two stored procedures by concatenating a database owner and an object
 // qualifier onto a procedure name and handing the result to a helper whose only artefact in the

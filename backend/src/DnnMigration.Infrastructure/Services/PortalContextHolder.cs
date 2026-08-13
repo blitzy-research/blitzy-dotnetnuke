@@ -60,13 +60,27 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// Most path segments beneath the authority that are considered when building the candidate chain.
     /// </summary>
     /// <remarks>
-    /// A bound on work an anonymous caller can ask for. Every candidate becomes an element of one IN list
-    /// sent to the store on every request, so an uncapped chain turns a deliberately long URL into a large
-    /// query. Four is generous: the legacy signup screen composed exactly one segment beneath the authority
-    /// (<c>Signup.ascx.vb</c> L232-L236), so a deeper alias can only arise from a host account typing one
-    /// by hand.
+    /// <para>
+    /// DERIVED FROM THE ONE DEFINITION rather than chosen here. <see cref="PortalAliasTopology"/> is what
+    /// the alias write path enforces, what the browser's own prefix detection honours and what the shipped
+    /// reverse proxy can deliver, so a figure declared independently in this file could - and did - let the
+    /// reader consider addresses the writer could never store and the proxy could never route.
+    /// </para>
+    /// <para>
+    /// It remains a bound on work an anonymous caller can ask for. Every candidate becomes an element of one
+    /// IN list sent to the store on every request, so an uncapped chain turns a deliberately long URL into a
+    /// large query.
+    /// </para>
+    /// <para>
+    /// MIGRATION: SEC-01. This was an independently declared 4 and is now the single authority's 1. Four was
+    /// never reachable - the legacy signup screen composed one segment - so the surplus widened this matcher
+    /// without widening the feature, and it widened it PAST what the validator would store and the proxy
+    /// would route. Resolution also stopped falling back to the bare host when a non-reserved first segment
+    /// is present: an address that names a tenant this reader cannot resolve is now refused rather than
+    /// served as though it had named none. Recorded in MIGRATION_NOTES.md.
+    /// </para>
     /// </remarks>
-    private const int MaximumAliasPathSegments = 4;
+    private const int MaximumAliasPathSegments = PortalAliasTopology.MaximumPathSegments;
 
     private readonly IPortalAliasRepository _aliases;
 
@@ -325,42 +339,61 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// The address as the caller supplied it: a host name, optionally followed by the request's path.
     /// </param>
     /// <returns>
-    /// The candidate addresses, longest first. Empty when the input carries no segment at all, and also
-    /// when every candidate it could produce - the bare authority included - exceeds the width the alias
-    /// column can hold, since such a value could never have been stored and so can match nothing.
+    /// The single candidate address this request can be matched by, or an empty list when the input carries
+    /// no segment at all and when the candidate it would produce exceeds the width the alias column can
+    /// hold, since such a value could never have been stored and so can match nothing.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// The chain for <c>host/child/api/v1</c> is <c>host/child/api/v1</c>, <c>host/child/api</c>,
-    /// <c>host/child</c>, <c>host</c> - progressively fewer path segments, with the bare authority last.
-    /// Empty segments collapse, so a doubled or trailing slash produces no duplicate candidate and no
-    /// candidate ending in a slash, neither of which the alias column ever holds.
+    /// EXACTLY ONE CANDIDATE, CHOSEN BY THE FIRST PATH SEGMENT. When the first segment beneath the authority
+    /// could name a tenant - <see cref="PortalAliasTopology.IsAddressableSegment"/> - the candidate is
+    /// <c>authority/segment</c> and NOTHING ELSE. Otherwise the candidate is the bare authority. So
+    /// <c>host/child/api/v1</c> looks up <c>host/child</c>, and <c>host/api/v1/portals</c> looks up
+    /// <c>host</c>, because <c>api</c> is one of the addresses this deployment owns. Empty segments
+    /// collapse, so a doubled or trailing slash produces no candidate ending in a slash, which the alias
+    /// column never holds.
     /// </para>
     /// <para>
-    /// TWO BOUNDS, BOTH DELIBERATE. Candidates longer than the alias column CANNOT match, so they are not
-    /// generated: <c>dbo.PortalAlias.HTTPAlias</c> is <c>nvarchar(200)</c> and a longer value could never
-    /// have been stored. And the number of path segments considered is capped, because the chain becomes an
-    /// IN list sent to the store on every request and an uncapped one turns a long URL into a large query -
-    /// a denial-of-service vector reachable by any anonymous caller. The cap is generous relative to what
-    /// the legacy product could produce: its signup screen composed exactly ONE path segment beneath the
-    /// authority (<c>Signup.ascx.vb</c> L232-L236), and a host account typing a deeper value by hand is the
-    /// only way more than one arises.
+    /// ⚠ THE ABSENCE OF A FALLBACK IS THE SECURITY PROPERTY. This method used to emit a DESCENDING CHAIN
+    /// ending in the bare authority, so a request for <c>/child/api/v1/roles</c> whose <c>child</c> alias
+    /// did not exist fell through to <c>host</c> and was answered by the PARENT tenant - a caller who
+    /// addressed a child received the parent's data under a child-looking address, silently. The chain also
+    /// considered four segments while the writer stored any depth and the proxy could deliver only one, so
+    /// the three components disagreed about what an address even meant. Resolution now FAILS CLOSED: an
+    /// address that names a tenant segment must match a stored alias exactly, and when it does not the
+    /// tenant is left unresolved. That is the same outcome an unknown host already produced, and the
+    /// pipeline already knows how to answer it.
+    /// </para>
+    /// <para>
+    /// A REQUEST THAT MATCHED NO ROUTE IS STILL A 404, not a tenant refusal.
+    /// <c>PortalAliasResolutionMiddleware</c> refuses only when an endpoint was matched and that endpoint
+    /// requires a tenant, so an address like <c>/childish/api/v1/roles</c> - which no longer rebases onto
+    /// any path base and therefore matches no route - is answered by routing exactly as before. Failing
+    /// closed here removes a wrong answer without inventing a new one.
     /// </para>
     /// <para>
     /// THE LENGTH BOUND APPLIES TO THE BARE AUTHORITY AS WELL, and that is a correction rather than a
     /// refinement. The authority used to be appended unconditionally, so a caller presenting an
     /// oversized host header reached the store with a candidate the column could not hold - a value
     /// guaranteed to match nothing, sent as a parameter on a lookup that any anonymous caller can
-    /// provoke. It is now subject to the same bound as every other candidate, which can leave the chain
-    /// EMPTY; an empty chain is already the contract for an unusable address and the caller treats it as
+    /// provoke. It is now subject to the same bound as every other candidate, which can leave the result
+    /// EMPTY; an empty result is already the contract for an unusable address and the caller treats it as
     /// an unresolved tenant.
+    /// </para>
+    /// <para>
+    /// A STORED ALIAS THAT PREDATES THE CONTRACT IS NO LONGER REACHED, which is a real consequence and is
+    /// surfaced rather than hidden: <c>PortalAliasConformanceMonitor</c> enumerates every stored alias that
+    /// the contract would refuse and logs it as a warning at startup, so an installation carrying a deeper
+    /// or dotted alias learns about it from its own logs instead of from an unreachable tenant.
     /// </para>
     /// </remarks>
     private static IReadOnlyList<string> BuildAddressChain(string address)
     {
         string trimmed = address.Trim();
 
-        string[] parts = trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        string[] parts = trimmed.Split(
+            PortalAliasTopology.PathSeparator,
+            StringSplitOptions.RemoveEmptyEntries);
 
         if (parts.Length == 0)
         {
@@ -369,25 +402,36 @@ internal sealed class PortalContextHolder : IPortalContextHolder
 
         string authority = parts[0];
 
-        int segments = Math.Min(parts.Length - 1, MaximumAliasPathSegments);
+        // How many leading path segments could name a tenant, bounded by the topology. Written as a walk
+        // rather than as an index into parts[1] so that the method stays correct if the topology is ever
+        // widened: the answer is the DEEPEST run of addressable segments, and the first segment that is not
+        // addressable ends it.
+        int considered = Math.Min(parts.Length - 1, MaximumAliasPathSegments);
+        int addressable = 0;
 
-        List<string> chain = new(segments + 1);
-
-        for (int depth = segments; depth >= 1; depth--)
+        while (addressable < considered
+            && PortalAliasTopology.IsAddressableSegment(parts[addressable + 1]))
         {
-            string candidate = string.Join('/', parts.Take(depth + 1));
-
-            if (candidate.Length <= MaximumAliasLength)
-            {
-                chain.Add(candidate);
-            }
+            addressable++;
         }
 
-        if (authority.Length <= MaximumAliasLength)
+        if (addressable == 0)
         {
-            chain.Add(authority);
+            // No segment beneath the authority could name a tenant, so the address means the bare host and
+            // the bare host is the only thing looked up.
+            return authority.Length <= MaximumAliasLength
+                ? new[] { authority }
+                : Array.Empty<string>();
         }
 
-        return chain;
+        string candidate = string.Join(
+            PortalAliasTopology.PathSeparator,
+            parts.Take(addressable + 1));
+
+        // ⚠ NO FALLBACK. When the address names a tenant segment, that address must match a stored alias
+        // exactly or resolve to nothing at all.
+        return candidate.Length <= MaximumAliasLength
+            ? new[] { candidate }
+            : Array.Empty<string>();
     }
 }

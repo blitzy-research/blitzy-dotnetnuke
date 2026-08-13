@@ -628,21 +628,46 @@ public interface IUserRepository
         DateTime utcNow,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Replaces a user's stored password hash.</summary>
+    /// <summary>
+    /// Replaces a user's stored password hash, and only while the stored representation is still the one the
+    /// caller read.
+    /// </summary>
     /// <param name="userId">User identifier.</param>
     /// <param name="passwordHash">The new one-way password hash.</param>
+    /// <param name="expectedPasswordValue">
+    /// The stored representation the caller read from <see cref="GetCredentialStateAsync"/> and made its
+    /// decision against, or <see langword="null"/> when that read returned no stored value.
+    /// </param>
     /// <param name="utcNow">The change instant.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a record was updated.</returns>
+    /// <returns>Which of the four <see cref="CredentialWriteOutcome"/> states occurred.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: the legacy store used reversible encryption, so retrieval was possible and is
     /// deliberately not carried forward. This member only ever writes a hash it is given; a legacy
     /// credential is replaced on the owner's first successful login within the bounded compatibility
     /// window, with administrative reset retained as the fallback.
+    /// </para>
+    /// <para>
+    /// ⚠ THIS IS A COMPARE-AND-SWAP, AND THE EXPECTATION IS NOT OPTIONAL. Every caller of this member first
+    /// reads the credential and decides from that read - a self-service change verifies the current value, an
+    /// administrative reset authorises against the account, a sign-in proves a legacy representation - and an
+    /// unconditional write would discard whatever changed in between. An implementation MUST evaluate the
+    /// expectation inside the same statement that performs the update, because that statement's row is the
+    /// only serialisation point two API replicas share. <see cref="CredentialWriteOutcome"/> enumerates the
+    /// races this closes and why a boolean could not express them.
+    /// </para>
+    /// <para>
+    /// A caller that receives <see cref="CredentialWriteOutcome.Superseded"/> must NOT retry with the same
+    /// hash: doing so would reintroduce the overwrite. It must re-read, re-decide, and report a conflict. On
+    /// a sign-in path it must additionally refuse the sign-in, because the credential the request verified is
+    /// no longer the account's credential.
+    /// </para>
     /// </remarks>
-    Task<bool> SetPasswordHashAsync(
+    Task<CredentialWriteOutcome> SetPasswordHashAsync(
         int userId,
         string passwordHash,
+        string? expectedPasswordValue,
         DateTime utcNow,
         CancellationToken cancellationToken = default);
 
